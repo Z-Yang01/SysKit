@@ -1,0 +1,583 @@
+"""工具箱：速度测试 / 局域网设备发现 / DNS查询与子网计算 / 持续ping与路由追踪 / 端口占用。"""
+import ipaddress
+import re
+import socket
+import subprocess
+import threading
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+import psutil
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFormLayout,
+                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QListWidget, QMessageBox, QProgressBar, QPushButton, QRadioButton,
+                               QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QVBoxLayout, QWidget)
+
+from .charts import LineChart, human_bytes
+from .. import icmp, dnsquery
+from ..logger import LOGGER
+
+TEST_URLS = [
+    "https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe",
+    "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_250avis_x64.exe",
+    "https://mirrors.aliyun.com/debian-cd/current/amd64/iso-cd/debian-12.9.0-amd64-netinst.iso",
+]
+
+
+class SpeedTestWorker(QThread):
+    progress = Signal(float, float)   # instant_Bps, total_MB
+    done = Signal(bool, float)
+
+    def __init__(self, seconds=8, parent=None):
+        super().__init__(parent)
+        self.seconds = seconds
+
+    def run(self):
+        stop = threading.Event()
+        counter = {"bytes": 0}
+        for url in TEST_URLS:
+            req = urllib.request.Request(url, headers={"User-Agent": "NetTool/1.0"})
+            try:
+                resp = urllib.request.urlopen(req, timeout=10)
+            except Exception:
+                continue
+            start = time.time()
+
+            def measure():
+                last_t, last_b = start, 0
+                while not stop.is_set():
+                    time.sleep(1)
+                    now = time.time()
+                    counter["instant"] = (counter["bytes"] - last_b) / max(0.001, now - last_t)
+                    last_t, last_b = now, counter["bytes"]
+                    self.progress.emit(counter["instant"], counter["bytes"] / 2**20)
+                    if now - start >= self.seconds:
+                        stop.set()
+
+            threading.Thread(target=measure, daemon=True).start()
+            try:
+                while not stop.is_set():
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    counter["bytes"] += len(chunk)
+            except Exception:
+                pass
+            finally:
+                resp.close()
+                stop.set()
+            elapsed = time.time() - start
+            if counter["bytes"] > 1024 * 512:
+                self.done.emit(True, counter["bytes"] / max(0.001, elapsed))
+                return
+        self.done.emit(False, 0.0)
+
+
+class SpeedTestTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.btn_start = QPushButton("开始测速")
+        self.btn_start.setProperty("primary", True)
+        self.btn_start.clicked.connect(self.start)
+        row.addWidget(self.btn_start)
+        self.lbl_status = QLabel("点击开始，将下载约几十 MB 流量")
+        self.lbl_status.setStyleSheet("color:#6a737d;")
+        row.addWidget(self.lbl_status, 1)
+        lay.addLayout(row)
+
+        self.pb = QProgressBar()
+        self.pb.setRange(0, 0)
+        self.pb.setTextVisible(False)
+        self.pb.hide()
+        lay.addWidget(self.pb)
+
+        self.lbl_big = QLabel("— Mbps")
+        f = self.lbl_big.font()
+        f.setPointSize(20)
+        f.setBold(True)
+        self.lbl_big.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self.lbl_big)
+
+        hist_grp = QGroupBox("历史结果（本次运行）")
+        hlay = QVBoxLayout(hist_grp)
+        self.list_hist = QListWidget()
+        hlay.addWidget(self.list_hist)
+        lay.addWidget(hist_grp, 1)
+        self._worker = None
+
+    def start(self):
+        if self._worker:
+            return
+        self.btn_start.setEnabled(False)
+        self.pb.show()
+        self.lbl_status.setText("测速中…")
+        self._worker = SpeedTestWorker()
+        self._worker.progress.connect(self._on_progress)
+        self._worker.done.connect(self._on_done)
+        self._worker.start()
+
+    def _on_progress(self, instant_bps, total_mb):
+        self.lbl_status.setText(f"实时 {human_bytes(instant_bps)}/s　已下载 {total_mb:.1f} MB")
+
+    def _on_done(self, ok, avg_bps):
+        self._worker = None
+        self.btn_start.setEnabled(True)
+        self.pb.hide()
+        mbps = avg_bps * 8 / 2**20
+        if ok:
+            self.lbl_big.setText(f"{mbps:.1f} Mbps（{human_bytes(avg_bps)}/s）")
+            self.list_hist.insertItem(0, f"{time.strftime('%H:%M:%S')}　{mbps:.1f} Mbps")
+            LOGGER.info("速度测试完成: {} Mbps", f"{mbps:.1f}")
+        else:
+            self.lbl_big.setText("测速失败")
+            self.lbl_status.setText("所有测速源均不可达，请检查网络")
+
+
+# ---------------- 局域网设备发现 ----------------
+
+class _LanScanWorker(QThread):
+    done = Signal(list)
+
+    def run(self):
+        subnet = None
+        for addr in psutil.net_if_addrs().values():
+            for a in addr:
+                if a.family == socket.AF_INET and a.address and not a.address.startswith("127.") \
+                        and not a.address.startswith("169.254."):
+                    net = ipaddress.ip_network(f"{a.address}/255.255.255.0", strict=False)
+                    subnet = net
+                    break
+            if subnet:
+                break
+        if not subnet:
+            self.done.emit([])
+            return
+        hosts = [str(h) for h in subnet.hosts()]
+        results = {}
+
+        def probe(ip):
+            ms = icmp.ping(ip, timeout_ms=400)
+            if ms is not None:
+                results[ip] = ms
+
+        with ThreadPoolExecutor(max_workers=32) as ex:
+            list(ex.map(probe, hosts))
+        macs = {}
+        r = subprocess.run(["arp", "-a"], capture_output=True, timeout=15,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        for line in r.stdout.decode("mbcs", errors="replace").splitlines():
+            m = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([\da-fA-F-]{17})", line)
+            if m:
+                macs[m.group(1)] = m.group(2)
+        rows = [(ip, macs.get(ip, "?"), f"{results[ip]:.0f}") for ip in sorted(
+            results, key=lambda x: tuple(int(o) for o in x.split(".")))]
+        self.done.emit(rows)
+
+
+class LanTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.btn_scan = QPushButton("扫描局域网")
+        self.btn_scan.setProperty("primary", True)
+        self.btn_scan.clicked.connect(self.start)
+        row.addWidget(self.btn_scan)
+        self.lbl_status = QLabel("扫描当前 /24 网段（约 5-10 秒），列出存活设备与 MAC")
+        self.lbl_status.setStyleSheet("color:#6a737d;")
+        row.addWidget(self.lbl_status, 1)
+        lay.addLayout(row)
+
+        self.tbl = QTableWidget(0, 3)
+        self.tbl.setHorizontalHeaderLabels(["IP 地址", "MAC 地址", "延迟 ms"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.verticalHeader().setVisible(False)
+        lay.addWidget(self.tbl)
+        self._worker = None
+
+    def start(self):
+        if self._worker:
+            return
+        self.btn_scan.setEnabled(False)
+        self.lbl_status.setText("扫描中…")
+        self.tbl.setRowCount(0)
+        self._worker = _LanScanWorker()
+        self._worker.done.connect(self._done)
+        self._worker.start()
+
+    def _done(self, rows):
+        self._worker = None
+        self.btn_scan.setEnabled(True)
+        self.tbl.setRowCount(len(rows))
+        for i, (ip, mac, ms) in enumerate(rows):
+            for c, v in enumerate([ip, mac, ms]):
+                self.tbl.setItem(i, c, QTableWidgetItem(v))
+        self.lbl_status.setText(f"发现 {len(rows)} 台设备")
+
+
+# ---------------- DNS 查询 + 子网计算 ----------------
+
+class DnsSubnetTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+
+        grp_dns = QGroupBox("DNS 查询")
+        dlay = QVBoxLayout(grp_dns)
+        row1 = QHBoxLayout()
+        self.ed_domain = QLineEdit()
+        self.ed_domain.setPlaceholderText("要查询的域名，如 www.baidu.com")
+        self.ed_domain.setText("www.baidu.com")
+        row1.addWidget(QLabel("域名:"))
+        row1.addWidget(self.ed_domain, 1)
+        dlay.addLayout(row1)
+        row2 = QHBoxLayout()
+        self.cmb_server = QComboBox()
+        self.cmb_server.addItems(["系统默认", "223.5.5.5（阿里）", "119.29.29.29（腾讯）",
+                                  "114.114.114.114", "8.8.8.8（Google）"])
+        row2.addWidget(QLabel("DNS 服务器:"))
+        row2.addWidget(self.cmb_server, 1)
+        dlay.addLayout(row2)
+        btn = QPushButton("查询")
+        btn.clicked.connect(self.query)
+        dlay.addWidget(btn, 0, Qt.AlignLeft)
+        self.list_dns = QListWidget()
+        dlay.addWidget(self.list_dns)
+        lay.addWidget(grp_dns, 1)
+
+        grp_sub = QGroupBox("子网计算器")
+        slay = QVBoxLayout(grp_sub)
+        row3 = QHBoxLayout()
+        self.ed_ip = QLineEdit("192.168.1.10")
+        self.spin_prefix = QSpinBox()
+        self.spin_prefix.setRange(8, 32)
+        self.spin_prefix.setValue(24)
+        row3.addWidget(QLabel("IP:"))
+        row3.addWidget(self.ed_ip, 1)
+        row3.addWidget(QLabel("/"))
+        row3.addWidget(self.spin_prefix)
+        btn_calc = QPushButton("计算")
+        btn_calc.clicked.connect(self.calc)
+        row3.addWidget(btn_calc)
+        slay.addLayout(row3)
+        self.list_sub = QListWidget()
+        slay.addWidget(self.list_sub)
+        lay.addWidget(grp_sub, 1)
+
+    def query(self):
+        self.list_dns.clear()
+        domain = self.ed_domain.text().strip()
+        if not domain:
+            return
+        server = self.cmb_server.currentText().split("（")[0]
+        try:
+            if server == "系统默认":
+                import socket as _s
+                infos = _s.getaddrinfo(domain, None, _s.AF_INET)
+                ips = sorted({i[4][0] for i in infos})
+            else:
+                ips = dnsquery.query(domain, server, timeout=3)
+        except Exception as e:
+            self.list_dns.addItem(f"查询失败: {e}")
+            return
+        for ip in ips:
+            self.list_dns.addItem(f"{ip}")
+
+    def calc(self):
+        self.list_sub.clear()
+        try:
+            net = ipaddress.ip_network(f"{self.ed_ip.text().strip()}/{self.spin_prefix.value()}",
+                                       strict=False)
+        except ValueError as e:
+            self.list_sub.addItem(f"输入无效: {e}")
+            return
+        hosts = list(net.hosts())
+        rows = [("网络地址", str(net.network_address)),
+                ("子网掩码", str(net.netmask)),
+                ("广播地址", str(net.broadcast_address)),
+                ("可用主机范围", f"{hosts[0]} ~ {hosts[-1]}" if hosts else "无"),
+                ("可用主机数", str(max(0, net.num_addresses - 2))),
+                ("总地址数", str(net.num_addresses))]
+        for k, v in rows:
+            self.list_sub.addItem(f"{k}: {v}")
+
+
+# ---------------- 持续 ping + 路由追踪 ----------------
+
+class _TracertWorker(QThread):
+    line = Signal(dict)
+
+    def __init__(self, target, parent=None):
+        super().__init__(parent)
+        self.target = target
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        try:
+            p = subprocess.Popen(
+                ["tracert", "-d", "-w", "600", "-h", "15", self.target],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            for raw in p.stdout:
+                if self._stop.is_set():
+                    p.kill()
+                    return
+                line = raw.decode("mbcs", errors="replace").strip()
+                m = re.match(r"^\s*(\d{1,2})\s+(.*)", line)
+                if not m:
+                    continue
+                hop = int(m.group(1))
+                rest = m.group(2)
+                ms_list = [int(x) for x in re.findall(r"(\d+)\s*ms", rest)]
+                ip_m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", rest)
+                self.line.emit({"hop": hop,
+                                "ms": ms_list,
+                                "ip": ip_m.group(1) if ip_m else "*"})
+        except Exception:
+            pass
+
+
+class PingRouteTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("目标:"))
+        self.ed_target = QLineEdit("223.5.5.5")
+        row.addWidget(self.ed_target, 1)
+        self.btn_ping = QPushButton("开始持续 ping")
+        self.btn_ping.clicked.connect(self.toggle_ping)
+        row.addWidget(self.btn_ping)
+        self.btn_route = QPushButton("路由追踪")
+        self.btn_route.clicked.connect(self.tracert)
+        row.addWidget(self.btn_route)
+        lay.addLayout(row)
+
+        self.chart = LineChart("持续 ping 延迟（1 秒/点）", series=[("延迟", "#3576e0")],
+                               seconds=180, fmt=lambda v: f"{v:.0f}ms")
+        lay.addWidget(self.chart)
+
+        self.tbl_route = QTableWidget(0, 3)
+        self.tbl_route.setHorizontalHeaderLabels(["跳数", "延迟 ms", "IP"])
+        self.tbl_route.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tbl_route.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_route.setAlternatingRowColors(True)
+        self.tbl_route.verticalHeader().setVisible(False)
+        self.tbl_route.setMaximumHeight(220)
+        lay.addWidget(self.tbl_route)
+
+        self._ping_timer = QTimer(self)
+        self._ping_timer.timeout.connect(self._ping_once)
+        self._tracert = None
+
+    def toggle_ping(self):
+        if self._ping_timer.isActive():
+            self._ping_timer.stop()
+            self.btn_ping.setText("开始持续 ping")
+        else:
+            self.chart.clear_data()
+            self._ping_timer.start(1000)
+            self._ping_once()
+            self.btn_ping.setText("停止 ping")
+
+    def _ping_once(self):
+        target = self.ed_target.text().strip()
+        if not target:
+            return
+        ms = icmp.ping(target)
+        self.chart.push([ms])
+
+    def tracert(self):
+        target = self.ed_target.text().strip()
+        if not target or self._tracert:
+            return
+        self.tbl_route.setRowCount(0)
+        self.btn_route.setEnabled(False)
+        self._tracert = _TracertWorker(target)
+        self._tracert.line.connect(self._route_line)
+        self._tracert.finished.connect(lambda: self.btn_route.setEnabled(True))
+        self._tracert.start()
+
+    def _route_line(self, hop):
+        row = self.tbl_route.rowCount()
+        self.tbl_route.insertRow(row)
+        ms_text = ", ".join(f"{x} ms" for x in hop["ms"]) or "超时"
+        for c, v in enumerate([str(hop["hop"]), ms_text, hop["ip"]]):
+            self.tbl_route.setItem(row, c, QTableWidgetItem(v))
+
+
+# ---------------- 端口占用查看器 ----------------
+
+class _PortWorker(QThread):
+    done = Signal(list)
+
+    def run(self):
+        rows = []
+        try:
+            conns = psutil.net_connections(kind="inet")
+        except psutil.AccessDenied:
+            self.done.emit([])
+            return
+        proc_cache = {}
+        for c in conns:
+            try:
+                pid = c.pid or 0
+                if pid not in proc_cache:
+                    p = psutil.Process(pid) if pid else None
+                    proc_cache[pid] = (p.name() if p else "System", p.exe() if p else "") \
+                        if p else ("System", "")
+                pname, pexe = proc_cache[pid]
+                laddr = f"{c.laddr.ip}:{c.laddr.port}" if c.laddr else "-"
+                raddr = f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else "-"
+                rows.append({"proto": "TCP" if c.type == 1 else "UDP",
+                             "tcp": c.type == 1,
+                             "laddr": laddr, "raddr": raddr,
+                             "status": c.status if c.status != "NONE" else "-",
+                             "pid": pid, "name": pname, "exe": pexe})
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+        rows.sort(key=lambda r: (not r["tcp"], r["laddr"]))
+        self.done.emit(rows)
+
+
+class PortTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.btn_refresh = QPushButton("刷新")
+        self.btn_refresh.setProperty("primary", True)
+        self.btn_refresh.clicked.connect(self.refresh)
+        row.addWidget(self.btn_refresh)
+        self.chk_auto = QCheckBox("每 5 秒自动刷新")
+        self.chk_auto.toggled.connect(
+            lambda on: self._timer.start(5000) if on else self._timer.stop())
+        row.addWidget(self.chk_auto)
+        self.chk_listen = QCheckBox("只看监听端口")
+        self.chk_listen.toggled.connect(lambda _on: self._apply_filter())
+        row.addWidget(self.chk_listen)
+        row.addWidget(QLabel("筛选:"))
+        self.ed_filter = QLineEdit()
+        self.ed_filter.setPlaceholderText("端口 / PID / 进程名 / IP…")
+        self.ed_filter.setClearButtonEnabled(True)
+        self.ed_filter.textChanged.connect(lambda _t: self._apply_filter())
+        row.addWidget(self.ed_filter, 1)
+        self.btn_kill = QPushButton("结束选中进程")
+        self.btn_kill.setProperty("danger", True)
+        self.btn_kill.clicked.connect(self._kill_selected)
+        row.addWidget(self.btn_kill)
+        lay.addLayout(row)
+
+        self.tbl = QTableWidget(0, 6)
+        self.tbl.setHorizontalHeaderLabels(["协议", "本地地址", "远程地址", "状态", "PID", "进程"])
+        self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.verticalHeader().setVisible(False)
+        lay.addWidget(self.tbl)
+
+        self.lbl_status = QLabel(" ")
+        self.lbl_status.setStyleSheet("color:#8a93a0;")
+        lay.addWidget(self.lbl_status)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.refresh)
+        self._worker = None
+        self.refresh()
+
+    def refresh(self):
+        if self._worker:
+            return
+        self.btn_refresh.setEnabled(False)
+        self._worker = _PortWorker()
+        self._worker.done.connect(self._done)
+        self._worker.start()
+
+    def _done(self, rows):
+        self._worker = None
+        self.btn_refresh.setEnabled(True)
+        self._rows = rows
+        self.lbl_status.setText(f"共 {len(rows)} 条连接　{time.strftime('%H:%M:%S')}")
+        self._render(rows)
+        self._apply_filter()
+
+    def _render(self, rows):
+        self.tbl.setRowCount(len(rows))
+        listen_color = QColor("#3576e0")
+        for i, r in enumerate(rows):
+            vals = [r["proto"], r["laddr"], r["raddr"], r["status"],
+                    str(r["pid"]) if r["pid"] else "-", r["name"]]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(v)
+                if r["status"] == "LISTEN":
+                    item.setForeground(listen_color)
+                self.tbl.setItem(i, c, item)
+            self.tbl.item(i, 5).setToolTip(r["exe"] or r["name"])
+
+    def _apply_filter(self):
+        kw = self.ed_filter.text().strip().lower()
+        only_listen = self.chk_listen.isChecked()
+        for row in range(self.tbl.rowCount()):
+            text = " ".join(self.tbl.item(row, c).text().lower()
+                            for c in range(6) if self.tbl.item(row, c))
+            status = self.tbl.item(row, 3).text()
+            visible = (not kw or kw in text) and (not only_listen or status == "LISTEN")
+            self.tbl.setRowHidden(row, not visible)
+
+    def _kill_selected(self):
+        row = self.tbl.currentRow()
+        if row < 0 or self.tbl.isRowHidden(row):
+            QMessageBox.information(self, "提示", "请先在列表中选中一条连接。")
+            return
+        pid = int(self.tbl.item(row, 4).text()) if self.tbl.item(row, 4).text() != "-" else 0
+        pname = self.tbl.item(row, 5).text()
+        if not pid:
+            QMessageBox.information(self, "提示", "该连接为系统级（无归属进程），无法结束。")
+            return
+        ret = QMessageBox.question(
+            self, "确认结束进程",
+            f"确定结束进程 {pname} (PID {pid}) 吗？\n\n"
+            "该进程的所有连接将断开；若是系统关键进程可能导致功能异常。",
+            QMessageBox.Yes | QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        try:
+            psutil.Process(pid).kill()
+            from ..logger import LOGGER
+            LOGGER.warning("已结束进程 {} (PID {})", pname, pid)
+        except psutil.AccessDenied:
+            QMessageBox.warning(self, "提示", "权限不足，无法结束该进程（可能需要管理员）。")
+        except psutil.NoSuchProcess:
+            QMessageBox.information(self, "提示", "进程已自行退出。")
+        except Exception as e:
+            QMessageBox.warning(self, "提示", f"结束进程失败: {e}")
+        self.refresh()
+
+
+class ToolboxPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        tabs = QTabWidget()
+        tabs.addTab(SpeedTestTab(), "速度测试")
+        tabs.addTab(LanTab(), "局域网设备")
+        tabs.addTab(PortTab(), "端口 / 进程")
+        tabs.addTab(DnsSubnetTab(), "DNS / 子网")
+        tabs.addTab(PingRouteTab(), "ping / 路由")
+        lay.addWidget(tabs)
