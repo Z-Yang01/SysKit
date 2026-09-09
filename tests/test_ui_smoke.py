@@ -1,0 +1,945 @@
+"""UI 离屏冒烟测试（QT_QPA_PLATFORM=offscreen，pytest-qt）。
+
+运行：QT_QPA_PLATFORM=offscreen python -m pytest tests/test_ui_smoke.py -q --timeout=60
+
+覆盖此前 0% 覆盖的 UI 模块：
+    syskit/ui/main_window.py / dashboard_page.py / wifi_page.py / disk_page.py /
+    system_page.py / toolbox_page.py / confirm_dialog.py / tray.py / app.py /
+    workers.py / theme.py
+（charts.py 的 human_bytes 在 test_toolbox_calc.py 已覆盖；图表控件随各页面构造 +
+ grab() 渲染冒烟。）
+
+Mock 策略（叠加在仓库 conftest 哨兵之上，绝不发真实网络请求 / 不改系统状态）：
+- autouse 夹具 ui_offline_mocks：
+  * proc.run / proc.run_ps → 返回空的成功 CmdResult（不启动任何真实进程）；
+  * psutil 全部采样函数 → 固定假数据；
+  * icmp.ping / icmp.default_gateway → 固定假值（绝不发真实 ICMP）；
+  * winsound.PlaySound / os.startfile → no-op；
+  * QMessageBox.information/warning/question/critical/about → no-op
+    （offscreen 下模态 exec 会永久挂起）。
+- 后台 worker（workers.py、DiskScanWorker、DeleteWorker、_LanScanWorker、
+  _PortWorker 等）一律不调用 start()，改为同步直接调用 run() 验证信号链路，
+  其内部依赖（netcheck.run_all / snapshot.take / diskusage.* / subprocess / psutil）
+  全部 monkeypatch 为假实现。
+- MainWindow 构造时自动启动 monitor/telemetry/诊断线程，夹具统一回收：
+  tele.wait + 探测 Monitor._tstate_lock 确认线程真正退出（Monitor 不能 join，
+  见疑似 bug 7），托盘 showMessage 全进程 no-op 并尽早 deleteLater。
+
+稳定性护栏（针对 PySide6 离屏 + pytest 捕获环境的原生 fail-fast 崩溃）：
+模块导入即在 QApplication 创建前 qInstallMessageHandler 接管 Qt 消息
+（README 已知坑：默认处理器在句柄被接管时 fail-fast 0xC0000409），并将
+QSystemTrayIcon.showMessage 置为 no-op。个别运行仍可能在进程退出阶段触发
+PySide6 原生 fail-fast（无任何 Qt 消息/Python 堆栈，疑似 PySide6 6.11 离屏
+平台在多窗口+线程会话收尾时的固有缺陷）：该崩溃发生在全部用例通过之后，
+不影响测试结果，重跑即可。
+
+各页面测试均验证：离屏构造、关键子控件存在、核心槽函数可调用、无异常销毁
+（qtbot.addWidget 统一清理；MainWindow 额外做线程回收）。
+
+================================================================================
+疑似 bug / 隐患记录（只记录不修改，均已用断言固化现状）：
+1. disk_page.py:25-27  ROLE_FILLED 与 ROLE_SIZE 同为 Qt.UserRole+1（两个常量值重复）。
+   目前分别只用于 QTreeWidgetItem / QTableWidgetItem，无实际冲突，但属潜伏陷阱：
+   控件用错（树里读 SIZE、表里读 FILLED）不会报错，只会拿到错误数据。
+2. toolbox_page.py:PingRouteTab.tracert()  追踪完成后 self._tracert 从不置回 None，
+   导致"路由追踪"按钮虽被 finished 信号重新启用，但再点只会静默 return——
+   每个页面生命周期内只能成功追踪一次（见 test_ping_route_tab 末尾的现状断言）。
+3. workers.py:RepairWorker.run()  get_action() 返回 None 时直接 return、不发 done
+   信号。当前唯一调用方 main_window.run_repair 先做了存在性检查所以不可达，但若
+   未来新增调用点，_repair_worker 将永远非 None、界面永久卡忙碌（无超时兜底）。
+4. wifi_page.py:WifiPage  self._worker 是扫描与读密码两类 worker 共用的单一槽位，
+   扫描进行中点"读取已存密码"会被静默忽略（无任何用户提示）。
+5. toolbox_page.py:SpeedTestWorker.run()  counter["bytes"] 在多个测速 URL 间累计，
+   若前一 URL 下载量 <512KB 落到下一 URL，平均速率=累计字节/末 URL 独立计时，
+   会高估测速结果。
+6. app.py:run_gui()  单实例互斥分支创建 QApplication 弹完提示后直接 return，
+   互斥量句柄依赖进程退出释放；且 run_gui 会创建真实 Win32 互斥量并进入
+   app.exec() 事件循环，无法在离屏单测中安全执行 —— 对应用例以 skip 写明。
+7. monitor.py:Monitor.__init__  self._stop = threading.Event() 覆盖了
+   threading.Thread 的私有方法名 _stop —— 因此对 Monitor 实例调用 join()
+   必然抛 TypeError: 'Event' object is not callable（threading 内部
+   _wait_for_tstate_lock 会调用 self._stop()）。当前 app 从不 join 监控线程
+   （daemon 线程仅靠 stop() 置位事件退出），故潜伏未爆；本文件 teardown 亦只
+   调 stop() 不 join。
+================================================================================
+"""
+import os
+import sys
+import tempfile
+import time
+import types
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import Qt, qInstallMessageHandler
+from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QLabel,
+                               QMenu, QSystemTrayIcon, QTabWidget, QWidget)
+
+
+def _qt_message_sink(msg_type, context, message):
+    """接管 Qt 消息处理：默认处理器在 pytest 捕获/无控制台的句柄环境下会
+    fail-fast(0xC0000409)（README 已知坑，app.run_gui 用同样手段规避），
+    测试进程同样命中，故在 QApplication 创建前安装本处理器。"""
+    try:
+        with open(os.path.join(tempfile.gettempdir(), "syskit_qt_sink.log"),
+                  "a", encoding="utf-8") as fh:
+            fh.write("[qt] {}\n".format(message))
+    except Exception:
+        pass
+
+
+qInstallMessageHandler(_qt_message_sink)
+
+# offscreen 平台无系统托盘实现：托盘气泡（showMessage）在部分时序下会触发
+# 原生 fail-fast 崩溃，对整个测试进程统一 no-op（冒烟只验证调用不崩溃）。
+QSystemTrayIcon.showMessage = lambda self, *a, **k: None
+
+# ---------------- autouse：离线 mock 环境 ----------------
+
+
+@pytest.fixture(autouse=True)
+def ui_offline_mocks(monkeypatch):
+    """UI 冒烟统一离线环境（在 conftest 哨兵之后生效，仅放宽 proc 与补齐假数据，
+    subprocess/socket/urlopen/winreg 写 哨兵保持原样 —— 漏 mock 依旧立刻失败）。"""
+    from syskit import icmp, proc
+
+    def _fake_run(cmd, timeout=20):
+        return proc.CmdResult(code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(proc, "run", _fake_run)
+    monkeypatch.setattr(proc, "run_ps", _fake_run)
+
+    import psutil
+    nic = types.SimpleNamespace(bytes_recv=120_000, bytes_sent=60_000)
+    part = types.SimpleNamespace(device="C:\\", mountpoint="C:\\",
+                                 fstype="NTFS", opts="rw fixed")
+    monkeypatch.setattr(psutil, "net_io_counters",
+                        lambda pernic=False: {"Ethernet0": nic} if pernic else nic)
+    monkeypatch.setattr(psutil, "cpu_percent", lambda interval=None: 7.5)
+    monkeypatch.setattr(psutil, "virtual_memory",
+                        lambda: types.SimpleNamespace(percent=41.0,
+                                                      total=16 * 2 ** 30,
+                                                      available=9 * 2 ** 30))
+    monkeypatch.setattr(psutil, "disk_io_counters",
+                        lambda perdisk=False: types.SimpleNamespace(
+                            read_bytes=4096, write_bytes=2048))
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(()))
+    monkeypatch.setattr(psutil, "net_if_addrs", lambda: {})
+    monkeypatch.setattr(psutil, "net_connections", lambda kind="inet": [])
+    monkeypatch.setattr(psutil, "disk_partitions", lambda all=False: [part])
+    monkeypatch.setattr(psutil, "disk_usage",
+                        lambda path: types.SimpleNamespace(
+                            total=500 * 2 ** 30, used=200 * 2 ** 30,
+                            free=300 * 2 ** 30, percent=40.0))
+
+    monkeypatch.setattr(icmp, "ping", lambda host, timeout_ms=1500: 8.0)
+    monkeypatch.setattr(icmp, "default_gateway", lambda: "192.168.1.1")
+
+    try:
+        import winsound
+        monkeypatch.setattr(winsound, "PlaySound", lambda *a, **k: None)
+    except ImportError:
+        pass
+    monkeypatch.setattr(os, "startfile", lambda *a, **k: None, raising=False)
+
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information",
+                        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(QMessageBox, "critical",
+                        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "about", staticmethod(lambda *a, **k: None))
+
+
+# ---------------- theme.py ----------------
+
+
+def test_theme_palette_qss_and_dark_toggle(qapp):
+    from syskit.ui import theme
+    pal = theme.pal()
+    for key in ("bg", "card", "border", "text", "sub", "accent", "sel_bg"):
+        assert key in pal, f"调色板缺 {key}"
+    assert theme.is_dark() is False                       # 模块初始浅色
+    qss = theme._build_qss(pal)
+    assert "QMainWindow" in qss and "@bg" not in qss      # 占位符全部替换
+    try:
+        theme.apply(qapp, dark=True)
+        assert theme.is_dark() is True
+        assert "#151a21" in qapp.styleSheet()             # 深色背景色已写入 QSS
+    finally:
+        theme.apply(qapp, dark=False)                     # 还原，避免状态泄漏
+    assert theme.is_dark() is False
+
+
+# ---------------- confirm_dialog.py ----------------
+
+
+def test_confirm_dialog_shows_action_risk_restore(qtbot):
+    from syskit import repairs
+    from syskit.ui.confirm_dialog import ConfirmDialog
+    act = repairs.get_action("flush_dns")
+    dlg = ConfirmDialog(act, param_desc="额外参数：adapter=WLAN")
+    qtbot.addWidget(dlg)
+    texts = [lbl.text() for lbl in dlg.findChildren(QLabel)]
+    assert act.title in texts
+    assert any("还原方式" in t for t in texts)
+    assert any("额外参数" in t for t in texts)
+    assert any("风险级别" in t for t in texts)
+
+
+def test_confirm_dialog_yes_accepts_and_reboot_hint(qtbot):
+    from syskit import repairs
+    from syskit.ui.confirm_dialog import ConfirmDialog
+    act = repairs.get_action("winsock_reset")     # 强力类 + need_reboot=True
+    dlg = ConfirmDialog(act)
+    qtbot.addWidget(dlg)
+    dlg.show()
+    assert dlg.isVisible()
+    texts = [lbl.text() for lbl in dlg.findChildren(QLabel)]
+    assert any("重启" in t for t in texts)         # 需重启提示
+    box = dlg.findChildren(QDialogButtonBox)[0]
+    box.button(QDialogButtonBox.Yes).click()       # 非阻塞（等效 exec 返回 Accepted）
+    assert dlg.result() == QDialog.Accepted
+    assert not dlg.isVisible()
+
+
+# ---------------- workers.py ----------------
+
+
+def test_worker_diagnosis_signal_chain(monkeypatch):
+    """DiagnosisWorker 不 start()，同步 run() 验证 progress/finished_ok 信号。"""
+    from syskit import netcheck
+    from syskit.netcheck import CheckResult
+    from syskit.ui.workers import DiagnosisWorker
+    expect = [CheckResult("real_conn", "真实连通性探测", "pass", "204探测:OK"),
+              CheckResult("dns_cfg", "静态 DNS", "fail", "8.8.8.8", fix_ids=["dns_auto"])]
+
+    def fake_run_all(progress=None, quick=False):
+        if progress:
+            for r in expect:
+                progress(r)
+        return expect
+
+    monkeypatch.setattr(netcheck, "run_all", fake_run_all)
+    w = DiagnosisWorker(quick=True)
+    seen_progress, seen_done = [], []
+    w.progress.connect(seen_progress.append)
+    w.finished_ok.connect(seen_done.append)
+    w.run()
+    assert len(seen_progress) == 2
+    assert seen_done and [r.id for r in seen_done[0]] == ["real_conn", "dns_cfg"]
+
+
+def test_worker_repair_and_combo_signal_chain(monkeypatch):
+    from syskit import repairs
+    from syskit.repairs import RepairResult
+    from syskit.ui.workers import ComboWorker, RepairWorker, action_summary
+    fake_act = types.SimpleNamespace(execute=lambda param: RepairResult(True, "假动作完成"))
+    monkeypatch.setattr(repairs, "get_action",
+                        lambda aid: fake_act if aid == "flush_dns" else None)
+
+    rw = RepairWorker("flush_dns", {"profile": "x"})
+    done = []
+    rw.done.connect(done.append)
+    rw.run()
+    assert done and done[0][0] == "flush_dns" and done[0][1].success
+
+    rw2 = RepairWorker("nope")                    # 动作不存在：现状是静默无信号（见文件头 bug 3）
+    done2 = []
+    rw2.done.connect(done2.append)
+    rw2.run()
+    assert done2 == []
+
+    cw = ComboWorker(["flush_dns", "nope", "flush_dns"])
+    items, finished = [], []
+    cw.item_done.connect(items.append)
+    cw.all_done.connect(lambda: finished.append(1))   # all_done 为无参信号
+    cw.run()
+    assert len(items) == 2 and len(finished) == 1
+    assert action_summary("flush_dns") is repairs.get_action("flush_dns")
+
+
+def test_worker_snapshot_signal_chain(monkeypatch):
+    from syskit import snapshot as snap_mod
+    from syskit.snapshot import Snapshot
+    from syskit.ui.workers import SnapshotWorker
+    fake = Snapshot()
+    monkeypatch.setattr(snap_mod, "take", lambda use_ps=True: fake)
+    w = SnapshotWorker()
+    got = []
+    w.got.connect(got.append)
+    w.run()
+    assert got and got[0] is fake
+
+
+# ---------------- dashboard_page.py ----------------
+
+
+def test_dashboard_construct_widgets_and_paint(qtbot):
+    from syskit.stores import EventStore
+    from syskit.ui.dashboard_page import DashboardPage
+    page = DashboardPage(EventStore())
+    qtbot.addWidget(page)
+    for attr in ("card_gw", "card_pub", "card_down", "card_up", "card_traffic",
+                 "chart_lat", "chart_speed", "chart_wifi", "list_events"):
+        assert getattr(page, attr, None) is not None, f"缺关键控件 {attr}"
+    page.show()
+    page.grab()                                   # 触发 LineChart.paintEvent
+    qtbot.wait(20)
+
+
+def test_dashboard_update_tick_and_event_timeline(qtbot):
+    from syskit.stores import EventStore
+    from syskit.ui.dashboard_page import DashboardPage
+    store = EventStore()
+    store.add("no_net", "连通性探测失败 ×2")
+    page = DashboardPage(store)
+    qtbot.addWidget(page)
+    page.reload_events()
+    assert page.list_events.count() == 1
+    assert "连接中断" in page.list_events.item(0).text()
+
+    page.update_tick({"lat_gw": 12.0, "lat_pub": 33.0, "gateway": "192.168.1.1",
+                      "down": 1024.0, "up": 2048.0, "wifi_signal": 77,
+                      "today_sent": 500, "today_recv": 900})
+    assert "12" in page.card_gw.value_label.text()
+    assert "ms" in page.card_pub.value_label.text()
+    assert "KB" in page.card_down.value_label.text()
+    assert "B" in page.card_traffic.value_label.text()
+    assert page.card_gw.toolTip() == "192.168.1.1"
+
+    page.update_tick({"lat_gw": None, "lat_pub": None})
+    assert "超时" in page.card_gw.value_label.text()
+
+
+# ---------------- wifi_page.py ----------------
+
+FAKE_APS = [
+    {"ssid": "HomeWiFi", "bssid": "AA:BB:CC:DD:EE:01", "signal": 82, "channel": 6,
+     "radio": "802.11ax", "auth": "WPA2-PSK", "band": "2.4G"},
+    {"ssid": "Office5G", "bssid": "AA:BB:CC:DD:EE:02", "signal": 55, "channel": 36,
+     "radio": "802.11ax", "auth": "WPA3-SAE", "band": "5G"},
+]
+
+
+def test_wifi_page_scan_fills_table_and_channel_advice(qtbot, monkeypatch):
+    import syskit.ui.wifi_page as wp
+    from syskit import repairs
+    monkeypatch.setattr(wp, "scan_networks", lambda: FAKE_APS)
+    monkeypatch.setattr(repairs, "wlan_profiles", lambda: ["HomeWiFi"])
+    page = wp.WifiPage()
+    qtbot.addWidget(page)
+    qtbot.wait_until(lambda: page._worker is None, timeout=10000)
+
+    tabs = page.findChildren(QTabWidget)[0]
+    assert tabs.count() == 4                      # 周边 AP / 信道分析 / 二维码 / 已存密码
+    assert page.tbl_aps.rowCount() == 2
+    assert page.tbl_aps.item(0, 0).text() == "HomeWiFi"   # 按信号降序
+    assert "共发现 2" in page.lbl_scan.text()
+    assert "推荐" in page.lbl_advice.text()               # 信道推荐已生成
+    assert page.cmb_share.count() == 1
+
+
+def test_wifi_page_generate_qr(qtbot, monkeypatch):
+    import syskit.ui.wifi_page as wp
+    page = wp.WifiPage()
+    qtbot.addWidget(page)
+    qtbot.wait_until(lambda: page._worker is None, timeout=10000)
+    monkeypatch.setattr(wp, "profile_password", lambda name: ("WPA2-PSK", "s3cret"))
+    assert not page.btn_save_qr.isEnabled()
+    page.cmb_share.addItem("HomeWiFi")
+    page.cmb_share.setCurrentText("HomeWiFi")
+    page._gen_qr()
+    assert page.btn_save_qr.isEnabled()
+    pix = page.lbl_qr.pixmap()
+    assert pix is not None and not pix.isNull()
+
+
+def test_wifi_page_password_table_fill(qtbot):
+    import syskit.ui.wifi_page as wp
+    page = wp.WifiPage()
+    qtbot.addWidget(page)
+    qtbot.wait_until(lambda: page._worker is None, timeout=10000)
+    page._pw_done([("HomeWiFi", "WPA2", "pw123"), ("Cafe", "?", "?")])
+    assert page.tbl_pw.rowCount() == 2
+    assert page.tbl_pw.item(0, 2).text() == "pw123"
+    assert "共 2" in page.lbl_pw.text()
+
+
+# ---------------- disk_page.py ----------------
+
+
+def _fake_scan_result():
+    from syskit.diskusage import DirNode, ScanResult
+    root = DirNode(name="C:", path="C:\\", total=1500, file_count=30,
+                   children=[DirNode(name="Users", path="C:\\Users",
+                                     total=1000, file_count=20)])
+    return ScanResult(root=root, ext_stats={"zip": 1000, "txt": 500},
+                      top_files=[(1000, "C:\\Users\\big.zip", time.time() - 60),
+                                 (500, "C:\\note.txt", time.time())],
+                      file_count=30, error_count=2, duration=1.5, cancelled=False)
+
+
+def test_disk_tab_construct_lists_fake_drives(qtbot):
+    from syskit.ui.disk_page import DiskTab
+    tab = DiskTab()
+    qtbot.addWidget(tab)
+    assert tab.combo.count() == 1                 # psutil mock：仅一个 C:
+    assert tab.combo.itemData(0) == "C:\\"
+    assert tab.btn_scan.isEnabled()
+    assert not tab.btn_stop.isEnabled()
+    for attr in ("tree", "table", "chart", "btn_delete", "pb"):
+        assert getattr(tab, attr, None) is not None
+
+
+def test_disk_tab_scan_render_tree_table_chart(qtbot, monkeypatch):
+    from syskit import diskusage
+    from syskit.ui.disk_page import DiskTab
+    monkeypatch.setattr(diskusage, "scan_tree",
+                        lambda root, stop=None, progress=None: _fake_scan_result())
+    tab = DiskTab()
+    qtbot.addWidget(tab)
+    tab.scan("C:\\")                              # 后台 worker，扫描函数已 mock
+    qtbot.wait_until(lambda: tab._worker is None, timeout=10000)
+
+    assert "扫描完成" in tab.lbl_result.text()
+    assert "跳过 2" in tab.lbl_result.text()
+    assert tab.tree.topLevelItemCount() == 1
+    root_item = tab.tree.topLevelItem(0)
+    assert root_item.text(0) == "C:"
+    assert root_item.childCount() == 1            # setExpanded 触发懒加载填充
+    assert root_item.child(0).text(0) == "Users"
+    assert tab.table.rowCount() == 2
+    assert tab.table.item(0, 0).text() == "big.zip"       # 按大小列降序
+    assert len(tab.chart._bars) == 2                      # 文件类型 Top 图
+    assert tab.btn_delete.isEnabled()
+
+    tab._scan_done(None)                          # 扫描失败分支
+    assert "扫描失败" in tab.lbl_progress.text()
+
+
+def test_disk_tab_collect_and_delete_worker(qtbot, monkeypatch):
+    from syskit import diskusage
+    from syskit.ui.disk_page import DeleteWorker, DiskTab
+    tab = DiskTab()
+    qtbot.addWidget(tab)
+    tab._scan_done(_fake_scan_result())
+
+    assert tab._collect() == []                   # 未勾选未选中 → 空
+    root_item = tab.tree.topLevelItem(0)
+    child_item = root_item.child(0)
+    child_item.setCheckState(0, Qt.Checked)
+    sel = tab._collect()
+    assert sel == [("C:\\Users", 1000)]
+    child_item.setCheckState(0, Qt.Unchecked)     # 还原，供下方空选守卫用
+
+    # DeleteWorker 同步执行，delete_to_recycle_bin 已 mock —— 绝不碰真实回收站
+    monkeypatch.setattr(diskusage, "delete_to_recycle_bin",
+                        lambda paths: (len(paths), []))
+    w = DeleteWorker(["C:\\Users"])
+    out = []
+    w.done.connect(lambda ok, errors: out.append((ok, errors)))
+    w.run()
+    assert out == [(1, [])]
+
+    tab.delete_checked()                          # 无勾选无选中：仅提示返回，不启动删除
+    assert tab._delete_worker is None
+
+
+def test_disk_tab_reveal_missing_path_noop(qtbot, monkeypatch):
+    """双击定位：路径不存在时直接返回，不触达 subprocess（哨兵保护未解除）。"""
+    from syskit.ui.disk_page import DiskTab
+    tab = DiskTab()
+    qtbot.addWidget(tab)
+    tab._scan_done(_fake_scan_result())
+    monkeypatch.setattr(os.path, "exists", lambda p: False)
+    tab._reveal(tab.table.item(0, 0))             # 不应抛异常/拉起 explorer
+
+
+# ---------------- toolbox_page.py ----------------
+
+
+def test_toolbox_page_constructs_five_tabs(qtbot):
+    from syskit.ui.toolbox_page import PortTab, ToolboxPage
+    page = ToolboxPage()
+    qtbot.addWidget(page)
+    tabs = page.findChildren(QTabWidget)[0]
+    assert tabs.count() == 5
+    port = page.findChildren(PortTab)[0]
+    qtbot.wait_until(lambda: port._worker is None, timeout=10000)
+    assert "共 0 条" in port.lbl_status.text()    # psutil.net_connections mock 为空
+
+
+def test_speed_test_tab_result_handlers(qtbot):
+    from syskit.ui.toolbox_page import SpeedTestTab
+    tab = SpeedTestTab()
+    qtbot.addWidget(tab)
+    tab._on_progress(500_000.0, 3.0)
+    assert "实时" in tab.lbl_status.text()
+    tab._on_done(True, 2_000_000.0)
+    assert "Mbps" in tab.lbl_big.text()
+    assert tab.list_hist.count() == 1
+    tab._on_done(False, 0.0)
+    assert "测速失败" in tab.lbl_big.text()
+    assert tab.btn_start.isEnabled()              # 失败后按钮恢复
+
+
+def test_lan_tab_done_and_scan_worker(qtbot, monkeypatch):
+    import socket as socket_mod
+    import subprocess
+    import psutil
+    from syskit import icmp
+    from syskit.ui import toolbox_page as tp
+    tab = tp.LanTab()
+    qtbot.addWidget(tab)
+
+    tab._done([("192.168.1.2", "AA:BB:CC:DD:EE:FF", "3"),
+               ("192.168.1.10", "?", "12")])
+    assert tab.tbl.rowCount() == 2
+    assert "发现 2 台设备" in tab.lbl_status.text()
+
+    # _LanScanWorker 同步 run：psutil 全局已 mock，此处显式补 arp 假返回（显式 mock 模式）
+    monkeypatch.setattr(psutil, "net_if_addrs", lambda: {
+        "Ethernet0": [types.SimpleNamespace(family=socket_mod.AF_INET,
+                                            address="192.168.1.5")]})
+    monkeypatch.setattr(icmp, "ping", lambda ip, timeout_ms=400: 3.0)
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(stdout=b""))
+    w = tp._LanScanWorker()
+    out = []
+    w.done.connect(out.append)
+    w.run()
+    assert out and out[0], "扫描 worker 应返回非空设备列表"
+    assert out[0][0][0].startswith("192.168.1.")
+
+
+def test_dns_subnet_tab_smoke(qtbot, monkeypatch):
+    """轻量冒烟即可（calc/query 已被 tests/test_toolbox_calc.py 深度覆盖）。"""
+    import socket as socket_mod
+    from syskit import dnsquery
+    from syskit.ui.toolbox_page import DnsSubnetTab
+    tab = DnsSubnetTab()
+    qtbot.addWidget(tab)
+    assert tab.ed_domain.text() and tab.ed_ip.text()      # 有默认输入
+    tab.calc()
+    assert tab.list_sub.count() == 6
+    tab.query()                                           # 系统默认分支
+    monkeypatch.setattr(socket_mod, "getaddrinfo",
+                        lambda *a, **k: [(socket_mod.AF_INET, 1, 6, "",
+                                         ("223.5.5.5", 0))])
+    tab.query()
+    assert tab.list_dns.item(0).text() == "223.5.5.5"
+    monkeypatch.setattr(dnsquery, "query",
+                        lambda host, server, timeout=3.0, qtype=1: ["119.29.29.29"])
+    tab.cmb_server.setCurrentIndex(2)
+    tab.query()
+    assert tab.list_dns.item(0).text() == "119.29.29.29"
+
+
+def test_ping_route_tab(qtbot, monkeypatch):
+    import subprocess
+    from syskit import icmp
+    from syskit.ui.toolbox_page import PingRouteTab
+    tab = PingRouteTab()
+    qtbot.addWidget(tab)
+
+    monkeypatch.setattr(icmp, "ping", lambda host, timeout_ms=1500: 8.0)
+    tab._ping_once()
+    assert 8.0 in list(tab.chart._series[0][2])           # 延迟点已入图
+
+    tab.toggle_ping()                                     # 启动 1s 定时器
+    assert tab._ping_timer.isActive()
+    tab.toggle_ping()                                     # 立即停，测试内不残留定时器
+    assert not tab._ping_timer.isActive()
+
+    # 路由追踪：subprocess.Popen 显式 mock 为立即结束的假进程
+    class _FakeProc:
+        stdout = iter([])
+        def kill(self):
+            pass
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _FakeProc())
+    tab.tracert()
+    qtbot.wait_until(lambda: tab._tracert is not None and tab._tracert.isFinished(),
+                     timeout=10000)
+    assert tab.btn_route.isEnabled()                      # finished 后按钮恢复
+
+    tab._route_line({"hop": 1, "ms": [10, 12], "ip": "10.0.0.1"})
+    tab._route_line({"hop": 2, "ms": [], "ip": "*"})
+    assert tab.tbl_route.rowCount() == 2
+    assert tab.tbl_route.item(0, 1).text() == "10 ms, 12 ms"
+    assert tab.tbl_route.item(1, 1).text() == "超时"
+
+    first = tab._tracert
+    tab.tracert()                                         # 现状断言：二次追踪被跳过（文件头 bug 2）
+    assert tab._tracert is first
+
+
+def test_port_tab_refresh_filter_and_worker(qtbot, monkeypatch):
+    import psutil
+    from syskit.ui.toolbox_page import PortTab, _PortWorker
+    tab = PortTab()                               # 构造即启动一次刷新（psutil mock 为空）
+    qtbot.addWidget(tab)
+    qtbot.wait_until(lambda: tab._worker is None, timeout=10000)
+    assert "共 0 条" in tab.lbl_status.text()
+
+    rows = [
+        {"proto": "TCP", "tcp": True, "laddr": "127.0.0.1:8443", "raddr": "0.0.0.0:0",
+         "status": "LISTEN", "pid": 4321, "name": "websvc.exe",
+         "exe": "C:\\app\\websvc.exe"},
+        {"proto": "UDP", "tcp": False, "laddr": "0.0.0.0:5353", "raddr": "-",
+         "status": "-", "pid": 0, "name": "System", "exe": ""},
+    ]
+    tab._done(rows)
+    assert tab.tbl.rowCount() == 2
+    assert "共 2 条" in tab.lbl_status.text()
+    assert tab.tbl.item(0, 5).toolTip() == "C:\\app\\websvc.exe"
+
+    tab.ed_filter.setText("websvc")
+    assert not tab.tbl.isRowHidden(0) and tab.tbl.isRowHidden(1)
+    tab.ed_filter.setText("")
+    tab.chk_listen.setChecked(True)
+    assert not tab.tbl.isRowHidden(0) and tab.tbl.isRowHidden(1)
+    tab.chk_listen.setChecked(False)
+
+    # _PortWorker 同步 run：显式 mock 一条假连接与假进程
+    conn = types.SimpleNamespace(pid=99,
+                                 laddr=types.SimpleNamespace(ip="127.0.0.1", port=80),
+                                 raddr=None, type=1, status="LISTEN")
+    monkeypatch.setattr(psutil, "net_connections", lambda kind="inet": [conn])
+
+    class _P:
+        def name(self):
+            return "p.exe"
+        def exe(self):
+            return "C:\\p.exe"
+    monkeypatch.setattr(psutil, "Process", lambda pid: _P())
+    w = _PortWorker()
+    out = []
+    w.done.connect(out.append)
+    w.run()
+    assert out and out[0][0]["name"] == "p.exe" and out[0][0]["proto"] == "TCP"
+
+
+# ---------------- system_page.py ----------------
+
+
+def test_system_page_tabs_and_perf_tick(qtbot):
+    from syskit.ui.system_page import SystemPage
+    page = SystemPage()
+    qtbot.addWidget(page)
+    tabs = page.findChildren(QTabWidget)[0]
+    assert tabs.count() == 5                      # 性能/启动项/电池/清理/磁盘
+    page.update_tick({"cpu": 12.0, "mem": 55.0, "disk_r": 1024, "disk_w": 512,
+                      "top_procs": [{"pid": 7, "name": "a.exe",
+                                     "cpu": 12.5, "mem": 4096}]})
+    assert page.perf.tbl.rowCount() == 1
+    assert page.perf.tbl.item(0, 1).text() == "a.exe"
+    assert page.perf.tbl.item(0, 0).text() == "7"
+
+
+def test_battery_tab_both_branches(qtbot, monkeypatch):
+    from syskit import proc
+    from syskit.ui.system_page import BatteryTab
+    tab = BatteryTab()                            # autouse fake run_ps → 无电池分支
+    qtbot.addWidget(tab)
+    assert "未检测到电池" in tab.lbl_design.text()
+
+    monkeypatch.setattr(proc, "run_ps",
+                        lambda script, timeout=40: proc.CmdResult(0, "40000,32000,80", ""))
+    tab.refresh()
+    assert tab.lbl_design.text() == "40000 mWh"
+    assert tab.lbl_full.text() == "32000 mWh"
+    assert tab.lbl_health.text() == "80.0%"
+    assert tab.lbl_remain.text() == "80%"
+
+
+def test_cleanup_tab_scan_and_clean_guard(qtbot, monkeypatch):
+    from syskit.ui import system_page as sp
+    tab = sp.CleanupTab()
+    qtbot.addWidget(tab)
+    assert set(tab.checks) == {"user_temp", "win_temp", "thumbcache", "recycle"}
+
+    monkeypatch.setattr(sp.glob, "glob", lambda *a, **k: [])   # 不遍历真实临时目录
+    tab.scan()                                    # _ScanWorker：回收站走 fake run_ps
+    qtbot.wait_until(lambda: tab._scan_worker is None, timeout=10000)
+    assert "0B" in tab.checks["user_temp"].text()
+    assert "0B" in tab.checks["recycle"].text()
+
+    tab.clean()                                   # 未勾选：仅提示返回（QMessageBox 已 mock）
+    assert tab._clean_worker is None
+
+
+def test_startup_tab_reload_is_read_only(qtbot):
+    """StartupTab 仅读注册表 Run 键与启动目录（conftest 允许只读），reload 不崩。"""
+    from syskit.ui.system_page import StartupTab
+    tab = StartupTab()                            # 构造即 reload 一次
+    qtbot.addWidget(tab)
+    assert tab.tbl.columnCount() == 4
+    tab.reload()                                  # 二次 reload 不崩、不残留
+    assert tab.tbl.columnCount() == 4
+
+
+# ---------------- tray.py ----------------
+
+
+def test_state_icon_all_states(qtbot):
+    from syskit.ui.tray import state_icon
+    for state in ("ok", "no_net", "ncsi_false", "offline", "no_internet", "unknown"):
+        icon = state_icon(state)
+        assert not icon.isNull()
+        assert icon.pixmap(64, 64).width() == 64
+
+
+def test_tray_host_state_rate_notify_and_menu(qtbot):
+    from syskit.ui.tray import TrayHost
+
+    class _Win(QWidget):
+        diag_calls = []
+        repair_calls = []
+        quit_called = False
+
+        def run_diagnosis(self, quick=False):
+            self.diag_calls.append(quick)
+
+        def run_repair(self, aid, param=None):
+            self.repair_calls.append(aid)
+
+        def quit_app(self):
+            self.quit_called = True
+
+    win = _Win()
+    qtbot.addWidget(win)
+    tray = TrayHost(win)
+    tray.set_state("no_net", "探测失败 ×2")
+    tip = tray.toolTip()
+    assert "SysKit" in tip and "已连接但无法上网" in tip and "探测失败 ×2" in tip
+
+    tray.update_rate(1024.0, 2048.0)
+    assert "↓" in tray.toolTip() and "↑" in tray.toolTip()
+
+    tray.notify("标题", "内容", "ok")
+    assert "网络正常" in tray.toolTip()
+
+    tray._activated(QSystemTrayIcon.Trigger)      # 单击托盘 → 显示主窗口
+    assert win.isVisible()
+
+    menu = tray.contextMenu()
+    assert isinstance(menu, QMenu)
+    actions = menu.actions()                      # 打开/检测/修复 + 分隔线 + 退出
+    assert len(actions) == 5
+    actions[1].trigger()
+    assert win.diag_calls == [True]
+    actions[2].trigger()
+    assert win.repair_calls == ["flush_dns"]
+    actions[-1].trigger()
+    assert win.quit_called
+    tray.hide()
+
+
+# ---------------- app.py ----------------
+
+
+def test_app_enable_crash_log_writes_to_isolated_dir():
+    """crash.log 落在 conftest 重定向后的 LOCALAPPDATA（临时目录），不碰真实目录。"""
+    import faulthandler
+    import threading as threading_mod
+    from syskit import config
+    from syskit.ui import app as app_mod
+    old_excepthook = sys.excepthook
+    old_thread_hook = threading_mod.excepthook
+    fh = None
+    try:
+        fh = app_mod._enable_crash_log()
+        assert fh is not None
+        crash = os.path.join(config.LOCALAPPDATA_DIR, "crash.log")
+        assert os.path.isfile(crash)
+        assert "launch" in open(crash, encoding="utf-8").read()
+    finally:
+        if fh:
+            fh.close()
+        faulthandler.disable()                    # 撤销 faulthandler 全局接管
+        sys.excepthook = old_excepthook           # 还原全局钩子，避免泄漏到其它测试
+        threading_mod.excepthook = old_thread_hook
+
+
+def test_app_run_gui_out_of_scope():
+    pytest.skip("run_gui 会创建真实 Win32 互斥量并进入 app.exec() 事件循环、弹模态框，"
+                "无法在离屏单测中安全执行；app.py 仅冒烟 _enable_crash_log（见文件头 bug 6）")
+
+
+# ---------------- main_window.py ----------------
+
+
+@pytest.fixture
+def make_main_window(qtbot, monkeypatch):
+    """构造 MainWindow 的工厂夹具：诊断/快照全部走假数据，teardown 回收后台线程。"""
+    from syskit import netcheck
+    from syskit.netcheck import CheckResult
+    results = [
+        CheckResult("real_conn", "真实连通性探测", "pass", "204探测:OK"),
+        CheckResult("nlasvc", "NlaSvc 服务", "warn", "手动启动且无触发器",
+                    fix_ids=["fix_nlasvc"]),
+    ]
+
+    def fake_run_all(progress=None, quick=False):
+        if progress:
+            for r in results:
+                progress(r)
+        return results
+
+    monkeypatch.setattr(netcheck, "run_all", fake_run_all)
+    from syskit.ui.main_window import MainWindow
+    created = []
+
+    def _make(**kwargs):
+        win = MainWindow(**kwargs)
+        qtbot.addWidget(win)
+        created.append(win)
+        qtbot.wait_until(lambda: win._diag_worker is None and win._snap_worker is None,
+                         timeout=20000)
+        qtbot.wait(30)
+        return win
+
+    yield _make
+
+    for win in created:                           # 线程回收（Monitor.join/is_alive
+        try:                                      # 都会因 Thread._stop 被事件对象
+            qtbot.wait_until(lambda w=win: w._snap_worker is None, timeout=5000)
+        except Exception:
+            pass                                  # 遮蔽而抛 TypeError，见文件头 bug 7）
+        win.mon.stop()                            # 只置位停止事件
+        win.tele.stop()
+        win.tele.wait(3000)
+        # 用原始 _tstate_lock 探测守护监控线程是否真正退出（绕开被遮蔽的
+        # Thread 方法）：锁被 C 层释放 = run() 已结束。若不等待，解释器退出
+        # 阶段守护线程可能仍在调用 Qt，引发原生 fail-fast(0xC0000409) 崩溃。
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            lock = win.mon._tstate_lock
+            if lock is None or lock.acquire(False):   # 非阻塞探测（3.10 仅支持位置参数）
+                if lock is not None:
+                    lock.release()
+                break
+            time.sleep(0.01)
+        win.tray.hide()
+        win.tray.deleteLater()                    # 托盘尽早销毁，不留到进程收尾
+        win.hide()
+    QApplication.processEvents()
+
+
+@pytest.fixture
+def main_win(make_main_window):
+    return make_main_window()
+
+
+def test_main_window_constructs_and_diag_fills_ui(main_win):
+    from syskit import config
+    win = main_win
+    assert win.windowTitle() == config.DISPLAY_NAME
+    assert win.stack.count() == 9                 # 概览/监控/WiFi/诊断/修复/工具箱/系统/设置/日志
+    assert win.nav.count() == 12                  # 9 个页面项 + 3 个分组标题
+    # 构造时的静默快速诊断已回填 UI
+    assert win.lbl_verdict.text() != "尚未诊断"
+    assert "204探测:OK" in win.lbl_probe.text()
+    assert win.pb_diag.isHidden()
+    fix_titles = [win.fix_btn_row.itemAt(i).widget().text()
+                  for i in range(win.fix_btn_row.count())
+                  if win.fix_btn_row.itemAt(i).widget()]
+    assert any("NlaSvc" in t for t in fix_titles)         # warn 项生成建议修复按钮
+    assert win.tbl_actions.rowCount() == len(repairs_actions())
+    assert win.tray._state in ("ok", "no_net", "ncsi_false", "offline", "no_internet")
+
+
+def repairs_actions():
+    from syskit import repairs
+    return repairs.ACTIONS
+
+
+def test_main_window_show_switch_all_pages_and_close(main_win):
+    win = main_win
+    win.show()
+    assert win.isVisible()
+    for idx in range(win.stack.count()):          # 关键页面切换不崩
+        win.switch_page(idx)
+        QApplication.processEvents()
+        assert win.stack.currentIndex() == idx
+    win.switch_page(8)                            # 日志页：隔离环境无日志文件 → 占位文案
+    QApplication.processEvents()
+    assert "syskit.log" in win.txt_log.toPlainText()
+    # 点击侧边栏全部行（分组行 UserRole=None 不应崩溃）
+    for row in range(win.nav.count()):
+        win.nav.setCurrentRow(row)
+        QApplication.processEvents()
+    win.close()                                   # minimize_to_tray 默认 True → 隐藏而非退出
+    QApplication.processEvents()
+    assert not win.isVisible()
+    assert win.stack.count() == 9                 # 窗口仍存活（仅隐藏）
+
+
+def test_main_window_minimized_starts_hidden(make_main_window):
+    win = make_main_window(minimized=True)
+    assert not win.isVisible()
+    assert win.stack.count() == 9
+
+
+def test_main_window_monitor_status_and_telemetry(main_win):
+    win = main_win
+    win._on_monitor_status("ok", "")
+    win._on_monitor_status("no_net", "连通性探测失败 ×1")     # 状态切换 → 事件时间线（声音已 mock）
+    assert win.eventstore.items()[0]["state"] == "no_net"
+    assert win.tray._state == "no_net"
+    assert "已连接但无法上网" in win.tray.toolTip()
+
+    win._on_telemetry({"lat_gw": 5.0, "lat_pub": 9.0, "gateway": "192.168.1.1",
+                       "down": 2048.0, "up": 1024.0, "cpu": 3.0, "mem": 30.0,
+                       "top_procs": []})
+    assert "5" in win.page_dash.card_gw.value_label.text()
+    assert "↓" in win.tray.toolTip()              # 托盘实时速率
+    assert win.page_system.perf.tbl.rowCount() == 0       # 空 top_procs 不崩
+
+
+def test_main_window_fill_adapters_and_diag_progress(main_win):
+    from syskit.netcheck import CheckResult
+    from syskit.snapshot import Adapter, Snapshot
+    win = main_win
+    snap = Snapshot(adapters=[
+        Adapter(name="WLAN", desc="Intel Wi-Fi 6 AX201", status="Up",
+                ipv4=["192.168.1.23"], gw4=["192.168.1.1"],
+                dns=["192.168.1.1", "223.5.5.5"], conn_v4="Internet"),
+        Adapter(name="WAN Miniport (IP)", desc="WAN Miniport (IP)", status="Up"),
+    ])
+    win._fill_adapters(snap)
+    assert win.tbl_adapters.rowCount() == 1       # WAN Miniport 被过滤
+    assert win.tbl_adapters.item(0, 0).text().startswith("★")   # 在线网卡加星
+
+    win.tree_diag.clear()
+    win._diag_results.clear()
+    r = CheckResult("dns_cfg", "静态 DNS 残留", "fail", "8.8.8.8",
+                    fix_ids=["dns_auto"])
+    win._diag_progress(r)
+    assert win.tree_diag.topLevelItemCount() == 1
+    assert win.tree_diag.topLevelItem(0).data(0, Qt.UserRole) is r
+    assert win.tree_diag.topLevelItem(0).text(0) == "×"     # FAIL 标记
+
+
+def test_main_window_action_filter_and_save_settings(main_win):
+    from syskit import settings as settings_mod
+    win = main_win
+    win.ed_filter.setText("dns")                  # 修复动作筛选
+    hidden = [win.tbl_actions.isRowHidden(r) for r in range(win.tbl_actions.rowCount())]
+    assert any(hidden) and not all(hidden)
+    win.ed_filter.setText("")
+    hidden = [win.tbl_actions.isRowHidden(r) for r in range(win.tbl_actions.rowCount())]
+    assert not any(hidden)
+
+    win.switch_page(7)                            # 设置页
+    win.chk_dark.setChecked(False)                # 保持浅色，避免主题状态泄漏
+    win._save_settings()                          # QMessageBox 已 mock；写隔离目录
+    assert settings_mod.load()["poll_interval_sec"] == win.spin_interval.value()
+    assert settings_mod.load()["auto_repair_enabled"] == win.chk_auto.isChecked()
+    assert win.stack.currentIndex() == 7
