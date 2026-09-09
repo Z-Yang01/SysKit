@@ -121,10 +121,11 @@ class LineChart(QWidget):
 class BarChart(QWidget):
     """信道占用柱状图：bars = [(label, value, color)]，value 为权重（AP 数/最强信号）。"""
 
-    def __init__(self, title="", y_label="", parent=None):
+    def __init__(self, title="", y_label="", fmt=None, parent=None):
         super().__init__(parent)
         self.title = title
         self.y_label = y_label
+        self.fmt = fmt or (lambda v: str(int(v)))
         self._bars = []
         self.setMinimumHeight(160)
 
@@ -167,8 +168,8 @@ class BarChart(QWidget):
             p.setBrush(QColor(color))
             p.drawRoundedRect(QRectF(x, y, bar_w, bh), 2, 2)
             p.setPen(QColor(pal["sub"]))
-            p.drawText(QRectF(x - slot * 0.2, y - 14, bar_w + slot * 0.4, 12),
-                       Qt.AlignCenter, str(int(value)))
+            p.drawText(QRectF(x - slot * 0.2, max(mt + 2, y - 14), bar_w + slot * 0.4, 12),
+                       Qt.AlignCenter, self.fmt(value))
             p.drawText(QRectF(x - slot * 0.2, mt + plot_h + 2, bar_w + slot * 0.4, 14),
                        Qt.AlignCenter, str(label))
         p.setPen(QColor(pal["scrollbar"]))

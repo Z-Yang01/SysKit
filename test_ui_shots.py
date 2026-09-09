@@ -1,7 +1,9 @@
 """UI 验收辅助：依次切换全部页面并各存一张截图。"""
+import os
 import sys
+import tempfile
 
-sys.path.insert(0, r"E:\Code\project\NetTool")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from syskit import logger
 
@@ -12,6 +14,8 @@ from PySide6.QtWidgets import QApplication
 
 from syskit.ui.main_window import MainWindow
 
+SHOT_DIR = os.path.join(tempfile.gettempdir(), "syskit_shots")
+os.makedirs(SHOT_DIR, exist_ok=True)
 PAGE_COUNT = 9
 app = QApplication(sys.argv)
 win = MainWindow()
@@ -21,7 +25,8 @@ state = {"i": 0}
 
 def shoot():
     i = state["i"]
-    win.grab().save(rf"E:\Code\project\NetTool\ui_tab{i}.png")
+    win.grab().save(os.path.join(SHOT_DIR, f"ui_tab{i}.png"))
+    print("saved", i)
     state["i"] += 1
     QTimer.singleShot(400, cycle)
 

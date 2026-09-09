@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFormLayout, QGroup
                                QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
+from .disk_page import DiskTab
 from .. import admin, winregread
 from ..logger import LOGGER
 
@@ -442,6 +443,7 @@ class SystemPage(QWidget):
         tabs.addTab(StartupTab(), "启动项管理")
         tabs.addTab(BatteryTab(), "电池健康")
         tabs.addTab(CleanupTab(), "垃圾清理")
+        tabs.addTab(DiskTab(), "磁盘空间")
         lay.addWidget(tabs)
 
     def update_tick(self, d):
