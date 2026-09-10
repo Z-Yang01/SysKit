@@ -1,20 +1,21 @@
-"""系统助手：性能监控 / 启动项管理 / 电池健康 / 安全清理。"""
+"""系统助手：性能监控 / 启动项管理 / 电池健康 / 安全清理 / 剪贴板历史 / 场景模式。"""
 import glob
 import os
 import shutil
 import tempfile
+import time
 
 import psutil
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFormLayout, QGroupBox,
-                               QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
-                               QMessageBox, QProgressBar, QPushButton, QTableWidget,
-                               QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QClipboard
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFormLayout,
+                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
+                               QListWidgetItem, QMessageBox, QProgressBar, QPushButton,
+                               QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
 from .disk_page import DiskTab
-from .. import admin, winregread
+from .. import admin, clipboard as clipboard_mod, modes, settings, winregread
 from ..logger import LOGGER
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -164,11 +165,11 @@ class StartupTab(QWidget):
 
     def _toggle_selected(self, disable: bool):
         if disable and not admin.is_admin():
-            QMessageBox.warning(self, "NetTool", "禁用/启用启动项需要管理员权限（涉及 HKLM）。")
+            QMessageBox.warning(self, "SysKit", "禁用/启用启动项需要管理员权限（涉及 HKLM）。")
             return
         targets = self._selected()
         if not targets:
-            QMessageBox.information(self, "NetTool", "请先在表格中选中要操作的启动项。")
+            QMessageBox.information(self, "SysKit", "请先在表格中选中要操作的启动项。")
             return
         for loc, name, enabled in targets:
             try:
@@ -411,7 +412,7 @@ class CleanupTab(QWidget):
             return
         keys = [k for k, cb in self.checks.items() if cb.isChecked()]
         if not keys:
-            QMessageBox.information(self, "NetTool", "请先勾选要清理的项目（先扫描可看到大小）。")
+            QMessageBox.information(self, "SysKit", "请先勾选要清理的项目（先扫描可看到大小）。")
             return
         self.btn_clean.setEnabled(False)
         self.pb.show()
@@ -432,6 +433,251 @@ class CleanupTab(QWidget):
         self.scan()
 
 
+class ClipboardTab(QWidget):
+    """剪贴板历史：监听系统剪贴板文本，列表可复制/删除/清空。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        max_items = int(settings.load().get("clipboard_max", 50))
+        self.hist = clipboard_mod.ClipboardHistory(max_items=max_items)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        row = QHBoxLayout()
+        self.chk_watch = QCheckBox("监听剪贴板（自动记录文本）")
+        self.chk_watch.setChecked(True)
+        self.btn_copy = QPushButton("复制选中")
+        self.btn_copy.clicked.connect(self._copy_selected)
+        self.btn_del = QPushButton("删除选中")
+        self.btn_del.clicked.connect(self._delete_selected)
+        self.btn_clear = QPushButton("清空历史")
+        self.btn_clear.setProperty("danger", True)
+        self.btn_clear.clicked.connect(self._clear_all)
+        row.addWidget(self.chk_watch)
+        row.addStretch(1)
+        row.addWidget(self.btn_copy)
+        row.addWidget(self.btn_del)
+        row.addWidget(self.btn_clear)
+        lay.addLayout(row)
+
+        self.tbl = QTableWidget(0, 2)
+        self.tbl.setHorizontalHeaderLabels(["时间", "内容"])
+        self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.itemDoubleClicked.connect(lambda *_: self._copy_selected())
+        lay.addWidget(self.tbl)
+        self.lbl = QLabel("监听剪贴板后，复制的文本会出现在此列表；双击一行可复制回剪贴板。")
+        self.lbl.setObjectName("hint")
+        self.lbl.setStyleSheet("color:#8a93a0;")
+        lay.addWidget(self.lbl)
+
+        app = QApplication.instance()
+        self._clip = app.clipboard() if app else None
+        self._last = (self._clip.text() or "") if self._clip else ""
+        if self._clip:
+            self._clip.dataChanged.connect(self._on_clip_change)
+        self.reload()
+
+    def reload(self):
+        items = self.hist.items()
+        self.tbl.setRowCount(len(items))
+        for i, it in enumerate(items):
+            try:
+                t = time.strftime("%m-%d %H:%M:%S", time.localtime(int(it.get("ts", 0))))
+            except Exception:
+                t = str(it.get("ts", ""))
+            self.tbl.setItem(i, 0, QTableWidgetItem(t))
+            preview = clipboard_mod.ClipboardHistory.preview(it.get("text", ""))
+            item = QTableWidgetItem(preview)
+            item.setToolTip(it.get("text", "")[:500])
+            self.tbl.setItem(i, 1, item)
+        self.lbl.setText(f"共 {len(items)} 条　双击行可复制")
+
+    def _on_clip_change(self):
+        if not self.chk_watch.isChecked():
+            return
+        try:
+            text = self._clip.text() if self._clip else ""
+        except Exception:
+            return
+        if not text or text == self._last:
+            return
+        self._last = text
+        if self.hist.add(text):
+            self.reload()
+
+    def _selected_index(self):
+        row = self.tbl.currentRow()
+        return row if 0 <= row < self.tbl.rowCount() else -1
+
+    def _copy_selected(self):
+        idx = self._selected_index()
+        if idx < 0 or not self._clip:
+            return
+        items = self.hist.items()
+        if idx < len(items):
+            self._clip.setText(items[idx]["text"])
+            self.lbl.setText("已复制到剪贴板")
+
+    def _delete_selected(self):
+        idx = self._selected_index()
+        if idx >= 0 and self.hist.remove(idx):
+            self.reload()
+
+    def _clear_all(self):
+        ret = QMessageBox.question(self, "清空剪贴板历史", "确定清空全部历史记录？",
+                                   QMessageBox.Yes | QMessageBox.No)
+        if ret == QMessageBox.Yes:
+            self.hist.clear()
+            self.reload()
+
+
+class ModesTab(QWidget):
+    """办公模式 / 游戏模式一键开关。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(10)
+
+        grp_o = QGroupBox("办公模式")
+        lo = QVBoxLayout(grp_o)
+        lo.addWidget(QLabel(
+            "适合开会/写文档：勿扰（关通知）+ 静音 + 打开常用软件 + 备份当前配置。\n"
+            "退出模式会恢复通知并取消静音。"))
+        self.chk_open_apps = QCheckBox("同时打开常用软件（记事本 / 计算器 / 资源管理器 / 画图）")
+        self.chk_open_apps.setChecked(True)
+        self.chk_open_apps.setToolTip("不勾选则只做勿扰+静音+备份，不自动启动程序")
+        lo.addWidget(self.chk_open_apps)
+        bo = QHBoxLayout()
+        self.btn_office = QPushButton("进入办公模式")
+        self.btn_office.setProperty("primary", True)
+        self.btn_office.setToolTip("按上表步骤依次执行，单步失败不会中断后续步骤")
+        self.btn_office.clicked.connect(self._enter_office)
+        self.btn_office_off = QPushButton("退出办公模式")
+        self.btn_office_off.setToolTip("恢复系统通知并取消静音（不会关闭已打开的软件）")
+        self.btn_office_off.clicked.connect(self._exit_office)
+        bo.addWidget(self.btn_office)
+        bo.addWidget(self.btn_office_off)
+        bo.addStretch(1)
+        lo.addLayout(bo)
+        lay.addWidget(grp_o)
+
+        grp_g = QGroupBox("游戏模式")
+        lg = QVBoxLayout(grp_g)
+        lg.addWidget(QLabel(
+            "适合打游戏：关通知 + 高性能电源 + 暂停 Windows 更新 + 清理白名单后台。\n"
+            "退出模式会恢复通知、平衡电源与更新策略。"))
+        self.chk_clear_bg = QCheckBox("同时清理白名单后台（OneDrive / 音乐 / 游戏启动器等）")
+        self.chk_clear_bg.setChecked(True)
+        self.chk_clear_bg.setToolTip("仅结束白名单应用，不会碰 explorer / 系统关键进程")
+        lg.addWidget(self.chk_clear_bg)
+        bg = QHBoxLayout()
+        self.btn_game = QPushButton("进入游戏模式")
+        self.btn_game.setProperty("primary", True)
+        self.btn_game.setToolTip("暂停更新与高性能电源建议以管理员运行；无管理员时会跳过失败步骤")
+        self.btn_game.clicked.connect(self._enter_game)
+        self.btn_game_off = QPushButton("退出游戏模式")
+        self.btn_game_off.setToolTip("恢复通知、平衡电源与 Windows 更新策略")
+        self.btn_game_off.clicked.connect(self._exit_game)
+        bg.addWidget(self.btn_game)
+        bg.addWidget(self.btn_game_off)
+        bg.addStretch(1)
+        lg.addLayout(bg)
+        tip = QLabel("提示：暂停更新 / 部分电源操作需要管理员权限；可用窗口底部「以管理员重启」后再试。")
+        tip.setObjectName("hint")
+        tip.setStyleSheet("color:#8a93a0;")
+        lg.addWidget(tip)
+        lay.addWidget(grp_g)
+
+        self.txt = QTableWidget(0, 3)
+        self.txt.setHorizontalHeaderLabels(["步骤", "结果", "说明"])
+        self.txt.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.txt.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.txt.setAlternatingRowColors(True)
+        self.txt.verticalHeader().setVisible(False)
+        self.txt.setSelectionMode(QAbstractItemView.NoSelection)
+        lay.addWidget(self.txt, 1)
+        self.lbl = QLabel("尚未执行模式。点击上方按钮查看逐步结果。")
+        self.lbl.setObjectName("hint")
+        self.lbl.setStyleSheet("color:#8a93a0;")
+        lay.addWidget(self.lbl)
+        self._busy = False
+
+    def _set_mode_busy(self, busy: bool):
+        self._busy = busy
+        for b in (self.btn_office, self.btn_office_off, self.btn_game, self.btn_game_off):
+            b.setEnabled(not busy)
+
+    def _show_steps(self, steps, title):
+        self.txt.setRowCount(len(steps))
+        ok_color = theme_ok = None
+        try:
+            from . import theme
+            p = theme.pal()
+            ok_color, err_color = p.get("ok", "#2e9e44"), p.get("err", "#d94040")
+        except Exception:
+            ok_color, err_color = "#2e9e44", "#d94040"
+        for i, s in enumerate(steps):
+            self.txt.setItem(i, 0, QTableWidgetItem(s.get("name", "")))
+            mark = QTableWidgetItem("√ 成功" if s.get("ok") else "× 失败")
+            mark.setForeground(QColor(ok_color if s.get("ok") else err_color))
+            self.txt.setItem(i, 1, mark)
+            self.txt.setItem(i, 2, QTableWidgetItem(s.get("detail", "")))
+        ok = sum(1 for s in steps if s.get("ok"))
+        self.lbl.setText(f"{title}：{ok}/{len(steps)} 步成功")
+        QMessageBox.information(self, title, f"{ok}/{len(steps)} 步成功。\n详见下表逐步说明。")
+
+    def _enter_office(self):
+        if self._busy:
+            return
+        self._set_mode_busy(True)
+        try:
+            steps = modes.run_office_mode(open_apps=self.chk_open_apps.isChecked())
+            self._show_steps(steps, "进入办公模式")
+        finally:
+            self._set_mode_busy(False)
+
+    def _exit_office(self):
+        if self._busy:
+            return
+        self._set_mode_busy(True)
+        try:
+            self._show_steps(modes.restore_office_defaults(), "退出办公模式")
+        finally:
+            self._set_mode_busy(False)
+
+    def _enter_game(self):
+        if self._busy:
+            return
+        if not admin.is_admin():
+            QMessageBox.warning(
+                self, "游戏模式",
+                "当前未以管理员运行：\n"
+                "· 暂停 Windows 更新 可能失败\n"
+                "· 高性能电源 / 关通知 仍会尝试\n\n"
+                "可点窗口底部「以管理员重启」后再进入游戏模式。")
+        self._set_mode_busy(True)
+        try:
+            steps = modes.run_game_mode(clear_bg=self.chk_clear_bg.isChecked())
+            self._show_steps(steps, "进入游戏模式")
+        finally:
+            self._set_mode_busy(False)
+
+    def _exit_game(self):
+        if self._busy:
+            return
+        self._set_mode_busy(True)
+        try:
+            self._show_steps(modes.restore_game_defaults(), "退出游戏模式")
+        finally:
+            self._set_mode_busy(False)
+
+
 class SystemPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -444,6 +690,8 @@ class SystemPage(QWidget):
         tabs.addTab(BatteryTab(), "电池健康")
         tabs.addTab(CleanupTab(), "垃圾清理")
         tabs.addTab(DiskTab(), "磁盘空间")
+        tabs.addTab(ClipboardTab(), "剪贴板历史")
+        tabs.addTab(ModesTab(), "场景模式")
         lay.addWidget(tabs)
 
     def update_tick(self, d):

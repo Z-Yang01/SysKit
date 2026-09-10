@@ -37,6 +37,10 @@ def run(cmd, timeout: int = 20) -> CmdResult:
         return CmdResult(-1, out, err, timeout=True)
     except FileNotFoundError:
         return CmdResult(-1, "", f"命令不存在: {cmd if isinstance(cmd, str) else cmd[0]}")
+    except OSError as e:
+        # 权限拒绝/映像损坏等启动失败也不应炸穿调用方
+        name = cmd if isinstance(cmd, str) else cmd[0]
+        return CmdResult(-1, "", f"命令执行失败({name}): {e}")
 
 
 def _decode(b: bytes) -> str:

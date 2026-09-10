@@ -12,7 +12,7 @@ from . import icmp, proc
 from .stores import TrafficStore
 from .logger import LOGGER
 
-_PHYSICAL_EXCLUDE = ("loopback", "vmnet", "vethernet", "bluetooth", "wan miniport",
+_PHYSICAL_EXCLUDE = ("loopback", "vmnet", "vmware", "vethernet", "bluetooth", "wan miniport",
                      "tap", "wintun", "utun", "vgate", "hyper-v")
 
 
@@ -36,17 +36,20 @@ class TelemetryWorker(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._stop = threading.Event()
+        # 不可命名为 _stop：与 threading.Thread 习惯对齐，避免与其它线程封装混淆
+        # （本类基于 QThread，应用 wait() 而非 join()）
+        self._stop_evt = threading.Event()
         self._last_net = None
         self._last_disk = None
         self._tickno = 0
         self._gateway = ""
         self._wifi_signal = None
+        self._procs = {}          # pid -> psutil.Process（跨 tick 复用，保证 cpu_percent 有基线）
         self.traffic = TrafficStore()
         psutil.cpu_percent(interval=None)   # 预热第一次调用
 
     def stop(self):
-        self._stop.set()
+        self._stop_evt.set()
 
     def refresh_gateway(self):
         self._gateway = icmp.default_gateway()
@@ -54,7 +57,7 @@ class TelemetryWorker(QThread):
     def run(self):
         self.refresh_gateway()
         save_counter = 0
-        while not self._stop.is_set():
+        while not self._stop_evt.is_set():
             try:
                 payload = self._sample()
                 if payload:
@@ -67,7 +70,7 @@ class TelemetryWorker(QThread):
                 save_counter = 0
             if self._tickno % 300 == 0:      # 每 5 分钟刷新一次网关
                 self.refresh_gateway()
-            self._stop.wait(1)
+            self._stop_evt.wait(1)
 
     def _sample(self):
         self._tickno += 1
@@ -117,15 +120,27 @@ class TelemetryWorker(QThread):
         return int(m.group(1)) if m else None
 
     def _top_procs(self, n=8):
+        """Top 进程。复用 psutil.Process 实例：cpu_percent 需要跨调用基线，
+        每次新建对象会导致读数恒为接近 0。"""
+        # 每约 60 秒重建一次进程快照，丢掉已退出的 pid
+        if self._tickno % 60 == 1:
+            self._procs = {}
         procs = []
         for p in psutil.process_iter(["pid", "name"]):
             try:
-                cpu = p.cpu_percent(interval=None)
+                pid = p.pid
+                cached = self._procs.get(pid)
+                if cached is None:
+                    cached = p
+                    self._procs[pid] = cached
+                cpu = cached.cpu_percent(interval=None)
                 if cpu < 0.5:
                     continue
-                mem = p.memory_info().rss
-                procs.append({"pid": p.pid, "name": p.info["name"], "cpu": cpu, "mem": mem})
+                mem = cached.memory_info().rss
+                procs.append({"pid": pid, "name": p.info["name"] or str(pid),
+                              "cpu": cpu, "mem": mem})
             except (psutil.NoSuchProcess, psutil.AccessDenied):
+                self._procs.pop(getattr(p, "pid", -1), None)
                 continue
         procs.sort(key=lambda x: x["cpu"], reverse=True)
         return procs[:n]

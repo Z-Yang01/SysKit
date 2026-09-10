@@ -47,7 +47,7 @@ def query(host: str, server: str, timeout: float = 3.0, qtype: int = 1) -> list:
     for _ in range(an):
         while True:
             length = data[pos]
-            if length & 0xC0 == 0xC0:
+            if (length & 0xC0) == 0xC0:
                 pos += 2
                 break
             pos += 1
@@ -85,10 +85,15 @@ def resolve_system(host: str, timeout: float = 4.0) -> list:
         except Exception as e:
             result["err"] = str(e)
 
-    with ThreadPoolExecutor(max_workers=1) as ex:
+    # 不用 with：ThreadPoolExecutor.__exit__ 会 shutdown(wait=True)，
+    # 超时后仍阻塞到 getaddrinfo 结束，抵消超时语义。
+    ex = ThreadPoolExecutor(max_workers=1)
+    try:
         fut = ex.submit(_work)
         try:
             fut.result(timeout=timeout)
         except Exception:
             return []
+    finally:
+        ex.shutdown(wait=False)
     return result.get("ips", [])

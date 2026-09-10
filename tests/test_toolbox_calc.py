@@ -137,32 +137,35 @@ def test_calc_invalid_input_shows_error_not_crash(dns_tab, bad):
 
 
 def test_calc_prefix_spinbox_reachable_range(dns_tab):
-    """前缀选择范围 8..32；/8 是可选值（注意：calc 会 list(net.hosts())，
-    /8 会物化 1677 万个地址 —— 见疑似 bug 记录，此处不真正调用 /8 计算）。"""
+    """前缀选择范围 8..32；/8 现已用地址算术推导首尾，不再 list(hosts()) 物化。"""
     assert dns_tab.spin_prefix.minimum() == 8
     assert dns_tab.spin_prefix.maximum() == 32
     assert dns_tab.spin_prefix.value() == 24
 
 
-@pytest.mark.skip(reason='疑似bug#4: spin_prefix 范围8..32会把126钳位为32, calc对::1/32执行list(net.hosts())物化2^96地址而冻结; app需对大网段做保护, 见PROGRESS.md', )
-def test_calc_ipv6_accepted_documented(dns_tab):
-    """记录性用例：输入 IPv6 不报错，走 ip_network 的 IPv6 分支。
-
-    注意只能用小前缀长度（如 /126）—— calc 内部 list(net.hosts()) 会物化全部
-    主机地址，IPv6 /64 会尝试物化 2^64 个地址而冻结（见疑似 bug 记录），故 /64
-    不在测试中实际执行。
-    """
-    dns_tab.ed_ip.setText("::1")
-    dns_tab.spin_prefix.setValue(126)
+def test_calc_ipv4_slash8_does_not_freeze(dns_tab):
+    """/8 约 1677 万地址：不得物化 hosts()，应瞬间出结果。"""
+    dns_tab.ed_ip.setText("10.0.0.1")
+    dns_tab.spin_prefix.setValue(8)
     dns_tab.calc()
     rows = _rows(dns_tab.list_sub)
-    # 注意 CPython 对 IPv6 的 hosts() 含广播地址（::3），与 IPv4 行为不同
+    assert rows[3] == "可用主机范围: 10.0.0.1 ~ 10.255.255.254"
+    assert rows[4] == "可用主机数: 16777214"
+
+
+def test_calc_ipv6_accepted_documented(dns_tab):
+    """IPv6 输入：spin_prefix 会把 126 钳位为 32；/32 大网段用算术推导，不冻结。"""
+    dns_tab.ed_ip.setText("::1")
+    dns_tab.spin_prefix.setValue(126)               # 被钳位为 32
+    assert dns_tab.spin_prefix.value() == 32
+    dns_tab.calc()
+    rows = _rows(dns_tab.list_sub)
     assert rows[0] == "网络地址: ::"
-    assert rows[1] == "子网掩码: ffff:ffff:ffff:ffff:ffff:ffff:ffff:fffc"
-    assert rows[2] == "广播地址: ::3"
-    assert rows[3] == "可用主机范围: ::1 ~ ::3"
-    assert rows[4] == "可用主机数: 2"
-    assert rows[5] == "总地址数: 4"
+    assert rows[1] == "子网掩码: ffff:ffff::"
+    assert rows[2] == "广播地址: ::ffff:ffff:ffff:ffff:ffff:ffff"
+    assert rows[3] == "可用主机范围: ::1 ~ ::ffff:ffff:ffff:ffff:ffff:fffe"
+    assert rows[4] == "可用主机数: 79228162514264337593543950334"  # 2**96 - 2
+    assert rows[5] == "总地址数: 79228162514264337593543950336"   # 2**96
 
 
 # ---------------- DnsSubnetTab.query：DNS 查询 UI 胶水（全部 mock，不出网） ----------------

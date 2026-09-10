@@ -5,12 +5,9 @@ Mock 边界（配合 conftest 哨兵双保险）：
 - "今天"通过替换 syskit.stores 的 time 模块引用固定（不动全局 time），验证跨天与 62 天修剪；
 - 异常路径用损坏 JSON / 目录占位 / 目录阻塞 os.replace 构造，不发真实系统调用。
 
-疑似业务 bug（只记录，不改源码）：
-1. syskit/stores.py:38-51 TrafficStore.__init__ 不校验 _load 返回类型（对比 EventStore 对
-   list 有 isinstance 校验）：traffic.json 若是合法 JSON 但非 object（如 list），add() 里
-   self._data.setdefault 会抛 AttributeError，当日流量记账直接崩溃。
-2. syskit/stores.py:57-61 save_if_dirty 在 _save 内部吞掉 OSError 后仍无条件置 _dirty=False：
-   磁盘满/权限问题导致写盘失败时脏数据被静默丢弃（无日志、下次也不再重试）。
+已修复行为（原 PROGRESS 疑似 bug）：
+1. TrafficStore.__init__ 对 _load 返回值做 isinstance(dict) 校验，非 object JSON 置空。
+2. save_if_dirty 仅在 _save 成功时清 _dirty；写盘失败保留脏标记待下次重试。
 """
 import json
 import os
@@ -124,10 +121,11 @@ class TestTrafficStore:
         assert "2026-09-10" in s._data
 
     def test_save_if_dirty_writes_and_resets(self, monkeypatch):
+        day = fix_today(monkeypatch, "2026-09-10")  # 固定日期：断言不得依赖真实当天
         s = stores.TrafficStore()
         s.add(7, 8)
         s.save_if_dirty()
-        assert _read_json("traffic.json") == {"2026-09-10": {"sent": 7, "recv": 8}}
+        assert _read_json("traffic.json") == {day: {"sent": 7, "recv": 8}}
         assert s._dirty is False
         # 不脏时不再写盘
         called = []
@@ -135,21 +133,21 @@ class TestTrafficStore:
         s.save_if_dirty()
         assert called == []
 
-    def test_save_failure_still_clears_dirty(self, tmp_path):
-        """记录疑似 bug 2：写盘失败（目录占位导致 OSError 被吞）后 _dirty 仍被清零，
-        脏数据静默丢失。本用例固化当前行为，修复后应改断言。"""
+    def test_save_failure_keeps_dirty_for_retry(self, tmp_path):
+        """写盘失败时保留 _dirty，下次 save_if_dirty 重试。"""
         os.makedirs(os.path.join(config.APPDATA_DIR, "traffic.json"))
         s = stores.TrafficStore()
         s.add(5, 5)
         s.save_if_dirty()                            # 不抛异常
-        assert s._dirty is False
+        assert s._dirty is True                      # 失败不清脏标记
 
-    def test_loaded_non_dict_crashes_on_add(self, tmp_path):
-        """记录疑似 bug 1：traffic.json 是合法 JSON list 时 add() 抛 AttributeError。"""
+    def test_loaded_non_dict_resets_to_empty(self, tmp_path):
+        """traffic.json 是合法 JSON list 时重置为空 dict，add() 不崩。"""
         _write_json("traffic.json", ["not", "a", "dict"])
         s = stores.TrafficStore()
-        with pytest.raises(AttributeError):
-            s.add(1, 1)
+        assert s._data == {}
+        s.add(1, 1)
+        assert s.today() == (1, 1)
 
 
 # ---------------- EventStore ----------------

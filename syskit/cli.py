@@ -11,7 +11,8 @@ def cmd_diagnose(quick: bool = False) -> int:
     if not admin.is_admin():
         log.warning("!! 未以管理员运行：部分检查项将受限（诊断结果仍可用于定位主要问题）\n")
     log.info("正在采集网络状态（约 5-15 秒）...")
-    results = netcheck.run_all(progress=lambda r: log.info(f"  {r.name} ... {r.status}"))
+    results = netcheck.run_all(progress=lambda r: log.info(f"  {r.name} ... {r.status}"),
+                               quick=quick)
     log.info("")
     log.info("=" * 62)
     log.info("诊断报告  SysKit")

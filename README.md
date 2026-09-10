@@ -15,8 +15,8 @@ Python 3.10 + PySide6 + loguru + psutil 实现，托盘常驻、自动监控、�
 - **🔍 诊断**：15 项逐条检查（NlaSvc / 幽灵路由 / 静态 DNS / **系统代理残留** / NCSI / 授权拦截等），双击未通过项直接修复
 - **🔧 修复**：一键快速/深度/重置组合 + 17 个单项动作（按风险分级）+ WiFi 专区（MAC 随机化开关/重连）+ 修复记录
 - **⚡ 工具箱**：速度测试、局域网设备发现、**端口占用查看器（找进程/结束进程）**、DNS/子网计算、持续 ping 与路由追踪
-- **🧰 系统助手**：性能监控（CPU/内存/磁盘曲线 + Top 进程）、启动项管理、电池健康、白名单垃圾清理、**磁盘空间分析**（目录占用树/文件类型分布/大文件排行，删除仅移入回收站）
-- **⚙ 设置 / 📋 日志**：自动修复策略、声音提醒、深色模式、开机自启；loguru 双日志（nettool.log / error.log）7 天自动清理
+- **🧰 系统助手**：性能监控（CPU/内存/磁盘曲线 + Top 进程）、启动项管理、电池健康、白名单垃圾清理、**磁盘空间分析**（目录占用树/文件类型分布/大文件排行，删除仅移入回收站）、**剪贴板历史**、**场景模式**（办公：勿扰+静音+常用软件+备份配置；游戏：关通知+高性能+暂停更新+白名单清后台）
+- **⚙ 设置 / 📋 日志**：自动修复策略、声音提醒、深色模式、开机自启；loguru 双日志（syskit.log / error.log）7 天自动清理
 
 ## 这个工具解决什么问题
 
@@ -83,16 +83,21 @@ python -m syskit diagnose        :: 源码运行（免打包调试）
 所有备份写入 `%LOCALAPPDATA%\SysKit\backup\<时间戳>\`（reg 导出、路由表存档、
 DNS 记录、WiFi 配置文件 XML），日志在 `%LOCALAPPDATA%\SysKit\logs\`。
 
-## 构建与开发
+## 构建与安装升级
 
 ```bat
-build.bat                       :: 装依赖 + 生成图标 + PyInstaller 打包
-python -m nettool diagnose      :: 源码直接跑诊断
+build.bat      :: 生成图标 + 安装依赖 + PyInstaller 打包 + 便携 zip
+install.bat    :: 安装/升级到 %LOCALAPPDATA%\Programs\SysKit，创建桌面与开始菜单快捷方式
 ```
 
+- **首次安装**：`build.bat` → `install.bat`（UAC 由 exe 清单触发，目录在用户区，无需拷贝 Program Files）
+- **升级**：退出正在运行的 SysKit → 重新 `build.bat` → 再跑一次 `install.bat`（覆盖同路径 exe 即完成）；设置与日志保留在 `%APPDATA%\SysKit` / `%LOCALAPPDATA%\SysKit`
+- **便携使用**：直接运行 `dist\SysKit.exe`，或解压 `dist\SysKit-<版本>-portable.zip`
+- **卸载**：删除安装目录与快捷方式即可（可选清空上述数据目录）
+- 版本号见 `syskit/config.py` 的 `VERSION`（窗口标题与设置页会显示）
 - 技术栈：Python 3.10、PySide6、loguru、标准库（subprocess/winreg/socket/urllib）
-- 打包：PyInstaller onefile + `uac_admin` 清单 + 裁剪 Qt 重型模块（产出约 46MB）
-- 日志：loguru 双文件分离——`nettool.log`（正常）与 `error.log`（错误+堆栈），
+- 打包：PyInstaller onefile + `uac_admin` 清单 + 裁剪 Qt 重型模块
+- 日志：loguru 双文件分离——`syskit.log`（正常）与 `error.log`（错误+堆栈），
   5MB 轮转，**超过 7 天自动删除**（启动清扫 + 常驻运行每日清扫双保险）
 - 已知坑（源码注释里有详细说明）：
   - windowed 打包后无 stderr，Qt 默认消息处理器会 fail-fast → 已接管 Qt 消息到日志

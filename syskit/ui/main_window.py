@@ -47,7 +47,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, minimized=False):
         super().__init__()
-        self.setWindowTitle(config.DISPLAY_NAME)
+        self.setWindowTitle(f"{config.DISPLAY_NAME}  v{config.VERSION}")
         self.resize(980, 680)
         self.tray = TrayHost(self)
         self.tray.show()
@@ -114,6 +114,19 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.UserRole, None)
             else:
                 item.setData(Qt.UserRole, idx)
+            tips = {
+                "🏠 概览": "网卡一览、网络状态徽章与快捷修复",
+                "📈 网络监控": "延迟 / 速率 / 流量 / 断网事件时间线",
+                "📶 WiFi 工具": "扫描周边 AP、信道推荐、二维码与已存密码",
+                "🔍 诊断": "15 项逐条检查，双击未通过项可直接修复",
+                "🔧 修复": "一键组合与单项修复（按风险分级）",
+                "⚡ 工具箱": "测速、局域网、端口/进程、DNS/子网、ping/路由",
+                "🧰 系统助手": "性能、启动项、电池、清理、磁盘、剪贴板、场景模式",
+                "⚙ 设置": "自动修复策略、外观、开机自启",
+                "📋 日志": "运行日志与错误日志（7 天自动清理）",
+            }
+            if label in tips:
+                item.setToolTip(tips[label])
             self.nav.addItem(item)
         self.nav.currentRowChanged.connect(self._nav_changed)
 
@@ -235,17 +248,27 @@ class MainWindow(QMainWindow):
         grp_quick = QGroupBox("快捷操作")
         layq = QHBoxLayout(grp_quick)
         b_dns = QPushButton("刷新 DNS 缓存")
+        b_dns.setToolTip("执行安全动作 flush_dns：清空系统 DNS 解析缓存，可反复执行")
         b_dns.clicked.connect(lambda: self.run_repair("flush_dns"))
         b_re = QPushButton("重连 WiFi")
+        b_re.setToolTip("重启 WLAN 服务并重连当前配置文件（网络会短暂中断数秒）")
         b_re.clicked.connect(lambda: self.run_repair("restart_wlan"))
         b_net = QPushButton("打开网络设置")
+        b_net.setToolTip("跳转 Windows 设置 · 网络和 Internet")
         b_net.clicked.connect(lambda: os.startfile("ms-settings:network-status"))
+        b_vpn = QPushButton("VPN 排查")
+        b_vpn.setToolTip("只读检查：隧道网卡 / 系统代理 / 持久路由 / 默认出口；不会改系统\n"
+                         "VPN 或 Clash 异常时先点这里")
+        b_vpn.clicked.connect(self._vpn_checklist)
         self.lbl_proxy = QLabel("系统代理：…")
         self.btn_proxy = QPushButton("关闭代理")
+        self.btn_proxy.setToolTip("若系统启用了 HTTP 代理，一键关闭以免误拦探测\n"
+                                  "注意：Clash 正常使用时可能依赖系统代理，VPN 场景请先用「VPN 排查」")
         self.btn_proxy.clicked.connect(self._toggle_proxy)
         layq.addWidget(b_dns)
         layq.addWidget(b_re)
         layq.addWidget(b_net)
+        layq.addWidget(b_vpn)
         layq.addStretch(1)
         layq.addWidget(self.lbl_proxy)
         layq.addWidget(self.btn_proxy)
@@ -254,11 +277,14 @@ class MainWindow(QMainWindow):
 
         btns = QHBoxLayout()
         self.btn_quick = QPushButton("快速检测")
+        self.btn_quick.setToolTip("跳过慢速项，约 5–10 秒完成核心连通性检查")
         self.btn_quick.clicked.connect(lambda: self.run_diagnosis(quick=True))
         self.btn_full = QPushButton("一键体检")
+        self.btn_full.setToolTip("完整 15 项检查，覆盖服务/路由/DNS/NCSI/省电等")
         self.btn_full.setProperty("primary", True)
         self.btn_full.clicked.connect(lambda: self.run_diagnosis(quick=False, goto_diag=True))
         self.btn_refresh_adapters = QPushButton("刷新网卡")
+        self.btn_refresh_adapters.setToolTip("重新采集网卡/路由快照并刷新列表")
         self.btn_refresh_adapters.clicked.connect(self.refresh_adapters)
         btns.addWidget(self.btn_quick)
         btns.addWidget(self.btn_full)
@@ -277,6 +303,29 @@ class MainWindow(QMainWindow):
         return w
 
     # ---------------- 代理 ----------------
+    def _vpn_checklist(self):
+        from .. import vpn
+        try:
+            steps = vpn.vpn_checklist()
+            head = vpn.summarize(steps)
+        except Exception as e:
+            QMessageBox.warning(self, config.DISPLAY_NAME, f"VPN 排查失败: {e}")
+            return
+        lines = []
+        mark = {"ok": "√", "warn": "!", "fail": "×", "info": "·"}
+        for s in steps:
+            lines.append(f"[{mark.get(s.get('level'), '?')}] {s['name']}\n    {s['detail']}")
+        box = QMessageBox(self)
+        box.setWindowTitle("VPN 排查（只读）")
+        box.setIcon(QMessageBox.Information)
+        box.setText(head)
+        box.setInformativeText("\n\n".join(lines))
+        box.setDetailedText(
+            "本检查不修改任何系统设置。\n"
+            "若 VPN 用不了：先重启 VPN 客户端，再确认本页「系统代理/隧道网卡」是否匹配你的模式。\n"
+            "SysKit 在检测到隧道在线时，自动修复不会做续租/重启 WLAN/关代理/删路由。")
+        box.exec()
+
     def _refresh_proxy_label(self):
         from .. import proxy
         st = proxy.get_proxy_status()
@@ -380,6 +429,7 @@ class MainWindow(QMainWindow):
             self.btn_diag.setText("诊断中…")
             self.pb_diag.show()
         self.tree_diag.clear()
+        self._diag_results.clear()      # 防止复制报告出现重复/无界增长
         self._clear_fix_buttons()
         self.lbl_verdict.setText("诊断进行中…")
         self._diag_worker = DiagnosisWorker(quick=quick)
@@ -643,8 +693,14 @@ class MainWindow(QMainWindow):
         form2.addRow(btn)
         outer.addWidget(g2)
 
-        note = QLabel(f"日志策略：syskit.log（正常）与 error.log（错误）分开记录，"
-                      f"超过 {_logging.LOG_RETENTION_DAYS} 天自动删除。")
+        note = QLabel(
+            f"{config.DISPLAY_NAME} v{config.VERSION}　|　"
+            f"日志：syskit.log（正常）与 error.log（错误）分开记录，超过 "
+            f"{_logging.LOG_RETENTION_DAYS} 天自动删除。　|　"
+            "构建/升级：build.bat → install.bat"
+        )
+        note.setObjectName("hint")
+        note.setWordWrap(True)
         note.setStyleSheet("color:#8a93a0;")
         outer.addWidget(note)
         outer.addStretch(1)
@@ -764,15 +820,38 @@ class MainWindow(QMainWindow):
         if key == "stack" and not admin.is_admin():
             QMessageBox.warning(self, config.DISPLAY_NAME, "需要管理员权限。")
             return
-        desc = "\n".join(f"· {repairs.get_action(a).title}" for a in ids if repairs.get_action(a))
+        # 改配置类逐项确认（与弹窗文案一致）；无管理员则跳过非 SAFE 项
+        confirmed = []
+        skipped_no_admin = []
+        for aid in ids:
+            act = repairs.get_action(aid)
+            if not act:
+                continue
+            if not admin.is_admin() and act.risk != repairs.RISK_SAFE:
+                skipped_no_admin.append(act.title)
+                continue
+            if act.risk != repairs.RISK_SAFE:
+                dlg = ConfirmDialog(act)
+                if dlg.exec() != ConfirmDialog.Accepted:
+                    continue
+            confirmed.append(aid)
+        if not confirmed:
+            if skipped_no_admin:
+                QMessageBox.information(
+                    self, config.DISPLAY_NAME,
+                    "未执行任何动作（缺少管理员权限，且组合内无可自动执行的安全项）。\n"
+                    f"受限项：{'、'.join(skipped_no_admin)}")
+            return
+        desc = "\n".join(f"· {repairs.get_action(a).title}" for a in confirmed)
+        extra = f"\n\n已跳过 {len(ids) - len(confirmed)} 项（取消或无权限）。" if len(confirmed) < len(ids) else ""
         dlg = QMessageBox(self)
         dlg.setWindowTitle("确认组合修复")
-        dlg.setText(f"{combo_title} 将依次执行：\n\n{desc}\n\n改配置类动作会逐项弹窗确认。")
+        dlg.setText(f"{combo_title} 将依次执行：\n\n{desc}{extra}")
         dlg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         if dlg.exec() != QMessageBox.Ok:
             return
         self._set_busy(True, f"正在执行：{combo_title} …")
-        self._combo_worker = ComboWorker(ids)
+        self._combo_worker = ComboWorker(confirmed)
         self._combo_worker.item_done.connect(self._combo_item)
         self._combo_worker.all_done.connect(self._combo_done)
         self._combo_results = []
@@ -848,6 +927,11 @@ class MainWindow(QMainWindow):
         self._save_window_state()
         self.mon.stop()
         self.tele.stop()
+        self.tele.wait(3000)              # 等遥测线程退出，避免 QThread destroyed while running
+        try:
+            self.mon.join(3000)           # Monitor 已修复 _stop 覆盖，join 可用
+        except RuntimeError:
+            pass
         self.tele.traffic.save_if_dirty()
         self.tray.hide()
         from PySide6.QtWidgets import QApplication

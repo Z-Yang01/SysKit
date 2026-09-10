@@ -37,10 +37,11 @@ class SpeedTestWorker(QThread):
         self.seconds = seconds
 
     def run(self):
-        stop = threading.Event()
-        counter = {"bytes": 0}
         for url in TEST_URLS:
-            req = urllib.request.Request(url, headers={"User-Agent": "NetTool/1.0"})
+            # 每个 URL 独立计数/计时：避免跨 URL 累计字节导致速率高估
+            stop = threading.Event()
+            counter = {"bytes": 0}
+            req = urllib.request.Request(url, headers={"User-Agent": "SysKit/1.0"})
             try:
                 resp = urllib.request.urlopen(req, timeout=10)
             except Exception:
@@ -299,11 +300,19 @@ class DnsSubnetTab(QWidget):
         except ValueError as e:
             self.list_sub.addItem(f"输入无效: {e}")
             return
-        hosts = list(net.hosts())
+        # 小网段沿用 hosts()（含 /31、/32 特例）；大网段用算术推导首尾，避免物化冻结。
+        if net.num_addresses <= 256:
+            hosts = list(net.hosts())
+            range_str = f"{hosts[0]} ~ {hosts[-1]}" if hosts else "无"
+        else:
+            ip_type = ipaddress.IPv6Address if net.version == 6 else ipaddress.IPv4Address
+            n, b = int(net.network_address), int(net.broadcast_address)
+            range_str = (f"{ip_type(n + 1)} ~ {ip_type(b - 1)}"
+                         if b - n > 1 else "无")
         rows = [("网络地址", str(net.network_address)),
                 ("子网掩码", str(net.netmask)),
                 ("广播地址", str(net.broadcast_address)),
-                ("可用主机范围", f"{hosts[0]} ~ {hosts[-1]}" if hosts else "无"),
+                ("可用主机范围", range_str),
                 ("可用主机数", str(max(0, net.num_addresses - 2))),
                 ("总地址数", str(net.num_addresses))]
         for k, v in rows:
@@ -318,10 +327,11 @@ class _TracertWorker(QThread):
     def __init__(self, target, parent=None):
         super().__init__(parent)
         self.target = target
-        self._stop = threading.Event()
+        # 不可命名为 _stop：会覆盖 Thread._stop()，导致 join() 抛 TypeError
+        self._stop_evt = threading.Event()
 
     def stop(self):
-        self._stop.set()
+        self._stop_evt.set()
 
     def run(self):
         try:
@@ -330,7 +340,7 @@ class _TracertWorker(QThread):
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW)
             for raw in p.stdout:
-                if self._stop.is_set():
+                if self._stop_evt.is_set():
                     p.kill()
                     return
                 line = raw.decode("mbcs", errors="replace").strip()
@@ -407,8 +417,13 @@ class PingRouteTab(QWidget):
         self.btn_route.setEnabled(False)
         self._tracert = _TracertWorker(target)
         self._tracert.line.connect(self._route_line)
-        self._tracert.finished.connect(lambda: self.btn_route.setEnabled(True))
+        self._tracert.finished.connect(self._tracert_finished)
         self._tracert.start()
+
+    def _tracert_finished(self):
+        # 必须复位，否则二次追踪被 self._tracert 守卫永久挡住
+        self._tracert = None
+        self.btn_route.setEnabled(True)
 
     def _route_line(self, hop):
         row = self.tbl_route.rowCount()
@@ -511,10 +526,24 @@ class PortTab(QWidget):
     def _done(self, rows):
         self._worker = None
         self.btn_refresh.setEnabled(True)
+        # 保留选中 PID，自动刷新后不丢焦点
+        selected_pid = 0
+        cur = self.tbl.currentRow()
+        if 0 <= cur < self.tbl.rowCount() and self.tbl.item(cur, 4):
+            try:
+                selected_pid = int(self.tbl.item(cur, 4).text())
+            except ValueError:
+                selected_pid = 0
         self._rows = rows
         self.lbl_status.setText(f"共 {len(rows)} 条连接　{time.strftime('%H:%M:%S')}")
         self._render(rows)
         self._apply_filter()
+        if selected_pid:
+            for row in range(self.tbl.rowCount()):
+                item = self.tbl.item(row, 4)
+                if item and item.text() == str(selected_pid):
+                    self.tbl.selectRow(row)
+                    break
 
     def _render(self, rows):
         self.tbl.setRowCount(len(rows))

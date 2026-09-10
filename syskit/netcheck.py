@@ -328,23 +328,31 @@ def chk_services(snap: Snapshot) -> CheckResult:
     return r
 
 
+TUNNEL_PAT = re.compile(r"wintun|tap|utun|tunnel|wireguard|openvpn|vgate|clash|sing-box|uu", re.I)
+
+
 def chk_proxy(snap: Snapshot) -> CheckResult:
     """系统代理检测：代理软件残留是'已连接但无网络'的经典元凶。"""
     from . import proxy
     r = CheckResult("proxy", "系统代理（代理软件残留会让全网流量进死端口）", PASS)
     st = proxy.get_proxy_status()
+    tunnels_up = [a for a in snap.adapters
+                  if a.status.lower() == "up" and TUNNEL_PAT.search(a.desc or "")]
     if st["enabled"] and st["server"]:
-        r.status, r.fix_ids = WARN, ["proxy_off"]
-        r.detail = f"系统代理已开启: {st['server']} —— 若代理软件未运行，所有应用将无法上网"
+        if tunnels_up:
+            # VPN/Clash 在线时系统代理多为预期，降为 INFO 且不建议 proxy_off
+            r.status, r.fix_ids = INFO, []
+            r.detail = (f"系统代理已开启: {st['server']}；同时检测到隧道网卡在线"
+                        f"（{tunnels_up[0].name}）—— 多半是客户端正常模式，勿盲目关闭")
+        else:
+            r.status, r.fix_ids = WARN, ["proxy_off"]
+            r.detail = f"系统代理已开启: {st['server']} —— 若代理软件未运行，所有应用将无法上网"
     elif st["autoconfig"] and st["pac_url"]:
         r.status, r.fix_ids = WARN, ["proxy_off"]
         r.detail = f"配置了 PAC 自动代理脚本: {st['pac_url'][:60]}"
     else:
         r.detail = "未启用系统代理"
     return r
-
-
-TUNNEL_PAT = re.compile(r"wintun|tap|utun|tunnel|wireguard|openvpn|vgate|clash|sing-box|uu", re.I)
 
 
 def chk_routes(snap: Snapshot) -> CheckResult:

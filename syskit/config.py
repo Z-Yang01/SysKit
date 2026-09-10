@@ -4,6 +4,7 @@ import sys
 
 APP_NAME = "SysKit"          # 数据目录/日志/互斥锁等内部标识（保持稳定以保证升级兼容）
 DISPLAY_NAME = "SysKit 系统工具箱"   # 面向用户的显示名（窗口/托盘/exe）
+VERSION = "1.2.0"            # 显示版本；打包安装脚本可用其生成快捷方式说明
 
 if sys.platform == "win32":
     APPDATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP_NAME)
@@ -82,4 +83,5 @@ DEFAULTS = {
     "sound_alert_enabled": True,
     "dark_mode": False,
     "dns_preset": "阿里",
+    "clipboard_max": 50,               # 剪贴板历史上限条数
 }

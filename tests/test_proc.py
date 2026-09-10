@@ -2,13 +2,11 @@
 
 Mock 边界（配合 conftest 哨兵双保险）：
 - subprocess.run 由本用例按需打桩（conftest 哨兵保证任何未打桩的真实调用直接失败）；
-- subprocess.TimeoutExpired / FileNotFoundError 手工构造或抛出；
+- subprocess.TimeoutExpired / FileNotFoundError / PermissionError 手工构造或抛出；
 - run_ps 只验证命令拼装与超时透传（proc.run 被打桩记录，不真实执行 PowerShell）。
 
-疑似业务 bug（只记录，不改源码）：
-1. syskit/proc.py:38-39 run() 只兜底 FileNotFoundError；命令存在但无法执行（如
-   PermissionError / 遇到目录、组策略拦截）时异常会向上抛，调用方（如监控线程）
-   需要自行兜底。
+已修复行为：run() 对 FileNotFoundError 与一般 OSError（PermissionError 等）
+均转为失败 CmdResult，不再向上抛穿调用方。
 """
 import subprocess
 from types import SimpleNamespace
@@ -115,6 +113,13 @@ class TestRun:
         self._patch_run(monkeypatch, FileNotFoundError(2, "no such"))
         r = proc.run("nosuchtool -x")
         assert r.stderr == "命令不存在: nosuchtool -x"
+
+    def test_other_oserror_bounded(self, monkeypatch, real_run):
+        """PermissionError 等 OSError 也应转为失败 CmdResult，不向上抛。"""
+        self._patch_run(monkeypatch, PermissionError(13, "denied"))
+        r = proc.run(["blocked.exe"])
+        assert r.code == -1 and not r.ok and not r.timeout
+        assert "命令执行失败" in r.stderr and "blocked.exe" in r.stderr
 
     def test_returns_cmdresult(self, monkeypatch, real_run):
         self._patch_run(monkeypatch, (0, b"", b""))

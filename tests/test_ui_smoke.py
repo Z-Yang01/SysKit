@@ -37,30 +37,18 @@ PySide6 原生 fail-fast（无任何 Qt 消息/Python 堆栈，疑似 PySide6 6.
 （qtbot.addWidget 统一清理；MainWindow 额外做线程回收）。
 
 ================================================================================
-疑似 bug / 隐患记录（只记录不修改，均已用断言固化现状）：
-1. disk_page.py:25-27  ROLE_FILLED 与 ROLE_SIZE 同为 Qt.UserRole+1（两个常量值重复）。
-   目前分别只用于 QTreeWidgetItem / QTableWidgetItem，无实际冲突，但属潜伏陷阱：
-   控件用错（树里读 SIZE、表里读 FILLED）不会报错，只会拿到错误数据。
-2. toolbox_page.py:PingRouteTab.tracert()  追踪完成后 self._tracert 从不置回 None，
-   导致"路由追踪"按钮虽被 finished 信号重新启用，但再点只会静默 return——
-   每个页面生命周期内只能成功追踪一次（见 test_ping_route_tab 末尾的现状断言）。
-3. workers.py:RepairWorker.run()  get_action() 返回 None 时直接 return、不发 done
-   信号。当前唯一调用方 main_window.run_repair 先做了存在性检查所以不可达，但若
-   未来新增调用点，_repair_worker 将永远非 None、界面永久卡忙碌（无超时兜底）。
-4. wifi_page.py:WifiPage  self._worker 是扫描与读密码两类 worker 共用的单一槽位，
-   扫描进行中点"读取已存密码"会被静默忽略（无任何用户提示）。
-5. toolbox_page.py:SpeedTestWorker.run()  counter["bytes"] 在多个测速 URL 间累计，
-   若前一 URL 下载量 <512KB 落到下一 URL，平均速率=累计字节/末 URL 独立计时，
-   会高估测速结果。
-6. app.py:run_gui()  单实例互斥分支创建 QApplication 弹完提示后直接 return，
-   互斥量句柄依赖进程退出释放；且 run_gui 会创建真实 Win32 互斥量并进入
-   app.exec() 事件循环，无法在离屏单测中安全执行 —— 对应用例以 skip 写明。
-7. monitor.py:Monitor.__init__  self._stop = threading.Event() 覆盖了
-   threading.Thread 的私有方法名 _stop —— 因此对 Monitor 实例调用 join()
-   必然抛 TypeError: 'Event' object is not callable（threading 内部
-   _wait_for_tstate_lock 会调用 self._stop()）。当前 app 从不 join 监控线程
-   （daemon 线程仅靠 stop() 置位事件退出），故潜伏未爆；本文件 teardown 亦只
-   调 stop() 不 join。
+已修复隐患（原疑似 bug，源码已改，测试同步锁定正确行为）：
+1. disk_page ROLE_SIZE 已改为 Qt.UserRole+2，与 ROLE_FILLED 分离。
+2. PingRouteTab.tracert() 完成后 _tracert 复位为 None，二次追踪可用。
+3. workers.RepairWorker 对未知 action_id 也发 done 信号。
+4. wifi_page 扫描/读密码拆分为 _scan_worker / _pw_worker 独立槽位。
+5. SpeedTestWorker 每个 URL 独立计数，避免跨 URL 字节累计高估速率。
+6. monitor 停止事件改名 _stop_evt；Monitor.join()/teardown 不再遮蔽 Thread._stop。
+
+仍存在的限制：
+- app.py:run_gui() 单实例互斥分支创建 QApplication 弹完提示后直接 return，
+  互斥量句柄依赖进程退出释放；且 run_gui 会创建真实 Win32 互斥量并进入
+  app.exec() 事件循环，无法在离屏单测中安全执行 —— 对应用例以 skip 写明。
 ================================================================================
 """
 import os
@@ -170,7 +158,9 @@ def test_theme_palette_qss_and_dark_toggle(qapp):
     try:
         theme.apply(qapp, dark=True)
         assert theme.is_dark() is True
-        assert "#151a21" in qapp.styleSheet()             # 深色背景色已写入 QSS
+        dark_bg = theme.pal()["bg"]
+        assert dark_bg in qapp.styleSheet()               # 深色背景色已写入 QSS
+        assert "@accent_hover" not in qapp.styleSheet()   # 长 token 不被短 token 截断
     finally:
         theme.apply(qapp, dark=False)                     # 还原，避免状态泄漏
     assert theme.is_dark() is False
@@ -249,11 +239,13 @@ def test_worker_repair_and_combo_signal_chain(monkeypatch):
     rw.run()
     assert done and done[0][0] == "flush_dns" and done[0][1].success
 
-    rw2 = RepairWorker("nope")                    # 动作不存在：现状是静默无信号（见文件头 bug 3）
+    rw2 = RepairWorker("nope")                    # 动作不存在：必须发 done，避免界面永久忙碌
     done2 = []
     rw2.done.connect(done2.append)
     rw2.run()
-    assert done2 == []
+    assert done2 and done2[0][0] == "nope"
+    assert done2[0][1].success is False
+    assert "未知修复动作" in done2[0][1].message
 
     cw = ComboWorker(["flush_dns", "nope", "flush_dns"])
     items, finished = [], []
@@ -334,7 +326,11 @@ def test_wifi_page_scan_fills_table_and_channel_advice(qtbot, monkeypatch):
     monkeypatch.setattr(repairs, "wlan_profiles", lambda: ["HomeWiFi"])
     page = wp.WifiPage()
     qtbot.addWidget(page)
-    qtbot.wait_until(lambda: page._worker is None, timeout=10000)
+    assert page._scan_worker is None                  # 构造时不自动扫描
+    page.show()                                       # 首次可见才扫
+    assert page._initial_scanned is True
+    qtbot.wait_until(lambda: page._scan_worker is None and page.tbl_aps.rowCount() >= 2,
+                     timeout=10000)
 
     tabs = page.findChildren(QTabWidget)[0]
     assert tabs.count() == 4                      # 周边 AP / 信道分析 / 二维码 / 已存密码
@@ -343,13 +339,14 @@ def test_wifi_page_scan_fills_table_and_channel_advice(qtbot, monkeypatch):
     assert "共发现 2" in page.lbl_scan.text()
     assert "推荐" in page.lbl_advice.text()               # 信道推荐已生成
     assert page.cmb_share.count() == 1
+    page.hide()                                       # 隐藏时应停掉自动扫描
+    assert not page._scan_timer.isActive()
 
 
 def test_wifi_page_generate_qr(qtbot, monkeypatch):
     import syskit.ui.wifi_page as wp
     page = wp.WifiPage()
     qtbot.addWidget(page)
-    qtbot.wait_until(lambda: page._worker is None, timeout=10000)
     monkeypatch.setattr(wp, "profile_password", lambda name: ("WPA2-PSK", "s3cret"))
     assert not page.btn_save_qr.isEnabled()
     page.cmb_share.addItem("HomeWiFi")
@@ -364,7 +361,6 @@ def test_wifi_page_password_table_fill(qtbot):
     import syskit.ui.wifi_page as wp
     page = wp.WifiPage()
     qtbot.addWidget(page)
-    qtbot.wait_until(lambda: page._worker is None, timeout=10000)
     page._pw_done([("HomeWiFi", "WPA2", "pw123"), ("Cafe", "?", "?")])
     assert page.tbl_pw.rowCount() == 2
     assert page.tbl_pw.item(0, 2).text() == "pw123"
@@ -564,9 +560,9 @@ def test_ping_route_tab(qtbot, monkeypatch):
             pass
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _FakeProc())
     tab.tracert()
-    qtbot.wait_until(lambda: tab._tracert is not None and tab._tracert.isFinished(),
+    # finished 槽会把 _tracert 复位为 None 并重新启用按钮
+    qtbot.wait_until(lambda: tab._tracert is None and tab.btn_route.isEnabled(),
                      timeout=10000)
-    assert tab.btn_route.isEnabled()                      # finished 后按钮恢复
 
     tab._route_line({"hop": 1, "ms": [10, 12], "ip": "10.0.0.1"})
     tab._route_line({"hop": 2, "ms": [], "ip": "*"})
@@ -574,9 +570,10 @@ def test_ping_route_tab(qtbot, monkeypatch):
     assert tab.tbl_route.item(0, 1).text() == "10 ms, 12 ms"
     assert tab.tbl_route.item(1, 1).text() == "超时"
 
-    first = tab._tracert
-    tab.tracert()                                         # 现状断言：二次追踪被跳过（文件头 bug 2）
-    assert tab._tracert is first
+    tab.tracert()                                      # 二次追踪可再次启动
+    assert tab._tracert is not None
+    qtbot.wait_until(lambda: tab._tracert is None and tab.btn_route.isEnabled(),
+                     timeout=10000)
 
 
 def test_port_tab_refresh_filter_and_worker(qtbot, monkeypatch):
@@ -633,7 +630,7 @@ def test_system_page_tabs_and_perf_tick(qtbot):
     page = SystemPage()
     qtbot.addWidget(page)
     tabs = page.findChildren(QTabWidget)[0]
-    assert tabs.count() == 5                      # 性能/启动项/电池/清理/磁盘
+    assert tabs.count() == 7                      # 性能/启动项/电池/清理/磁盘/剪贴板/场景
     page.update_tick({"cpu": 12.0, "mem": 55.0, "disk_r": 1024, "disk_w": 512,
                       "top_procs": [{"pid": 7, "name": "a.exe",
                                      "cpu": 12.5, "mem": 4096}]})
@@ -840,7 +837,8 @@ def main_win(make_main_window):
 def test_main_window_constructs_and_diag_fills_ui(main_win):
     from syskit import config
     win = main_win
-    assert win.windowTitle() == config.DISPLAY_NAME
+    assert config.DISPLAY_NAME in win.windowTitle()      # 标题可附带版本号
+    assert config.VERSION in win.windowTitle()
     assert win.stack.count() == 9                 # 概览/监控/WiFi/诊断/修复/工具箱/系统/设置/日志
     assert win.nav.count() == 12                  # 9 个页面项 + 3 个分组标题
     # 构造时的静默快速诊断已回填 UI

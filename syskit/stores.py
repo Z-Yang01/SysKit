@@ -22,14 +22,20 @@ def _load(name: str, default):
         return default
 
 
-def _save(name: str, data):
+def _save(name: str, data) -> bool:
+    """原子写盘。成功返回 True；失败吞掉 OSError 并返回 False（调用方决定是否重试）。"""
     tmp = _path(name + ".tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, _path(name))
+        return True
     except OSError:
-        pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
 
 
 class TrafficStore:
@@ -37,27 +43,30 @@ class TrafficStore:
 
     def __init__(self):
         self._data = _load("traffic.json", {})
+        if not isinstance(self._data, dict):
+            self._data = {}
         self._dirty = False
 
     def add(self, sent_delta: int, recv_delta: int):
-        day = time.strftime("%Y-%m-%d")
-        rec = self._data.setdefault(day, {"sent": 0, "recv": 0})
-        rec["sent"] += max(0, int(sent_delta))
-        rec["recv"] += max(0, int(recv_delta))
-        self._dirty = True
-        # 只保留 62 天
-        if len(self._data) > 62:
-            for k in sorted(self._data)[:-62]:
-                del self._data[k]
+        with _lock:
+            day = time.strftime("%Y-%m-%d")
+            rec = self._data.setdefault(day, {"sent": 0, "recv": 0})
+            rec["sent"] += max(0, int(sent_delta))
+            rec["recv"] += max(0, int(recv_delta))
+            self._dirty = True
+            # 只保留 62 天
+            if len(self._data) > 62:
+                for k in sorted(self._data)[:-62]:
+                    del self._data[k]
 
     def today(self):
-        rec = self._data.get(time.strftime("%Y-%m-%d"), {"sent": 0, "recv": 0})
-        return rec.get("sent", 0), rec.get("recv", 0)
+        with _lock:
+            rec = self._data.get(time.strftime("%Y-%m-%d"), {"sent": 0, "recv": 0})
+            return rec.get("sent", 0), rec.get("recv", 0)
 
     def save_if_dirty(self):
         with _lock:
-            if self._dirty:
-                _save("traffic.json", self._data)
+            if self._dirty and _save("traffic.json", self._data):
                 self._dirty = False
 
 

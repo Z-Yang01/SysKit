@@ -104,7 +104,10 @@ class WifiPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._aps = []
-        self._worker = None
+        self._scan_worker = None
+        self._pw_worker = None
+        self._initial_scanned = False
+        self._resume_auto = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         tabs = QTabWidget()
@@ -114,8 +117,35 @@ class WifiPage(QWidget):
         tabs.addTab(self._build_passwords(), "已存密码")
         lay.addWidget(tabs)
         self._scan_timer = QTimer(self)
-        self._scan_timer.timeout.connect(lambda: self.scan(auto=True))
-        self.scan()
+        self._scan_timer.timeout.connect(self._auto_scan_tick)
+        # 不在构造时扫描：主窗体会一次性建好全部页，避免用户从未打开 WiFi 页也跑 netsh
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._initial_scanned:
+            self._initial_scanned = True
+            self.scan()
+        if self._resume_auto and self.chk_auto.isChecked():
+            self._scan_timer.start(8000)
+            self._resume_auto = False
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        # 页面不可见时停掉自动扫描，省 netsh/CPU
+        if self._scan_timer.isActive():
+            self._scan_timer.stop()
+            self._resume_auto = True
+
+    def _auto_scan_tick(self):
+        if not self.isVisible():
+            return
+        self.scan(auto=True)
+
+    def _on_auto_toggled(self, on):
+        if on and self.isVisible():
+            self._scan_timer.start(8000)
+        elif not on:
+            self._scan_timer.stop()
 
     # ---- 周边 AP ----
     def _build_scan(self):
@@ -125,8 +155,7 @@ class WifiPage(QWidget):
         self.btn_scan = QPushButton("扫描")
         self.btn_scan.clicked.connect(lambda: self.scan())
         self.chk_auto = QCheckBox("每 8 秒自动刷新")
-        self.chk_auto.toggled.connect(
-            lambda on: self._scan_timer.start(8000) if on else self._scan_timer.stop())
+        self.chk_auto.toggled.connect(self._on_auto_toggled)
         row.addWidget(self.btn_scan)
         row.addWidget(self.chk_auto)
         row.addStretch(1)
@@ -150,18 +179,18 @@ class WifiPage(QWidget):
         return w
 
     def scan(self, auto=False):
-        if self._worker:
+        if self._scan_worker:
             return
         self.btn_scan.setEnabled(False)
         if not auto:
             self.lbl_scan.setText("扫描中…")
-        self._worker = ScanWorker()
-        self._worker.done.connect(self._scan_done)
-        self._worker.failed.connect(self._scan_failed)
-        self._worker.start()
+        self._scan_worker = ScanWorker()
+        self._scan_worker.done.connect(self._scan_done)
+        self._scan_worker.failed.connect(self._scan_failed)
+        self._scan_worker.start()
 
     def _scan_done(self, aps):
-        self._worker = None
+        self._scan_worker = None
         self.btn_scan.setEnabled(True)
         self._aps = aps
         self.lbl_scan.setText(f"共发现 {len(aps)} 个 BSSID　{time.strftime('%H:%M:%S')}")
@@ -178,7 +207,7 @@ class WifiPage(QWidget):
         self._update_channel_charts()
 
     def _scan_failed(self, msg):
-        self._worker = None
+        self._scan_worker = None
         self.btn_scan.setEnabled(True)
         self.lbl_scan.setText(f"扫描失败：{msg}")
 
@@ -282,7 +311,7 @@ class WifiPage(QWidget):
             self.btn_save_qr.setEnabled(True)
             self.lbl_qr.setToolTip(data)
         except Exception as e:
-            QMessageBox.warning(self, "NetTool", f"二维码生成失败: {e}")
+            QMessageBox.warning(self, "SysKit", f"二维码生成失败: {e}")
 
     def _save_qr(self):
         if not getattr(self, "_qr_png", None):
@@ -321,19 +350,19 @@ class WifiPage(QWidget):
         return w
 
     def _load_passwords(self):
-        if self._worker:
+        if self._pw_worker:
             return
         if not admin.is_admin():
-            QMessageBox.warning(self, "NetTool", "读取密码需要管理员权限（key=clear 接口限制）。")
+            QMessageBox.warning(self, "SysKit", "读取密码需要管理员权限（key=clear 接口限制）。")
             return
         self.btn_pw.setEnabled(False)
         self.lbl_pw.setText("读取中…")
-        self._worker = _PasswordWorker()
-        self._worker.done.connect(self._pw_done)
-        self._worker.start()
+        self._pw_worker = _PasswordWorker()
+        self._pw_worker.done.connect(self._pw_done)
+        self._pw_worker.start()
 
     def _pw_done(self, rows):
-        self._worker = None
+        self._pw_worker = None
         self.btn_pw.setEnabled(True)
         self.tbl_pw.setRowCount(len(rows))
         for i, (name, auth, pwd) in enumerate(rows):

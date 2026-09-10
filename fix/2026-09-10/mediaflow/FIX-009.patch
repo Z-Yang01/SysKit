@@ -1,0 +1,69 @@
+From 4bdfdab8c6536b021b93a18257d30dd9bdd019d2 Mon Sep 17 00:00:00 2001
+From: boyu <boyu@local>
+Date: Thu, 10 Sep 2026 22:41:34 +0800
+Subject: [PATCH] =?UTF-8?q?test(engage):=20FIX-009=20=E8=AE=A1=E6=95=B0?=
+ =?UTF-8?q?=E6=96=AD=E8=A8=80=E8=B8=A9=20identity=20map=20=E6=97=A7?=
+ =?UTF-8?q?=E5=AF=B9=E8=B1=A1=E2=80=94=E2=80=94select=20=E5=8A=A0=20popula?=
+ =?UTF-8?q?te=5Fexisting?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ backend/tests/test_engage_comment.py | 9 +++++++--
+ backend/tests/test_engage_like.py    | 9 +++++++--
+ 2 files changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/backend/tests/test_engage_comment.py b/backend/tests/test_engage_comment.py
+index 073ebed..f38bf4b 100644
+--- a/backend/tests/test_engage_comment.py
++++ b/backend/tests/test_engage_comment.py
+@@ -355,7 +355,10 @@ async def test_article_comment_count_updates(client, make_user, db_session):
+     await _create(client, commenter, "article", article.id, "nice")
+     await _create(client, commenter, "article", article.id, "again")
+ 
+-    row = await db_session.execute(select(Article).where(Article.id == article.id))
++    # 端点经独立 session 已提交；populate_existing 强制覆盖 identity map 中的旧对象
++    row = await db_session.execute(
++        select(Article).where(Article.id == article.id).execution_options(populate_existing=True)
++    )
+     assert row.scalar_one().comment_count == 2
+ 
+     # 软删一条 → 计数 -1
+@@ -365,5 +368,7 @@ async def test_article_comment_count_updates(client, make_user, db_session):
+     target = comments[0]["id"]
+     await client.delete(f"{BASE}/{target}", headers=auth_headers(commenter, permissions=DELETE_PERM))
+ 
+-    row = await db_session.execute(select(Article).where(Article.id == article.id))
++    row = await db_session.execute(
++        select(Article).where(Article.id == article.id).execution_options(populate_existing=True)
++    )
+     assert row.scalar_one().comment_count == 1
+diff --git a/backend/tests/test_engage_like.py b/backend/tests/test_engage_like.py
+index 9bace0d..0ba071e 100644
+--- a/backend/tests/test_engage_like.py
++++ b/backend/tests/test_engage_like.py
+@@ -161,13 +161,18 @@ async def test_like_article_updates_article_like_count(client, make_user, db_ses
+     res_on = await _toggle(client, liker, "article", article.id)
+     assert res_on.json() == {"liked": True, "like_count": 1}
+ 
+-    row = await db_session.execute(select(Article).where(Article.id == article.id))
++    # 端点经独立 session 已提交；populate_existing 强制覆盖 identity map 中的旧对象
++    row = await db_session.execute(
++        select(Article).where(Article.id == article.id).execution_options(populate_existing=True)
++    )
+     assert row.scalar_one().like_count == 1
+ 
+     res_off = await _toggle(client, liker, "article", article.id)
+     assert res_off.json() == {"liked": False, "like_count": 0}
+ 
+-    row = await db_session.execute(select(Article).where(Article.id == article.id))
++    row = await db_session.execute(
++        select(Article).where(Article.id == article.id).execution_options(populate_existing=True)
++    )
+     assert row.scalar_one().like_count == 0
+ 
+ 
+-- 
+2.53.0
+

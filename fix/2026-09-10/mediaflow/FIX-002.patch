@@ -1,0 +1,116 @@
+From cc0eb6961210a32afd0c5256be6a0560492e71c2 Mon Sep 17 00:00:00 2001
+From: boyu <boyu@local>
+Date: Thu, 10 Sep 2026 22:26:52 +0800
+Subject: [PATCH] =?UTF-8?q?fix(rag):=20FIX-002=20=E5=90=91=E9=87=8F?=
+ =?UTF-8?q?=E6=A3=80=E7=B4=A2SQL=20:embedding::vector=20=E8=A2=ABtext()?=
+ =?UTF-8?q?=E5=90=9E=E5=86=92=E5=8F=B7=E8=87=B4asyncpg=E8=AF=AD=E6=B3=95?=
+ =?UTF-8?q?=E9=94=99=E8=AF=AF=E2=80=94=E2=80=94=E6=94=B9CAST(:embedding=20?=
+ =?UTF-8?q?AS=20vector)=EF=BC=9B=E7=A7=BB=E9=99=A4=E5=A4=B1=E6=95=88xfail?=
+ =?UTF-8?q?=C3=979?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ backend/app/api/v1/module_ai/rag/repository.py | 4 ++--
+ backend/tests/test_ai_rag.py                   | 9 ---------
+ 2 files changed, 2 insertions(+), 11 deletions(-)
+
+diff --git a/backend/app/api/v1/module_ai/rag/repository.py b/backend/app/api/v1/module_ai/rag/repository.py
+index 26a3696..fa8efcc 100644
+--- a/backend/app/api/v1/module_ai/rag/repository.py
++++ b/backend/app/api/v1/module_ai/rag/repository.py
+@@ -154,12 +154,12 @@ class RAGRepository:
+                 d.title as document_title,
+                 d.source_type,
+                 d.source_uri,
+-                1 - (c.embedding <=> :embedding::vector) AS score
++                1 - (c.embedding <=> CAST(:embedding AS vector)) AS score
+             FROM rag_chunks c
+             JOIN rag_documents d ON c.document_id = d.id
+             WHERE d.knowledge_base_id = :kb_id
+               AND c.embedding IS NOT NULL
+-            ORDER BY c.embedding <=> :embedding::vector
++            ORDER BY c.embedding <=> CAST(:embedding AS vector)
+             LIMIT :top_k
+         """)
+         result = await self.db.execute(stmt, {
+diff --git a/backend/tests/test_ai_rag.py b/backend/tests/test_ai_rag.py
+index 00f5f56..2c2a851 100644
+--- a/backend/tests/test_ai_rag.py
++++ b/backend/tests/test_ai_rag.py
+@@ -232,7 +232,6 @@ async def test_upload_markdown_completed_and_keyword_search(client, make_user, m
+     assert res.json()["total"] == 0
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_vector_search_orders_by_embedding_similarity(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=4)
+     uid, kb = await _make_kb(client, make_user, name="vec-kb")
+@@ -250,7 +249,6 @@ async def test_vector_search_orders_by_embedding_similarity(client, make_user, m
+     assert scores == sorted(scores, reverse=True)
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_hybrid_search_merges_keyword_and_vector(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=4)
+     uid, kb = await _make_kb(client, make_user, name="hy-kb")
+@@ -320,7 +318,6 @@ async def test_dimension_mismatch_marks_document_failed(client, make_user, monke
+     assert res.json()[0]["status"] == "failed"
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_document_reindex_repairs_after_provider_fixed(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=3)
+     uid, kb = await _make_kb(client, make_user, name="fix-kb", dimension=4)
+@@ -377,7 +374,6 @@ async def test_duplicate_upload_is_idempotent(client, make_user, monkeypatch):
+     assert len(res.json()) == 1
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_delete_document_removes_chunks_from_search(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=4)
+     uid, kb = await _make_kb(client, make_user, name="del-kb")
+@@ -412,7 +408,6 @@ async def test_delete_kb_cascades_documents(client, make_user, monkeypatch):
+ # ── answer / answer/stream ───────────────────────────
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_answer_returns_llm_text_with_sources(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=4)
+     uid, kb = await _make_kb(client, make_user, name="ans-kb")
+@@ -452,7 +447,6 @@ async def test_answer_returns_llm_text_with_sources(client, make_user, monkeypat
+     assert calls[0]["max_tokens"] == 2048
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_answer_empty_kb_returns_not_found_text(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=4)
+     uid, kb = await _make_kb(client, make_user, name="empty-kb")
+@@ -470,7 +464,6 @@ async def test_answer_empty_kb_returns_not_found_text(client, make_user, monkeyp
+     assert calls == []  # 检索为空不应调用 LLM
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_answer_injects_history_into_messages(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=4)
+     uid, kb = await _make_kb(client, make_user, name="hist-kb")
+@@ -511,7 +504,6 @@ async def test_answer_unknown_kb_returns_400(client, make_user, monkeypatch):
+     assert res.status_code == 400
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_answer_stream_emits_sse_and_done(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=4)
+     uid, kb = await _make_kb(client, make_user, name="stream-kb")
+@@ -530,7 +522,6 @@ async def test_answer_stream_emits_sse_and_done(client, make_user, monkeypatch):
+     assert res.text.rstrip().endswith("data: [DONE]")
+ 
+ 
+-@pytest.mark.xfail(strict=False, reason="疑似bug#2: RAG检索SQL ':embedding::vector' 在asyncpg下语法错误, answer类失败为其下游; 见PROGRESS.md")
+ async def test_answer_stream_empty_kb(client, make_user, monkeypatch):
+     patch_embedding(monkeypatch, dim=4)
+     uid, kb = await _make_kb(client, make_user, name="stream-empty-kb")
+-- 
+2.53.0
+

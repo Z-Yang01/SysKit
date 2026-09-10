@@ -1,0 +1,49 @@
+From d25a7f06bd1d38f8a5d0e16ffbc7e6b0a6e098cd Mon Sep 17 00:00:00 2001
+From: boyu <boyu@local>
+Date: Thu, 10 Sep 2026 22:41:33 +0800
+Subject: [PATCH] =?UTF-8?q?fix(comment):=20FIX-005=20=E4=B8=89=E4=B8=AA?=
+ =?UTF-8?q?=E5=88=97=E8=A1=A8=E7=AB=AF=E7=82=B9=E6=BC=8Fawait=E8=87=B4?=
+ =?UTF-8?q?=E5=93=8D=E5=BA=94=E4=B8=BAcoroutine=E2=86=92500=E2=80=94?=
+ =?UTF-8?q?=E2=80=94=E5=88=97=E8=A1=A8=E6=8E=A8=E5=AF=BC=E8=A1=A5await?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ backend/app/api/v1/module_common/comment/api.py | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/backend/app/api/v1/module_common/comment/api.py b/backend/app/api/v1/module_common/comment/api.py
+index dd4480b..899383c 100644
+--- a/backend/app/api/v1/module_common/comment/api.py
++++ b/backend/app/api/v1/module_common/comment/api.py
+@@ -35,7 +35,7 @@ async def list_comments(
+ ):
+     service = CommentService(db)
+     comments = await service.get_by_content(content_type, content_id, skip=skip, limit=limit)
+-    return [_enrich_author(db, c) for c in comments]
++    return [await _enrich_author(db, c) for c in comments]
+ 
+ 
+ @router.get("/{comment_id}/replies", response_model=list[CommentResponse])
+@@ -47,7 +47,7 @@ async def list_replies(
+ ):
+     service = CommentService(db)
+     replies = await service.get_replies(comment_id, skip=skip, limit=limit)
+-    return [_enrich_author(db, r) for r in replies]
++    return [await _enrich_author(db, r) for r in replies]
+ 
+ 
+ @router.post("", response_model=CommentResponse, status_code=201)
+@@ -106,7 +106,7 @@ async def pending_comments(
+ ):
+     service = CommentService(db)
+     comments = await service.get_pending(content_type, skip=skip, limit=limit)
+-    return [_enrich_author(db, c) for c in comments]
++    return [await _enrich_author(db, c) for c in comments]
+ 
+ 
+ @router.post("/{comment_id}/approve")
+-- 
+2.53.0
+

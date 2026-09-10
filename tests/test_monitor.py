@@ -7,12 +7,13 @@ Mock 边界（配合 conftest 哨兵双保险）：
 - probe_quick 在模块级替换；time.sleep 置空；monitor 的 stop/force 事件换成假 Event
   （is_set 按脚本返回、wait 只记录不阻塞），让 run() 循环确定性退出。
 
-疑似业务 bug（只记录，不改源码）：
-1. syskit/monitor.py:15 probe_quick 只探测 `config.PROBE_204_URLS[:1]`（第一个端点），与
-   docstring"任一 204 端点可达即有网"不符：第一个端点故障/被墙时第二个永不尝试，
-   会把"有网"误报为断网并可能触发不必要的自动修复。
-2. syskit/monitor.py:61-63 force_check 请求的"立即复检"仍要先等满本轮 poll_interval
-   再额外等 1 秒才生效（force 后并未跳过周期等待），手动刷新体感延迟最长约 poll+1s。
+已修复行为（原 PROGRESS 疑似 bug，现已改源码）：
+1. probe_quick 遍历全部 PROBE_204_URLS，首端点失败时继续尝试后续端点。
+2. Monitor 停止事件命名为 _stop_evt（不可覆盖 Thread._stop）。
+
+仍记录的设计取舍：
+- force_check 请求的"立即复检"仍要先等满本轮 poll_interval 再额外等 1 秒
+  （force 后并未跳过周期等待），手动刷新体感延迟最长约 poll+1s。
 """
 import threading
 import time
@@ -58,28 +59,41 @@ def patch_sleep(monkeypatch):
 
 
 class FakeEvent:
-    """is_set 按序列返回（耗尽后重复最后一项）；wait/set/clear 只记录不阻塞。"""
+    """is_set 按 seq 返回；wait 按 wait_seq 返回（默认全 False=超时）。
 
-    def __init__(self, seq):
+    两者脚本分离：run() 里 stop.is_set 控制循环退出，force.wait 控制是否
+    提前唤醒；若共用同一序列会互相抢消费导致轮次错乱。
+    """
+
+    def __init__(self, seq, wait_seq=None):
         self.seq = list(seq)
+        self._wait_seq = list(wait_seq) if wait_seq is not None else [False]
         self.waits = []
         self.cleared = False
-        self.set_flag = False
+        self._flag = False
+
+    def _next(self, pool):
+        if len(pool) > 1:
+            return pool.pop(0)
+        return bool(pool[0]) if pool else False
 
     def is_set(self):
-        if len(self.seq) > 1:
-            return self.seq.pop(0)
-        return self.seq[0] if self.seq else False
+        if self._flag:
+            return True
+        return self._next(self.seq)
 
     def set(self):
-        self.set_flag = True
+        self._flag = True
 
     def clear(self):
         self.cleared = True
+        self._flag = False
 
-    def wait(self, t):
-        self.waits.append(t)
-        return True
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self._flag:
+            return True
+        return self._next(self._wait_seq)
 
 
 class FakeAction:
@@ -136,8 +150,8 @@ class TestProbeQuick:
         self.patch_urlopen(monkeypatch, boom)
         assert probe_quick() is False
 
-    def test_only_first_endpoint_tried(self, monkeypatch):
-        """记录疑似 bug 1：第二端点永不被尝试。"""
+    def test_fallback_to_second_endpoint(self, monkeypatch):
+        """首端点故障时必须尝试后续端点，第二端点 204 即视为有网。"""
         urls = ["http://a.example/generate_204", "http://b.example/generate_204"]
         monkeypatch.setattr(config, "PROBE_204_URLS", urls)
         asked = []
@@ -148,8 +162,20 @@ class TestProbeQuick:
                 raise OSError("a down")
             return _FakeResp(204)
         self.patch_urlopen(monkeypatch, fake)
+        assert probe_quick() is True
+        assert asked == [urls[0], urls[1]]
+
+    def test_all_endpoints_fail_false(self, monkeypatch):
+        urls = ["http://a.example/generate_204", "http://b.example/generate_204"]
+        monkeypatch.setattr(config, "PROBE_204_URLS", urls)
+        asked = []
+
+        def fake(req, timeout=None):
+            asked.append(req.full_url)
+            raise OSError("down")
+        self.patch_urlopen(monkeypatch, fake)
         assert probe_quick() is False
-        assert asked == [urls[0]]
+        assert asked == urls
 
 
 # ---------------- settings 映射 ----------------
@@ -183,10 +209,10 @@ class TestMonitorBasics:
 
     def test_stop_and_force_check_set_events(self):
         m, _ = make_mon()
-        assert not m._stop.is_set() and not m._force_check.is_set()
+        assert not m._stop_evt.is_set() and not m._force_check.is_set()
         m.stop()
         m.force_check()
-        assert m._stop.is_set() and m._force_check.is_set()
+        assert m._stop_evt.is_set() and m._force_check.is_set()
 
     def test_is_daemon_thread(self):
         m, _ = make_mon()
@@ -304,6 +330,9 @@ class TestRunLadder:
                 actions[fid] = FakeAction(fid, f"标题-{fid}")
             return actions[fid]
         monkeypatch.setattr(monitor_mod.repairs, "get_action", fake_get)
+        # 默认无隧道；VPN 相关用例在 test_vpn.py 单独覆盖
+        from syskit import vpn as vpn_mod
+        monkeypatch.setattr(vpn_mod, "should_skip_auto_repair", lambda snap=None: False)
         patch_sleep(monkeypatch)
         return actions
 
@@ -404,11 +433,13 @@ class TestRunLadder:
 # ---------------- run 主循环 ----------------
 
 class TestRun:
-    def _prepare(self, monkeypatch, m, stop_seq, force_seq):
+    def _prepare(self, monkeypatch, m, stop_seq, force_wait_seq,
+                 stop_wait_seq=None):
+        """stop_seq → is_set 脚本；force_wait_seq → force.wait 返回值脚本。"""
         sweep_calls = []
         once_calls = []
-        m._stop = FakeEvent(stop_seq)
-        m._force_check = FakeEvent(force_seq)
+        m._stop_evt = FakeEvent(stop_seq, wait_seq=stop_wait_seq or [False])
+        m._force_check = FakeEvent([False], wait_seq=force_wait_seq)
         import syskit.logger as logger_mod
         monkeypatch.setattr(logger_mod, "sweep_old_logs",
                             lambda *a, **kw: sweep_calls.append(1) or 0)
@@ -417,21 +448,44 @@ class TestRun:
 
     def test_single_pass_then_stop(self, monkeypatch):
         m, _ = make_mon()
+        # force.wait 超时(False)，随后 stop.is_set 置位退出
         sweep, once = self._prepare(monkeypatch, m, [False, True], [False])
         m.run()
         assert len(once) == 1
         assert sweep == [1]                            # 每天首圈清扫
-        assert m._stop.waits == [30]                   # 用 settings 默认 poll_interval
+        assert m._force_check.waits == [30]            # 以 poll_interval 作可中断等待
+        assert m._stop_evt.waits == []
 
-    def test_force_check_adds_short_wait_and_extra_pass(self, monkeypatch):
-        """记录疑似 bug 2：force 复检发生在整轮 poll 等待之后。"""
+    def test_force_check_wakes_early_and_rechecks(self, monkeypatch):
+        """force 置位时不必等满剩余 poll：wait 提前返回 True，短暂节流后再探测。"""
         m, _ = make_mon()
-        sweep, once = self._prepare(monkeypatch, m, [False, False, True], [True, False])
+        # force.wait: 第一次 True（提前唤醒），第二次 False（超时）
+        # stop.is_set: 两轮 _once 后退出；stop.wait(1.0) 未停
+        sweep, once = self._prepare(
+            monkeypatch, m,
+            stop_seq=[False, False, True],
+            force_wait_seq=[True, False],
+            stop_wait_seq=[False],
+        )
         m.run()
         assert len(once) == 2
-        assert m._stop.waits == [30, 1.0, 30]
+        assert m._force_check.waits == [30, 30]        # 两次都以 poll 为超时上限
+        assert m._stop_evt.waits == [1.0]              # 唤醒后仅节流 1s，非再等满 poll
         assert m._force_check.cleared is True
         assert sweep == [1]                            # 同一天只清扫一次
+
+    def test_force_then_stop_during_throttle(self, monkeypatch):
+        """force 唤醒后 1s 节流期间收到 stop → 不再探测下一轮。"""
+        m, _ = make_mon()
+        sweep, once = self._prepare(
+            monkeypatch, m,
+            stop_seq=[False],
+            force_wait_seq=[True],
+            stop_wait_seq=[True],                      # 节流 wait 立即“停”
+        )
+        m.run()
+        assert len(once) == 1
+        assert m._stop_evt.waits == [1.0]
 
     def test_once_exception_does_not_kill_loop(self, monkeypatch):
         """_once 抛异常被兜底记录，循环继续到 stop。"""

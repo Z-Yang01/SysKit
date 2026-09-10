@@ -4,6 +4,7 @@ import traceback
 from PySide6.QtCore import QThread, Signal
 
 from .. import netcheck, repairs
+from ..repairs import RepairResult
 from ..logger import LOGGER
 
 
@@ -35,6 +36,8 @@ class RepairWorker(QThread):
     def run(self):
         act = repairs.get_action(self.action_id)
         if not act:
+            # 必须发 done，否则调用方 _repair_worker 永不复位、界面永久忙碌
+            self.done.emit((self.action_id, RepairResult(False, f"未知修复动作: {self.action_id}")))
             return
         result = act.execute(self.param)
         self.done.emit((self.action_id, result))

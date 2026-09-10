@@ -1,0 +1,39 @@
+From 8401a3df6a18c12f0a1e9f017e73c9ffc7fc8957 Mon Sep 17 00:00:00 2001
+From: boyu <boyu@local>
+Date: Thu, 10 Sep 2026 22:41:34 +0800
+Subject: [PATCH] =?UTF-8?q?test(mediaconv):=20FIX-011=20content-type=20?=
+ =?UTF-8?q?=E6=96=AD=E8=A8=80=E8=BF=87=E4=B8=A5=E2=80=94=E2=80=94=E6=AF=94?=
+ =?UTF-8?q?=E8=BE=83=20media=20type=20=E4=B8=BB=E4=BD=93?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ backend/tests/test_mediaconv_document.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/backend/tests/test_mediaconv_document.py b/backend/tests/test_mediaconv_document.py
+index ab00c53..078cdae 100644
+--- a/backend/tests/test_mediaconv_document.py
++++ b/backend/tests/test_mediaconv_document.py
+@@ -102,7 +102,7 @@ async def test_pdf_to_markdown(client):
+         data={"target_format": "markdown"},
+     )
+     assert res.status_code == 200
+-    assert res.headers["content-type"] == "text/markdown"
++    assert res.headers["content-type"].split(";")[0] == "text/markdown"
+     assert 'filename="doc.md"' in res.headers["content-disposition"]
+     text = res.content.decode("utf-8")
+     assert "# Big Heading" in text
+@@ -118,7 +118,7 @@ async def test_epub_to_markdown(client):
+         data={"target_format": "markdown"},
+     )
+     assert res.status_code == 200
+-    assert res.headers["content-type"] == "text/markdown"
++    assert res.headers["content-type"].split(";")[0] == "text/markdown"
+     assert 'filename="book.md"' in res.headers["content-disposition"]
+     text = res.content.decode("utf-8")
+     assert "# Chapter 1" in text
+-- 
+2.53.0
+

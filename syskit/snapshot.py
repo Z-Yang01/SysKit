@@ -80,7 +80,7 @@ class Snapshot:
         return None
 
     def physical_up_adapters(self) -> list:
-        """有真实上联特征（有网关或已连接）的非虚拟网卡。"""
+        """状态 Up 且持有 IPv4 的网卡（不判断是否虚拟/是否有网关）。"""
         return [a for a in self.adapters
                 if a.status.lower() == "up" and a.ipv4]
 

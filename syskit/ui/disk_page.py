@@ -24,7 +24,7 @@ _BAR_COLORS = ["#3576e0", "#8e5ce6", "#2e9e44", "#ef6c00",
 
 ROLE_NODE = Qt.UserRole        # 树节点对应的 DirNode
 ROLE_FILLED = Qt.UserRole + 1  # 子节点是否已懒加载
-ROLE_SIZE = Qt.UserRole + 1    # 表格大小列的原始字节数（用于排序）
+ROLE_SIZE = Qt.UserRole + 2    # 表格大小列的原始字节数（用于排序）
 
 DELETE_WARN_BYTES = 10 * 1024 ** 3
 

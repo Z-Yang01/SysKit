@@ -11,8 +11,8 @@ ST_OK, ST_NO_NET, ST_NCSI_FALSE, ST_OFFLINE = "ok", "no_net", "ncsi_false", "off
 
 
 def probe_quick(timeout: float = 4.0) -> bool:
-    """轻量探测：任一 204 端点可达即有网。"""
-    for url in config.PROBE_204_URLS[:1]:
+    """轻量探测：任一 204 端点可达即有网。遍历全部端点，避免单点故障误报断网。"""
+    for url in config.PROBE_204_URLS:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "SysKit/1.0"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -31,7 +31,8 @@ class Monitor(threading.Thread):
         self.on_status = on_status or (lambda *a: None)
         self.on_action = on_action or (lambda *a: None)     # (action_id, result)
         self.on_suggest = on_suggest or (lambda *a: None)   # (fix_id, reason)
-        self._stop = threading.Event()
+        # 不可命名为 _stop：会覆盖 threading.Thread._stop()，导致 join() 抛 TypeError
+        self._stop_evt = threading.Event()
         self._force_check = threading.Event()
         self.last_results = []
         self._fail_streak = 0
@@ -39,7 +40,7 @@ class Monitor(threading.Thread):
         self._last_l3_ts = 0.0
 
     def stop(self):
-        self._stop.set()
+        self._stop_evt.set()
 
     def force_check(self):
         self._force_check.set()
@@ -47,7 +48,7 @@ class Monitor(threading.Thread):
     def run(self):
         from .logger import sweep_old_logs
         last_sweep_day = ""
-        while not self._stop.is_set():
+        while not self._stop_evt.is_set():
             st = self.settings()
             try:
                 today = time.strftime("%Y-%m-%d")
@@ -57,10 +58,14 @@ class Monitor(threading.Thread):
                 self._once(st)
             except Exception:
                 LOGGER.exception("监控循环异常")
-            self._stop.wait(st["poll_interval_sec"])
-            if self._force_check.is_set():
+            # 用 force 事件做可中断等待：force 置位立即醒来（跳过剩余 poll），
+            # 再短暂节流后进入下一轮 _once——手动刷新不必等满 poll_interval。
+            if self._force_check.wait(timeout=st["poll_interval_sec"]):
                 self._force_check.clear()
-                self._stop.wait(1.0)
+                if self._stop_evt.wait(1.0):
+                    break
+                continue
+            # 超时：回到循环顶部再查 stop / 再次探测
 
     def settings(self):
         s = settings.load()
@@ -110,13 +115,25 @@ class Monitor(threading.Thread):
         return st["max_level"]
 
     def _run_ladder(self, level: int):
+        from . import vpn as vpn_mod
         ladder = ["flush_dns"]
         if level >= 2:
             ladder += ["start_nlasvc", "renew_dhcp"]
         if level >= 3:
             ladder += ["restart_wlan", "toggle_adapter"]
+        # VPN/TUN 在用：跳过易断隧道的动作（续租/重启 WLAN/网卡开关）
+        try:
+            skip_vpn = vpn_mod.should_skip_auto_repair()
+        except Exception:
+            skip_vpn = False  # 快照失败时不停用自动修复，仅记日志
+            LOGGER.warning("VPN 护栏检测失败，本轮按无隧道处理", exc_info=True)
+        if skip_vpn:
+            skipped = [x for x in ladder if x in ("renew_dhcp", "restart_wlan", "toggle_adapter")]
+            ladder = [x for x in ladder if x not in skipped]
+            LOGGER.warning("检测到 VPN/隧道在线，自动修复跳过: {}", ", ".join(skipped) or "无")
+            self.on_suggest("flush_dns", vpn_mod.auto_repair_guard_note())
         for fid in ladder:
-            if self._stop.is_set():
+            if self._stop_evt.is_set():
                 return
             act = repairs.get_action(fid)
             if not act:
