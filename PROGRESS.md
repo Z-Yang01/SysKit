@@ -182,3 +182,59 @@
 - **UI**：概览页「快捷操作」新增「VPN 排查」对话框（只读步骤列表）。
 - 测试：`tests/test_vpn.py`；全量 pytest **全绿**。
 
+
+---
+
+## 2026-09-11 会话（夜间挂机总任务·项目四）
+
+### 当前状态
+
+- 分支 `test/pytest-setup`；全量 **635 passed / 1 skipped / 1 xfailed**；总覆盖 **80% → 96%**。
+
+### 已完成
+
+1. **Carry-over 提交**（2e229c8）：上一会话的逻辑/性能优化、剪贴板历史/场景模式、VPN 护栏、
+   UI 美化等成果（535 例全绿）经验证后入库；总控修复 1 个日期炸弹测试
+   （test_stores 硬编码 "2026-09-10"，改用 fix_today 固定日期）。
+2. **逻辑层补测**（子 Agent G，58 例）：telemetry 48%→**100%**、vpn 71%→**100%**、
+   admin 38%→**100%**、autostart 43%→**100%**。schtasks/winreg/ctypes/psutil 全 mock，
+   零真实注册表与系统操作。
+3. **系统页/应用壳补测**（子 Agent H，24 例）：ui/system_page 63%→**90%**、ui/app 35%→**100%**。
+   覆盖启动项四来源聚合、回收站/清理编排、剪贴板历史交互、场景模式确认流、崩溃日志钩子、
+   单实例互斥、DPI/主题装配。
+4. **主窗体三页补测**（子 Agent I，18 例）：ui/main_window 75%→**99%**、ui/toolbox_page 76%→**99%**、
+   ui/wifi_page 68%→**100%**。重点覆盖 WiFi 懒扫描语义全链路与测速/局域网/端口/路由 Worker。
+5. **P2 业务 Bug 修复 ×1**（子 Agent I 发现，总控修复）：
+   `_save_window_state` 中 `bytes(QByteArray).toBase64()` 对 bytes 调 toBase64 必抛
+   AttributeError 且被 except 吞掉 → 窗口几何/页码从不持久化。已改为
+   `bytes(self.saveGeometry().toBase64()).decode()`，两处锁定旧行为的测试改为正向回归断言。
+
+### 测试
+
+- 摸底：535 passed / 1 failed（日期炸弹）→ 修复后 carry-over 全绿；总覆盖 80%。
+- 收尾：**635 passed / 1 skipped / 1 xfailed**（两次验证稳定）；总覆盖 **96%**（miss 990 → 223）。
+- 安全哨兵全程有效：所有系统调用路径（schtasks/winreg 写/ctypes ShellExecute/urlopen/psutil）均 mock。
+
+### 疑似 Bug（只记录不修）
+
+1. `syskit/vpn.py:87` `if tunnels or True:` 恒真，owner_hint 初始化为死代码（可读性）。
+2. `syskit/ui/system_page.py:261` 电池解析 `except (ValueError, IndexError)` 对常规脏数据
+   （如 "4万"）无防御力，仅 "²" 类 isdigit-但不可 int 的 Unicode 字符可命中。
+3. 环境性已知问题：PySide6 6.11 离屏下真实 QThread 的 UI 测试有低概率原生崩溃
+   （用例全过后的收尾段 fail-fast，重跑即可，README 已有处置约定）。
+
+### 遗留与下一步
+
+- ui 剩余低覆盖：dashboard/charts 等 60-75% 小块；dist 旧 NetTool.exe 已删除（随 carry-over 入库）。
+- 可考虑把「重跑即可」的 QThread 崩溃根治（真实线程测试改同步 run 模式已在本轮验证可行）。
+
+### Git Commit
+
+- `2e229c8 carry-over: 上一会话成果（535 例全绿）+ test_stores 日期炸弹修复`
+- `fix(ui): _save_window_state 编码误用致窗口状态从不持久化；test: 逻辑层+UI 补测 100 例，80%→96%`
+- （未 push）
+
+### 晨报（2026-09-11 轮）
+
+- **完成**：635 测试全绿；总覆盖 80%→96%；修复 1 个真实持久化 Bug + 1 个日期炸弹测试；新增 100 用例。
+- **红线遵守**：零真实 DNS/网卡/注册表/服务/socket 操作（哨兵验证）；未触真实 %APPDATA%；未 push。

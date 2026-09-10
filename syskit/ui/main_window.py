@@ -162,7 +162,10 @@ class MainWindow(QMainWindow):
     def _save_window_state(self):
         try:
             settings.save({
-                "win_geometry": bytes(self.saveGeometry()).toBase64().decode(),
+                # saveGeometry() 返回 QByteArray，须先 toBase64() 再转 bytes
+                #（此前 bytes(...).toBase64() 对 bytes 调 toBase64 必抛 AttributeError
+                #  且被 except 吞掉，窗口几何从不持久化）
+                "win_geometry": bytes(self.saveGeometry().toBase64()).decode(),
                 "last_page": self.stack.currentIndex(),
             })
         except Exception:
