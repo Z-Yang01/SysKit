@@ -502,12 +502,13 @@ def test_disk_tab_reveal_missing_path_noop(qtbot, monkeypatch):
 # ---------------- toolbox_page.py ----------------
 
 
-def test_toolbox_page_constructs_five_tabs(qtbot):
+def test_toolbox_page_constructs_six_tabs(qtbot):
     from syskit.ui.toolbox_page import PortTab, ToolboxPage
     page = ToolboxPage()
     qtbot.addWidget(page)
     tabs = page.findChildren(QTabWidget)[0]
-    assert tabs.count() == 5
+    assert tabs.count() == 6                        # +Hosts 编辑
+    assert tabs.tabText(5) == "Hosts 编辑"
     port = page.findChildren(PortTab)[0]
     qtbot.wait_until(lambda: port._worker is None, timeout=10000)
     assert "共 0 条" in port.lbl_status.text()    # psutil.net_connections mock 为空

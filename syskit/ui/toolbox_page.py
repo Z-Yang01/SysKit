@@ -1,5 +1,6 @@
-"""工具箱：速度测试 / 局域网设备发现 / DNS查询与子网计算 / 持续ping与路由追踪 / 端口占用。"""
+"""工具箱：速度测试 / 局域网设备发现 / DNS查询与子网计算 / 持续ping与路由追踪 / 端口占用 / Hosts 编辑。"""
 import ipaddress
+import os
 import re
 import socket
 import subprocess
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComb
                                QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
-from .. import icmp, dnsquery
+from .. import admin, hostsed, icmp, dnsquery
 from ..logger import LOGGER
 
 TEST_URLS = [
@@ -614,6 +615,180 @@ class PortTab(QWidget):
         self.refresh()
 
 
+class HostsTab(QWidget):
+    """Hosts 文件编辑器：表格化增删改，改前自动备份，保存需管理员权限。
+
+    增/删/切换只改内存列表并标脏；「保存」一次性写回（写前备份原文件）。
+    path 参数供测试注入临时文件，默认系统 hosts。
+    """
+
+    def __init__(self, parent=None, path: str = None):
+        super().__init__(parent)
+        self._path = path or hostsed.HOSTS_PATH
+        self._entries = []
+        self._dirty = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+
+        self.lbl_info = QLabel()
+        self.lbl_info.setObjectName("hint")
+        lay.addWidget(self.lbl_info)
+
+        row = QHBoxLayout()
+        self.edt_ip = QLineEdit()
+        self.edt_ip.setPlaceholderText("IP，如 127.0.0.1")
+        self.edt_host = QLineEdit()
+        self.edt_host.setPlaceholderText("主机名，如 api.example.com")
+        self.edt_cmt = QLineEdit()
+        self.edt_cmt.setPlaceholderText("备注（可选）")
+        self.btn_add = QPushButton("添加条目")
+        self.btn_add.setProperty("primary", True)
+        self.btn_add.clicked.connect(self._add)
+        for w in (self.edt_ip, self.edt_host, self.edt_cmt):
+            row.addWidget(w, 1)
+        row.addWidget(self.btn_add)
+        lay.addLayout(row)
+
+        self.tbl = QTableWidget(0, 4)
+        self.tbl.setHorizontalHeaderLabels(["状态", "IP", "主机名", "备注"])
+        self.tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setAlternatingRowColors(True)
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.itemSelectionChanged.connect(self._refresh_buttons)
+        lay.addWidget(self.tbl, 1)
+
+        brow = QHBoxLayout()
+        self.btn_toggle = QPushButton("启用 / 禁用")
+        self.btn_toggle.clicked.connect(self._toggle)
+        self.btn_del = QPushButton("删除选中")
+        self.btn_del.setProperty("danger", True)
+        self.btn_del.clicked.connect(self._remove)
+        self.btn_reload = QPushButton("放弃更改")
+        self.btn_reload.clicked.connect(self.load)
+        self.btn_save = QPushButton("保存（自动备份）")
+        self.btn_save.clicked.connect(self._save)
+        self.lbl_dirty = QLabel("")
+        self.lbl_dirty.setObjectName("hint")
+        brow.addWidget(self.lbl_dirty)
+        brow.addStretch(1)
+        for b in (self.btn_toggle, self.btn_del, self.btn_reload, self.btn_save):
+            brow.addWidget(b)
+        lay.addLayout(brow)
+        self.load()
+
+    # ---------------- 数据 ----------------
+
+    def load(self):
+        """读取 hosts（或放弃更改）。文件不可读时显示空态。"""
+        self._entries = hostsed.read_entries(self._path)
+        self._dirty = False
+        admin_ok = admin.is_admin()
+        self.lbl_info.setText(
+            f"{self._path}　·　" +
+            ("管理员：可保存" if admin_ok else "非管理员：只能查看，保存会被系统拒绝"))
+        self.btn_save.setEnabled(admin_ok)
+        self._reload_table()
+
+    def _reload_table(self):
+        self.tbl.setRowCount(len(self._entries))
+        for r, e in enumerate(self._entries):
+            if e.get("kind") == "entry":
+                status = "✔ 启用"
+            elif e.get("kind") == "disabled":
+                status = "✘ 禁用"
+            else:
+                status = "—"
+            item0 = QTableWidgetItem(status)
+            item0.setData(Qt.UserRole, r)
+            self.tbl.setItem(r, 0, item0)
+            self.tbl.setItem(r, 1, QTableWidgetItem(e.get("ip", "")))
+            self.tbl.setItem(r, 2, QTableWidgetItem(
+                e.get("host", "") + (" " + " ".join(e.get("aliases") or [])
+                                     if e.get("aliases") else "")))
+            self.tbl.setItem(r, 3, QTableWidgetItem(e.get("comment", "")))
+        self._update_dirty()
+        self._refresh_buttons()
+
+    def _selected_index(self) -> int:
+        row = self.tbl.currentRow()
+        if row < 0:
+            return -1
+        item = self.tbl.item(row, 0)
+        data = item.data(Qt.UserRole) if item else None
+        return int(data) if data is not None else -1
+
+    def _mark_dirty(self):
+        self._dirty = True
+        self._update_dirty()
+
+    def _update_dirty(self):
+        self.lbl_dirty.setText("● 未保存" if self._dirty else "")
+        self.btn_reload.setEnabled(self._dirty)
+
+    def _refresh_buttons(self):
+        has = self._selected_index() >= 0
+        self.btn_toggle.setEnabled(has)
+        self.btn_del.setEnabled(has)
+
+    # ---------------- 操作 ----------------
+
+    def _add(self):
+        ip = self.edt_ip.text().strip()
+        host = self.edt_host.text().strip()
+        if not ip or not host:
+            QMessageBox.information(self, "SysKit", "请填写 IP 和主机名")
+            return
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            QMessageBox.warning(self, "SysKit", f"IP 格式不合法：{ip}")
+            return
+        hostsed.add_entry(self._entries, ip, host, self.edt_cmt.text())
+        self.edt_ip.clear()
+        self.edt_host.clear()
+        self.edt_cmt.clear()
+        self._mark_dirty()
+        self._reload_table()
+
+    def _toggle(self):
+        idx = self._selected_index()
+        if idx < 0:
+            return
+        if self._entries[idx].get("kind") not in ("entry", "disabled"):
+            return
+        hostsed.toggle_entry(self._entries, idx)
+        self._mark_dirty()
+        self._reload_table()
+
+    def _remove(self):
+        idx = self._selected_index()
+        if idx >= 0:
+            hostsed.remove_entry(self._entries, idx)
+            self._mark_dirty()
+            self._reload_table()
+
+    def _save(self):
+        if not self._dirty:
+            return
+        if not admin.is_admin():
+            QMessageBox.warning(self, "SysKit",
+                                "写入 hosts 需要管理员权限。\n请以管理员身份运行 SysKit 后重试。")
+            return
+        try:
+            backup = hostsed.write_entries(self._entries, self._path, backup=True)
+        except OSError as e:
+            QMessageBox.warning(self, "SysKit", f"保存失败：{e}")
+            return
+        self._dirty = False
+        self._update_dirty()
+        LOGGER.info("hosts 已保存，备份: {}", backup or "无")
+        QMessageBox.information(self, "SysKit",
+                                "已保存" + (f"（备份：{backup}）" if backup else ""))
+
+
 class ToolboxPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -626,4 +801,5 @@ class ToolboxPage(QWidget):
         tabs.addTab(PortTab(), "端口 / 进程")
         tabs.addTab(DnsSubnetTab(), "DNS / 子网")
         tabs.addTab(PingRouteTab(), "ping / 路由")
+        tabs.addTab(HostsTab(), "Hosts 编辑")
         lay.addWidget(tabs)
