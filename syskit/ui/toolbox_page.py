@@ -619,7 +619,8 @@ class ToolboxPage(QWidget):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()        # 供命令面板定位子工具
+        tabs = self.tabs
         tabs.addTab(SpeedTestTab(), "速度测试")
         tabs.addTab(LanTab(), "局域网设备")
         tabs.addTab(PortTab(), "端口 / 进程")

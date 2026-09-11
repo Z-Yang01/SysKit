@@ -52,6 +52,11 @@ class TrayHost(QSystemTrayIcon):
             menu.addAction(a)
         clip_menu = menu.addMenu("📋 最近剪贴板")
         clip_menu.aboutToShow.connect(lambda: self._fill_clip_menu(clip_menu))
+        if getattr(window, "toggle_palette", None):
+            act_palette = QAction("⌘ 命令面板", menu)
+            act_palette.setToolTip("全局热键呼出，输入即搜")
+            act_palette.triggered.connect(window.toggle_palette)
+            menu.addAction(act_palette)
         menu.addSeparator()
         menu.addAction(act_quit)
         self.setContextMenu(menu)

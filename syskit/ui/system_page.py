@@ -967,6 +967,7 @@ class SystemPage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         tabs = QTabWidget()
+        self.tabs = tabs                # 供命令面板定位子工具
         self.perf = PerfTab()
         tabs.addTab(self.perf, "性能监控")
         tabs.addTab(StartupTab(), "启动项管理")

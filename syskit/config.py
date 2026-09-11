@@ -88,4 +88,6 @@ DEFAULTS = {
     "clip_sensitive_ttl": 25,          # 敏感复制在剪贴板中的存活秒数（0=不清空）
     "clip_capture_images": True,       # 剪贴板监听是否记录图片
     "vault_autolock_min": 10,          # 密码库自动锁定分钟数（0=不锁）
+    "palette_hotkey": "Ctrl+Alt+K",    # 命令面板全局热键（重启后生效）
+    "palette_commands": "",            # 命令面板自定义命令 JSON [{name,type,value}]
 }

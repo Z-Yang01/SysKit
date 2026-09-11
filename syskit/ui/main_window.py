@@ -2,8 +2,8 @@
 import os
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QFont, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLayout,
                                QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLay
                                QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import admin, autostart, config, monitor, netcheck, repairs, settings
+from .. import admin, autostart, config, hotkey, monitor, netcheck, repairs, settings
 from .. import logger as _logging
 from ..logger import LOGGER
 from ..stores import EventStore
@@ -21,6 +21,7 @@ from . import theme
 from .charts import human_bytes
 from .confirm_dialog import ConfirmDialog
 from .dashboard_page import DashboardPage
+from .palette import CommandPalette, setup_global_hotkey
 from .system_page import SystemPage
 from .toolbox_page import ToolboxPage
 from .tray import TrayHost
@@ -158,9 +159,48 @@ class MainWindow(QMainWindow):
 
         self._admin_banner()
         self._restore_window_state()
+        self._setup_palette()
         self.run_diagnosis(quick=True, silent=True)
         if minimized:
             self.hide()
+
+    # ---------------- 命令面板 ----------------
+    def _setup_palette(self):
+        """全局热键 + 应用内 Ctrl+K；注册失败静默降级（托盘菜单仍可呼出）。"""
+        self._palette = None
+        self._hotkey_filter = None
+        setup_global_hotkey(self)
+        sc = QShortcut(QKeySequence("Ctrl+K"), self)
+        sc.activated.connect(self.toggle_palette)
+
+    def toggle_palette(self):
+        try:
+            if self._palette is None:
+                self._palette = CommandPalette(self)
+            self._palette.toggle()
+        except RuntimeError:
+            pass        # C++ 对象已被销毁（测试卸载路径）
+
+    def run_palette_command(self, value: str):
+        """面板自定义命令：URL 直接打开；本地命令确认后执行并气泡反馈。"""
+        v = (value or "").strip()
+        if not v:
+            return
+        if v.lower().startswith(("http://", "https://")):
+            QDesktopServices.openUrl(QUrl(v))
+            return
+        ret = QMessageBox.question(self, "运行命令", f"执行以下命令？\n\n{v}",
+                                   QMessageBox.Yes | QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        from .. import proc
+        try:
+            r = proc.run(v, timeout=30)
+            ok = getattr(r, "code", 1) == 0
+            out = (getattr(r, "stdout", "") or getattr(r, "stderr", "") or "").strip()
+        except Exception as e:
+            ok, out = False, str(e)
+        self.tray.notify("命令面板", ("完成: " if ok else "失败: ") + out[:120])
 
     # ---------------- 品牌头 ----------------
     def _build_brand(self) -> QWidget:
@@ -992,6 +1032,8 @@ class MainWindow(QMainWindow):
 
     def quit_app(self):
         self._save_window_state()
+        from .palette import teardown_global_hotkey
+        teardown_global_hotkey(self)
         self.mon.stop()
         self.tele.stop()
         self.tele.wait(3000)              # 等遥测线程退出，避免 QThread destroyed while running
