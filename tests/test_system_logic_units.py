@@ -612,3 +612,49 @@ class TestEnabled:
     def test_none_exists(self, monkeypatch):
         _proc_run_scripted(monkeypatch, [-1, -1])
         assert autostart.enabled() is False
+
+
+# ---------------- winregread 只读健壮性 ----------------
+
+class TestWinregreadRobustness:
+    """回归：只读注册表助手在任何读取异常下都返回空值，绝不打断调用方。
+
+    此前 values()/subkeys() 只兜 OSError，且 finally 里 k.Close() 未加保护：
+    未知根键（KeyError）、非 PyHKEY 句柄（TypeError）都会直接炸穿。
+    """
+
+    def test_values_unknown_hive_returns_empty(self):
+        from syskit import winregread
+        assert winregread.values(r"HKXX\Software\Whatever") == {}
+
+    def test_values_close_failure_is_ignored(self, monkeypatch):
+        import winreg
+
+        from syskit import winregread
+
+        class _K:
+            def Close(self):
+                raise RuntimeError("close boom")
+
+        monkeypatch.setattr(winreg, "OpenKey", lambda *a, **k: _K())
+        monkeypatch.setattr(winreg, "EnumValue",
+                            lambda k, i: (_ for _ in ()).throw(TypeError("not a key")))
+        assert winregread.values(r"HKLM\Software\X") == {}
+
+    def test_subkeys_non_key_handle_returns_empty(self, monkeypatch):
+        import winreg
+
+        from syskit import winregread
+
+        class _K:
+            def Close(self):
+                pass
+
+        monkeypatch.setattr(winreg, "OpenKey", lambda *a, **k: _K())
+        monkeypatch.setattr(winreg, "EnumKey",
+                            lambda k, i: (_ for _ in ()).throw(TypeError("not a key")))
+        assert winregread.subkeys(r"HKLM\Software\X") == []
+
+    def test_subkeys_unknown_hive_returns_empty(self):
+        from syskit import winregread
+        assert winregread.subkeys(r"HKZZ\Software") == []

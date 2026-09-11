@@ -88,7 +88,7 @@ class SpeedTestTab(QWidget):
         self.btn_start.clicked.connect(self.start)
         row.addWidget(self.btn_start)
         self.lbl_status = QLabel("点击开始，将下载约几十 MB 流量")
-        self.lbl_status.setStyleSheet("color:#6a737d;")
+        self.lbl_status.setProperty("hint", True)
         row.addWidget(self.lbl_status, 1)
         lay.addLayout(row)
 
@@ -146,6 +146,15 @@ class _LanScanWorker(QThread):
     done = Signal(list)
 
     def run(self):
+        # 无论如何都要发 done：否则 LanTab._worker 永不复位，「扫描局域网」按钮永久禁用
+        try:
+            rows = self._scan()
+        except Exception:
+            LOGGER.exception("局域网扫描失败")
+            rows = []
+        self.done.emit(rows)
+
+    def _scan(self) -> list:
         subnet = None
         for addr in psutil.net_if_addrs().values():
             for a in addr:
@@ -157,8 +166,7 @@ class _LanScanWorker(QThread):
             if subnet:
                 break
         if not subnet:
-            self.done.emit([])
-            return
+            return []
         hosts = [str(h) for h in subnet.hosts()]
         results = {}
 
@@ -170,15 +178,18 @@ class _LanScanWorker(QThread):
         with ThreadPoolExecutor(max_workers=32) as ex:
             list(ex.map(probe, hosts))
         macs = {}
-        r = subprocess.run(["arp", "-a"], capture_output=True, timeout=15,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
-        for line in r.stdout.decode("mbcs", errors="replace").splitlines():
-            m = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([\da-fA-F-]{17})", line)
-            if m:
-                macs[m.group(1)] = m.group(2)
-        rows = [(ip, macs.get(ip, "?"), f"{results[ip]:.0f}") for ip in sorted(
+        try:
+            r = subprocess.run(["arp", "-a"], capture_output=True, timeout=15,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            for line in r.stdout.decode("mbcs", errors="replace").splitlines():
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+([\da-fA-F-]{17})", line)
+                if m:
+                    macs[m.group(1)] = m.group(2)
+        except Exception:
+            # arp 不可用只影响 MAC 列，存活设备照常展示
+            LOGGER.warning("arp -a 解析失败，MAC 列留空", exc_info=True)
+        return [(ip, macs.get(ip, "?"), f"{results[ip]:.0f}") for ip in sorted(
             results, key=lambda x: tuple(int(o) for o in x.split(".")))]
-        self.done.emit(rows)
 
 
 class LanTab(QWidget):
@@ -191,7 +202,7 @@ class LanTab(QWidget):
         self.btn_scan.clicked.connect(self.start)
         row.addWidget(self.btn_scan)
         self.lbl_status = QLabel("扫描当前 /24 网段（约 5-10 秒），列出存活设备与 MAC")
-        self.lbl_status.setStyleSheet("color:#6a737d;")
+        self.lbl_status.setProperty("hint", True)
         row.addWidget(self.lbl_status, 1)
         lay.addLayout(row)
 
@@ -507,7 +518,7 @@ class PortTab(QWidget):
         lay.addWidget(self.tbl)
 
         self.lbl_status = QLabel(" ")
-        self.lbl_status.setStyleSheet("color:#8a93a0;")
+        self.lbl_status.setProperty("hint", True)
         lay.addWidget(self.lbl_status)
 
         self._timer = QTimer(self)
@@ -562,9 +573,10 @@ class PortTab(QWidget):
         kw = self.ed_filter.text().strip().lower()
         only_listen = self.chk_listen.isChecked()
         for row in range(self.tbl.rowCount()):
-            text = " ".join(self.tbl.item(row, c).text().lower()
-                            for c in range(6) if self.tbl.item(row, c))
-            status = self.tbl.item(row, 3).text()
+            cells = [self.tbl.item(row, c) for c in range(6)]
+            text = " ".join(it.text().lower() for it in cells if it is not None)
+            status_item = cells[3]
+            status = status_item.text() if status_item is not None else ""
             visible = (not kw or kw in text) and (not only_listen or status == "LISTEN")
             self.tbl.setRowHidden(row, not visible)
 
@@ -573,8 +585,12 @@ class PortTab(QWidget):
         if row < 0 or self.tbl.isRowHidden(row):
             QMessageBox.information(self, "提示", "请先在列表中选中一条连接。")
             return
-        pid = int(self.tbl.item(row, 4).text()) if self.tbl.item(row, 4).text() != "-" else 0
-        pname = self.tbl.item(row, 5).text()
+        cell_pid = self.tbl.item(row, 4)
+        cell_name = self.tbl.item(row, 5)
+        if cell_pid is None or cell_name is None:
+            return
+        pid = int(cell_pid.text()) if cell_pid.text() != "-" else 0
+        pname = cell_name.text()
         if not pid:
             QMessageBox.information(self, "提示", "该连接为系统级（无归属进程），无法结束。")
             return

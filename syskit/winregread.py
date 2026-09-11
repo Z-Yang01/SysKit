@@ -11,11 +11,15 @@ def _split(path: str):
 
 
 def values(path: str) -> dict:
-    """读某键下全部值 → {名称: 数据}。DWORD 自动转 int。"""
+    """读某键下全部值 → {名称: 数据}。DWORD 自动转 int。
+
+    任何读取失败（键不存在/权限不足/未知根键）都返回空 dict，绝不向上抛：
+    本函数只做只读探测，供诊断与状态展示，不应因注册表异常打断调用方。
+    """
     try:
         hive, sub = _split(path)
         k = winreg.OpenKey(hive, sub, 0, winreg.KEY_READ)
-    except OSError:
+    except Exception:
         return {}
     out = {}
     try:
@@ -27,8 +31,13 @@ def values(path: str) -> dict:
                 break
             out[name] = int(data) if isinstance(data, int) else data
             i += 1
+    except Exception:
+        pass
     finally:
-        k.Close()
+        try:
+            k.Close()
+        except Exception:
+            pass
     return out
 
 
@@ -41,7 +50,7 @@ def subkeys(path: str) -> list:
     try:
         hive, sub = _split(path)
         k = winreg.OpenKey(hive, sub, 0, winreg.KEY_READ)
-    except OSError:
+    except Exception:
         return []
     out = []
     try:
@@ -52,8 +61,13 @@ def subkeys(path: str) -> list:
             except OSError:
                 break
             i += 1
+    except Exception:
+        pass
     finally:
-        k.Close()
+        try:
+            k.Close()
+        except Exception:
+            pass
     return out
 
 

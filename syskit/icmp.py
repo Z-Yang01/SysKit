@@ -27,7 +27,7 @@ _iphlpapi.IcmpSendEcho.argtypes = [
 _iphlpapi.IcmpSendEcho.restype = ctypes.c_uint32
 _iphlpapi.IcmpCloseHandle.argtypes = [ctypes.c_void_p]
 
-_PAYLOAD = b"NetToolPingData"
+_PAYLOAD = b"SysKitPingData"
 _INVALID = 0xFFFFFFFFFFFFFFFF
 
 

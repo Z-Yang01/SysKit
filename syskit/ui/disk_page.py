@@ -96,7 +96,7 @@ class DiskTab(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
 
         tip = QLabel("扫描磁盘占用，定位空间大头；删除仅移入回收站，可在系统回收站还原。")
-        tip.setStyleSheet("color:#8a93a0;")
+        tip.setProperty("hint", True)
         lay.addWidget(tip)
 
         row = QHBoxLayout()
@@ -138,7 +138,7 @@ class DiskTab(QWidget):
         self.chart = BarChart("文件类型占用 Top 8", fmt=human_bytes)
         rlay.addWidget(self.chart)
         self.lbl_files = QLabel("大文件 Top 200（双击定位所在文件夹，选中行可删除）")
-        self.lbl_files.setStyleSheet("color:#8a93a0;")
+        self.lbl_files.setProperty("hint", True)
         rlay.addWidget(self.lbl_files)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["文件", "大小", "修改时间"])

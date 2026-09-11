@@ -18,6 +18,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -106,3 +107,44 @@ def fake_cmd_result():
     def _make(code=0, stdout="", stderr="", timeout=False):
         return CmdResult(code=code, stdout=stdout, stderr=stderr, timeout=timeout)
     return _make
+
+
+# ---------------- 会话收尾：QThread 排空（缓解原生 fail-fast） ----------------
+
+@pytest.fixture(scope="session", autouse=True)
+def _drain_qt_threads_on_session_end():
+    """会话收尾兜底：等所有仍在运行的 QThread 结束。
+
+    QThread 对象在「仍在运行」时被 GC / 被 Qt 析构会触发 qFatal → 整个 pytest
+    进程以 0xC0000409 崩溃。该崩溃发生在**全部用例通过之后**的收尾阶段，却会把
+    退出码污染成 127，掩盖真实结果（README / 各 UI 测试文件头均有记载）。
+
+    各测试文件的局部夹具已尽力回收自己创建的线程，这里再做一个进程级兜底：
+    扫描 GC 可见的 QThread，给它们一点时间收尾并泵一次事件循环。
+    """
+    yield
+    try:
+        import gc
+        from PySide6.QtCore import QThread
+        from PySide6.QtWidgets import QApplication
+
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            running = [o for o in gc.get_objects()
+                       if isinstance(o, QThread) and o.isRunning()]
+            if not running:
+                break
+            for t in running:
+                try:
+                    t.wait(500)
+                except Exception:
+                    pass
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents()
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+        gc.collect()
+    except Exception:
+        pass

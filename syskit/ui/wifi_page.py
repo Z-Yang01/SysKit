@@ -160,7 +160,7 @@ class WifiPage(QWidget):
         row.addWidget(self.chk_auto)
         row.addStretch(1)
         self.lbl_scan = QLabel(" ")
-        self.lbl_scan.setStyleSheet("color:#8a93a0;")
+        self.lbl_scan.setProperty("hint", True)
         row.addWidget(self.lbl_scan)
         lay.addLayout(row)
 
@@ -174,7 +174,7 @@ class WifiPage(QWidget):
         lay.addWidget(self.tbl_aps)
 
         self.lbl_loc = QLabel("提示：Win11 扫描周边 WiFi 需要系统「位置」服务开启。")
-        self.lbl_loc.setStyleSheet("color:#8a93a0;")
+        self.lbl_loc.setProperty("hint", True)
         lay.addWidget(self.lbl_loc)
         return w
 
@@ -336,7 +336,7 @@ class WifiPage(QWidget):
         row.addWidget(self.btn_copy)
         row.addStretch(1)
         self.lbl_pw = QLabel(" ")
-        self.lbl_pw.setStyleSheet("color:#8a93a0;")
+        self.lbl_pw.setProperty("hint", True)
         row.addWidget(self.lbl_pw)
         lay.addLayout(row)
 

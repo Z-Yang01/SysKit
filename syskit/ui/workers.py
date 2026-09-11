@@ -53,13 +53,19 @@ class ComboWorker(QThread):
         self.action_ids = action_ids
 
     def run(self):
-        for aid in self.action_ids:
-            act = repairs.get_action(aid)
-            if not act:
-                continue
-            result = act.execute({})
-            self.item_done.emit((aid, result))
-        self.all_done.emit()
+        try:
+            for aid in self.action_ids:
+                act = repairs.get_action(aid)
+                if not act:
+                    continue
+                result = act.execute({})
+                self.item_done.emit((aid, result))
+        except Exception:
+            # execute() 本身已兜底，这里再保一层：无论如何都要发 all_done，
+            # 否则调用方的 _combo_worker 永不复位、界面永久忙碌。
+            LOGGER.error("组合修复线程异常:\n{}", traceback.format_exc())
+        finally:
+            self.all_done.emit()
 
 
 class SnapshotWorker(QThread):
@@ -67,7 +73,14 @@ class SnapshotWorker(QThread):
 
     def run(self):
         from ..snapshot import take
-        self.got.emit(take())
+        try:
+            snap = take()
+        except Exception:
+            # 快照失败也必须回报，否则 _snap_worker 永不复位、「刷新网卡」永久失效
+            LOGGER.error("网卡快照线程异常:\n{}", traceback.format_exc())
+            from ..snapshot import Snapshot
+            snap = Snapshot()
+        self.got.emit(snap)
 
 
 def action_summary(aid: str):

@@ -238,3 +238,72 @@
 
 - **完成**：635 测试全绿；总覆盖 80%→96%；修复 1 个真实持久化 Bug + 1 个日期炸弹测试；新增 100 用例。
 - **红线遵守**：零真实 DNS/网卡/注册表/服务/socket 操作（哨兵验证）；未触真实 %APPDATA%；未 push。
+
+---
+
+## 2026-09-11 会话（检查 bug / 优化代码 / 美化界面·项目五）
+
+任务：全面检查 bug、优化代码、美化软件界面；保持全量 pytest 全绿。
+
+### 逻辑层 Bug 修复（8 处）
+
+1. `vpn.py vpn_checklist()`：删除恒真死分支 `if tunnels or True:`，按「有无隧道」分流
+   proxy owner_hint（有隧道→客户端正常模式提示；无隧道→残留代理提示）。
+2. `icmp.py`：探测载荷 `b"NetToolPingData"` → `b"SysKitPingData"`（旧产品名残留）。
+3. `proxy.py disable_proxy()`：原先只置 `ProxyEnable=0`、**不清 PAC(AutoConfigURL)** →
+   诊断 `proxy_off` 建议对 PAC 脚本无效。现一并清 PAC，且写前用 `_backup_values()` 备份旧值。
+4. `winregread.py values()/subkeys()`：异常处理从 `OSError` 放宽为 `Exception`，`Close()` 走安全
+   包裹 → 未知 hive(KeyError)/坏句柄(TypeError) 不再崩调用方。
+5. `dnsquery.py`：新增 `_encode_qname()`，按 IDNA 编码后的**字节数**写 QNAME 标签长度前缀
+   → 修复非 ASCII 域名（如 `例子.com`）QNAME 畸形。
+6. `settings.py save()`：改临时文件 + 原子 `os.replace`，先更新 `_cache` 再落盘，失败时上抛
+   `OSError` 并清理临时文件 → 不再留半截 JSON / 静默吞错。
+7. `netcheck.py chk_persistent_route()`：删除恒不可达的死 `else` 分支。
+8. `telemetry.py` top 进程遍历：`p.info["name"]` → `(p.info or {}).get("name")` + 兜底
+   `except Exception` → 单个坏进程不再终止整轮采样。
+
+### UI 层 Bug 修复（3 处）
+
+9. `ui/workers.py`：`ComboWorker.run()` / `SnapshotWorker.run()` 包 try/finally，异常时仍发
+   `all_done`/`got` → 不再永久卡忙态。
+10. `ui/toolbox_page.py`：`_LanScanWorker.run()` 同法保证 `done` 必发；`_kill_selected()` /
+    `_apply_filter()` 对空单元格加空值防护。
+11. `ui/main_window.py`：`_repair_done()` 修复后刷新代理状态标签（原为陈旧值）；
+    `_save_settings()` 包裹 `autostart.enable/disable` 与 `settings.save`，失败给用户提示而非崩溃。
+
+### 界面美化
+
+- **`ui/theme.py`**：QSS 大改——菜单/分隔线、按钮 focus 态、splitter 手柄、tooltip 块、侧栏；
+  新增语义 `badge`/`badgeWarn` 与 `brandCard`/`statCard`；新增 helper `sub_color()` /
+  `add_shadow(widget,...)` / `app_logo_pixmap(size)`（纯代码绘制蓝色圆角 S logo，规避 onefile
+  资源打包问题）；新增 `accent_soft`/`ok_soft`/`warn_soft`/`err_soft`/`brand_sub` 调色。
+- **`ui/main_window.py`**：新增 `_build_brand()` 品牌头卡（logo + "SysKit / 系统工具箱" + 版本徽章）
+  置于左列；大状态标签加阴影；多处硬编码灰字改 `setProperty("hint", True)` 走主题。
+- **`ui/dashboard_page.py`**：`_stat_card()` 重设计——左侧色条（CARD_ACCENTS）+ 阴影 +
+  `statTitle`/`statValue`；事件/延迟颜色改用 `theme.pal()`。
+- **`system_page`/`disk_page`/`wifi_page`/`toolbox_page`**：硬编码 hint 颜色统一改主题属性。
+
+### 新增工具
+
+- **`tools/ui_preview.py`**（新）：离屏渲染器，mock 全部系统调用与持久化，播种假数据
+  （网卡/诊断/WiFi/磁盘树/端口/剪贴板/模式），导出 13 张页面截图；含 `_norm_out()` 修正
+  Git-Bash `/e/...` 路径（否则误建 `E:\e\...`）。
+
+### 测试
+
+- 新增/扩展：test_vpn(+2)、test_repairs(+2)、test_icmp(+1)、test_toolbox_calc(原 xfail 转正式
+  通过 +2)、test_ui_smoke(+1 异常安全；`_repair_done` 用例改轻量假窗体避免第 7 个 MainWindow)、
+  test_system_logic_units(+4 winregread 健壮性)、test_smoke(+1 原子保存)。
+- **全量：649 passed / 1 skipped**（三次运行两绿一 127；127 为 PySide6 6.11 offscreen 已知退出
+  原生崩溃，发生在用例之后，遵 README 约定重跑即绿）。
+- `conftest.py` 增会话级夹具 `_drain_qt_threads_on_session_end`（gc + wait QThread ≤8s + processEvents）。
+
+### 基线变化
+
+- 635 → **649** 例（+14），仍 1 skip；1 xfail 转正。
+
+### 遗留与下一步
+
+- `tools/ui_preview.py` 产出的 13 张截图位于 `.workbuddy/preview/`（随工作区，未入库）。
+- 退出阶段偶发原生崩溃（约 1/3）仍未根治，可考虑真实线程测试改同步 run 模式。
+- **未 commit / 未 push**。

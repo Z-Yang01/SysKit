@@ -83,9 +83,11 @@ def vpn_checklist(snap=None) -> list:
     # 2) 系统代理
     st = proxy.get_proxy_status()
     if st["enabled"]:
-        owner_hint = ""
-        if tunnels or True:
-            owner_hint = "—— Clash/v2ray 等正常开启时属预期；仅当代理软件已退出仍显示开启才是故障"
+        # 有隧道在用 → 多半是客户端正常模式；无隧道却开着代理 → 更可能是残留，需重点排查
+        if tunnels:
+            owner_hint = "—— 已有隧道网卡在用，属客户端正常模式；仅当代理软件已退出仍显示开启才是故障"
+        else:
+            owner_hint = "—— 未检测到隧道网卡，可能是代理软件残留（已退出但未清理系统代理）"
         steps.append({
             "name": "系统代理",
             "ok": True,

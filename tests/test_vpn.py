@@ -118,3 +118,30 @@ class TestMonitorGuard:
         m._run_ladder(3)
         assert executed == ["flush_dns", "start_nlasvc", "renew_dhcp",
                             "restart_wlan", "toggle_adapter"]
+
+
+class TestProxyOwnerHintBranch:
+    """回归：系统代理项的 owner_hint 须随「是否有隧道网卡」给出不同结论。
+
+    原 vpn.py 里是 `if tunnels or True:` 恒真条件，两条分支永远不会区分。
+    """
+
+    _PROXY_ON = {"enabled": True, "server": "127.0.0.1:7890",
+                 "autoconfig": False, "pac_url": ""}
+
+    def _steps(self, monkeypatch, snap):
+        monkeypatch.setattr(vpn.proxy, "get_proxy_status", lambda: dict(self._PROXY_ON))
+        return vpn.vpn_checklist(snap)
+
+    def test_with_tunnel_expects_client_normal_mode(self, monkeypatch):
+        steps = self._steps(monkeypatch, _snap(tunnels=[_ad("Clash", "Clash TUN Adapter")]))
+        p = next(x for x in steps if x["name"] == "系统代理")
+        assert p["level"] == "warn"
+        assert "隧道网卡在用" in p["detail"]
+        assert "127.0.0.1:7890" in p["detail"]
+
+    def test_without_tunnel_flags_residue(self, monkeypatch):
+        steps = self._steps(monkeypatch, _snap())
+        p = next(x for x in steps if x["name"] == "系统代理")
+        assert "未检测到隧道网卡" in p["detail"]
+        assert "残留" in p["detail"]

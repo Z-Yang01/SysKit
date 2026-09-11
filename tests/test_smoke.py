@@ -61,3 +61,21 @@ def test_qtbot_offscreen(qtbot):
     label.show()
     assert label.isVisible()
     assert os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+
+
+def test_settings_save_atomic_and_tmp_cleanup(monkeypatch):
+    """回归：save 走临时文件 + 原子替换；写失败时清掉半截 tmp，且内存缓存仍生效。"""
+    from syskit import config, settings
+
+    saved = settings.save({"poll_interval_sec": 45})
+    assert saved["poll_interval_sec"] == 45
+    assert not os.path.exists(config.SETTINGS_FILE + ".tmp")
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(settings.os, "replace", _boom)
+    with pytest.raises(OSError):
+        settings.save({"poll_interval_sec": 77})
+    assert not os.path.exists(config.SETTINGS_FILE + ".tmp")   # 半截文件已清理
+    assert settings.load()["poll_interval_sec"] == 77          # 本次改动在内存中仍生效

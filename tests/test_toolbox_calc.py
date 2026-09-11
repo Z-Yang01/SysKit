@@ -341,17 +341,31 @@ def test_query_safe_returns_empty_on_error(fake_dns_socket):
     assert dnsquery.query_safe("www.baidu.com", "223.5.5.5") == []
 
 
-@pytest.mark.xfail(reason="疑似 bug：dnsquery.py:13 非ASCII标签长度前缀用字符数而非IDNA字节数"
-                          "（'例子' len=2，但 encode('idna') 为 11 字节），构造出畸形 QNAME",
-                   strict=True)
 def test_query_idna_label_length_prefix(fake_dns_socket):
-    """正确行为：长度前缀必须等于标签 IDNA 编码后的字节数。"""
+    """回归：长度前缀必须等于标签 IDNA 编码后的字节数（'例子' 2 字符 → 11 字节）。
+
+    原实现用 len(label)（字符数）写长度前缀，中文域名会构造出畸形 QNAME。
+    """
     fake_dns_socket.response = _header(0xABCD) + QUESTION + _answer()
-    dnsquery.query("例子.com", "223.5.5.5")
+    assert dnsquery.query("例子.com", "223.5.5.5") == ["93.184.216.34"]
     (pkt, _), = fake_dns_socket.instances[-1].sent_to
     enc = "例子".encode("idna")                      # b'xn--fsqu00a'（11 字节）
-    assert pkt[12:12 + 1 + len(enc) + 4] == \
-        bytes([len(enc)]) + enc + b"\x03com\x00"
+    assert enc == b"xn--fsqu00a"
+    assert pkt[12:] == bytes([len(enc)]) + enc + b"\x03com\x00" + b"\x00\x01\x00\x01"
+
+
+def test_encode_qname_ascii_matches_legacy_format():
+    """回归：纯 ASCII 域名编码结果与旧实现逐字节一致（不改变既有行为）。"""
+    assert dnsquery._encode_qname("www.baidu.com") == b"\x03www\x05baidu\x03com\x00"
+    assert dnsquery._encode_qname("a.b") == b"\x01a\x01b\x00"
+
+
+def test_encode_qname_rejects_illegal_label():
+    from syskit import dnsquery as dq
+    with pytest.raises(ValueError, match="非法 DNS 标签"):
+        dq._encode_qname("")
+    with pytest.raises(ValueError, match="非法 DNS 标签"):
+        dq._encode_qname("x" * 64 + ".com")          # 单标签超过 63 字节
 
 
 # ---------------- dnsquery.resolve_system（mock getaddrinfo，不出网） ----------------

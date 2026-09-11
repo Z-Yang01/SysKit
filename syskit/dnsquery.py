@@ -6,13 +6,27 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 
+def _encode_qname(host: str) -> bytes:
+    """按 DNS 线格式编码域名。
+
+    长度字节必须等于「编码后的字节数」：中文等非 ASCII 标签经 IDNA 变成
+    xn-- 前缀的 punycode，字节数与字符数不同——用 len(label) 会写出非法报文。
+    """
+    out = bytearray()
+    for label in host.rstrip(".").split("."):
+        enc = label.encode("ascii") if label.isascii() else label.encode("idna")
+        if not enc or len(enc) > 63:
+            raise ValueError(f"非法 DNS 标签: {label!r}")
+        out.append(len(enc))
+        out += enc
+    out.append(0)
+    return bytes(out)
+
+
 def query(host: str, server: str, timeout: float = 3.0, qtype: int = 1) -> list:
     """向指定 DNS 服务器查询 A 记录（qtype=1）或 AAAA（28），返回 IP 列表；失败抛异常。"""
     txid = int.from_bytes(os.urandom(2), "big")
-    qname = b"".join(
-        bytes([len(label)]) + label.encode("idna") if not label.isascii() else bytes([len(label)]) + label.encode()
-        for label in host.split(".")
-    ) + b"\x00"
+    qname = _encode_qname(host)
     packet = struct.pack(">HHHHHH", txid, 0x0100, 1, 0, 0, 0) + qname + struct.pack(">HH", qtype, 1)
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

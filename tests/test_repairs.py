@@ -738,6 +738,60 @@ def test_disable_proxy_oserror_returns_false(monkeypatch):
     assert proxy.disable_proxy() is False
 
 
+def test_disable_proxy_clears_pac_when_present(monkeypatch):
+    """回归：诊断对「PAC 自动代理脚本」给出的建议修复也是 proxy_off，
+    因此 disable_proxy 必须一并清掉 AutoConfigURL，否则点了建议按钮毫无效果。"""
+    from syskit import proxy
+    written, deleted = [], []
+
+    class _K:
+        def Close(self):
+            pass
+
+    class _Wininet:
+        def InternetSetOptionW(self, *a):
+            pass
+
+    monkeypatch.setattr(proxy.winregread, "values", lambda path: {
+        "ProxyEnable": 1, "ProxyServer": "127.0.0.1:7890",
+        "AutoConfigURL": "http://127.0.0.1:7890/pac"})
+    monkeypatch.setattr(winreg, "OpenKey", lambda *a, **k: _K())
+    monkeypatch.setattr(winreg, "SetValueEx",
+                        lambda key, name, res, typ, data: written.append((name, data)))
+    monkeypatch.setattr(winreg, "DeleteValue", lambda key, name: deleted.append(name))
+    monkeypatch.setattr(proxy.ctypes, "windll", type("W", (), {"wininet": _Wininet()})())
+
+    assert proxy.disable_proxy() is True
+    assert ("ProxyEnable", 0) in written
+    assert deleted == ["AutoConfigURL"]
+    # 关闭前原值已备份到隔离的备份目录，便于人工还原
+    assert any(p.name == "proxy_backup.json" for p in Path(config.BACKUP_DIR).rglob("*"))
+
+
+def test_disable_proxy_without_pac_does_not_delete(monkeypatch):
+    """未配置 PAC 时不应触碰 AutoConfigURL（避免多余写操作）。"""
+    from syskit import proxy
+    deleted = []
+
+    class _K:
+        def Close(self):
+            pass
+
+    class _Wininet:
+        def InternetSetOptionW(self, *a):
+            pass
+
+    monkeypatch.setattr(proxy.winregread, "values",
+                        lambda path: {"ProxyEnable": 1, "ProxyServer": "127.0.0.1:7890"})
+    monkeypatch.setattr(winreg, "OpenKey", lambda *a, **k: _K())
+    monkeypatch.setattr(winreg, "SetValueEx", lambda *a, **k: None)
+    monkeypatch.setattr(winreg, "DeleteValue", lambda key, name: deleted.append(name))
+    monkeypatch.setattr(proxy.ctypes, "windll", type("W", (), {"wininet": _Wininet()})())
+
+    assert proxy.disable_proxy() is True
+    assert deleted == []
+
+
 # ---------------- MAC 随机化（改 XML 文件，全程在 tmp） ----------------
 
 def _write_profile_xml(tmp_path, name="MyWiFi", randomization=None):

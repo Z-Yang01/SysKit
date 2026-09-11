@@ -85,6 +85,7 @@ class TestPing:
         # 目标 IP 已转网络序 32 位整数
         assert sent["dest"] == struct.unpack("<I", socket.inet_aton("192.168.1.1"))[0]
         assert sent["payload"] == icmp._PAYLOAD
+        assert sent["payload"].startswith(b"SysKit")        # 品牌标识（曾残留旧名 NetTool）
         assert sent["timeout"] == 1500
 
     def test_reply_buffer_has_error_headroom(self, monkeypatch):

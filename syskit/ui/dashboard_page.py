@@ -6,25 +6,49 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QVBoxLayout, QWidget)
 
+from . import theme
 from .charts import LineChart, human_bytes
 
 STATE_TEXT = {"ok": "恢复在线", "no_net": "连接中断", "ncsi_false": "NCSI 误报",
               "offline": "无网络连接", "no_internet": "外网不可达"}
 
+# 每张统计卡的强调色（左侧色条），让五张卡一眼可区分
+CARD_ACCENTS = {
+    "网关延迟": "#3576e0", "公网延迟": "#8e5ce6", "↓ 下载速率": "#2e9e44",
+    "↑ 上传速率": "#ef6c00", "今日流量 ↓/↑": "#00838f",
+}
+
 
 def _stat_card(title):
+    """统计卡：左侧强调色条 + 标题 + 大字数值（投影由 theme.add_shadow 提供）。"""
     frame = QFrame()
     frame.setObjectName("statCard")
-    lay = QVBoxLayout(frame)
-    lay.setContentsMargins(12, 8, 12, 10)
+    outer = QHBoxLayout(frame)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(0)
+
+    strip = QFrame()
+    strip.setFixedWidth(4)
+    accent = CARD_ACCENTS.get(title, "#3576e0")
+    strip.setStyleSheet(
+        f"background:{accent}; border:none;"
+        "border-top-left-radius:11px; border-bottom-left-radius:11px;")
+    outer.addWidget(strip)
+
+    inner = QVBoxLayout()
+    inner.setContentsMargins(12, 10, 12, 12)
+    inner.setSpacing(2)
     t = QLabel(title)
-    t.setStyleSheet("color:#8a93a0; font-size:9pt; border:none; background:transparent;")
+    t.setObjectName("statTitle")
     v = QLabel("—")
-    v.setFont(QFont("Microsoft YaHei UI", 13, QFont.Bold))
-    v.setStyleSheet("border:none; background:transparent;")
-    lay.addWidget(t)
-    lay.addWidget(v)
+    v.setFont(QFont("Microsoft YaHei UI", 15, QFont.Bold))
+    v.setObjectName("statValue")
+    inner.addWidget(t)
+    inner.addWidget(v)
+    outer.addLayout(inner, 1)
+
     frame.value_label = v
+    theme.add_shadow(frame, blur=18, dy=3, alpha=30)
     return frame
 
 
@@ -76,8 +100,9 @@ class DashboardPage(QWidget):
 
     def reload_events(self):
         self.list_events.clear()
+        p = theme.pal()
         for ev in self._eventstore.recent(30):
-            color = {"ok": "#2e9e44"}.get(ev["state"], "#c62828")
+            color = p["ok"] if ev["state"] == "ok" else p["err"]
             text = f"{ev['ts']}　{STATE_TEXT.get(ev['state'], ev['state'])}"
             if ev.get("detail"):
                 text += f"　— {ev['detail']}"
@@ -102,13 +127,14 @@ class DashboardPage(QWidget):
 
     @staticmethod
     def _set_lat(card, ms, target):
+        p = theme.pal()
         if ms is None:
-            card.value_label.setText(f"超时/丢包")
+            card.value_label.setText("超时/丢包")
             card.value_label.setStyleSheet(
-                "color:#c62828; border:none; background:transparent;")
+                f"color:{p['err']}; border:none; background:transparent;")
         else:
             card.value_label.setText(f"{ms:.0f} ms")
-            color = "#2e9e44" if ms < 60 else "#ef6c00" if ms < 150 else "#c62828"
+            color = p["ok"] if ms < 60 else p["warn"] if ms < 150 else p["err"]
             card.value_label.setStyleSheet(
                 f"color:{color}; border:none; background:transparent;")
         card.setToolTip(target)

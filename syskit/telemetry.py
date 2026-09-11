@@ -137,10 +137,13 @@ class TelemetryWorker(QThread):
                 if cpu < 0.5:
                     continue
                 mem = cached.memory_info().rss
-                procs.append({"pid": pid, "name": p.info["name"] or str(pid),
-                              "cpu": cpu, "mem": mem})
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                name = (p.info or {}).get("name") or str(pid)
+                procs.append({"pid": pid, "name": name, "cpu": cpu, "mem": mem})
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 self._procs.pop(getattr(p, "pid", -1), None)
+                continue
+            except Exception:
+                # 单个进程信息读取异常不应中断整轮采样
                 continue
         procs.sort(key=lambda x: x["cpu"], reverse=True)
         return procs[:n]

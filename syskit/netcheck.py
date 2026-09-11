@@ -115,11 +115,10 @@ def chk_persistent_route(snap: Snapshot) -> CheckResult:
         r.status = FAIL
         r.detail = f"存在持久默认路由 → {gws}。连上同网段 WiFi 时它会以更低跃点抢占全部流量，若该网关不可达则流量黑洞（热点/USB 不受影响）"
         r.fix_ids = ["del_persistent_route"]
-    elif others:
+    else:
+        # 走到这里 others 必非空（空表已在函数开头 return），故只需一个分支
         r.status = WARN
         r.detail = "存在非默认持久路由: " + ", ".join(f"{p['dest']}→{p['nextHop']}" for p in others[:4])
-    else:
-        r.detail = "持久路由: " + ", ".join(f"{p['dest']}→{p['nextHop']}" for p in others[:4])
     return r
 
 
