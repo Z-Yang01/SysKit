@@ -87,4 +87,5 @@ DEFAULTS = {
     "clip_process_blacklist": "keepass,bitwarden,1password,enpass",  # 前台为这些进程时不记录剪贴板
     "clip_sensitive_ttl": 25,          # 敏感复制在剪贴板中的存活秒数（0=不清空）
     "clip_capture_images": True,       # 剪贴板监听是否记录图片
+    "vault_autolock_min": 10,          # 密码库自动锁定分钟数（0=不锁）
 }

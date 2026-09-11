@@ -5,7 +5,7 @@ import time
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
                                QStackedWidget, QSystemTrayIcon, QTableWidget,
@@ -24,6 +24,7 @@ from .dashboard_page import DashboardPage
 from .system_page import SystemPage
 from .toolbox_page import ToolboxPage
 from .tray import TrayHost
+from .vault_page import VaultPage
 from .wifi_page import WifiPage
 from .workers import ComboWorker, DiagnosisWorker, RepairWorker, SnapshotWorker
 
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self.page_repair = self._build_repair_tab()
         self.page_toolbox = ToolboxPage()
         self.page_system = SystemPage()
+        self.page_vault = VaultPage()
         self.page_settings = self._build_settings_tab()
         self.page_logs = self._build_log_tab()
         pages = [("🏠 概览", self.page_status),
@@ -94,6 +96,7 @@ class MainWindow(QMainWindow):
                  ("🔧 修复", self.page_repair),
                  ("⚡ 工具箱", self.page_toolbox),
                  ("🧰 系统助手", self.page_system),
+                 ("🔐 密码库", self.page_vault),
                  ("⚙ 设置", self.page_settings),
                  ("📋 日志", self.page_logs)]
         for w in pages:
@@ -102,9 +105,9 @@ class MainWindow(QMainWindow):
                           ("item", "📈 网络监控", 1), ("item", "📶 WiFi 工具", 2),
                           ("item", "🔍 诊断", 3), ("item", "🔧 修复", 4),
                           ("分组", "工具", None), ("item", "⚡ 工具箱", 5),
-                          ("item", "🧰 系统助手", 6),
-                          ("分组", "其他", None), ("item", "⚙ 设置", 7),
-                          ("item", "📋 日志", 8)]
+                          ("item", "🧰 系统助手", 6), ("item", "🔐 密码库", 7),
+                          ("分组", "其他", None), ("item", "⚙ 设置", 8),
+                          ("item", "📋 日志", 9)]
         self.nav = QListWidget()
         self.nav.setObjectName("sidebar")
         for kind, label, idx in self._nav_defs:
@@ -122,6 +125,7 @@ class MainWindow(QMainWindow):
                 "🔧 修复": "一键组合与单项修复（按风险分级）",
                 "⚡ 工具箱": "测速、局域网、端口/进程、DNS/子网、ping/路由",
                 "🧰 系统助手": "性能、启动项、电池、清理、磁盘、剪贴板、场景模式",
+                "🔐 密码库": "网站/账号两级密码管理，敏感剪贴板防记录",
                 "⚙ 设置": "自动修复策略、外观、开机自启",
                 "📋 日志": "运行日志与错误日志（7 天自动清理）",
             }
@@ -130,10 +134,18 @@ class MainWindow(QMainWindow):
             self.nav.addItem(item)
         self.nav.currentRowChanged.connect(self._nav_changed)
 
+        # 左侧栏：品牌头 + 导航列表（导航行号语义保持不变）
+        left_col = QWidget()
+        left_lay = QVBoxLayout(left_col)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(9)
+        left_lay.addWidget(self._build_brand())
+        left_lay.addWidget(self.nav, 1)
+
         body = QHBoxLayout()
         body.setContentsMargins(10, 10, 10, 4)
         body.setSpacing(10)
-        body.addWidget(self.nav)
+        body.addWidget(left_col)
         body.addWidget(self.stack, 1)
         central = QWidget()
         central.setLayout(body)
@@ -149,6 +161,43 @@ class MainWindow(QMainWindow):
         self.run_diagnosis(quick=True, silent=True)
         if minimized:
             self.hide()
+
+    # ---------------- 品牌头 ----------------
+    def _build_brand(self) -> QWidget:
+        """侧边栏顶部品牌区：代码绘制的标识 + 名称 + 版本徽章。
+
+        宽度对齐导航列表（≤200），保持左栏视觉为一整列。
+        """
+        card = QFrame()
+        card.setObjectName("brandCard")
+        card.setMaximumWidth(200)
+        outer = QHBoxLayout(card)
+        outer.setContentsMargins(12, 10, 12, 10)
+        outer.setSpacing(9)
+
+        logo = QLabel()
+        logo.setPixmap(theme.app_logo_pixmap(34))
+        logo.setFixedSize(34, 34)
+        logo.setToolTip("已以管理员身份运行，可执行全部修复动作" if admin.is_admin()
+                        else "未以管理员运行：诊断可用，修复动作会被拒绝")
+        outer.addWidget(logo, 0, Qt.AlignVCenter)
+
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(1)
+        title = QLabel(config.APP_NAME)
+        title.setObjectName("brandTitle")
+        sub = QLabel("系统工具箱")
+        sub.setObjectName("brandSub")
+        col.addWidget(title)
+        col.addWidget(sub)
+        outer.addLayout(col, 1)
+
+        ver = QLabel(f"v{config.VERSION}")
+        ver.setObjectName("badge" if admin.is_admin() else "badgeWarn")
+        outer.addWidget(ver, 0, Qt.AlignTop)
+        theme.add_shadow(card, blur=18, dy=3, alpha=26)
+        return card
 
     # ---------------- 窗口状态记忆 ----------------
     def _restore_window_state(self):
@@ -238,11 +287,13 @@ class MainWindow(QMainWindow):
         self.lbl_big.setFont(QFont("Microsoft YaHei UI", 14))
         self.lbl_big.setAlignment(Qt.AlignCenter)
         self.lbl_big.setObjectName("card")
+        self.lbl_big.setMinimumHeight(96)
+        theme.add_shadow(self.lbl_big, blur=24, dy=4, alpha=34)
         lay.addWidget(self.lbl_big)
 
         self.lbl_probe = QLabel(" ")
         self.lbl_probe.setObjectName("card")
-        self.lbl_probe.setStyleSheet(f"color:{theme.pal()['sub']};")
+        self.lbl_probe.setProperty("hint", True)
         self.lbl_probe.setAlignment(Qt.AlignCenter)
         self.lbl_probe.setWordWrap(True)
         lay.addWidget(self.lbl_probe)
@@ -418,7 +469,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(panel, 1)
 
         hint = QLabel("双击上方未通过项可执行建议修复；下方的建议按钮作用相同。")
-        hint.setStyleSheet("color:#888;")
+        hint.setProperty("hint", True)
         lay.addWidget(hint)
         return w
 
@@ -704,7 +755,6 @@ class MainWindow(QMainWindow):
         )
         note.setObjectName("hint")
         note.setWordWrap(True)
-        note.setStyleSheet("color:#8a93a0;")
         outer.addWidget(note)
         outer.addStretch(1)
         return w
@@ -722,11 +772,20 @@ class MainWindow(QMainWindow):
             "dns_preset": self.cmb_dns.currentText(),
         }
         if admin.is_admin():
-            if self.chk_start.isChecked() and not autostart.enabled():
-                autostart.enable()
-            elif not self.chk_start.isChecked() and autostart.enabled():
-                autostart.disable()
-        settings.save(patch)
+            try:
+                if self.chk_start.isChecked() and not autostart.enabled():
+                    autostart.enable()
+                elif not self.chk_start.isChecked() and autostart.enabled():
+                    autostart.disable()
+            except Exception:
+                LOGGER.warning("更新开机自启失败", exc_info=True)
+                QMessageBox.warning(self, config.DISPLAY_NAME, "开机自启设置失败（详见日志），其余设置将继续保存。")
+        try:
+            settings.save(patch)
+        except OSError as e:
+            QMessageBox.warning(self, config.DISPLAY_NAME,
+                                f"设置写入失败：{e}\n本次改动在当前运行中仍生效，重启后会丢失。")
+            return
         # 主题即时切换
         if theme.is_dark() != self.chk_dark.isChecked():
             from PySide6.QtWidgets import QApplication
@@ -814,6 +873,11 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self.statusBar().showMessage(f"修复完成：{title}", 6000)
         self._update_mac_state()
+        try:
+            # 修复（尤其 proxy_off）会改系统代理，修复完成后必须重读，否则标签停留在旧值
+            self._refresh_proxy_label()
+        except Exception:
+            LOGGER.warning("刷新代理状态失败", exc_info=True)
         self.run_diagnosis(quick=True, silent=True)
 
     def run_combo(self, key):

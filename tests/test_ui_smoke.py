@@ -890,8 +890,8 @@ def test_main_window_constructs_and_diag_fills_ui(main_win):
     win = main_win
     assert config.DISPLAY_NAME in win.windowTitle()      # 标题可附带版本号
     assert config.VERSION in win.windowTitle()
-    assert win.stack.count() == 9                 # 概览/监控/WiFi/诊断/修复/工具箱/系统/设置/日志
-    assert win.nav.count() == 12                  # 9 个页面项 + 3 个分组标题
+    assert win.stack.count() == 10                # 概览/监控/WiFi/诊断/修复/工具箱/系统/密码库/设置/日志
+    assert win.nav.count() == 13                  # 10 个页面项 + 3 个分组标题
     # 构造时的静默快速诊断已回填 UI
     assert win.lbl_verdict.text() != "尚未诊断"
     assert "204探测:OK" in win.lbl_probe.text()
@@ -927,13 +927,13 @@ def test_main_window_show_switch_all_pages_and_close(main_win):
     win.close()                                   # minimize_to_tray 默认 True → 隐藏而非退出
     QApplication.processEvents()
     assert not win.isVisible()
-    assert win.stack.count() == 9                 # 窗口仍存活（仅隐藏）
+    assert win.stack.count() == 10                # 窗口仍存活（仅隐藏）
 
 
 def test_main_window_minimized_starts_hidden(make_main_window):
     win = make_main_window(minimized=True)
     assert not win.isVisible()
-    assert win.stack.count() == 9
+    assert win.stack.count() == 10
 
 
 def test_main_window_monitor_status_and_telemetry(main_win):
