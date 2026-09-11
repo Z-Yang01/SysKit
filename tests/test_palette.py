@@ -42,6 +42,7 @@ class TestHotkeyParse:
     def test_display_roundtrip(self):
         assert hotkey.hotkey_display("ctrl+alt+k") == "Ctrl+Alt+K"
         assert hotkey.hotkey_display("alt+space") == "Alt+Space"
+        assert hotkey.hotkey_display("Ctrl+F9") == "Ctrl+F9"    # F 键不得显示成字母
         assert hotkey.hotkey_display("bad key") == ""
 
 

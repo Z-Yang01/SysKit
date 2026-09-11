@@ -378,3 +378,14 @@
   `data\config` 与 `data\local`，随目录整体搬迁；卸载保留数据。测试 test_portable.py。
 - **任务栏图标修复**：打包 exe 下设 AUMID 反而令 Windows 找不到快捷方式图标源而回退默认图标
   → 改为仅源码运行设 AUMID；打包 exe 按内嵌 app.ico 正常显示与分组。
+
+### 补充3（同日）：bug 排查（便携/密码库/热键）
+
+- **fix(vault)**：`_connect` 未建父目录——全新便携安装后 data\config 不存在，密码库首次操作报
+  unable to open database file。现自动建目录（回归：嵌套不存在路径 init_db+add_site）。
+- **fix(app)**：新增 `_prepare_data_dirs()`——启动即建数据目录；便携模式首次运行自动把旧
+  %APPDATA% 的 settings/vault/clipboard/traffic/events 迁移到 data\config（不覆盖已有新数据）。
+- **fix(vault UX)**：DPAPI 免密模式手动锁定后，复制密码曾弹"主密码"框（本就无主密码）→
+  `_ensure_unlocked` 对 DPAPI 模式静默重解锁。
+- **fix(hotkey)**：`hotkey_display("Ctrl+F9")` 曾显示成 "Ctrl+x"（F 键未走命名分支）。
+- 相关测试 +6；test_vault/test_portable/test_palette 全绿；ui_preview 通过；已重新打包 exe/zip/setup。

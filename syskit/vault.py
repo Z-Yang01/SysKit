@@ -53,7 +53,9 @@ def _db_path() -> str:
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
+    path = _db_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)   # 便携首启：data\config 尚不存在
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

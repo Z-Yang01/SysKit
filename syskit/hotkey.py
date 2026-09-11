@@ -89,7 +89,10 @@ def hotkey_display(text: str) -> str:
             names.append(name.capitalize())
             break
     else:
-        names.append(chr(vk))
+        if 0x70 <= vk <= 0x87:                  # F1-F24
+            names.append(f"F{vk - 0x70 + 1}")
+        else:
+            names.append(chr(vk))
     return "+".join(names)
 
 

@@ -329,6 +329,11 @@ class VaultPage(QWidget):
         if self.crypto.is_unlocked:
             self._restart_autolock()
             return True
+        # DPAPI 免密模式（未设主密码）：静默重解锁，不弹主密码框
+        if self.crypto.is_provisioned and not self.crypto.has_master_password():
+            if self.crypto.unlock(None):
+                self._refresh_state()
+                return True
         pwd = self._ask_password("解锁密码库")
         if pwd is None:
             return False

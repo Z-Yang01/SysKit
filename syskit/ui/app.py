@@ -28,6 +28,35 @@ def _enable_crash_log():
         return None
 
 
+def _prepare_data_dirs():
+    """启动即建好数据目录；便携模式首次运行时从旧 %APPDATA% 位置迁移历史数据。"""
+    import shutil
+
+    from ..logger import LOGGER
+    try:
+        os.makedirs(config.APPDATA_DIR, exist_ok=True)
+        os.makedirs(config.LOCALAPPDATA_DIR, exist_ok=True)
+        if not getattr(config, "_PORTABLE", ""):
+            return
+        old, new = config._APP_DATA_ROOT, config.APPDATA_DIR
+        if not (os.path.isdir(old) and os.path.isdir(new)) or os.listdir(new):
+            return                         # 非便携 / 无旧数据 / 已有新数据（不覆盖）
+        for name in ("settings.json", "vault.db", "vault.key",
+                     "clipboard.json", "traffic.json", "events.json"):
+            src = os.path.join(old, name)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(new, name))
+        src_files = os.path.join(old, "clipboard_files")
+        if os.path.isdir(src_files):
+            dst_files = os.path.join(new, "clipboard_files")
+            os.makedirs(dst_files, exist_ok=True)
+            for n in os.listdir(src_files):
+                shutil.copy2(os.path.join(src_files, n), os.path.join(dst_files, n))
+        LOGGER.info("便携模式：历史数据已从 {} 迁移至 {}", old, new)
+    except Exception:
+        LOGGER.exception("数据目录准备/迁移失败（不影响启动）")
+
+
 def run_gui():
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "SysKit_SingleInstance_Mutex")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
@@ -54,6 +83,7 @@ def run_gui():
 
     _enable_crash_log()
     _logging.setup(verbose_console=False)
+    _prepare_data_dirs()
 
     def _qt_msg_handler(msg_type, context, message):
         # windowed 打包无 stderr，Qt 默认处理器会 fail-fast(0xc0000409)——接管到日志

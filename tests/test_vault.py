@@ -361,6 +361,28 @@ class TestVaultPage:
         page._add_account()
         assert vault_mod.search_sites("GitHub")[0]["n_accounts"] == before
 
+    def test_dpapi_relock_unlocks_silently(self, qtbot, monkeypatch):
+        """回归：DPAPI 免密模式手动锁定后，_ensure_unlocked 应静默解锁，
+        不得弹主密码输入框（本就无主密码）。"""
+        from syskit.ui.vault_page import VaultPage
+        c = VaultCrypto()
+        c.setup()                                   # DPAPI 模式
+        c.lock()
+        page = VaultPage()
+        qtbot.addWidget(page)
+        page.crypto = c
+        page._refresh_state()
+
+        def _boom(title):
+            monkey_calls.append(title)
+            raise AssertionError("DPAPI 模式不应索要主密码")
+
+        monkey_calls = []
+        monkeypatch.setattr(page, "_ask_password", _boom)
+        assert page._ensure_unlocked() is True
+        assert monkey_calls == []
+        assert page.crypto.is_unlocked
+
     def test_copy_password_is_sensitive(self, qtbot, seeded, monkeypatch):
         from syskit import clipboard as clip_mod
         page = self._page(qtbot)
