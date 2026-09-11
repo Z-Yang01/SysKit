@@ -340,6 +340,32 @@ def seed():
                        {"name": "清理后台", "ok": True, "detail": "已结束 2 个：OneDrive.exe、Steam.exe"}],
                       "进入游戏模式")
 
+    # 密码库
+    from syskit import vault as vault_mod
+    vp = win.page_vault
+    gh = vault_mod.add_site("GitHub", domain="github.com", aliases="gh", tags="代码")
+    aws = vault_mod.add_site("AWS 控制台", domain="aws.amazon.com", tags="云")
+    vault_mod.add_account(gh, "pw-demo", vp.crypto, username="alice", label="工作",
+                          totp_secret="JBSWY3DPEHPK3PXP")
+    vault_mod.add_account(gh, "pw-demo2", vp.crypto, username="bob")
+    vault_mod.add_account(aws, "pw-demo3", vp.crypto, username="root", label="管理员")
+    vp.refresh_sites()
+    for i in range(vp.lst_sites.count()):           # 选中 GitHub 展示账号列表
+        if "GitHub" in vp.lst_sites.item(i).text():
+            vp.lst_sites.setCurrentRow(i)
+            break
+    vp.refresh_accounts()
+
+    # 工具箱 · Hosts 编辑
+    from syskit import hostsed as hostsed_mod
+    hosts_tab = win.page_toolbox.tabs.widget(win.page_toolbox.tabs.count() - 1)
+    hosts_tab._entries = hostsed_mod.parse(
+        "127.0.0.1 localhost\n"
+        "# 10.0.0.5 blocked.example.com\n"
+        "10.0.0.6 db.local    # 数据库\n"
+        "192.168.1.9 nas.home\n")
+    hosts_tab._reload_table()
+
 
 seed()
 _pump(200)
@@ -351,7 +377,7 @@ def shoot(name):
     print("saved", path)
 
 
-PAGES = ["概览", "网络监控", "WiFi工具", "诊断", "修复", "工具箱", "系统助手", "设置", "日志"]
+PAGES = ["概览", "网络监控", "WiFi工具", "诊断", "修复", "工具箱", "系统助手", "密码库", "设置", "日志"]
 for i, label in enumerate(PAGES):
     win.switch_page(i)
     _pump(140)

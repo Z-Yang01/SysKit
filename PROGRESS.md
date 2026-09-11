@@ -307,3 +307,45 @@
 - `tools/ui_preview.py` 产出的 13 张截图位于 `.workbuddy/preview/`（随工作区，未入库）。
 - 退出阶段偶发原生崩溃（约 1/3）仍未根治，可考虑真实线程测试改同步 run 模式。
 - **未 commit / 未 push**。
+
+
+## 2026-09-11 会话·项目六：命令面板 / 剪贴板升级 / 密码库 / Hosts 编辑器
+
+### 交付（4 个里程碑各自 commit，测试全绿后进下一块）
+
+1. **M1 feat(clipboard) 70be1a0**：剪贴板历史升级——条目多格式（文本/图片/文件/HTML，图片 PNG 落盘 md5 去重）、
+   置顶（不被淘汰、防重复入库）、搜索+分类、隐私暂停；敏感内容防护（mark_sensitive 摘要跳过 + 前台进程黑名单）；
+   规则引擎 `cliprules.py`（JSON 格式化 / URL 二维码+打开 / 色块 / 文件路径 / IP+域名 DNS·ping·归属地）；
+   托盘「最近剪贴板」子菜单；UserRole 修复过滤态删错行隐患。
+2. **M2 feat(vault) 1ac7053**：密码库——`vault_crypto.py`（PBKDF2 600k + AES-256-GCM 主密码模式 /
+   DPAPI 免密模式，数据密钥仅解锁后驻留内存）+ `vault.py`（SQLite sites/accounts 两级模型，secrets 密文 BLOB，
+   search_sites/list_accounts/global_search 空格分词直达账号，find_by_domain 为浏览器扩展预留，RFC 6238 TOTP）+
+   密码库页（左右分栏 + DictFilterProxy，双击复制密码走敏感剪贴板 25s 自动清空，添加永不验证/查看需解锁/自动重锁）。
+   新依赖 cryptography。test_ui_smoke 页面断言 9/12 → 10/13。
+3. **M3 feat(palette) 303b1c5**：命令面板——`hotkey.py`（RegisterHotKey + 解析纯函数）、
+   `palette_actions.py`（动作注册表 + fuzzy 子序列评分）、`ui/palette.py`（无边框面板 + HotkeyFilter；
+   动态条目：剪贴板回填 / 密码库直达 / ping·dns·URL 语法）；Ctrl+Alt+K 全局 + Ctrl+K 应用内 + 托盘入口；
+   自定义命令（URL 直开 / 本地命令确认后执行）。
+4. **M4 feat(toolbox) d0ceead**：Hosts 编辑器——`hostsed.py`（parse/serialize 增删改 + 写前备份）
+   + 工具箱第 6 个 Tab（标脏编辑、保存需管理员、path 注入可测）。
+
+### 会话内修复的关键 bug
+
+- **跨文件 QWidget 泄漏 → 确定性退出崩溃**：test_palette 的 _FakeWindow 未交 qtbot 回收，
+  QApplication 先亡导致原生崩溃（此前多次全量 EXIT=127 的真凶之一，非纯环境问题）。
+- **HotkeyFilter 悬空**：过滤器装在 QApplication 上、唯一引用随窗口销毁被 GC → 任何原生事件踩已释放对象。
+  改模块级持活 + quit_app/teardown_global_hotkey 反注册。
+- QUrl 从 QtGui 移到 QtCore（PySide6 导入修正）；QSortFilterProxyModel.invalidateFilter 弃用改 invalidate()；
+  class 体无法读外层局部变量（测试桩改 SimpleNamespace）；int(ctypes 指针) 不支持（过滤器按字节回退解析地址）。
+
+### 基线变化
+
+- 649 → **758** 例（+109：剪贴板 19 + 规则 23 + 密码库 30 + 面板 23 + Hosts 17，扣除改并的旧用例），仍 1 skip。
+- `ui_preview.py` 产出 14 张截图（新增密码库页；离屏缺中文字体渲染为方块属环境限制）。
+
+### 遗留与下一步
+
+- 退出阶段偶发原生崩溃仍存在（约 1/3，位置漂移，全程无失败用例）——与 PySide6 6.11 离屏 + QThread 相关，未根治。
+- 浏览器扩展自动填充：vault.find_by_domain API 边界已留，扩展本体未做。
+- 全局热键修改后需重启生效；TOTP 密钥暂无二维码导入。
+- **本会话 4 个 commit 已提交；未 push**。

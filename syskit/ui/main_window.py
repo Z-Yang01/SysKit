@@ -780,12 +780,45 @@ class MainWindow(QMainWindow):
         self.cmb_dns.addItems(list(config.DNS_PRESETS.keys()))
         self.cmb_dns.setCurrentText(str(s.get("dns_preset", "阿里")))
         form2.addRow("DNS 预设（dns_preset 动作使用）", self.cmb_dns)
+        outer.addWidget(g2)
+
+        g3 = QGroupBox("剪贴板 / 密码库 / 命令面板")
+        form3 = QFormLayout(g3)
+        self.chk_clip_images = QCheckBox("剪贴板历史记录图片（存本地缓存目录）")
+        self.chk_clip_images.setChecked(bool(s.get("clip_capture_images", True)))
+        form3.addRow(self.chk_clip_images)
+
+        self.spin_clip_ttl = QSpinBox()
+        self.spin_clip_ttl.setRange(0, 300)
+        self.spin_clip_ttl.setValue(int(s.get("clip_sensitive_ttl", 25)))
+        self.spin_clip_ttl.setSuffix(" 秒")
+        self.spin_clip_ttl.setToolTip("密码库复制的密码在剪贴板中存活的时间；0=不清空（仍不进历史）")
+        form3.addRow("敏感复制自动清空", self.spin_clip_ttl)
+
+        self.edt_blacklist = QLineEdit(str(s.get("clip_process_blacklist",
+                                                  config.DEFAULTS["clip_process_blacklist"])))
+        self.edt_blacklist.setToolTip("前台进程在名单内时不记录剪贴板（密码管理器等），逗号分隔")
+        form3.addRow("剪贴板不记录进程", self.edt_blacklist)
+
+        self.spin_autolock = QSpinBox()
+        self.spin_autolock.setRange(0, 240)
+        self.spin_autolock.setValue(int(s.get("vault_autolock_min", 10)))
+        self.spin_autolock.setSuffix(" 分钟")
+        self.spin_autolock.setToolTip("密码库解锁后自动重新锁定；0=不自动锁定")
+        form3.addRow("密码库自动锁定", self.spin_autolock)
+
+        self.cmb_hotkey = QComboBox()
+        self.cmb_hotkey.setEditable(True)
+        self.cmb_hotkey.addItems(["Ctrl+Alt+K", "Ctrl+Alt+Space", "Alt+C", "Ctrl+Shift+K", "F9"])
+        self.cmb_hotkey.setCurrentText(str(s.get("palette_hotkey", "Ctrl+Alt+K")))
+        self.cmb_hotkey.setToolTip("命令面板全局热键（重启后生效）")
+        form3.addRow("命令面板热键", self.cmb_hotkey)
+        outer.addWidget(g3)
 
         btn = QPushButton("保存设置")
         btn.setProperty("primary", True)
         btn.clicked.connect(self._save_settings)
-        form2.addRow(btn)
-        outer.addWidget(g2)
+        outer.addWidget(btn)
 
         note = QLabel(
             f"{config.DISPLAY_NAME} v{config.VERSION}　|　"
@@ -810,6 +843,11 @@ class MainWindow(QMainWindow):
             "sound_alert_enabled": self.chk_sound.isChecked(),
             "dark_mode": self.chk_dark.isChecked(),
             "dns_preset": self.cmb_dns.currentText(),
+            "clip_capture_images": self.chk_clip_images.isChecked(),
+            "clip_sensitive_ttl": self.spin_clip_ttl.value(),
+            "clip_process_blacklist": self.edt_blacklist.text().strip(),
+            "vault_autolock_min": self.spin_autolock.value(),
+            "palette_hotkey": self.cmb_hotkey.currentText().strip() or "Ctrl+Alt+K",
         }
         if admin.is_admin():
             try:
