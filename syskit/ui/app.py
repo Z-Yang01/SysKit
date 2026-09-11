@@ -42,6 +42,14 @@ def run_gui():
     from . import theme
     from .. import logger as _logging
 
+    if sys.platform == "win32":
+        # 声明独立的任务栏身份（AppUserModelID）：源码运行时不归入 python.exe 分组，
+        # 任务栏按钮/跳转列表/Alt+Tab 使用应用自己的图标与名称
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(config.APP_NAME)
+        except Exception:
+            pass
+
     _enable_crash_log()
     _logging.setup(verbose_console=False)
 
@@ -59,6 +67,7 @@ def run_gui():
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setWindowIcon(theme.app_icon())     # 标题栏/任务栏/Alt+Tab 统一蓝色 S 标识
     from .. import settings
     theme.apply(app, dark=bool(settings.load().get("dark_mode", False)))
     app.setApplicationName(config.APP_NAME)

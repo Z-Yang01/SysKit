@@ -735,6 +735,15 @@ def test_state_icon_all_states(qtbot):
         assert icon.pixmap(64, 64).width() == 64
 
 
+def test_app_icon_multi_size(qtbot):
+    """应用图标：多尺寸代码绘制非空（窗口接线在下方主窗口构造测试中断言）。"""
+    from syskit.ui import theme
+    icon = theme.app_icon()
+    assert not icon.isNull()
+    for size in (16, 32, 256):
+        assert icon.pixmap(size).width() == size
+
+
 def test_tray_host_state_rate_notify_and_menu(qtbot):
     from syskit.ui.tray import TrayHost
 
@@ -891,6 +900,7 @@ def test_main_window_constructs_and_diag_fills_ui(main_win):
     win = main_win
     assert config.DISPLAY_NAME in win.windowTitle()      # 标题可附带版本号
     assert config.VERSION in win.windowTitle()
+    assert not win.windowIcon().isNull()                 # 标题栏/任务栏图标已接线
     assert win.stack.count() == 10                # 概览/监控/WiFi/诊断/修复/工具箱/系统/密码库/设置/日志
     assert win.nav.count() == 13                  # 10 个页面项 + 3 个分组标题
     # 构造时的静默快速诊断已回填 UI

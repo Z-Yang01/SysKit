@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
     def __init__(self, minimized=False):
         super().__init__()
         self.setWindowTitle(f"{config.DISPLAY_NAME}  v{config.VERSION}")
+        self.setWindowIcon(theme.app_icon())   # 标题栏/任务栏/Alt+Tab 蓝色 S 标识
         self.resize(980, 680)
         self.tray = TrayHost(self)
         self.tray.show()

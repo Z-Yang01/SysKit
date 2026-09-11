@@ -95,6 +95,16 @@ def app_logo_pixmap(size: int = 34):
     return pm
 
 
+def app_icon():
+    """应用图标（窗口标题栏 / 任务栏 / Alt+Tab）：多尺寸代码绘制，与 exe 图标观感一致。"""
+    from PySide6.QtGui import QIcon
+
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        icon.addPixmap(app_logo_pixmap(size))
+    return icon
+
+
 QSS_TEMPLATE = """
 * { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 9pt; color: @text; }
 

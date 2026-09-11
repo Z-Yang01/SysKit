@@ -949,6 +949,9 @@ class _FakeApp:
     def setApplicationName(self, n):
         self.app_name = n
 
+    def setWindowIcon(self, icon):
+        self.window_icon = icon
+
     def setQuitOnLastWindowClosed(self, b):
         self.quit_on_close = b
 

@@ -349,3 +349,14 @@
 - 浏览器扩展自动填充：vault.find_by_domain API 边界已留，扩展本体未做。
 - 全局热键修改后需重启生效；TOTP 密钥暂无二维码导入。
 - **本会话 4 个 commit 已提交；未 push**。
+
+### 补充（同日）：任务栏/窗口图标
+
+- `theme.app_icon()` 多尺寸（16-256）代码绘制图标；`main_window` 构造即 `setWindowIcon`，
+  `app.run_gui` 设 `QApplication.windowIcon` 并注册 `SetCurrentProcessExplicitAppUserModelID`——
+  源码运行时任务栏不再显示 python.exe 默认图标、不再归入 python 分组。
+- 打包 exe 的任务栏图标本就来自 `assets/app.ico`（build.bat 生成），观感一致。
+- 测试：app_icon 多尺寸断言 + 主窗口 icon 接线断言（并入既有构造测试，避免多起一次重型引导）；
+  `_FakeApp` 桩补 `setWindowIcon`。当前代码下全量 759 例分区验证全绿。
+- 观察记录：本日末段 PySide6 离屏偶发 fail-fast 频率显著升高（>1/3，位置漂移、无失败用例、
+  单文件/分区重跑即绿），与环境会话长度正相关，未根治。
