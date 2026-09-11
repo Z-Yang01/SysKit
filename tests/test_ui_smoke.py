@@ -269,6 +269,48 @@ def test_worker_snapshot_signal_chain(monkeypatch):
     assert got and got[0] is fake
 
 
+def test_worker_exception_still_emits_done(monkeypatch):
+    """回归：worker 内部异常也必须发出完成信号。
+
+    否则调用方的 _xxx_worker 永不复位：界面永久忙碌、按钮永久禁用
+    （_LanScanWorker 曾无任何 try/except）。
+    """
+    import psutil
+
+    from syskit import repairs
+    from syskit import snapshot as snap_mod
+    from syskit.ui import toolbox_page as tp
+    from syskit.ui.workers import ComboWorker, SnapshotWorker
+
+    class _Boom:
+        def execute(self, param):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(repairs, "get_action",
+                        lambda aid: _Boom() if aid == "x" else None)
+    cw = ComboWorker(["x"])
+    finished = []
+    cw.all_done.connect(lambda: finished.append(1))
+    cw.run()
+    assert finished == [1]                       # 异常后仍发 all_done
+
+    monkeypatch.setattr(snap_mod, "take",
+                        lambda use_ps=True: (_ for _ in ()).throw(RuntimeError("no ps")))
+    sw = SnapshotWorker()
+    got = []
+    sw.got.connect(got.append)
+    sw.run()
+    assert len(got) == 1 and got[0].ok is False  # 失败也回报空快照
+
+    monkeypatch.setattr(psutil, "net_if_addrs",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    lw = tp._LanScanWorker()
+    out = []
+    lw.done.connect(out.append)
+    lw.run()
+    assert out == [[]]                           # 异常后仍发 done，按钮可复位
+
+
 # ---------------- dashboard_page.py ----------------
 
 
@@ -727,8 +769,12 @@ def test_tray_host_state_rate_notify_and_menu(qtbot):
 
     menu = tray.contextMenu()
     assert isinstance(menu, QMenu)
-    actions = menu.actions()                      # 打开/检测/修复 + 分隔线 + 退出
-    assert len(actions) == 5
+    actions = menu.actions()                      # 打开/检测/修复 + 剪贴板子菜单 + 分隔线 + 退出
+    assert len(actions) == 6
+    clip_menu = actions[3].menu()
+    assert clip_menu is not None and "剪贴板" in actions[3].text()
+    tray._fill_clip_menu(clip_menu)               # 空历史 → 灰色占位
+    assert clip_menu.actions() and not clip_menu.actions()[0].isEnabled()
     actions[1].trigger()
     assert win.diag_calls == [True]
     actions[2].trigger()
@@ -826,6 +872,11 @@ def make_main_window(qtbot, monkeypatch):
         win.tray.hide()
         win.tray.deleteLater()                    # 托盘尽早销毁，不留到进程收尾
         win.hide()
+        win.deleteLater()                         # 在事件循环仍存活时确定性析构窗口
+    QApplication.processEvents()
+    # 主动回收，减少留到解释器退出阶段才析构的 Qt 对象
+    import gc
+    gc.collect()
     QApplication.processEvents()
 
 
@@ -941,3 +992,60 @@ def test_main_window_action_filter_and_save_settings(main_win):
     assert settings_mod.load()["poll_interval_sec"] == win.spin_interval.value()
     assert settings_mod.load()["auto_repair_enabled"] == win.chk_auto.isChecked()
     assert win.stack.currentIndex() == 7
+
+
+def test_repair_done_refreshes_proxy_label(monkeypatch):
+    """回归：修复完成（尤其 proxy_off）后必须重读系统代理状态。
+
+    原实现只在 _toggle_proxy 里同步刷新一次，而修复在后台线程异步执行，
+    刷新发生在真正改动之前 → 标签长期停留在旧值。
+
+    这里用「假 self」直接调用真实方法体：本文件已有 6 个用例各建一个
+    MainWindow，PySide6 6.11 离屏平台在窗口数量继续增加时收尾不稳定，
+    故此用例不建窗口（只验证 _repair_done 的编排逻辑）。
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    from syskit.repairs import RepairResult
+    from syskit.ui.main_window import MainWindow
+
+    monkeypatch.setattr(QMessageBox, "information",
+                        staticmethod(lambda *a, **k: QMessageBox.Ok))
+
+    class _FakeWin:
+        def __init__(self):
+            self._repair_worker = object()
+            self.busy = []
+            self.records = []
+            self.mac_checked = 0
+            self.proxy_refreshed = 0
+            self.status_msgs = []
+            self.diag_calls = []
+
+        def _set_busy(self, busy, text=""):
+            self.busy.append(busy)
+
+        def statusBar(self):
+            return types.SimpleNamespace(showMessage=lambda *a: self.status_msgs.append(a))
+
+        def _add_repair_record(self, aid, result):
+            self.records.append((aid, result.success))
+
+        def _update_mac_state(self):
+            self.mac_checked += 1
+
+        def _refresh_proxy_label(self):
+            self.proxy_refreshed += 1
+
+        def run_diagnosis(self, **kw):
+            self.diag_calls.append(kw)
+
+    obj = _FakeWin()
+    MainWindow._repair_done(obj, ("flush_dns", RepairResult(True, "已刷新 DNS 缓存")))
+
+    assert obj.proxy_refreshed == 1                  # 修复后重读代理状态
+    assert obj._repair_worker is None                # 忙碌标志已复位
+    assert obj.records == [("flush_dns", True)]
+    assert obj.mac_checked == 1
+    assert obj.busy and obj.busy[-1] is False
+    assert obj.diag_calls and obj.diag_calls[0].get("quick") is True

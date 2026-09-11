@@ -83,5 +83,8 @@ DEFAULTS = {
     "sound_alert_enabled": True,
     "dark_mode": False,
     "dns_preset": "阿里",
-    "clipboard_max": 50,               # 剪贴板历史上限条数
+    "clipboard_max": 50,               # 剪贴板历史上限条数（非置顶）
+    "clip_process_blacklist": "keepass,bitwarden,1password,enpass",  # 前台为这些进程时不记录剪贴板
+    "clip_sensitive_ttl": 25,          # 敏感复制在剪贴板中的存活秒数（0=不清空）
+    "clip_capture_images": True,       # 剪贴板监听是否记录图片
 }

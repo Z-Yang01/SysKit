@@ -1,9 +1,10 @@
 """托盘：四色状态图标（QPainter 动态绘制）、右键菜单、气泡通知。"""
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QPainter, QPixmap, QPen
-from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 
+from .. import clipboard as clipboard_mod
 from .. import config
 STATE_COLORS = {
     "ok": QColor("#2e9e44"),
@@ -49,6 +50,8 @@ class TrayHost(QSystemTrayIcon):
         act_quit.triggered.connect(window.quit_app)
         for a in (act_open, act_check, act_fix):
             menu.addAction(a)
+        clip_menu = menu.addMenu("📋 最近剪贴板")
+        clip_menu.aboutToShow.connect(lambda: self._fill_clip_menu(clip_menu))
         menu.addSeparator()
         menu.addAction(act_quit)
         self.setContextMenu(menu)
@@ -58,6 +61,52 @@ class TrayHost(QSystemTrayIcon):
     def _activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
             self.show_window()
+
+    def _fill_clip_menu(self, m):
+        """重建「最近剪贴板」子菜单：最近 5 条，点击回填剪贴板。"""
+        m.clear()
+        try:
+            max_items = int(config.DEFAULTS.get("clipboard_max", 50))
+            from .. import settings as settings_mod
+            max_items = int(settings_mod.load().get("clipboard_max", max_items))
+            hist = clipboard_mod.ClipboardHistory(max_items=max_items)
+            items = hist.items()[:5]
+        except Exception:
+            items = []
+        if not items:
+            empty = QAction("（空）", m)
+            empty.setEnabled(False)
+            m.addAction(empty)
+            return
+        for it in items:
+            text = it.get("text", "")
+            kind = it.get("kind", "text")
+            label = ("🖼 图片条目" if kind == "image" else clipboard_mod.ClipboardHistory.preview(text, 40))
+            payload = it.get("data", "") if kind == "image" else text
+            act = QAction(label, m)
+            act.triggered.connect(lambda checked=False, t=payload, k=kind: self._copy_back(t, k))
+            m.addAction(act)
+
+    def _copy_back(self, text, kind="text"):
+        app = QApplication.instance()
+        if not app or not text:
+            return
+        clip = app.clipboard()
+        if kind == "image":
+            from PySide6.QtGui import QImage
+            from .. import clipboard as cb
+            path = cb.image_path(text)
+            try:
+                img = QImage(path)
+                if not img.isNull():
+                    clip.setImage(img)
+                    self.notify("剪贴板", "已把图片放回剪贴板")
+                    return
+            except Exception:
+                pass
+            return
+        clip.setText(text)
+        self.notify("剪贴板", "已复制到剪贴板")
 
     def show_window(self):
         w = self.window

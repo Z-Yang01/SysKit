@@ -541,15 +541,18 @@ def test_clipboard_reload_rows_preview_and_bad_ts(qtbot):
                        {"ts": "bad", "text": "x" * 200}]
     tab.reload()
     assert tab.tbl.rowCount() == 2
-    assert tab.tbl.item(0, 1).text() == "hello world foo"          # 预览压成单行
+    assert tab.tbl.item(0, 2).text() == "hello world foo"          # 预览压成单行
+    assert tab.tbl.item(0, 1).text() == "📄 文本"                   # 类型列
     assert tab.tbl.item(0, 0).text().count(":") == 2               # 时间格式
-    assert tab.tbl.item(1, 1).text().endswith("…")                 # 长文截断
-    assert tab.tbl.item(1, 1).toolTip().startswith("x")
+    assert tab.tbl.item(1, 2).text().endswith("…")                 # 长文截断
+    assert tab.tbl.item(1, 2).toolTip().startswith("x")
     assert tab.tbl.item(1, 0).text() == "bad"                      # 非法 ts 兜底
     assert "共 2 条" in tab.lbl.text()
 
 
-def test_clipboard_watch_change_and_guards(qtbot):
+def test_clipboard_watch_change_and_guards(qtbot, monkeypatch):
+    from syskit import clipboard as clip_mod
+    monkeypatch.setattr(clip_mod, "should_record_now", lambda *a, **k: True)
     tab = _make_clip_tab(qtbot)
     fake = _FakeClip(tab)
     tab._clip = fake
@@ -625,6 +628,132 @@ def test_clipboard_copy_delete_clear(qtbot, monkeypatch, msgbox_recorder):
     tab._clear_all()                             # 取消 → 不清空
     assert tab.hist.texts() == ["left"]
     assert recorder_kinds(msgbox_recorder).count("question") == 1
+
+
+def test_clipboard_search_filter_and_row_index_mapping(qtbot):
+    tab = _make_clip_tab(qtbot)
+    for t in ("alpha one", "beta two", "gamma ALPHA"):
+        tab.hist.add(t)
+    tab.reload()
+    tab.edt_search.setText("ALPHA")              # 大小写不敏感 → 2 条
+    assert tab.tbl.rowCount() == 2
+    # 过滤态下行号≠历史索引：删第 0 行应命中 gamma（最新），而非行号对应的错误条目
+    tab.tbl.selectRow(0)
+    tab._delete_selected()
+    texts = tab.hist.texts()
+    assert "gamma ALPHA" not in texts and "beta two" in texts
+    assert tab.tbl.rowCount() == 1               # 过滤仍生效
+    tab.edt_search.setText("")
+    assert tab.tbl.rowCount() == 2
+
+
+def test_clipboard_kind_filter(qtbot):
+    tab = _make_clip_tab(qtbot)
+    tab.hist.add("[图片 4×4]", kind="image", data="a.png")
+    tab.hist.add("plain")
+    tab.reload()
+    assert tab.tbl.rowCount() == 2
+    tab.cmb_kind.setCurrentIndex(2)              # 图片
+    assert tab.tbl.rowCount() == 1
+    assert tab.tbl.item(0, 1).text() == "🖼 图片"
+    tab.cmb_kind.setCurrentIndex(0)
+    assert tab.tbl.rowCount() == 2
+
+
+def test_clipboard_pin_protects_from_eviction(qtbot):
+    from syskit.clipboard import ClipboardHistory
+    tab = _make_clip_tab(qtbot)
+    tab.hist = ClipboardHistory(max_items=2)
+    tab.hist.add("keep")
+    tab.hist.add("m1")
+    tab.reload()
+    tab.tbl.selectRow(1)                         # keep（最老）
+    tab._toggle_pin()
+    assert tab.tbl.item(0, 0).text().startswith("📌")
+    assert tab.tbl.item(0, 2).text() == "keep"
+    tab.hist.add("m2")                           # 非置顶未超上限
+    tab.reload()
+    assert [tab.tbl.item(r, 2).text() for r in range(tab.tbl.rowCount())] == \
+        ["keep", "m2", "m1"]
+    tab.hist.add("m3")                           # 非置顶超额 → m1 淘汰，keep 保留
+    tab.reload()
+    assert [tab.tbl.item(r, 2).text() for r in range(tab.tbl.rowCount())] == \
+        ["keep", "m3", "m2"]
+    tab.tbl.selectRow(0)
+    tab._toggle_pin()                            # 取消置顶恢复普通排序
+    assert not tab.tbl.item(0, 0).text().startswith("📌")
+
+
+def test_clipboard_pause_toggles_and_blacklist(qtbot, monkeypatch):
+    from syskit import clipboard as clip_mod
+    monkeypatch.setattr(clip_mod, "should_record_now", lambda *a, **k: True)
+    tab = _make_clip_tab(qtbot)
+    fake = _FakeClip(tab)
+    tab._clip = fake
+
+    tab._toggle_pause()
+    assert not tab.chk_watch.isChecked()
+    assert tab.btn_pause.text() == "恢复监听"
+    fake._text = "while-paused"
+    tab._on_clip_change()                        # 暂停中不记录
+    assert tab.hist.items() == []
+    tab._toggle_pause()
+    assert tab.chk_watch.isChecked()
+    assert tab.btn_pause.text() == "隐私暂停"
+
+    monkeypatch.setattr(clip_mod, "should_record_now", lambda *a, **k: False)
+    fake._text = "from-keepass"
+    tab._on_clip_change()                        # 黑名单来源 → 吞掉不入库
+    assert tab.hist.items() == []
+    monkeypatch.setattr(clip_mod, "should_record_now", lambda *a, **k: True)
+    fake._text = "normal"
+    tab._on_clip_change()
+    assert tab.hist.texts() == ["normal"]
+
+
+def test_clipboard_detail_rules_and_json_action(qtbot):
+    tab = _make_clip_tab(qtbot)
+    tab.hist.add("just words")
+    tab.hist.add('{"a": 1}')                     # 最新在前 → 行 0
+    tab.reload()
+    tab.tbl.selectRow(0)                         # 最新在前 → JSON 条目
+    labels = [tab.rules_row.itemAt(i).widget().text()
+              for i in range(tab.rules_row.count())]
+    assert any("格式化 JSON" in x for x in labels)
+    tab.tbl.selectRow(1)                         # 无可识别操作
+    assert tab.rules_row.count() == 0
+    assert "无可识别操作" in tab.lbl_detail.text()
+    # 点击「格式化 JSON」→ 结果写回剪贴板
+    fake = _FakeClip(tab)
+    tab._clip = fake
+    tab.tbl.selectRow(0)
+    tab.rules_row.itemAt(0).widget().click()
+    assert fake.set_calls == ['{\n  "a": 1\n}']
+    assert "已复制" in tab.lbl.text()
+
+
+def test_clipboard_image_preview_and_copy_back(qtbot):
+    from PySide6.QtCore import QBuffer
+    from PySide6.QtGui import QImage
+    from syskit import clipboard as clip_mod
+    tab = _make_clip_tab(qtbot)
+    img = QImage(4, 4, QImage.Format_ARGB32)
+    img.fill(0xFF0000FF)
+    buf = QBuffer()
+    buf.open(QBuffer.WriteOnly)
+    img.save(buf, "PNG")
+    name = clip_mod.save_image_bytes(bytes(buf.data()))
+    assert name.endswith(".png")
+    tab.hist.add("[图片 4×4]", kind="image", data=name)
+    tab.reload()
+    tab.tbl.selectRow(0)
+    assert not tab.lbl_thumb.isHidden()          # 图片条目显示缩略图
+    fake = _FakeClip(tab)
+    fake.images = []
+    fake.setImage = lambda im: fake.images.append(im)
+    tab._clip = fake
+    tab._copy_selected()                         # 图片条目复制 → 放回剪贴板
+    assert len(fake.images) == 1
 
 
 # ---------------- ModesTab ----------------

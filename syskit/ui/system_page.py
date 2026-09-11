@@ -6,16 +6,17 @@ import tempfile
 import time
 
 import psutil
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QClipboard
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-                               QListWidgetItem, QMessageBox, QProgressBar, QPushButton,
-                               QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QBuffer, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QClipboard, QDesktopServices, QPixmap
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+                               QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
+                               QPushButton, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QLineEdit, QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
 from .disk_page import DiskTab
-from .. import admin, clipboard as clipboard_mod, modes, settings, winregread
+from .. import admin, clipboard as clipboard_mod, cliprules, modes, settings, winregread
 from ..logger import LOGGER
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -108,10 +109,11 @@ class StartupTab(QWidget):
     @staticmethod
     def _enum():
         """[(location, name, command, enabled)] location: HKCU-Run / HKLM-Run / 启动文件夹"""
+        import winreg
+
         items = []
         for tag, hive in (("HKCU-Run", winregread._HIVES["HKCU"]),
                           ("HKLM-Run", winregread._HIVES["HKLM"])):
-            import winreg
             try:
                 k = winreg.OpenKey(hive, RUN_KEY, 0, winreg.KEY_READ)
             except OSError:
@@ -237,7 +239,7 @@ class BatteryTab(QWidget):
         self.form.addRow("当前电量", self.lbl_remain)
         lay.addLayout(self.form)
         self.lbl_note = QLabel(" ")
-        self.lbl_note.setStyleSheet("color:#8a93a0;")
+        self.lbl_note.setProperty("hint", True)
         lay.addWidget(self.lbl_note)
         lay.addStretch(1)
         self.refresh()
@@ -361,7 +363,7 @@ class CleanupTab(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         self.lbl_tip = QLabel("白名单式清理，只删除下列安全位置的文件；正在使用的文件会自动跳过。")
-        self.lbl_tip.setStyleSheet("color:#8a93a0;")
+        self.lbl_tip.setProperty("hint", True)
         lay.addWidget(self.lbl_tip)
         self.checks = {}
         for key, title, _g in CLEAN_TARGETS:
@@ -433,8 +435,29 @@ class CleanupTab(QWidget):
         self.scan()
 
 
+KIND_LABELS = {"text": "📄 文本", "image": "🖼 图片", "file": "📁 文件", "html": "🌐 网页"}
+KIND_FILTERS = [("全部", None), ("文本", "text"), ("图片", "image"), ("文件", "file"), ("网页", "html")]
+
+
+class _ClipActionWorker(QThread):
+    """规则动作后台执行：fn(arg) -> 结果描述。无论成败都发 done。"""
+
+    done = Signal(str)
+
+    def __init__(self, fn, arg, parent=None):
+        super().__init__(parent)
+        self._fn, self._arg = fn, arg
+
+    def run(self):
+        try:
+            msg = self._fn(self._arg) or "完成"
+        except Exception as e:
+            msg = f"失败: {e}"
+        self.done.emit(msg)
+
+
 class ClipboardTab(QWidget):
-    """剪贴板历史：监听系统剪贴板文本，列表可复制/删除/清空。"""
+    """剪贴板历史：监听系统剪贴板（文本/图片/文件/HTML），支持搜索/置顶/分类/规则动作。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -443,96 +466,358 @@ class ClipboardTab(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         row = QHBoxLayout()
-        self.chk_watch = QCheckBox("监听剪贴板（自动记录文本）")
+        self.chk_watch = QCheckBox("监听剪贴板")
         self.chk_watch.setChecked(True)
+        self.chk_watch.setToolTip("自动记录复制的文本/图片/文件路径")
+        self.cmb_kind = QComboBox()
+        self.cmb_kind.addItems([name for name, _ in KIND_FILTERS])
+        self.cmb_kind.currentIndexChanged.connect(lambda *_: self.reload())
+        self.edt_search = QLineEdit()
+        self.edt_search.setPlaceholderText("搜索历史…")
+        self.edt_search.setClearButtonEnabled(True)
+        self.edt_search.textChanged.connect(lambda *_: self.reload())
+        self.btn_pause = QPushButton("隐私暂停")
+        self.btn_pause.setToolTip("暂停记录；恢复后也不会补录暂停期间的内容")
+        self.btn_pause.clicked.connect(self._toggle_pause)
         self.btn_copy = QPushButton("复制选中")
         self.btn_copy.clicked.connect(self._copy_selected)
+        self.btn_pin = QPushButton("置顶")
+        self.btn_pin.setToolTip("置顶条目不会被自动淘汰，且文本重复时不再入库")
+        self.btn_pin.clicked.connect(self._toggle_pin)
         self.btn_del = QPushButton("删除选中")
         self.btn_del.clicked.connect(self._delete_selected)
         self.btn_clear = QPushButton("清空历史")
         self.btn_clear.setProperty("danger", True)
         self.btn_clear.clicked.connect(self._clear_all)
         row.addWidget(self.chk_watch)
-        row.addStretch(1)
+        row.addWidget(self.cmb_kind)
+        row.addWidget(self.edt_search, 1)
+        row.addWidget(self.btn_pause)
         row.addWidget(self.btn_copy)
+        row.addWidget(self.btn_pin)
         row.addWidget(self.btn_del)
         row.addWidget(self.btn_clear)
         lay.addLayout(row)
 
-        self.tbl = QTableWidget(0, 2)
-        self.tbl.setHorizontalHeaderLabels(["时间", "内容"])
-        self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl = QTableWidget(0, 3)
+        self.tbl.setHorizontalHeaderLabels(["时间", "类型", "内容"])
+        self.tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl.setAlternatingRowColors(True)
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.itemDoubleClicked.connect(lambda *_: self._copy_selected())
+        self.tbl.itemSelectionChanged.connect(self._show_detail)
         lay.addWidget(self.tbl)
-        self.lbl = QLabel("监听剪贴板后，复制的文本会出现在此列表；双击一行可复制回剪贴板。")
+
+        # 详情区：左侧图片缩略图（仅图片条目），右侧提示与规则动作按钮
+        bottom = QHBoxLayout()
+        self.lbl_thumb = QLabel()
+        self.lbl_thumb.setFixedHeight(96)
+        self.lbl_thumb.hide()
+        bottom.addWidget(self.lbl_thumb)
+        col = QVBoxLayout()
+        self.lbl_detail = QLabel("选中一条记录查看可执行操作")
+        self.lbl_detail.setObjectName("hint")
+        col.addWidget(self.lbl_detail)
+        self.rules_row = QHBoxLayout()
+        col.addLayout(self.rules_row)
+        bottom.addLayout(col, 1)
+        lay.addLayout(bottom)
+
+        self.lbl = QLabel("监听剪贴板后，复制的内容会出现在此列表；双击一行可复制回剪贴板。")
         self.lbl.setObjectName("hint")
-        self.lbl.setStyleSheet("color:#8a93a0;")
         lay.addWidget(self.lbl)
 
         app = QApplication.instance()
         self._clip = app.clipboard() if app else None
         self._last = (self._clip.text() or "") if self._clip else ""
+        self._bg = None
         if self._clip:
             self._clip.dataChanged.connect(self._on_clip_change)
         self.reload()
 
+    # ---------------- 列表 ----------------
+
+    def _filtered_items(self) -> list:
+        kind = KIND_FILTERS[self.cmb_kind.currentIndex()][1]
+        return self.hist.search(self.edt_search.text(), kind)
+
     def reload(self):
-        items = self.hist.items()
+        items = self._filtered_items()
         self.tbl.setRowCount(len(items))
-        for i, it in enumerate(items):
+        for r, it in enumerate(items):
             try:
                 t = time.strftime("%m-%d %H:%M:%S", time.localtime(int(it.get("ts", 0))))
             except Exception:
                 t = str(it.get("ts", ""))
-            self.tbl.setItem(i, 0, QTableWidgetItem(t))
-            preview = clipboard_mod.ClipboardHistory.preview(it.get("text", ""))
-            item = QTableWidgetItem(preview)
+            col0 = QTableWidgetItem(("📌 " if it.get("pinned") else "") + t)
+            col0.setData(Qt.UserRole, int(it.get("idx", -1)))
+            self.tbl.setItem(r, 0, col0)
+            self.tbl.setItem(r, 1, QTableWidgetItem(
+                KIND_LABELS.get(it.get("kind", "text"), it.get("kind", "text"))))
+            item = QTableWidgetItem(clipboard_mod.ClipboardHistory.preview(it.get("text", "")))
             item.setToolTip(it.get("text", "")[:500])
-            self.tbl.setItem(i, 1, item)
+            self.tbl.setItem(r, 2, item)
         self.lbl.setText(f"共 {len(items)} 条　双击行可复制")
 
     def _on_clip_change(self):
         if not self.chk_watch.isChecked():
             return
         try:
-            text = self._clip.text() if self._clip else ""
+            text = self._clip.text() or ""
         except Exception:
             return
-        if not text or text == self._last:
+        if text == self._last:
             return
-        self._last = text
-        if self.hist.add(text):
-            self.reload()
+        # 前台进程黑名单（密码管理器等来源不记录）；当前内容吞掉防止恢复后补录
+        if not clipboard_mod.should_record_now():
+            self._last = text
+            return
+        added = False
+        try:
+            mime = self._clip.mimeData()
+        except Exception:
+            mime = None
+        if mime is not None:
+            try:
+                if mime.hasUrls():
+                    paths = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
+                    if paths:
+                        added = self.hist.add("\n".join(paths), kind="file")
+                if (not added and mime.hasImage()
+                        and settings.load().get("clip_capture_images", True)):
+                    img = self._clip.image()
+                    if img is not None and not img.isNull():
+                        buf = QBuffer()
+                        buf.open(QBuffer.WriteOnly)
+                        img.save(buf, "PNG")
+                        name = clipboard_mod.save_image_bytes(bytes(buf.data()))
+                        added = self.hist.add(f"[图片 {img.width()}×{img.height()}]",
+                                              kind="image", data=name)
+                if not added and mime.hasHtml():
+                    html = mime.html() or ""
+                    if html.strip() and html.strip() != text.strip():
+                        added = self.hist.add(text or "[HTML]", kind="html", data=html[:20000])
+            except Exception:
+                added = False
+        if not added:
+            added = self.hist.add(text)
+        if added:
+            self._after_add()
 
-    def _selected_index(self):
+    def _after_add(self):
+        self._last = self._clip.text() or ""
+        self.reload()
+
+    # ---------------- 选中 / 操作 ----------------
+
+    def _selected_index(self) -> int:
         row = self.tbl.currentRow()
-        return row if 0 <= row < self.tbl.rowCount() else -1
+        if row < 0:
+            return -1
+        item = self.tbl.item(row, 0)
+        data = item.data(Qt.UserRole) if item else None
+        return int(data) if data is not None else -1
+
+    def _selected_item(self):
+        idx = self._selected_index()
+        items = self.hist.items()
+        return items[idx] if 0 <= idx < len(items) else None
 
     def _copy_selected(self):
-        idx = self._selected_index()
-        if idx < 0 or not self._clip:
+        it = self._selected_item()
+        if it is None or not self._clip:
             return
-        items = self.hist.items()
-        if idx < len(items):
-            self._clip.setText(items[idx]["text"])
-            self.lbl.setText("已复制到剪贴板")
+        if it.get("kind") == "image":
+            from PySide6.QtGui import QImage
+            path = clipboard_mod.image_path(it.get("data", ""))
+            if path and os.path.exists(path):
+                img = QImage(path)
+                if not img.isNull():
+                    self._clip.setImage(img)
+                    self.lbl.setText("已把图片放回剪贴板")
+                    return
+        self._clip.setText(it.get("text", ""))
+        self._last = it.get("text", "")
+        self.lbl.setText("已复制到剪贴板")
+
+    def _toggle_pin(self):
+        idx = self._selected_index()
+        if idx >= 0 and self.hist.toggle_pin(idx):
+            self.reload()
+
+    def _toggle_pause(self):
+        if self.chk_watch.isChecked():
+            self.chk_watch.setChecked(False)
+            try:
+                self._last = (self._clip.text() or "") if self._clip else ""
+            except Exception:
+                self._last = ""
+            self.btn_pause.setText("恢复监听")
+            self.lbl_detail.setText("隐私暂停中：不记录新内容")
+        else:
+            self.chk_watch.setChecked(True)
+            self.btn_pause.setText("隐私暂停")
+            self.lbl_detail.setText("已恢复监听")
 
     def _delete_selected(self):
         idx = self._selected_index()
         if idx >= 0 and self.hist.remove(idx):
             self.reload()
+            self._show_detail()
 
     def _clear_all(self):
-        ret = QMessageBox.question(self, "清空剪贴板历史", "确定清空全部历史记录？",
+        ret = QMessageBox.question(self, "清空剪贴板历史", "确定清空全部历史记录？（置顶条目也会删除）",
                                    QMessageBox.Yes | QMessageBox.No)
         if ret == QMessageBox.Yes:
             self.hist.clear()
             self.reload()
+            self._show_detail()
+
+    # ---------------- 规则动作 ----------------
+
+    def _clear_rules(self):
+        while self.rules_row.count():
+            item = self.rules_row.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+    def _show_detail(self):
+        self._clear_rules()
+        self.lbl_thumb.hide()
+        it = self._selected_item()
+        if it is None:
+            self.lbl_detail.setText("选中一条记录查看可执行操作")
+            return
+        if it.get("kind") == "image":
+            path = clipboard_mod.image_path(it.get("data", ""))
+            if path and os.path.exists(path):
+                pix = QPixmap(path)
+                if not pix.isNull():
+                    self.lbl_thumb.setPixmap(pix.scaledToHeight(96, Qt.SmoothTransformation))
+                    self.lbl_thumb.show()
+            self.lbl_detail.setText("图片条目：双击可放回剪贴板")
+            return
+        hits = cliprules.detect(it.get("text", ""))
+        self.lbl_detail.setText("可执行操作（↗ 需联网）：" if hits else "此内容无可识别操作")
+        for hit in hits:
+            btn = QPushButton(hit["label"] + (" ↗" if hit.get("online") else ""))
+            btn.clicked.connect(lambda checked=False, h=dict(hit): self._run_action(h))
+            self.rules_row.addWidget(btn)
+
+    def _run_action(self, hit):
+        aid, arg = hit["id"], hit.get("arg", "")
+        if aid == "json_format":
+            self._set_clipboard_text(arg, "格式化结果已复制到剪贴板")
+        elif aid == "url_qr":
+            self._show_qr_dialog(arg)
+        elif aid == "url_open":
+            QDesktopServices.openUrl(QUrl(arg))
+        elif aid == "color_show":
+            self._show_color_dialog(arg)
+        elif aid == "file_reveal":
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(arg) or arg))
+        elif aid == "file_open":
+            QDesktopServices.openUrl(QUrl.fromLocalFile(arg))
+        elif aid == "domain_dns":
+            self._start_bg(self._dns_lookup, arg)
+        elif aid in ("domain_ping", "ip_ping"):
+            self._start_bg(self._ping_host, arg)
+        elif aid == "ip_geo":
+            self._start_bg(self._ip_geo, arg)
+
+    def _set_clipboard_text(self, text, note):
+        if not self._clip:
+            return
+        self._clip.setText(text)
+        self._last = text
+        self.lbl.setText(note)
+
+    def _start_bg(self, fn, arg):
+        if getattr(self, "_bg", None):
+            return
+        self.lbl_detail.setText("执行中…")
+        self._bg = _ClipActionWorker(fn, arg)
+        self._bg.done.connect(self._bg_done)
+        self._bg.start()
+
+    def _bg_done(self, msg):
+        self._bg = None
+        self.lbl_detail.setText(str(msg))
+
+    @staticmethod
+    def _dns_lookup(host):
+        from .. import dnsquery
+        answers = dnsquery.query(host)
+        return f"{host} → {', '.join(answers) if answers else '无记录'}"
+
+    @staticmethod
+    def _ping_host(host):
+        from .. import icmp
+        ms = icmp.ping(host)
+        return f"{host} 延迟 {ms} ms" if ms is not None else f"{host} ping 不通"
+
+    @staticmethod
+    def _ip_geo(ip):
+        import json as _json
+        from urllib.request import urlopen
+        with urlopen(f"http://ip-api.com/json/{ip}?lang=zh-CN", timeout=5) as r:
+            d = _json.loads(r.read().decode("utf-8", "replace"))
+        if d.get("status") == "success":
+            return f"{ip} · {d.get('country', '')} {d.get('regionName', '')} {d.get('city', '')} {d.get('isp', '')}".strip()
+        return f"{ip} 归属地查询失败"
+
+    def _show_qr_dialog(self, data):
+        try:
+            import io
+            import qrcode
+            img = qrcode.make(data, box_size=8, border=2)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            pix = QPixmap()
+            pix.loadFromData(buf.getvalue(), "PNG")
+        except Exception as e:
+            QMessageBox.warning(self, "SysKit", f"二维码生成失败: {e}")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("二维码")
+        v = QVBoxLayout(dlg)
+        lbl = QLabel()
+        lbl.setPixmap(pix.scaled(280, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        lbl.setAlignment(Qt.AlignCenter)
+        v.addWidget(lbl)
+        tip = QLabel(clipboard_mod.ClipboardHistory.preview(data, 60))
+        tip.setObjectName("hint")
+        tip.setAlignment(Qt.AlignCenter)
+        v.addWidget(tip)
+        btn = QPushButton("保存图片")
+        btn.clicked.connect(lambda: self._save_qr(buf.getvalue()))
+        v.addWidget(btn, 0, Qt.AlignCenter)
+        dlg.exec()
+
+    def _save_qr(self, png_bytes):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "保存二维码", "clip_qr.png", "PNG (*.png)")
+        if path:
+            with open(path, "wb") as f:
+                f.write(png_bytes)
+
+    def _show_color_dialog(self, hexcolor):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"颜色 {hexcolor}")
+        v = QVBoxLayout(dlg)
+        swatch = QLabel()
+        swatch.setFixedHeight(120)
+        swatch.setStyleSheet(f"background:{hexcolor}; border:1px solid #ccc; border-radius:8px;")
+        v.addWidget(swatch)
+        tip = QLabel(hexcolor)
+        tip.setObjectName("hint")
+        tip.setAlignment(Qt.AlignCenter)
+        v.addWidget(tip)
+        dlg.exec()
 
 
 class ModesTab(QWidget):
@@ -590,7 +875,6 @@ class ModesTab(QWidget):
         lg.addLayout(bg)
         tip = QLabel("提示：暂停更新 / 部分电源操作需要管理员权限；可用窗口底部「以管理员重启」后再试。")
         tip.setObjectName("hint")
-        tip.setStyleSheet("color:#8a93a0;")
         lg.addWidget(tip)
         lay.addWidget(grp_g)
 
@@ -604,7 +888,6 @@ class ModesTab(QWidget):
         lay.addWidget(self.txt, 1)
         self.lbl = QLabel("尚未执行模式。点击上方按钮查看逐步结果。")
         self.lbl.setObjectName("hint")
-        self.lbl.setStyleSheet("color:#8a93a0;")
         lay.addWidget(self.lbl)
         self._busy = False
 

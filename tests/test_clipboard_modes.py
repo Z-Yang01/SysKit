@@ -61,6 +61,109 @@ class TestClipboardHistory:
         assert clip_mod.ClipboardHistory.preview("x" * 100, n=10).endswith("…")
         assert len(clip_mod.ClipboardHistory.preview("x" * 100, n=10)) == 10
 
+    # ---------------- 新特性：kind / 置顶 / 搜索 / 敏感 ----------------
+
+    def test_kind_entry_roundtrip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
+        h1 = clip_mod.ClipboardHistory()
+        assert h1.add("C:\\a\\b.txt", kind="file")
+        assert h1.add("[图片 4×4]", kind="image", data="abc.png")
+        h2 = clip_mod.ClipboardHistory()
+        kinds = {it["text"]: it["kind"] for it in h2.items()}
+        assert kinds["C:\\a\\b.txt"] == "file"
+        assert kinds["[图片 4×4]"] == "image"
+        assert [it["data"] for it in h2.items() if it["kind"] == "image"] == ["abc.png"]
+
+    def test_old_format_json_compat(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
+        old = [{"ts": 456, "text": "n2", "kind": "html"}, {"ts": 123, "text": "legacy"}]
+        (tmp_path / "clipboard.json").write_text(json.dumps(old), encoding="utf-8")
+        h = clip_mod.ClipboardHistory()
+        assert h.texts() == ["n2", "legacy"]
+        first = h.items()[0]
+        assert first["kind"] == "html" and first["pinned"] is False
+        assert h.items()[1]["kind"] == "text"
+
+    def test_pin_toggle_resort(self):
+        h = clip_mod.ClipboardHistory()
+        for t in ("a", "b", "c"):
+            h.add(t)
+        for i, it in enumerate(h._items):           # 显式时间戳避免同秒并列
+            it["ts"] = 300 - i                      # c=300, b=299, a=298
+        assert h.texts() == ["c", "b", "a"]
+        assert h.toggle_pin(2)                      # 置顶最老的 a
+        assert [it["pinned"] for it in h.items()] == [True, False, False]
+        assert h.texts() == ["a", "c", "b"]
+        assert h.toggle_pin(0)
+        assert h.texts() == ["c", "b", "a"]
+        assert h.toggle_pin(99) is False
+
+    def test_pinned_not_evicted(self):
+        h = clip_mod.ClipboardHistory(max_items=2)
+        h.add("keep")
+        h.add("m1")
+        h.toggle_pin(1)                             # keep → [keep, m1]
+        h.add("m2")                                 # 非置顶 m1,m2 未超上限
+        assert h.texts() == ["keep", "m2", "m1"]
+        h.add("m3")                                 # 非置顶超额 → 淘汰最老 m1
+        assert h.texts() == ["keep", "m3", "m2"]
+
+    def test_pinned_dup_add_rejected(self):
+        h = clip_mod.ClipboardHistory()
+        h.add("x")
+        h.toggle_pin(0)
+        h.add("y")
+        assert h.add("x") is False                  # 与置顶条目相同 → 不入库
+        assert h.texts() == ["x", "y"]              # 置顶块始终在前
+        # 图片条目：描述相同但 data 不同仍可入库
+        assert h.add("[图片 4×4]", kind="image", data="a.png")
+        assert h.add("[图片 4×4]", kind="image", data="a.png") is False
+        assert h.add("[图片 4×4]", kind="image", data="b.png") is True
+
+    def test_search_keyword_and_kind(self):
+        h = clip_mod.ClipboardHistory()
+        h.add("Alpha one")
+        h.add("beta")
+        h.add("gamma ALPHA", kind="html", data="<i>x</i>")
+        hits = h.search("alpha")
+        assert [it["text"] for it in hits] == ["gamma ALPHA", "Alpha one"]
+        assert hits[1]["idx"] == 2                  # idx 映射原始索引
+        only_html = h.search(None, kind="html")
+        assert [it["text"] for it in only_html] == ["gamma ALPHA"]
+        assert h.search("不存在的词") == []
+
+    def test_sensitive_skip(self, monkeypatch):
+        clip_mod._sensitive.clear()
+        try:
+            clip_mod.mark_sensitive("secret-token", ttl=30)
+            h = clip_mod.ClipboardHistory()
+            assert h.add("secret-token") is False
+            assert h.items() == []
+            assert h.add("other") is True
+            # 过期后不再拦截
+            clip_mod._sensitive[:] = [{"digest": list(clip_mod._sensitive)[0]["digest"],
+                                       "until": 0}]
+            assert h.add("secret-token") is True
+        finally:
+            clip_mod._sensitive.clear()
+
+    def test_should_record_now_blacklist(self, monkeypatch):
+        monkeypatch.setattr(clip_mod, "foreground_process_name",
+                            lambda: "keepass.exe")
+        assert clip_mod.should_record_now(blacklist="keepass, other") is False
+        assert clip_mod.should_record_now(blacklist="") is True
+        monkeypatch.setattr(clip_mod, "foreground_process_name", lambda: "notepad")
+        assert clip_mod.should_record_now(blacklist="KEEPASS.EXE,bitwarden") is True
+
+    def test_save_image_bytes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
+        assert clip_mod.save_image_bytes(b"") == ""
+        name = clip_mod.save_image_bytes(b"\x89PNG-fake")
+        assert name.endswith(".png")
+        assert (tmp_path / "clipboard_files" / name).read_bytes() == b"\x89PNG-fake"
+        assert clip_mod.save_image_bytes(b"\x89PNG-fake") == name    # md5 去重同名
+        assert clip_mod.image_path(name) == str(tmp_path / "clipboard_files" / name)
+
 
 # ---------------- modes helpers ----------------
 
