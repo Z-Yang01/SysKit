@@ -389,3 +389,83 @@
   `_ensure_unlocked` 对 DPAPI 模式静默重解锁。
 - **fix(hotkey)**：`hotkey_display("Ctrl+F9")` 曾显示成 "Ctrl+x"（F 键未走命名分支）。
 - 相关测试 +6；test_vault/test_portable/test_palette 全绿；ui_preview 通过；已重新打包 exe/zip/setup。
+
+---
+
+# 2026-09-11 深夜会话（总控 Agent：覆盖率深补 + 测试基建加固）
+
+### 当前状态
+
+- 分支 `test/pytest-setup`；全量 **882 用例全绿**（2 段式验证均 EXIT=0，1 已知 skip），
+  总覆盖 90% → **96%**（miss 271/7162）。
+- 本轮零业务代码改动；新增 4 个测试文件 116 用例 + 1 个测试基建修复（conftest msgbox_noop）
+  + 1 篇 error 文档。
+
+### 已完成
+
+1. **摸底与 blocker 根治**：
+   - 发现全量跑两处病根：① `test_vault.py::test_add_account_empty_password_rejected`
+     未 mock `QMessageBox.warning` → offscreen 真实模态永久挂起，300s 被 timeout 击杀，
+     强杀 Qt 模态连带原生崩溃（EXIT 127）；② `pytest --cov` 插件模式 + PySide6 原生崩溃
+     （崩点稳定于 palette 首用例，非 cov 方式崩点漂移）。
+   - 修复：conftest.py 增全局 autouse `msgbox_noop`（QMessageBox 五个静态弹窗 → 记录型
+     no-op，需断言弹窗的测试可自行覆盖）；覆盖率测量改用
+     `coverage run -m pytest`（插件模式兼容性问题详见
+     `error/2026-09-11-pytest-cov-pyside6-native-crash.md`）。
+2. **Task S1 vault/palette/tray/hotkey**（子 Agent A，58 用例）：vault_page 67%→**99%**、
+   palette 71%→**100%**、tray 76%→**100%**、hotkey 87%→**100%**。顺带稳定了托盘测试
+   会话收尾的原生崩溃（fixture 内提前 hide+deleteLater+processEvents，连续 5 次 EXIT=0）。
+3. **Task S2 charts/modes/pages**（子 Agent B，58 用例）：charts 71%→**99%**、modes 74%→**100%**、
+   disk_page 81%→**100%**、system_page 87%→**100%**、diskusage 83%→**99%**、proxy→**100%**、
+   settings→**100%**。并把 test_ui_smoke 独有的覆盖路径（PerfTab/BatteryTab/disk_page 渲染链）
+   复制进自己的文件，缓解 ui_smoke 崩溃对指标的影响。
+
+### 测试
+
+- 摸底（修复后）：`coverage run -m pytest --timeout=300 -q` → 766 用例全绿，TOTAL 90%。
+- 收尾（定版，分段式）：
+  - 段1 `coverage run -m pytest tests/ --ignore=tests/test_ui_smoke.py --timeout=300 -q` → EXIT=0；
+  - 段2 `pytest tests/test_ui_smoke.py --timeout=300 -q`（裸跑）→ EXIT=0；
+  - 合计 882 用例全绿（1 skip：已知 IPv6 冻结防护），TOTAL **96%**。
+
+### 已知环境限制（非回归，详见 error 文档）
+
+- `test_ui_smoke.py` 在 coverage 追踪 + 高负载下可复现原生崩溃（真实 QThread DiskScanWorker
+  + qFatal 区间），裸跑稳定；并发跑测试会放大。全量 coverage 验证请用上述两段式。
+- `pytest --cov` 插件模式本机不可用（崩），一律 `coverage run`。
+
+### 疑似 Bug（只记录不修，本轮新增 6 个）
+
+1. vault_page.py 259-260/303-304：列表刷新末尾的"补选中"防御永不可达（_sync_list 已保证）。
+2. tray.py `_copy_back`（96-98）缺 `if not clip: return` 判空（palette 同名方法有），
+   clipboard() 返回 None 时信号槽内 AttributeError。
+3. charts.py:16 与 diskusage.py:130：human_bytes 循环后 TB 兜底 return 不可达（死代码）。
+4. modes.py:224：close_background 对"targets 全为非法 pid"返回 ok=False 但 detail 为
+   "已结束 0 个"，用户无从判断原因（体验）。
+5. ui/disk_page.py:352：删除整批失败 0 项成功时不重扫，与"删除完成后自动重扫"注释语义不符。
+6. tests/test_clipboard_modes.py::test_set_notifications_success monkeypatch 了自身再调用
+   （测试恒真，未测真函数）——本轮已由新测试补上真本体覆盖。
+
+### Coverage（收尾 96%）
+
+低于 90% 仅剩：`ui/workers.py` 40%（QThread worker 区间，coverage 追踪下覆盖即接近原生
+崩溃高危区，刻意保留并记录）、`__init__` 38% / `__main__` 0%（入口桩）、
+`dashboard_page` 85%、`confirm_dialog` 88%。其余全部 ≥96%，约 2/3 模块 100%。
+
+### 下一步
+
+- ui/workers.py 的 QThread 深覆盖建议配合真实进程级隔离方案（如 subprocess 化用例）再评估；
+- 上游跟进 pytest-cov × PySide6 兼容性；dashboard_page/confirm_dialog 补至 ≥90% 可作为小任务。
+
+### Git Commit
+
+- `test: vault/palette/tray/charts/modes/pages 补测 116 例 + msgbox_noop 基建，coverage 90%→96%`（本轮，未 push）
+
+### 晨报（2026-09-11 深夜）
+
+- **完成**：根治 2 个测试基建 blocker（QMessageBox 挂起、pytest-cov 插件崩溃并留档规避方案）；
+  +116 用例全绿（766→882）；总覆盖 90%→96%；记录疑似 bug 6 个。
+- **阻塞**：无（ui_smoke coverage 态崩溃为已知环境限制，已用两段式验证与 error 文档覆盖）。
+- **红线遵守**：零业务代码改动；无真实修复动作/注册表写/网络/剪贴板（哨兵 + mock 全程拦截）；
+  未碰真实 %APPDATA%；未 push。
+

@@ -99,6 +99,41 @@ def block_system_calls(monkeypatch):
 
 # ---------------- 通用测试夹具 ----------------
 
+@pytest.fixture(autouse=True)
+def msgbox_noop(monkeypatch):
+    """QMessageBox 静态弹窗默认替换为记录型 no-op（autouse）。
+
+    offscreen 平台下真实模态弹窗无人点击会永久阻塞（300s 被 pytest-timeout
+    击杀，且强杀 Qt 模态可引发原生崩溃连带整个进程 127 退出）。需要断言
+    弹窗内容的测试可自行覆盖对应静态方法。
+    """
+    try:
+        from PySide6.QtWidgets import QMessageBox
+    except ImportError:
+        yield
+        return
+
+    calls = []
+
+    def _fake(kind, default):
+        def _impl(*args, **kwargs):
+            calls.append((kind, args))
+            return default
+        return staticmethod(_impl)
+
+    monkeypatch.setattr(QMessageBox, "information",
+                        _fake("information", QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "warning",
+                        _fake("warning", QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "critical",
+                        _fake("critical", QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "about",
+                        _fake("about", QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "question",
+                        _fake("question", QMessageBox.StandardButton.Yes))
+    yield calls
+
+
 @pytest.fixture
 def fake_cmd_result():
     """构造 proc.CmdResult 假对象的工厂。"""
