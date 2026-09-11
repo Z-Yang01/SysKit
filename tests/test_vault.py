@@ -314,6 +314,53 @@ class TestVaultPage:
         page.edt_acct.setText("")
         assert page.lst_accts.count() == 2
 
+    def test_add_account_through_dialog(self, qtbot, seeded, monkeypatch):
+        """回归：_add_account 必须把对话框里的密码传给 vault.add_account
+        （曾因 pop 后漏传报 missing positional argument 'password'）。"""
+        from syskit.ui import vault_page as vp_mod
+        page = self._page(qtbot)
+        page.refresh_sites()
+        self._select_site(page, "GitHub")
+
+        real_dialog = vp_mod._AccountDialog
+
+        def fake_dialog(parent=None, edit=False):
+            d = real_dialog(parent, edit=edit)
+            d.edt_username.setText("carol")
+            d.edt_password.setText("pw-carol")
+            d.edt_label.setText("test")
+            monkeypatch.setattr(d, "exec", lambda: 1)    # QDialog.Accepted
+            return d
+
+        monkeypatch.setattr(vp_mod, "_AccountDialog", fake_dialog)
+        page._add_account()
+        gh = vault.search_sites("GitHub")[0]
+        assert gh["n_accounts"] == 3
+        carol = next(a for a in vault.list_accounts(gh["id"]) if a["username"] == "carol")
+        assert carol["label"] == "test"
+        assert vault.get_secret(carol["id"], page.crypto, "password") == "pw-carol"
+
+    def test_add_account_empty_password_rejected(self, qtbot, seeded, monkeypatch):
+        from syskit import vault as vault_mod
+        from syskit.ui import vault_page as vp_mod
+        page = self._page(qtbot)
+        page.refresh_sites()
+        self._select_site(page, "GitHub")
+        before = vault_mod.search_sites("GitHub")[0]["n_accounts"]
+
+        real_dialog = vp_mod._AccountDialog
+
+        def fake_dialog(parent=None, edit=False):
+            d = real_dialog(parent, edit=edit)
+            d.edt_username.setText("no-pw")
+            monkeypatch.setattr(d, "exec", lambda: 1)
+            return d
+
+        monkeypatch.setattr(vp_mod, "_AccountDialog", fake_dialog)
+        monkeypatch.setattr(page, "_ensure_unlocked", lambda: True)
+        page._add_account()
+        assert vault_mod.search_sites("GitHub")[0]["n_accounts"] == before
+
     def test_copy_password_is_sensitive(self, qtbot, seeded, monkeypatch):
         from syskit import clipboard as clip_mod
         page = self._page(qtbot)

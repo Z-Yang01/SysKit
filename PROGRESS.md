@@ -360,3 +360,21 @@
   `_FakeApp` 桩补 `setWindowIcon`。当前代码下全量 759 例分区验证全绿。
 - 观察记录：本日末段 PySide6 离屏偶发 fail-fast 频率显著升高（>1/3，位置漂移、无失败用例、
   单文件/分区重跑即绿），与环境会话长度正相关，未根治。
+
+### 补充2（同日）：安装向导 + 便携数据模式 + 任务栏图标修复
+
+- **fix(vault)**：添加账号报 missing positional argument 'password'——对话框密码 pop 后漏传。
+  已修并补两条回归用例（对话框全流程 / 空密码拒绝）。
+- **build 三连修**（用户 build.bat 出不了 exe 的根因）：
+  1) build.bat 改 `python -m PyInstaller`（--user 安装的 Scripts 不在 PATH，裸 pyinstaller 找不到）；
+  2) build.bat/install.bat 被 LF 化导致 cmd 解析错乱 → 转 CRLF 并加 .gitattributes 钉死；
+  3) 第4步内联 PowerShell 引号在 cmd 下必炸 → 改 tools/package_zip.py。
+- **安装向导**：installer/SysKit.iss（Inno Setup；winget 不可用，从 GitHub releases 装 7.1.0 用户级）
+  下一步式向导：可选安装目录、桌面快捷方式、开机自启（schtasks 最高权限）、卸载信息；
+  `PrivilegesRequiredOverridesAllowed=commandline` 支持免管理员静默装用户目录。
+  build.bat 第5步自动探测 ISCC（6/7 × x86/x64/用户目录），没有则跳过只出绿色版。
+- **便携数据模式**：安装勾选「数据保存在安装目录」→ 向导创建 `<安装目录>\data`，
+  config.py 检测到该标记即把 settings/密码库/剪贴板/日志/备份全部收敛到
+  `data\config` 与 `data\local`，随目录整体搬迁；卸载保留数据。测试 test_portable.py。
+- **任务栏图标修复**：打包 exe 下设 AUMID 反而令 Windows 找不到快捷方式图标源而回退默认图标
+  → 改为仅源码运行设 AUMID；打包 exe 按内嵌 app.ico 正常显示与分组。

@@ -1,33 +1,49 @@
 @echo off
+chcp 65001 >nul
 cd /d %~dp0
 echo ============================================
 echo  SysKit build  (icon - deps - pyinstaller)
 echo ============================================
 
 echo.
-echo [1/4] generate icon...
+echo [1/5] generate icon...
 python tools\make_icon.py || goto :err
 
-echo [2/4] install deps...
+echo [2/5] install deps...
 python -m pip install -r requirements.txt -q || goto :err
 
-echo [3/4] pyinstaller...
-pyinstaller SysKit.spec --noconfirm --clean || goto :err
+echo [3/5] pyinstaller...
+REM 用 python -m 调用：pip --user 安装时 Scripts 目录不在 PATH，裸 pyinstaller 会找不到命令
+python -m PyInstaller SysKit.spec --noconfirm --clean || goto :err
+if not exist dist\SysKit.exe (
+  echo 构建流程结束但未生成 dist\SysKit.exe，请查看上方日志
+  goto :err
+)
 
-echo [4/4] package portable zip...
-if not exist dist mkdir dist
-powershell -NoProfile -Command ^
-  "$v = Select-String -Path 'syskit\config.py' -Pattern 'VERSION\s*=\s*\"([^\"]+)\"' | ForEach-Object { $_.Matches[0].Groups[1].Value };" ^
-  "if (-not $v) { $v = '0.0.0' };" ^
-  "$zip = Join-Path 'dist' ('SysKit-' + $v + '-portable.zip');" ^
-  "if (Test-Path $zip) { Remove-Item $zip -Force };" ^
-  "Compress-Archive -Path 'dist\SysKit.exe' -DestinationPath $zip -Force;" ^
-  "Write-Host ('zip -> ' + $zip)"
+echo [4/5] package portable zip...
+python tools\package_zip.py || goto :err
+
+echo [5/5] build setup wizard (Inno Setup)...
+for /f "delims=" %%v in ('python tools\package_zip.py --print-version') do set "VER=%%v"
+set "ISCC="
+if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if exist "%ProgramFiles%\Inno Setup 7\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 7\ISCC.exe"
+if exist "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LocalAppData%\Programs\Inno Setup 6\ISCC.exe"
+if exist "%LocalAppData%\Programs\Inno Setup 7\ISCC.exe" set "ISCC=%LocalAppData%\Programs\Inno Setup 7\ISCC.exe"
+if not defined ISCC where ISCC >nul 2>nul && set "ISCC=ISCC"
+if defined ISCC (
+  "%ISCC%" /DAPP_VERSION=%VER% installer\SysKit.iss || goto :err
+) else (
+  echo   未找到 Inno Setup，跳过安装向导（仅影响 setup.exe）。
+  echo   安装一次即可: https://jrsoftware.org/isdl.php
+)
 
 echo.
 echo Build OK
 echo   exe : dist\SysKit.exe
-echo   下一步: 运行 install.bat  安装/升级到用户目录并创建快捷方式
+echo   zip : dist\SysKit-%VER%-portable.zip
+if exist dist\SysKit-%VER%-setup.exe echo   setup: dist\SysKit-%VER%-setup.exe  （下一步式安装向导）
 exit /b 0
 :err
 echo Build FAILED

@@ -7,11 +7,34 @@ DISPLAY_NAME = "SysKit 系统工具箱"   # 面向用户的显示名（窗口/�
 VERSION = "1.2.0"            # 显示版本；打包安装脚本可用其生成快捷方式说明
 
 if sys.platform == "win32":
-    APPDATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP_NAME)
-    LOCALAPPDATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), APP_NAME)
+    _APP_DATA_ROOT = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP_NAME)
+    _LOCAL_DATA_ROOT = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), APP_NAME)
 else:
-    APPDATA_DIR = os.path.join(os.path.expanduser("~"), "." + APP_NAME)
-    LOCALAPPDATA_DIR = os.path.join(os.path.expanduser("~"), "." + APP_NAME)
+    _APP_DATA_ROOT = os.path.join(os.path.expanduser("~"), "." + APP_NAME)
+    _LOCAL_DATA_ROOT = _APP_DATA_ROOT
+
+
+def _portable_data_dir() -> str:
+    """便携模式标记：exe 旁存在 data 目录时返回它，否则 ""。
+
+    便携模式下全部数据（settings/密码库/剪贴板/日志/备份）都存在安装目录
+    （安装向导勾选「数据保存在安装目录」时创建该目录），便于整体搬迁/卸载即清。
+    """
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    data = os.path.join(base, "data")
+    return data if os.path.isdir(data) else ""
+
+
+_PORTABLE = _portable_data_dir()
+if _PORTABLE:
+    APPDATA_DIR = os.path.join(_PORTABLE, "config")
+    LOCALAPPDATA_DIR = os.path.join(_PORTABLE, "local")
+else:
+    APPDATA_DIR = _APP_DATA_ROOT
+    LOCALAPPDATA_DIR = _LOCAL_DATA_ROOT
 
 SETTINGS_FILE = os.path.join(APPDATA_DIR, "settings.json")
 LOG_DIR = os.path.join(LOCALAPPDATA_DIR, "logs")

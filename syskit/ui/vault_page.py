@@ -428,11 +428,12 @@ class VaultPage(QWidget):
         if dlg.exec() != QDialog.Accepted:
             return
         f = dlg.fields()
-        if not f.pop("password"):
+        password = f.pop("password")
+        if not password:
             QMessageBox.warning(self, "SysKit", "密码不能为空")
             return
         try:
-            vault.add_account(sid, crypto=self.crypto, **f)
+            vault.add_account(sid, password, crypto=self.crypto, **f)
         except Exception as e:
             QMessageBox.warning(self, "SysKit", f"添加失败: {e}")
             return

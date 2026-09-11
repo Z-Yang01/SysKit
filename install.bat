@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM ============================================================
 REM  SysKit 用户目录安装 / 升级（无需拷贝到 Program Files）
 REM  安装位置: %LOCALAPPDATA%\Programs\SysKit
@@ -26,17 +27,8 @@ if errorlevel 1 (
 )
 
 echo [3/4] 生成快捷方式...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$dest = '%DEST%'; $exe = Join-Path $dest 'SysKit.exe';" ^
-  "$ws = New-Object -ComObject WScript.Shell;" ^
-  "$desk = [Environment]::GetFolderPath('Desktop');" ^
-  "$sm = [Environment]::GetFolderPath('Programs');" ^
-  "$s1 = $ws.CreateShortcut((Join-Path $desk 'SysKit.lnk'));" ^
-  "$s1.TargetPath = $exe; $s1.WorkingDirectory = $dest; $s1.Description = 'SysKit System Toolbox'; $s1.Save();" ^
-  "$menu = Join-Path $sm 'SysKit'; if (-not (Test-Path $menu)) { New-Item -ItemType Directory -Path $menu | Out-Null };" ^
-  "$s2 = $ws.CreateShortcut((Join-Path $menu 'SysKit.lnk'));" ^
-  "$s2.TargetPath = $exe; $s2.WorkingDirectory = $dest; $s2.Save();" ^
-  "Write-Host 'shortcuts ok'"
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\make_shortcuts.ps1
+if errorlevel 1 echo   快捷方式创建失败（不影响安装本体）。
 
 echo [4/4] 完成
 echo.

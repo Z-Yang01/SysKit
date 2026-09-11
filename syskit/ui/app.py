@@ -42,9 +42,11 @@ def run_gui():
     from . import theme
     from .. import logger as _logging
 
-    if sys.platform == "win32":
-        # 声明独立的任务栏身份（AppUserModelID）：源码运行时不归入 python.exe 分组，
-        # 任务栏按钮/跳转列表/Alt+Tab 使用应用自己的图标与名称
+    if sys.platform == "win32" and not getattr(sys, "frozen", False):
+        # 仅源码运行需要：声明独立任务栏身份，避免归入 python.exe 分组。
+        # 打包 exe 已内嵌 app.ico，任务栏按 exe 本体显示图标与分组；
+        # 再设 AUMID 反而会让 Windows 找不到该 AUMID 对应的快捷方式图标源，
+        # 任务栏回退成默认白图标。
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(config.APP_NAME)
         except Exception:

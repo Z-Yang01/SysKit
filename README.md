@@ -41,6 +41,17 @@ Windows 判断「有没有网」依赖 **NCSI 探测**（访问 `www.msftconnect
 
 ## 使用
 
+### 安装（推荐：安装向导）
+
+```bat
+build.bat        :: 产出 dist\SysKit.exe + 便携 zip + SysKit-<版本>-setup.exe
+```
+
+双击 `dist\SysKit-<版本>-setup.exe`，按向导「下一步」完成安装：可选桌面快捷方式、
+开机自启，自动写入卸载信息（控制面板"卸载程序"可见，卸载不删除 %APPDATA% 下的用户数据）。
+需要 Inno Setup 6.3+/7（一次性安装：https://jrsoftware.org/isdl.php ）；未安装时
+build.bat 自动跳过第 5 步，只产出绿色版 exe/zip，此时可用 install.bat 装到用户目录。
+
 ### 图形界面（推荐）
 
 双击 `dist\SysKit.exe`（UAC 点「是」），最小化到托盘后台守护：
