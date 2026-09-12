@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLay
                                QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import admin, autostart, config, monitor, netcheck, repairs, settings
+from .. import admin, autostart, config, hotkey, monitor, netcheck, repairs, settings
 from .. import logger as _logging
 from ..logger import LOGGER
 from ..stores import EventStore
@@ -871,6 +871,13 @@ class MainWindow(QMainWindow):
         return w
 
     def _save_settings(self):
+        # 热键保存前验证：非法输入不得破坏当前已注册的全局热键
+        hotkey_text = self.cmb_hotkey.currentText().strip() or "Ctrl+Alt+K"
+        if hotkey.parse_hotkey(hotkey_text) is None:
+            QMessageBox.warning(self, config.DISPLAY_NAME,
+                                f"热键「{self.cmb_hotkey.currentText()}」无法识别（示例：Ctrl+Alt+K）。\n"
+                                "本次保存不更改全局热键，其余设置将继续保存。")
+            hotkey_text = settings.load().get("palette_hotkey", "Ctrl+Alt+K")
         patch = {
             "auto_repair_enabled": self.chk_auto.isChecked(),
             "poll_interval_sec": self.spin_interval.value(),
@@ -885,7 +892,7 @@ class MainWindow(QMainWindow):
             "clip_sensitive_ttl": self.spin_clip_ttl.value(),
             "clip_process_blacklist": self.edt_blacklist.text().strip(),
             "vault_autolock_min": self.spin_autolock.value(),
-            "palette_hotkey": self.cmb_hotkey.currentText().strip() or "Ctrl+Alt+K",
+            "palette_hotkey": hotkey_text,
         }
         if admin.is_admin():
             try:
@@ -1061,11 +1068,11 @@ class MainWindow(QMainWindow):
                           for a, r in self._combo_results)
         self._set_busy(False)
         if getattr(worker, "cancelled", False):
-            skipped = getattr(worker, "action_ids", []) and \
-                len(worker.action_ids) - len(self._combo_results)
+            planned = len(getattr(worker, "action_ids", []) or [])
+            skipped = max(0, planned - len(self._combo_results))
             QMessageBox.information(
                 self, "组合修复已中止",
-                f"已执行 {ok}/{len(self._combo_results)} 项成功，剩余约 {max(0, skipped)} 项未执行。\n\n"
+                f"已执行 {ok}/{len(self._combo_results)} 项成功，剩余约 {skipped} 项未执行。\n\n"
                 f"注意：已执行的系统操作不会自动撤销。\n\n{lines}")
         else:
             QMessageBox.information(self, "组合修复完成", f"{ok}/{len(self._combo_results)} 项成功：\n\n{lines}")

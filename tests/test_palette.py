@@ -341,6 +341,13 @@ def test_main_window_palette_integration(qtbot, monkeypatch, make_main_window):
     win._save_settings()
     assert (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("P")) in reg_calls
 
+    # 回归：非法热键保存 → 警告且以回退的旧值重注册（全局热键不丢），设置保持旧值
+    reg_calls.clear()
+    win.cmb_hotkey.setCurrentText("不是热键")
+    win._save_settings()
+    assert reg_calls == [(hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("P"))]
+    assert settings.load().get("palette_hotkey") == "Ctrl+Alt+P"
+
     # 清理全局热键与原生过滤器，避免悬空回调
     from syskit.ui.palette import teardown_global_hotkey
     teardown_global_hotkey(win)
