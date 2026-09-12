@@ -39,7 +39,7 @@ class TrayHost(QSystemTrayIcon):
         self._base_tip = config.DISPLAY_NAME
         self._rate_text = ""
         self.setToolTip(config.DISPLAY_NAME)
-        menu = QMenu()
+        self._menu = menu = QMenu()   # 显式保引用：setContextMenu 不取得所有权
         act_open = QAction("打开主界面", menu)
         act_check = QAction("立即检测", menu)
         act_fix = QAction("快速修复", menu)

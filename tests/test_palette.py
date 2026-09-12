@@ -359,7 +359,8 @@ def test_main_window_palette_integration(qtbot, monkeypatch, make_main_window):
     win._save_settings()
     assert settings.load().get("palette_hotkey") == "Ctrl+Alt+P"   # 回退旧值
     assert win.cmb_hotkey.currentText() == "Ctrl+Alt+P"
-    assert len(warn_calls) == 1                                  # 提示已恢复
+    assert len(warn_calls) == 2                                  # 占用提示 + 保存成功
+    assert "占用" in str(warn_calls[0])
 
     # 清理全局热键与原生过滤器，避免悬空回调
     from syskit.ui.palette import teardown_global_hotkey

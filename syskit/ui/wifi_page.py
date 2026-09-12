@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLay
                                QTabWidget, QVBoxLayout, QWidget)
 
 from .charts import BarChart
+from .workers import reap
 from .. import admin, proc
 from ..logger import LOGGER
 
@@ -185,7 +186,7 @@ class WifiPage(QWidget):
         self.btn_scan.setEnabled(False)
         if not auto:
             self.lbl_scan.setText("扫描中…")
-        self._scan_worker = ScanWorker()
+        self._scan_worker = reap(ScanWorker(), self)
         self._scan_worker.done.connect(self._scan_done)
         self._scan_worker.failed.connect(self._scan_failed)
         self._scan_worker.start()
@@ -358,7 +359,7 @@ class WifiPage(QWidget):
             return
         self.btn_pw.setEnabled(False)
         self.lbl_pw.setText("读取中…")
-        self._pw_worker = _PasswordWorker()
+        self._pw_worker = reap(_PasswordWorker(), self)
         self._pw_worker.done.connect(self._pw_done)
         self._pw_worker.start()
 

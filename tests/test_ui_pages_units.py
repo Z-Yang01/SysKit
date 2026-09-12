@@ -672,9 +672,14 @@ def test_tracert_worker_stop_parse_error_and_tab_guards(qtbot, monkeypatch):
     tab.ed_target.clear()
     tab._ping_once()                                  # 空目标早退
     tab.tracert()                                     # 空目标早退
-    tab._tracert = object()
+    class _Running:
+        def stop(self):
+            self.stopped = True
+    tab._tracert = _Running()                          # 运行中 → 再点变中止
     tab.ed_target.setText("223.5.5.5")
-    tab.tracert()                                     # 已有 worker 早退
+    tab.tracert()
+    assert tab._tracert.stopped is True
+    assert tab.btn_route.text() == "路由追踪"
     tab._tracert = None
 
 

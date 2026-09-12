@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 
 from .charts import LineChart, human_bytes
 from .disk_page import DiskTab
+from .workers import reap
 from .. import admin, clipboard as clipboard_mod, cliprules, modes, settings, winregread
 from ..logger import LOGGER
 
@@ -277,7 +278,7 @@ class BatteryTab(QWidget):
         if self._bw is not None:
             return
         self.lbl_note.setText("查询中…（PowerShell CIM，最长 30 秒）")
-        self._bw = _BatteryWorker()
+        self._bw = reap(_BatteryWorker(), self)
         self._bw.got.connect(self._on_got)
         self._bw.start()
 
@@ -323,8 +324,12 @@ class _ScanWorker(QThread):
 
     def run(self):
         sizes = {}
-        for key, _title, getter in CLEAN_TARGETS:
-            sizes[key] = self._size(key, getter)
+        try:
+            for key, _title, getter in CLEAN_TARGETS:
+                sizes[key] = self._size(key, getter)
+        except Exception:
+            from ..logger import LOGGER
+            LOGGER.exception("清理扫描线程异常")   # 无论如何发 done：否则按钮永久禁用
         self.done.emit(sizes)
 
     def _size(self, key, getter):
@@ -362,26 +367,30 @@ class _CleanWorker(QThread):
     def run(self):
         freed = 0
         errors = []
-        for key in self.keys:
-            if key == "recycle":
-                self.progress.emit("清空回收站…")
-                from .. import proc
-                proc.run_ps("Clear-RecycleBin -Force -ErrorAction SilentlyContinue", timeout=60)
-                continue
-            root = next((g() for k, _t, g in CLEAN_TARGETS if k == key), "")
-            self.progress.emit(f"清理 {root} …")
-            if not root or not os.path.isdir(root):
-                continue
-            for path in glob.glob(os.path.join(root, "**", "*"), recursive=True):
-                try:
-                    if key == "thumbcache" and not os.path.basename(path).lower().startswith("thumbcache"):
-                        continue
-                    if os.path.isfile(path):
-                        size = os.path.getsize(path)
-                        os.remove(path)
-                        freed += size
-                except OSError:
-                    errors.append(os.path.basename(path))
+        try:
+            for key in self.keys:
+                if key == "recycle":
+                    self.progress.emit("清空回收站…")
+                    from .. import proc
+                    proc.run_ps("Clear-RecycleBin -Force -ErrorAction SilentlyContinue", timeout=60)
+                    continue
+                root = next((g() for k, _t, g in CLEAN_TARGETS if k == key), "")
+                self.progress.emit(f"清理 {root} …")
+                if not root or not os.path.isdir(root):
+                    continue
+                for path in glob.glob(os.path.join(root, "**", "*"), recursive=True):
+                    try:
+                        if key == "thumbcache" and not os.path.basename(path).lower().startswith("thumbcache"):
+                            continue
+                        if os.path.isfile(path):
+                            size = os.path.getsize(path)
+                            os.remove(path)
+                            freed += size
+                    except OSError:
+                        errors.append(os.path.basename(path))
+        except Exception:
+            from ..logger import LOGGER
+            LOGGER.exception("清理执行线程异常")   # 无论如何发 done：否则按钮永久禁用
         self.done.emit(freed, errors[:10])
 
 
@@ -425,7 +434,7 @@ class CleanupTab(QWidget):
             return
         self.btn_scan.setEnabled(False)
         self.lbl_result.setText("扫描中…")
-        self._scan_worker = _ScanWorker()
+        self._scan_worker = reap(_ScanWorker(), self)
         self._scan_worker.done.connect(self._scan_done)
         self._scan_worker.start()
 
@@ -446,7 +455,7 @@ class CleanupTab(QWidget):
             return
         self.btn_clean.setEnabled(False)
         self.pb.show()
-        self._clean_worker = _CleanWorker(keys)
+        self._clean_worker = reap(_CleanWorker(keys), self)
         self._clean_worker.done.connect(self._clean_done)
         self._clean_worker.progress.connect(lambda s: self.lbl_result.setText(s))
         self._clean_worker.start()
@@ -772,7 +781,7 @@ class ClipboardTab(QWidget):
         if getattr(self, "_bg", None):
             return
         self.lbl_detail.setText("执行中…")
-        self._bg = _ClipActionWorker(fn, arg)
+        self._bg = reap(_ClipActionWorker(fn, arg), self)
         self._bg.done.connect(self._bg_done)
         self._bg.start()
 

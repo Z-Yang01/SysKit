@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel,
 from .. import diskusage
 from ..logger import LOGGER
 from .charts import BarChart, human_bytes
+from .workers import reap
 
 _BAR_COLORS = ["#3576e0", "#8e5ce6", "#2e9e44", "#ef6c00",
                "#c62828", "#00838f", "#6d4c41", "#546e7a"]
@@ -334,7 +335,7 @@ class DiskTab(QWidget):
             return
         self.btn_delete.setEnabled(False)
         self.lbl_result.setText("正在移入回收站…")
-        self._delete_worker = DeleteWorker([p for p, _s in sel])
+        self._delete_worker = reap(DeleteWorker([p for p, _s in sel]), self)
         self._delete_worker.done.connect(self._delete_done)
         self._delete_worker.start()
 

@@ -699,3 +699,23 @@ QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗�
   动作 _bg 纳入 quit_app 等待、Ctrl+Return/Alt+T 限定 WidgetWithChildren 作用域、
   autostart 变更移到 settings.save 之后（消除半完成态）、托盘速率开关即时生效。
 - 测试：+3 新回归（编辑回填/表格掩码单击复制/电池懒加载+异步），全量 **787 例全绿**。
+
+### 补充22（同日）：多子代理查 bug 第二批（并发/生命周期维度）——退出路径系统性重构
+
+子代理发现此前修复只覆盖主窗口 4 个 worker，页面级同族缺陷系统性存在（11 处槽内置
+None 的 GC 窗口、quit_app 清单漏 8 类 worker、wait 超时后置 None 重开窗口、
+BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构：
+
+- **R1 workers.reap(worker, owner) 统一设施**：finished→deleteLater（C++ 对象生命
+  周期与 Python 引用解耦，槽内置 None 从此安全）+ setParent(owner)（挂对象树，
+  退出可沿 findChildren(QThread) 枚举）。应用到全部 15 处构造点
+  （主窗4 + Battery/Scan/Clean/ClipAction + Speed/Lan/Port/Tracert + Wifi×2 + Disk删除）。
+- **R2 quit_app 全树扫尾**：沿 allWidgets×findChildren(QThread) 枚举 isRunning 的
+  线程统一 wait(10s)（telemetry netsh 最坏 8s），替代逐类清单（8 处遗漏不再漏）；
+  TelemetryWorker 挂 parent；主窗口引用照旧复位（deleteLater 托管，超时清引用安全）。
+- **R3** PingRouteTab：hideEvent 停持续 ping 表（icmp 同步卡 UI 1.5s/次）+ showEvent
+  恢复；tracert 运行中再点变「停止追踪」接线 stop()（原 stop() 为死代码）。
+- **R4** CleanupTab _ScanWorker/_CleanWorker 补异常兜底（契约：无论如何发 done）。
+- **R5** 热键"原键被抢"场景：保存时注册失败总是提示（原来同键被抢静默丢失）。
+- **R6** 托盘菜单显式保引用（self._menu，setContextMenu 不取得所有权）。
+- 测试：+1 tracert 中止分支回归；适配占位/守卫 4 处；全量 **790 例全绿**。

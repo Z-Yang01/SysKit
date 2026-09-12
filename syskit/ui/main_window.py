@@ -27,7 +27,7 @@ from .toolbox_page import ToolboxPage
 from .tray import TrayHost
 from .vault_page import VaultPage
 from .wifi_page import WifiPage
-from .workers import ComboWorker, DiagnosisWorker, RepairWorker, SnapshotWorker
+from .workers import ComboWorker, DiagnosisWorker, RepairWorker, SnapshotWorker, reap
 
 STATUS_TEXT = {
     "normal": ("网络正常", "#2e9e44"),
@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         self.mon.start()
 
         self.tele = TelemetryWorker()
+        self.tele.setParent(self)      # 挂对象树：quit_app 全树扫尾可枚举
         self.tele.tick.connect(self._on_telemetry)
         self.tele.start()
 
@@ -448,7 +449,7 @@ class MainWindow(QMainWindow):
     def refresh_adapters(self):
         if self._snap_worker:
             return
-        self._snap_worker = SnapshotWorker()
+        self._snap_worker = reap(SnapshotWorker(), self)
         self._snap_worker.got.connect(self._fill_adapters)
         self._snap_worker.start()
 
@@ -541,7 +542,7 @@ class MainWindow(QMainWindow):
         self._diag_results.clear()      # 防止复制报告出现重复/无界增长
         self._clear_fix_buttons()
         self.lbl_verdict.setText("诊断进行中…")
-        self._diag_worker = DiagnosisWorker(quick=quick)
+        self._diag_worker = reap(DiagnosisWorker(quick=quick), self)
         self._diag_worker.progress.connect(self._diag_progress)
         self._diag_worker.finished_ok.connect(lambda rs: self._diag_done(rs, silent))
         self._diag_worker.start()
@@ -914,13 +915,18 @@ class MainWindow(QMainWindow):
         # 命令面板热键即时重注册；新键被占用时回退旧键（避免全局热键全丢）
         from .palette import setup_global_hotkey, teardown_global_hotkey
         teardown_global_hotkey(self)
-        if not setup_global_hotkey(self) and hotkey_text != previous_hotkey:
-            settings.save({"palette_hotkey": previous_hotkey})
-            self.cmb_hotkey.setCurrentText(previous_hotkey)
-            if setup_global_hotkey(self):
+        if not setup_global_hotkey(self):
+            if hotkey_text != previous_hotkey:      # 新键被占 → 回退旧键
+                settings.save({"palette_hotkey": previous_hotkey})
+                self.cmb_hotkey.setCurrentText(previous_hotkey)
+                setup_global_hotkey(self)
                 QMessageBox.information(
                     self, config.DISPLAY_NAME,
                     f"热键「{hotkey_text}」已被其他程序占用，已恢复为「{previous_hotkey}」。")
+            else:                                    # 原键被抢 → 明确告知（不静默丢）
+                QMessageBox.warning(self, config.DISPLAY_NAME,
+                                    f"热键「{hotkey_text}」注册失败（可能刚被其他程序占用），"
+                                    "全局热键暂不可用；托盘菜单与 Ctrl+K 不受影响。")
         # 主题即时切换
         if theme.is_dark() != self.chk_dark.isChecked():
             from PySide6.QtWidgets import QApplication
@@ -992,7 +998,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, config.DISPLAY_NAME, "有修复正在进行中，请稍候。")
             return
         self._set_busy(True, f"正在执行：{act.title} …")
-        self._repair_worker = RepairWorker(aid, param or {})
+        self._repair_worker = reap(RepairWorker(aid, param or {}), self)
         self._repair_worker.done.connect(self._repair_done)
         self._repair_worker.start()
 
@@ -1055,7 +1061,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QMessageBox.Ok:
             return
         self._set_busy(True, f"正在执行：{combo_title} …")
-        self._combo_worker = ComboWorker(confirmed)
+        self._combo_worker = reap(ComboWorker(confirmed), self)
         self._combo_worker.item_done.connect(self._combo_item)
         self._combo_worker.all_done.connect(self._combo_done)
         self._combo_results = []
@@ -1150,19 +1156,20 @@ class MainWindow(QMainWindow):
             self.mon.join(3000)           # Monitor 已修复 _stop 覆盖，join 可用
         except RuntimeError:
             pass
-        # 页面内嵌 worker（剪贴板规则动作，如归属地查询 ≤5s）：退出前等待
+        # 全树扫尾：沿对象树枚举所有仍存活的工作线程统一等待（reap 已挂 parent，
+        # findChildren 可枚举；telemetry 的 netsh 最坏 8s → 上限 10s），杜绝退出期
+        # "QThread destroyed while running" qFatal 家族
+        from PySide6.QtCore import QThread as _QThread
         from PySide6.QtWidgets import QApplication as _QApp
-        from .system_page import ClipboardTab
-        for w in _QApp.allWidgets():
-            if isinstance(w, ClipboardTab) and getattr(w, "_bg", None):
-                w._bg.wait(3000)
-                w._bg = None
-        # 页面级 worker（诊断/修复/组合/快照）：退出前等待，杜绝退出期 qFatal
+        app_inst = _QApp.instance()
+        if app_inst is not None:
+            for widget in app_inst.allWidgets():
+                for th in widget.findChildren(_QThread):
+                    if th.isRunning():
+                        th.wait(10_000)
+        # 主窗口引用照旧复位（C++ 对象由 reap 的 deleteLater 托管，提前清引用安全）
         for attr in ("_snap_worker", "_diag_worker", "_repair_worker", "_combo_worker"):
-            w = getattr(self, attr, None)
-            if w is not None:
-                w.wait(5000)
-                setattr(self, attr, None)
+            setattr(self, attr, None)
         self.tele.traffic.save_if_dirty()
         self.tray.hide()
         from PySide6.QtWidgets import QApplication

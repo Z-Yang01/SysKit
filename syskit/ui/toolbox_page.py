@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComb
                                QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
+from .workers import reap
 from .. import admin, hostsed, icmp, dnsquery
 from ..logger import LOGGER
 
@@ -119,7 +120,7 @@ class SpeedTestTab(QWidget):
         self.btn_start.setEnabled(False)
         self.pb.show()
         self.lbl_status.setText("测速中…")
-        self._worker = SpeedTestWorker()
+        self._worker = reap(SpeedTestWorker(), self)
         self._worker.progress.connect(self._on_progress)
         self._worker.done.connect(self._on_done)
         self._worker.start()
@@ -222,7 +223,7 @@ class LanTab(QWidget):
         self.btn_scan.setEnabled(False)
         self.lbl_status.setText("扫描中…")
         self.tbl.setRowCount(0)
-        self._worker = _LanScanWorker()
+        self._worker = reap(_LanScanWorker(), self)
         self._worker.done.connect(self._done)
         self._worker.start()
 
@@ -403,6 +404,21 @@ class PingRouteTab(QWidget):
         self._ping_timer = QTimer(self)
         self._ping_timer.timeout.connect(self._ping_once)
         self._tracert = None
+        self._ping_was_active = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._ping_was_active and not self._ping_timer.isActive():
+            self._ping_timer.start(1000)     # 页面重新可见：恢复持续 ping
+            self._ping_was_active = False
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        # 页面不可见时停持续 ping（icmp 同步调用会卡 UI 线程最长 1.5s/次）
+        if self._ping_timer.isActive():
+            self._ping_timer.stop()
+            self._ping_was_active = True
+            self.btn_ping.setText("开始持续 ping")
 
     def toggle_ping(self):
         if self._ping_timer.isActive():
@@ -423,11 +439,16 @@ class PingRouteTab(QWidget):
 
     def tracert(self):
         target = self.ed_target.text().strip()
-        if not target or self._tracert:
+        if self._tracert:                        # 运行中再点 → 中止（stop() 此前是死代码）
+            self._tracert.stop()
+            self.btn_route.setText("路由追踪")
+            return
+        if not target:
             return
         self.tbl_route.setRowCount(0)
-        self.btn_route.setEnabled(False)
-        self._tracert = _TracertWorker(target)
+        self.btn_route.setEnabled(True)
+        self.btn_route.setText("停止追踪")
+        self._tracert = reap(_TracertWorker(target), self)
         self._tracert.line.connect(self._route_line)
         self._tracert.finished.connect(self._tracert_finished)
         self._tracert.start()
@@ -435,7 +456,7 @@ class PingRouteTab(QWidget):
     def _tracert_finished(self):
         # 必须复位，否则二次追踪被 self._tracert 守卫永久挡住
         self._tracert = None
-        self.btn_route.setEnabled(True)
+        self.btn_route.setText("路由追踪")
 
     def _route_line(self, hop):
         row = self.tbl_route.rowCount()
@@ -548,7 +569,7 @@ class PortTab(QWidget):
         if self._worker:
             return
         self.btn_refresh.setEnabled(False)
-        self._worker = _PortWorker()
+        self._worker = reap(_PortWorker(), self)
         self._worker.done.connect(self._done)
         self._worker.start()
 

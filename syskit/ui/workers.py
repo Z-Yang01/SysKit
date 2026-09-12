@@ -8,6 +8,21 @@ from ..repairs import RepairResult
 from ..logger import LOGGER
 
 
+def reap(worker: QThread, owner=None) -> QThread:
+    """统一 worker 生命周期设施：C++ 对象生命周期与 Python 引用解耦。
+
+    - finished → deleteLater：线程真正结束后由事件循环删除 C++ 对象，
+      彻底消除"emit 后收尾微秒窗口内被 GC 析构 → qFatal 0xC0000409"的家族性窗口
+      （槽内 `self._worker = None` 释放 Python 引用从此安全）。
+    - setParent(owner)：挂到宿主控件的对象树，退出时 quit_app 可沿
+      findChildren(QThread) 全树枚举统一等待，不再依赖逐处清单。
+    """
+    worker.finished.connect(worker.deleteLater)
+    if owner is not None:
+        worker.setParent(owner)
+    return worker
+
+
 class DiagnosisWorker(QThread):
     progress = Signal(object)      # CheckResult
     finished_ok = Signal(list)     # list[CheckResult]
