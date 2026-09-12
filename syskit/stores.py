@@ -46,13 +46,18 @@ class TrafficStore:
         if not isinstance(self._data, dict):
             self._data = {}
         self._dirty = False
+        self._today_cache = (None, 0, 0)    # (day, sent, recv)：秒级热路径免锁
 
     def add(self, sent_delta: int, recv_delta: int):
         with _lock:
             day = time.strftime("%Y-%m-%d")
             rec = self._data.setdefault(day, {"sent": 0, "recv": 0})
-            rec["sent"] += max(0, int(sent_delta))
-            rec["recv"] += max(0, int(recv_delta))
+            ds, dr = max(0, int(sent_delta)), max(0, int(recv_delta))
+            if ds == 0 and dr == 0:
+                return                      # 无增量：不标脏（避免空转写盘）
+            rec["sent"] += ds
+            rec["recv"] += dr
+            self._today_cache = (day, rec["sent"], rec["recv"])
             self._dirty = True
             # 只保留 62 天
             if len(self._data) > 62:
@@ -60,9 +65,14 @@ class TrafficStore:
                     del self._data[k]
 
     def today(self):
+        day = time.strftime("%Y-%m-%d")
+        cached_day, sent, recv = self._today_cache
+        if cached_day == day:
+            return sent, recv               # 每秒热路径：无锁快照
         with _lock:
-            rec = self._data.get(time.strftime("%Y-%m-%d"), {"sent": 0, "recv": 0})
-            return rec.get("sent", 0), rec.get("recv", 0)
+            rec = self._data.get(day, {"sent": 0, "recv": 0})
+            self._today_cache = (day, rec.get("sent", 0), rec.get("recv", 0))
+            return self._today_cache[1], self._today_cache[2]
 
     def save_if_dirty(self):
         with _lock:

@@ -16,7 +16,24 @@ QT_HEAVY = [
     "PySide6.QtLocation", "PySide6.QtHelp", "PySide6.QtUiTools", "PySide6.QtOpenGL",
     "PySide6.QtOpenGLWidgets", "PySide6.QtNetworkAuth", "PySide6.QtGraphs",
     "tkinter", "unittest", "pydoc_data",
+    # 体积优化：项目用不到的重型依赖（psutil/qrcode 均不需要 numpy）
+    "numpy", "numpy.libs", "numpy._core", "numpy.random", "numpy.fft", "numpy.linalg",
 ]
+
+# 二进制层排除：软件 OpenGL 备胎、Qt Qml/Quick/Pdf/Network 运行库、PIL 冷门编解码
+BIN_EXCLUDES = {
+    "opengl32sw.dll",
+    "qt6quick.dll", "qt6qml.dll", "qt6qmlmodels.dll", "qt6qmlmeta.dll",
+    "qt6qmlworkerscript.dll", "qt6pdf.dll", "qt6quickwidgets.dll", "qt6network.dll",
+    "_avif.cp310-win_amd64.pyd",
+}
+
+
+def _keep(binaries):
+    """按目标文件名排除 BIN_EXCLUDES（不区分大小写）。"""
+    return [(dest, src, kind) for dest, src, kind in binaries
+            if dest.rsplit("\\", 1)[-1].rsplit("/", 1)[-1].lower() not in BIN_EXCLUDES]
+
 
 a = Analysis(
     ["launcher.py"],
@@ -30,6 +47,8 @@ a = Analysis(
     excludes=QT_HEAVY,
     noarchive=False,
 )
+
+a.binaries = _keep(a.binaries)
 
 pyz = PYZ(a.pure, a.zipped_data)
 

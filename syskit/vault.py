@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at TEXT,
   updated_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_accounts_site ON accounts(site_id, is_favorite DESC);
+CREATE INDEX IF NOT EXISTS idx_sites_name ON sites(name COLLATE NOCASE);
 """
 
 

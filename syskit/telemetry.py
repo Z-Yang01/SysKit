@@ -121,23 +121,39 @@ class TelemetryWorker(QThread):
 
     def _top_procs(self, n=8):
         """Top 进程。复用 psutil.Process 实例：cpu_percent 需要跨调用基线，
-        每次新建对象会导致读数恒为接近 0。"""
-        # 每约 60 秒重建一次进程快照，丢掉已退出的 pid
+        每次新建对象会导致读数恒为接近 0。
+
+        优化：优先走缓存（self._procs），仅当缓存为空（首启/全退出/每 60 秒
+        重建轮）才 process_iter 全表枚举；非重建轮对已退出 pid 清缓存。
+        """
+        rebuild = self._tickno % 60 == 1 or not self._procs
         if self._tickno % 60 == 1:
             self._procs = {}
         procs = []
-        for p in psutil.process_iter(["pid", "name"]):
+        if rebuild:
+            it = psutil.process_iter(["pid", "name"])
+        else:
+            it = list(self._procs.values())     # 仅缓存对象，不做全表枚举
+        seen = set()
+        for p in it:
             try:
                 pid = p.pid
-                cached = self._procs.get(pid)
-                if cached is None:
+                seen.add(pid)
+                if rebuild:
                     cached = p
                     self._procs[pid] = cached
+                else:
+                    cached = self._procs.get(pid, p)
                 cpu = cached.cpu_percent(interval=None)
                 if cpu < 0.5:
                     continue
                 mem = cached.memory_info().rss
                 name = (p.info or {}).get("name") or str(pid)
+                if not name:
+                    try:
+                        name = cached.name() or str(pid)
+                    except Exception:
+                        name = str(pid)
                 procs.append({"pid": pid, "name": name, "cpu": cpu, "mem": mem})
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 self._procs.pop(getattr(p, "pid", -1), None)
@@ -145,5 +161,9 @@ class TelemetryWorker(QThread):
             except Exception:
                 # 单个进程信息读取异常不应中断整轮采样
                 continue
+        if not rebuild:
+            for pid in list(self._procs.keys()):
+                if pid not in seen:             # 清掉已退出的 pid
+                    del self._procs[pid]
         procs.sort(key=lambda x: x["cpu"], reverse=True)
         return procs[:n]

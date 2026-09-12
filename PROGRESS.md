@@ -469,3 +469,15 @@
 - **红线遵守**：零业务代码改动；无真实修复动作/注册表写/网络/剪贴板（哨兵 + mock 全程拦截）；
   未碰真实 %APPDATA%；未 push。
 
+
+### 补充4（同日）：性能与体积优化
+
+- **遥测热路径**（每秒 tick）：
+  - `_top_procs` 只在缓存为空/每 60 秒重建轮走 process_iter 全表（原每 2 秒全表枚举数百进程）；
+    非重建轮仅对缓存 pid 读 cpu_percent/rss，退出 pid 清缓存；缓存空自动降级重建。
+  - TrafficStore.today() 秒级免锁快照（原每秒加锁+strftime 拼 key）；add() 零增量不标脏
+    （原无流量也每分钟空写盘）。
+- **密码库**：sites(name COLLATE NOCASE) / accounts(site_id, is_favorite DESC) 两个索引。
+- **exe 体积 67.6 → 37.7 MB（-44%）**：spec 排除 numpy/OpenBLAS（psutil、qrcode 均不需要）、
+  软件 OpenGL 备胎 opengl32sw.dll(20MB)、Qt6 Quick/Qml/Pdf/Network 运行库、PIL avif 编解码。
+  10 页离屏渲染 + 全量 767 例回归全绿后打包。
