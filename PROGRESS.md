@@ -668,3 +668,15 @@ QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗�
   "升级验证"转为最新版稳定性验收——三轮全量回归全绿 **0 崩溃**（修复前基线约 1/3），
   证实退出路径修复（quit_app 等待 worker/_release_worker/qFatal 落盘）已根治偶发崩溃。
   requirements.txt 注明验证基线。PROGRESS 遗留项关闭。
+
+### 补充20（2026-09-13）：依赖审计——12/12 对齐最新版
+
+- **审计结果**：PySide6/loguru/psutil/qrcode/pillow/pyinstaller/pytest 系/pyflakes
+  全部已是最新；唯一落后 cryptography 49.0.0 → **升级 50.0.1**（安全库跨大版本，
+  可能含 CVE 修复；我方 API 面仅 AESGCM encrypt/decrypt，极稳定）。
+- **替代品评估**（§40/§41）：各库均为领域事实标准——PySide6（Qt 官方绑定，LGPL 优于
+  PyQt6）、loguru/psutil/pillow/qrcode/pyinstaller/pytest 系保持；pyflakes→ruff 为可选
+  但不值得为 lint 引新依赖，不换。结论：无换栈必要，零新增依赖。
+- **验证**：vault/secure_store 加密路径测试（真实 AESGCM+DPAPI）→ 全量 784 例全绿 →
+  打包（PyInstaller hook 正确收集 cryptography 50 的 _rust.pyd）→ exe 冒烟无 QtFATAL。
+- requirements.txt 注明 cryptography 验证基线。
