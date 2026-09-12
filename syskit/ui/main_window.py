@@ -452,8 +452,16 @@ class MainWindow(QMainWindow):
         self._snap_worker.got.connect(self._fill_adapters)
         self._snap_worker.start()
 
+    def _release_worker(self, attr: str):
+        """复位 worker 前先 wait：QThread 在 emit 后仍有微秒级收尾，
+        此时 GC 析构会 qFatal（0xC0000409 / P9=7），即退出崩溃同源问题。"""
+        w = getattr(self, attr, None)
+        if w is not None:
+            w.wait(3000)
+        setattr(self, attr, None)
+
     def _fill_adapters(self, snap):
-        self._snap_worker = None
+        self._release_worker("_snap_worker")
         rows = [a for a in snap.adapters if "WAN Miniport" not in a.desc]
         self.tbl_adapters.setRowCount(len(rows))
         online_bg = QColor(theme.pal()["sel_bg"])
@@ -548,7 +556,7 @@ class MainWindow(QMainWindow):
         self.tree_diag.scrollToBottom()
 
     def _diag_done(self, results, silent):
-        self._diag_worker = None
+        self._release_worker("_diag_worker")
         self.btn_diag.setEnabled(True)
         self.btn_diag.setText("开始完整诊断")
         self.pb_diag.hide()
@@ -939,7 +947,7 @@ class MainWindow(QMainWindow):
         self._repair_worker.start()
 
     def _repair_done(self, payload):
-        self._repair_worker = None
+        self._release_worker("_repair_worker")
         aid, result = payload
         act = repairs.get_action(aid)
         title = act.title if act else aid
@@ -1010,7 +1018,7 @@ class MainWindow(QMainWindow):
         LOGGER.info("组合修复 [{}] -> {}: {}", aid, result.success, result.message)
 
     def _combo_done(self):
-        self._combo_worker = None
+        self._release_worker("_combo_worker")
         ok = sum(1 for _, r in self._combo_results if r.success)
         lines = "\n".join(f"{'√' if r.success else '×'} {repairs.get_action(a).title}: {r.message[:80]}"
                           for a, r in self._combo_results)
@@ -1080,6 +1088,12 @@ class MainWindow(QMainWindow):
             self.mon.join(3000)           # Monitor 已修复 _stop 覆盖，join 可用
         except RuntimeError:
             pass
+        # 页面级 worker（诊断/修复/组合/快照）：退出前等待，杜绝退出期 qFatal
+        for attr in ("_snap_worker", "_diag_worker", "_repair_worker", "_combo_worker"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.wait(5000)
+                setattr(self, attr, None)
         self.tele.traffic.save_if_dirty()
         self.tray.hide()
         from PySide6.QtWidgets import QApplication

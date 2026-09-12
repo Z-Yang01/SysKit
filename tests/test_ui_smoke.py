@@ -947,6 +947,47 @@ def test_main_window_minimized_starts_hidden(make_main_window):
     assert win.stack.count() == 10
 
 
+def test_quit_app_waits_page_workers(make_main_window, qtbot, monkeypatch):
+    """回归：quit_app 必须等待页面级 QThread（诊断/修复/组合/快照），
+    否则运行中的线程随窗口析构 → qFatal 0xC0000409（生产 BEX64 崩溃同源）。"""
+    from PySide6.QtCore import QThread, Signal
+
+    class _Slow(QThread):
+        done = Signal()
+
+        def __init__(self):
+            super().__init__()
+            self._finished_run = False
+
+        def run(self):
+            import time as _t
+            _t.sleep(0.4)               # 模拟收尾延迟
+            self._finished_run = True
+            self.done.emit()
+
+    win = make_main_window()
+    slow = _Slow()
+    win._repair_worker = slow
+    slow.start()
+    # 主线程直接调 quit_app：先停后台线程，再等 slow
+    monkeypatch.setattr(win.tele.traffic, "save_if_dirty", lambda: None)
+    win.quit_app()
+    assert slow._finished_run            # run 已完整结束（wait 生效）
+    assert win._repair_worker is None    # 引用已安全释放
+    assert win._snap_worker is None and win._diag_worker is None
+    assert win._combo_worker is None
+
+
+def test_release_worker_waits_before_drop(make_main_window):
+    """_release_worker：复位前 wait，线程 emit 后的收尾不再有 GC 析构竞态。"""
+    win = make_main_window()
+    w = win._snap_worker
+    win._release_worker("_snap_worker")
+    assert win._snap_worker is None
+    if w is not None:
+        assert not w.isRunning()
+
+
 def test_main_window_monitor_status_and_telemetry(main_win):
     win = main_win
     win._on_monitor_status("ok", "")
@@ -1025,13 +1066,16 @@ def test_repair_done_refreshes_proxy_label(monkeypatch):
 
     class _FakeWin:
         def __init__(self):
-            self._repair_worker = object()
+            self._repair_worker = None
             self.busy = []
             self.records = []
             self.mac_checked = 0
             self.proxy_refreshed = 0
             self.status_msgs = []
             self.diag_calls = []
+
+        def _release_worker(self, attr):
+            setattr(self, attr, None)
 
         def _set_busy(self, busy, text=""):
             self.busy.append(busy)

@@ -491,3 +491,23 @@
   main_window hotkey、system_page theme_ok/except e）——纯风格，无逻辑影响。
 - 已知遗留（评估后接受）：ClipboardTab._ClipActionWorker 3s DNS 窗口内退出理论上可遇
   QThread 析构竞态——onefile 退出不跑 GC 析构 + conftest 会话兜底，实际风险极低。
+
+### 补充6（同日）：生产崩溃排查（用户真机）
+
+**证据链**：crash.log 无 Python 异常 → WER ReportArchive 发现 AppCrash_SysKit.exe ×3 + AppHang ×1
+→ 事件日志：BEX64，c0000409，P9=7（FAST_FAIL_FATAL_APP_EXIT = qFatal/abort），模块 Qt6Core.dll 6.11.2，
+时间 2026-09-12 13:01:34；syskit.log 显示 13:01:00 深度修复组合（含 winsock_reset/ipstack_reset）刚跑完。
+
+**根因**：退出路径不等待页面级 QThread——quit_app 只停 monitor/telemetry，
+_diag/_repair/_combo/_snap 四个 worker 完全不管理；且各 _done 槽把引用置 None 后
+QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗口内被 GC 析构 →
+"QThread: Destroyed while thread is still running" qFatal。用户跑完深度修复立即退出
+= 时间线吻合；测试环境约 1/3 的退出崩溃同源。
+
+**修复**：
+- main_window._release_worker(attr)：复位前 wait(3000)，四个 _done 槽统一走它；
+- quit_app 退出前逐个 wait(5000) 四个页面 worker；
+- _qt_msg_handler 增加 QtFatalMsg 分支：同步直写 crash.log + fsync——qFatal 是原生崩溃
+  前最后痕迹，loguru 缓冲/锁可能来不及落盘，本次日志里没有 [qt] 消息即因此。
+- 回归：quit_app 等待慢 worker（0.4s 收尾断言 run 完整）、_release_worker 等待后再置 None；
+  全量 769 例全绿，已重新打包。

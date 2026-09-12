@@ -86,7 +86,23 @@ def run_gui():
     _prepare_data_dirs()
 
     def _qt_msg_handler(msg_type, context, message):
-        # windowed 打包无 stderr，Qt 默认处理器会 fail-fast(0xc0000409)——接管到日志
+        # windowed 打包无 stderr，Qt 默认处理器会 fail-fast(0xc0000409)——接管到日志。
+        # qFatal（QThread destroyed / QObject 析构序等）是原生崩溃前的最后痕迹，
+        # 必须同步直写 crash.log 并 flush：loguru 走 syskit.log，缓冲/锁可能来不及。
+        try:
+            if msg_type == 3:               # QtFatalMsg
+                fh = getattr(_qt_msg_handler, "_fatal_fh", None)
+                if fh is None:
+                    os.makedirs(config.LOCALAPPDATA_DIR, exist_ok=True)
+                    fh = open(os.path.join(config.LOCALAPPDATA_DIR, "crash.log"),
+                              "a", encoding="utf-8", buffering=1)
+                    _qt_msg_handler._fatal_fh = fh
+                import time as _t
+                fh.write(f"\n[{_t.strftime('%F %T')}] QtFATAL: {message}\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except Exception:
+            pass
         try:
             from ..logger import LOGGER
             LOGGER.debug("[qt] {}", message)
