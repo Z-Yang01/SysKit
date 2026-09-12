@@ -547,7 +547,15 @@ class VaultPage(QWidget):
             return
         if not self._ensure_unlocked():          # 需要加密密钥，锁定时先解锁一次
             return
-        dlg = _AccountDialog(self)
+        self._autolock.stop()
+        try:
+            dlg = _AccountDialog(self)
+            accepted = dlg.exec() == QDialog.Accepted
+            f = dlg.fields() if accepted else None
+        finally:
+            self._restart_autolock()
+        if not accepted:
+            return
         if dlg.exec() != QDialog.Accepted:
             return
         f = dlg.fields()
@@ -574,10 +582,16 @@ class VaultPage(QWidget):
             return
         if not self._ensure_unlocked():
             return
-        dlg = _AccountDialog(self, edit=True, account={
-            "username": cur.get("username") or "", "label": cur.get("label") or "",
-            "totp_secret": self._current_totp_or_blank(aid), "notes": self._current_notes_or_blank(aid)})
-        if dlg.exec() != QDialog.Accepted:
+        self._autolock.stop()                # 模态编辑期间不自动锁（防保存时已锁定）
+        try:
+            dlg = _AccountDialog(self, edit=True, account={
+                "username": cur.get("username") or "", "label": cur.get("label") or "",
+                "totp_secret": self._current_totp_or_blank(aid), "notes": self._current_notes_or_blank(aid)})
+            accepted = dlg.exec() == QDialog.Accepted
+            f = dlg.fields() if accepted else None
+        finally:
+            self._restart_autolock()
+        if not accepted:
             return
         f = dlg.fields()
         pw = f.pop("password")

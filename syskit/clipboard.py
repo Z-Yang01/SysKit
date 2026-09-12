@@ -167,8 +167,10 @@ class ClipboardHistory:
         unpinned = [i for i, it in enumerate(self._items) if not it.get("pinned")]
         excess = len(unpinned) - self.max_items
         if excess > 0:
+            evicted = [self._items[i] for i in unpinned[-excess:]]   # 最老的非置顶
             for i in sorted(unpinned[-excess:], reverse=True):
                 del self._items[i]
+            self._delete_image_files(evicted)
 
     def items(self) -> list:
         with _lock:
@@ -213,16 +215,31 @@ class ClipboardHistory:
             self.save()
             return True
 
+    @staticmethod
+    def _delete_image_files(items: list):
+        """删除图片条目引用的 PNG 载荷（明文截图不应在磁盘无限期残留）。"""
+        for it in items:
+            name = it.get("data", "") if it.get("kind") == "image" else ""
+            if name:
+                try:
+                    path = image_path(name)
+                    if os.path.exists(path):
+                        os.unlink(path)
+                except OSError:
+                    pass
+
     def remove(self, index: int) -> bool:
         with _lock:
             if 0 <= index < len(self._items):
-                del self._items[index]
+                removed = self._items.pop(index)
+                self._delete_image_files([removed])
                 self.save()
                 return True
             return False
 
     def clear(self):
         with _lock:
+            self._delete_image_files(self._items)
             self._items = []
             self.save()
 

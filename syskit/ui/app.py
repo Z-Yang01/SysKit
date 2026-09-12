@@ -57,20 +57,28 @@ def _prepare_data_dirs():
                         leftover_cfg, config.APPDATA_DIR, config.APPDATA_DIR)
             return
         old, new = config._APP_DATA_ROOT, config.APPDATA_DIR
-        if not (os.path.isdir(old) and os.path.isdir(new)) or os.listdir(new):
+        # 跳过条件收紧为"关键文件已在"：上次迁移部分失败（如磁盘满中断）时
+        # 新目录只有残缺文件，重跑迁移以 copy2 覆盖补齐（源是唯一真本，安全）
+        key_present = any(os.path.exists(os.path.join(new, n))
+                          for n in ("settings.json", "vault.db"))
+        if not os.path.isdir(old) or key_present:
             return                         # 无旧数据 / 已有新数据（不覆盖）
         for name in ("settings.json", "vault.db", "vault.key",
                      "clipboard.json", "traffic.json", "events.json"):
             src = os.path.join(old, name)
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(new, name))
+                # 迁移后源文件改名退役：不留可用的明文副本（clipboard.json 常含
+                # 敏感内容）；如需回退改回原名即可（保守可逆，§15）
+                os.replace(src, src + ".migrated")
         src_files = os.path.join(old, "clipboard_files")
         if os.path.isdir(src_files):
             dst_files = os.path.join(new, "clipboard_files")
             os.makedirs(dst_files, exist_ok=True)
             for n in os.listdir(src_files):
                 shutil.copy2(os.path.join(src_files, n), os.path.join(dst_files, n))
-        LOGGER.info("便携模式：历史数据已从 {} 迁移至 {}", old, new)
+        LOGGER.info("便携模式：历史数据已从 {} 迁移至 {}（源文件已改名 .migrated 退役）",
+                    old, new)
     except Exception:
         LOGGER.exception("数据目录准备/迁移失败（不影响启动）")
 

@@ -158,13 +158,24 @@ class VaultCrypto:
         self._data_key = key
 
     def unlock(self, password: str = None) -> bool:
-        """解锁：解包数据密钥到内存。成功返回 True（已解锁直接 True）。"""
+        """解锁：解包数据密钥到内存。成功返回 True（已解锁直接 True）。
+
+        key 文件损坏/截断（掉电无 fsync）时返回 False 而非抛异常——
+        否则 GUI 启动即崩，用户可能误删整个密码库。"""
         if self.is_unlocked:
             return True
         if not self.is_provisioned:
             return False
-        meta = self._meta()
-        wrapped = _unb64(meta["wrapped_key"])
+        try:
+            meta = self._meta()
+            wrapped = _unb64(meta["wrapped_key"])
+        except Exception as e:
+            from .logger import LOGGER
+            LOGGER.error("vault.key 无法解析（可能已损坏）：{}。"
+                         "密码库保持锁定；如确认放弃历史数据可删除该文件后重启。",
+                         self._path)
+            LOGGER.debug("vault.key 解析异常详情", exc_info=e)
+            return False
         if meta.get("mode") == "dpapi":
             try:
                 self._data_key = _dpapi_unprotect(wrapped)

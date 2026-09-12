@@ -216,7 +216,7 @@ class CommandPalette(QDialog):
                     hist = clipboard_mod.ClipboardHistory(max_items=max_items)
                     self._clip_cache = (mtime, hist.items()[:5])
                 items = self._clip_cache[1]
-                for i, it in enumerate(hist.items()[:5]):
+                for i, it in enumerate(items):
                     text = it.get("text", "")
                     kind = it.get("kind", "text")
                     label = ("放回图片条目" if kind == "image"

@@ -13,6 +13,11 @@ echo [2/5] install deps...
 python -m pip install -r requirements.txt -q || goto :err
 
 echo [3/5] pyinstaller...
+tasklist /FI "IMAGENAME eq SysKit.exe" 2>nul | find /I "SysKit.exe" >nul && (
+  echo 检测到正在运行的 SysKit——它锁定了 dist\SysKit.exe，无法覆盖。
+  echo 请先退出（托盘右键 → 退出）后重试。
+  goto :err
+)
 REM 用 python -m 调用：pip --user 安装时 Scripts 目录不在 PATH，裸 pyinstaller 会找不到命令
 python -m PyInstaller SysKit.spec --noconfirm --clean || goto :err
 if not exist dist\SysKit.exe (

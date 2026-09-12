@@ -739,3 +739,26 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
 - 过程事故记录：bash heredoc 转义折叠两次向测试文件注入真 NUL/BOM 字节——改用
   chr() 构造 + Edit 工具修复。
 - 全量 **791 例全绿**。
+
+### 补充24（2026-09-13）：多子代理查 bug 第四批（持久化安全维度）——6×P2 + P3 批
+
+- **P2 面板缓存 NameError**（上轮缓存补丁自身 bug）：cache-hit 分支引用未定义 hist →
+  剪贴板区块从第二个键起消失。修正循环变量。
+- **P2 vault.key 损坏启动崩溃循环**：空/截断 key 文件使 unlock 抛 KeyError（try 外）→
+  构造失败反复崩。修：整体捕获 + ERROR 日志明确"可删该文件"路径，库保持锁定不崩。
+- **P2 迁移部分失败永久跳过**：跳过条件从"新目录非空"收紧为"关键文件（settings/vault）
+  已在"——残缺迁移下重跑以 copy2 覆盖补齐（源是唯一真本）。
+- **P2 迁移后明文残留**：迁移成功的源文件改名 `.migrated` 退役（clipboard.json 常含
+  敏感内容），可逆（改回原名）不覆盖（§15/§16）。
+- **P2 编辑对话框 autolock 竞态**：模态编辑期间暂停自动重锁（finally 恢复）+
+  update_account 补 VaultLockedError 兜底提示（此前静默丢改动）。
+- **P2 剪贴板 PNG 明文残留**：删除/清空/超额淘汰时同步删除 PNG 载荷文件
+  （明文截图不再无限期累积），+1 回归。
+- **P3 批**：search_sites LIKE 通配转义；ttl=0 敏感标记延长；WLAN 密码复制走敏感路径
+  （todo——未含本批）；密封写失败 LOGGER.warning；kdf.iter 读回兼容（防未来调迭代埋雷）；
+  notes 不 strip；_nav_changed save 兜底；反向检测补 clipboard.json；backup_config
+  补 vault.db/vault.key；_AccountDialog edt_totp 双写笔误清理。
+- 过程记录：heredoc 转义折叠再次注入 NUL/BOM（改 chr 构造 + 字节层替换修复）；
+  打包被用户正在运行的实例阻塞——build.bat 增加运行实例检测（明确提示代替
+  PermissionError），产物待用户退出后补打。
+- 全量 **792 例全绿**。

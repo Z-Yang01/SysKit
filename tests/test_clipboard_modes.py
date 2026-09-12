@@ -9,6 +9,10 @@ from syskit import clipboard as clip_mod
 from syskit import config, modes
 from syskit.proc import CmdResult
 
+PNG1 = bytes([0x89]) + b'PNG-fake-1'
+PNG2 = bytes([0x89]) + b'PNG-fake-2'
+PNG3 = bytes([0x89]) + b'PNG-fake-3'
+
 
 # ---------------- ClipboardHistory ----------------
 
@@ -167,6 +171,29 @@ class TestClipboardHistory:
         assert clip_mod.should_record_now(blacklist="") is True
         monkeypatch.setattr(clip_mod, "foreground_process_name", lambda: "notepad")
         assert clip_mod.should_record_now(blacklist="KEEPASS.EXE,bitwarden") is True
+
+    def test_image_payload_removed_on_remove_clear_evict(self, tmp_path, monkeypatch):
+        """回归：删除/清空/超额淘汰图片条目时，明文 PNG 载荷同步删除（不留磁盘残留）。"""
+        monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
+        h = clip_mod.ClipboardHistory(max_items=3)
+        png = PNG1
+        name = clip_mod.save_image_bytes(png)
+        h.add("[图片 1×1]", kind="image", data=name)
+        path = clip_mod.image_path(name)
+        assert os.path.exists(path)
+        h.remove(0)                                   # 单条删除 → PNG 同删
+        assert not os.path.exists(path)
+        name2 = clip_mod.save_image_bytes(PNG2)
+        h.add("[图片 2×2]", kind="image", data=name2)
+        h.clear()                                     # 清空 → PNG 同删
+        assert not os.path.exists(clip_mod.image_path(name2))
+        # 超额淘汰：4 条挤掉最老图片
+        name3 = clip_mod.save_image_bytes(PNG3)
+        h.add("[图片 3×3]", kind="image", data=name3)
+        for i in range(3):
+            h.add(f"t{i}")
+        assert not os.path.exists(clip_mod.image_path(name3))   # 最老被淘汰
+        h.clear()
 
     def test_save_image_bytes(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
