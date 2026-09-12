@@ -8,7 +8,6 @@ cryptography，便于离线单测。
 import hashlib
 import hmac
 import os
-import secrets
 import sqlite3
 import struct
 import time

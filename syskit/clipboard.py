@@ -4,10 +4,9 @@
 - image 条目：text 为可搜索的占位描述（如 "[图片 128×96]"），data 为 PNG 文件名，
   实际字节存 %APPDATA%\\SysKit\\clipboard_files\\（md5 命名去重）。
 - html 条目：text 为纯文本预览，data 为原始 HTML。
-- 兼容旧格式 JSON（无 kind/pinned 字段）。
+- 落盘经 secure_store DPAPI 密封；兼容旧明文 JSON（无 kind/pinned 字段，下次保存升级）。
 """
 import hashlib
-import json
 import os
 import sys
 import threading

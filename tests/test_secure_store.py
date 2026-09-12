@@ -1,8 +1,6 @@
 """syskit/secure_store.py：DPAPI 密封存储（透明迁移旧明文）。"""
 import json
 
-import pytest
-
 from syskit import secure_store as ss
 
 
@@ -48,7 +46,6 @@ class TestCorruptAndEdge:
         assert ss.save_sealed_json(str(p), {"x": 1}) is True
         assert p.exists()
 
-    @pytest.mark.skipif(not hasattr(__import__("os"), "replace"), reason="posix replace")
     def test_atomic_no_tmp_left(self, tmp_path):
         p = str(tmp_path / "at.json")
         ss.save_sealed_json(p, {"a": 1})

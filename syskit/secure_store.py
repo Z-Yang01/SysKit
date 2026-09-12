@@ -39,7 +39,7 @@ def load_sealed_json(path: str, default):
 
 
 def save_sealed_json(path: str, data) -> bool:
-    """密封写入（原子替换）。成功返回 True。"""
+    """密封写入（原子替换）。成功返回 True；任何失败（含 DPAPI 不可用）返回 False。"""
     tmp = path + ".tmp"
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -47,7 +47,7 @@ def save_sealed_json(path: str, data) -> bool:
             f.write(seal_json(data))
         os.replace(tmp, path)
         return True
-    except OSError:
+    except Exception:               # DPAPI 不可用抛 AttributeError 等非 OSError，一并兜住
         try:
             os.unlink(tmp)
         except OSError:

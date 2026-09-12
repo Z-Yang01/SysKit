@@ -626,3 +626,15 @@ QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗�
    可选（向导目录页）。
 5. 测试：secure_store 6 例 + 剪贴板密封回归 1 例 + vault 表格/信任窗口重写
    （test_vault.py 3 例重写 + gaps 文件批量适配）；全量 783 例全绿。
+
+### 补充16（同日）：bug 复查（secure_store/clipboard/vault 改动面二次审查）
+
+- **fix(secure_store)**：save_sealed_json 只捕 OSError，而 _dpapi_protect 在非 Windows/
+  DPAPI 不可用场景抛 AttributeError——异常穿透风险。改为捕 Exception（存储层防御语义：
+  任何失败返回 False，调用方 ClipboardHistory.save 再兜一层）。
+- 清理功能迁移后的无用导入（clipboard.json、vault.secrets）与测试怪异 skipif；
+  pyflakes 新改动面零告警。
+- 其余二次审查结论（无问题）：构造顺序安全（_pw_display 仅在明文模式触 DB）；
+  信任窗口与手动锁定/更改主密码/DPAPI 模式的交互语义一致；表格 blockSignals 重建
+  无信号竞态；Inno 卸载不删便携 data 用户数据（仅删安装器记录的文件）。
+- 全量 783 例全绿。dist 重打包仍被运行中的实例（17656）锁定，继续待用户关闭。
