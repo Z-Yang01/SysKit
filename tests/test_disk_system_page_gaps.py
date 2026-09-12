@@ -898,8 +898,9 @@ def test_battery_tab_full_data_green_health(qtbot, monkeypatch):
 
     monkeypatch.setattr(proc, "run_ps",
                         lambda script, timeout=30: proc.CmdResult(0, "45000,40000,77", ""))
-    tab = BatteryTab()                                  # 构造即 refresh
+    tab = BatteryTab()                                  # 懒加载：构造期不查询
     qtbot.addWidget(tab)
+    tab.refresh()                                       # 显式触发（首显由 showEvent 自动）
     assert tab.lbl_design.text() == "45000 mWh"
     assert tab.lbl_full.text() == "40000 mWh"
     assert tab.lbl_health.text() == "88.9%"
@@ -917,6 +918,7 @@ def test_battery_tab_no_remain_shows_dash(qtbot, monkeypatch):
                         lambda script, timeout=30: proc.CmdResult(0, "50000,30000,", ""))
     tab = BatteryTab()
     qtbot.addWidget(tab)
+    tab.refresh()                                       # 懒加载：显式触发
     assert tab.lbl_health.text() == "60.0%"             # 边界：不 >80、不 >60 → 红
     assert tab.lbl_health.styleSheet().startswith("color:#c62828")
     assert tab.lbl_remain.text() == "—"

@@ -322,8 +322,9 @@ def test_battery_parse_error_falls_back_to_no_battery(qtbot, monkeypatch):
     from syskit.ui.system_page import BatteryTab
     monkeypatch.setattr(proc, "run_ps",
                         lambda script, timeout=30: proc.CmdResult(0, "40000,32000,³", ""))
-    tab = BatteryTab()                           # 构造即 refresh
+    tab = BatteryTab()                           # 懒加载：构造期不查询
     qtbot.addWidget(tab)
+    tab.refresh()                                # 显式触发（首显由 showEvent 自动）
     assert "未检测到电池" in tab.lbl_design.text()
     assert tab.lbl_full.text() == "—"
     assert "电池" in tab.lbl_note.text()
@@ -533,6 +534,24 @@ def _make_clip_tab(qtbot):
     qtbot.addWidget(tab)
     tab.hist.clear()
     return tab
+
+
+def test_battery_tab_lazy_loads_on_show(qtbot, monkeypatch):
+    """回归：电池 Tab 懒加载——构造期不跑 PowerShell，首次显示才查询。"""
+    from syskit import proc
+    from syskit.ui.system_page import BatteryTab
+    calls = []
+    monkeypatch.setattr(proc, "run_ps",
+                        lambda script, timeout=30:
+                        calls.append(script) or proc.CmdResult(0, "40000,32000,80", ""))
+    tab = BatteryTab()
+    qtbot.addWidget(tab)
+    assert calls == []                            # 构造期零系统调用
+    tab.show()                                    # 首次显示 → 自动查询一次
+    assert len(calls) == 1
+    tab.hide()
+    tab.show()                                    # 再次显示不重复查询（手动刷新除外）
+    assert len(calls) == 1
 
 
 def test_clipboard_reload_rows_preview_and_bad_ts(qtbot):

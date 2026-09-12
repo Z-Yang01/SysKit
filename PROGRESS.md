@@ -595,3 +595,18 @@ QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗�
 - README 新增「开发与测试」章节（安装/运行/单文件/静态扫描/截图验收/安全网说明）。
 - PROJECT_SUMMARY 技术债表同步（移除"开发依赖未固化"）。
 - 维护章程生效后首个任务；后续遗留：PySide6 升级验证（需明确要求）、VaultPage 状态模型化（待功能驱动）。
+
+### 补充14（同日）：启动性能优化——页面构造懒加载（-90%）
+
+- **测量先行**（§27）：逐页构造计时定位元凶——SystemPage 983ms（BatteryTab 构造即发
+  PowerShell CIM 电池查询）、WifiPage 220ms（构造即发 netsh show profiles）、
+  PortTab 构造即起 psutil 端口扫描 worker（用户可能永不打开工具箱页）。
+- **实施**（沿用 WifiPage 既有 `_initial_scanned` showEvent 首显模式）：
+  BatteryTab / PortTab 构造期 refresh() → showEvent 首显触发（`_initial_refreshed`
+  防重复）；WifiPage 配置文件枚举并入既有 showEvent 首访块。
+- **效果实测**：SystemPage 983→16ms、WifiPage 220→7ms、页面构造合计 1239→120ms（-90%）、
+  MainWindow 构造 1048→422ms（-60%）。
+- 测试：+1 回归（构造零系统调用/首显恰一次/重复显示不重复查）；5 处既有测试适配为
+  显式触发（行为有意变更，非掩盖）；全量 776 例全绿。
+- **遗留**：dist 产物重打包被正在运行的 SysKit（管理员实例）锁定——代码已提交，
+  软件关闭后跑 build.bat 即可（exe 目前仍是懒加载前的版本）。

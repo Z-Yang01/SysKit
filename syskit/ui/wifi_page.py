@@ -125,6 +125,7 @@ class WifiPage(QWidget):
         if not self._initial_scanned:
             self._initial_scanned = True
             self.scan()
+            self._refresh_share_profiles()   # netsh 配置文件枚举同样延迟到首显
         if self._resume_auto and self.chk_auto.isChecked():
             self._scan_timer.start(8000)
             self._resume_auto = False
@@ -273,7 +274,7 @@ class WifiPage(QWidget):
         self.lbl_qr.setMinimumSize(240, 240)
         self.lbl_qr.setStyleSheet("background:#fff; border:1px solid #e3e8ef; border-radius:8px;")
         lay.addWidget(self.lbl_qr)
-        self._refresh_share_profiles()
+        # 配置文件枚举（netsh）不在构造期执行：由 showEvent 首访触发
         return w
 
     def _refresh_share_profiles(self):

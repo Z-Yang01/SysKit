@@ -525,7 +525,13 @@ class PortTab(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._worker = None
-        self.refresh()
+        self._initial_refreshed = False   # 懒加载：首次显示本 Tab 才扫描（启动期不做端口枚举）
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._initial_refreshed:
+            self._initial_refreshed = True
+            self.refresh()
 
     def refresh(self):
         if self._worker:

@@ -725,10 +725,11 @@ def test_port_tab_refresh_guard_selection_restore(qtbot, monkeypatch):
             pass
 
     monkeypatch.setattr(tp, "_PortWorker", _FakePortWorker)
-    tab = tp.PortTab()                                # 构造刷新走假 worker，不启动线程
+    tab = tp.PortTab()                                # 懒加载：构造期不扫描
     qtbot.addWidget(tab)
+    tab.refresh()                                     # 显式触发（走假 worker，不启动线程）
     assert isinstance(tab._worker, _FakePortWorker)
-    tab._done([])                                     # 手动完成构造刷新
+    tab._done([])                                     # 手动完成刷新
     assert "共 0 条" in tab.lbl_status.text()
 
     tab._worker = object()
@@ -784,7 +785,7 @@ def test_port_tab_kill_selected_all_branches(qtbot, monkeypatch):
     monkeypatch.setattr(tp, "_PortWorker", _FakePortWorker)
     tab = tp.PortTab()
     qtbot.addWidget(tab)
-    tab._worker = None                                # 构造刷新（假 worker）视为已完成
+    tab._worker = None                                # 懒加载：无构造期 worker，直接就绪
     rows = [
         {"proto": "TCP", "tcp": True, "laddr": "127.0.0.1:8443", "raddr": "0.0.0.0:0",
          "status": "LISTEN", "pid": 4321, "name": "websvc.exe", "exe": "C:\\a.exe"},

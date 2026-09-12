@@ -609,6 +609,8 @@ def test_toolbox_page_constructs_six_tabs(qtbot):
     assert tabs.count() == 6                        # +Hosts 编辑
     assert tabs.tabText(5) == "Hosts 编辑"
     port = page.findChildren(PortTab)[0]
+    assert port._worker is None                     # 懒加载：构造期不扫描
+    port.refresh()                                  # 显式触发（首显由 showEvent 自动）
     qtbot.wait_until(lambda: port._worker is None, timeout=10000)
     assert "共 0 条" in port.lbl_status.text()    # psutil.net_connections mock 为空
 
@@ -721,8 +723,9 @@ def test_ping_route_tab(qtbot, monkeypatch):
 def test_port_tab_refresh_filter_and_worker(qtbot, monkeypatch):
     import psutil
     from syskit.ui.toolbox_page import PortTab, _PortWorker
-    tab = PortTab()                               # 构造即启动一次刷新（psutil mock 为空）
+    tab = PortTab()                               # 懒加载：构造期不扫描
     qtbot.addWidget(tab)
+    tab.refresh()                                 # 显式触发（psutil mock 为空）
     qtbot.wait_until(lambda: tab._worker is None, timeout=10000)
     assert "共 0 条" in tab.lbl_status.text()
 
@@ -784,8 +787,9 @@ def test_system_page_tabs_and_perf_tick(qtbot):
 def test_battery_tab_both_branches(qtbot, monkeypatch):
     from syskit import proc
     from syskit.ui.system_page import BatteryTab
-    tab = BatteryTab()                            # autouse fake run_ps → 无电池分支
+    tab = BatteryTab()                            # 懒加载：构造期无查询
     qtbot.addWidget(tab)
+    tab.refresh()                                 # autouse fake run_ps → 无电池分支
     assert "未检测到电池" in tab.lbl_design.text()
 
     monkeypatch.setattr(proc, "run_ps",

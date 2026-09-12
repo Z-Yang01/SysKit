@@ -242,7 +242,13 @@ class BatteryTab(QWidget):
         self.lbl_note.setProperty("hint", True)
         lay.addWidget(self.lbl_note)
         lay.addStretch(1)
-        self.refresh()
+        self._initial_refreshed = False   # 懒加载：首次显示本 Tab 才查电池（构造期不跑 PowerShell）
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._initial_refreshed:
+            self._initial_refreshed = True
+            self.refresh()
 
     def refresh(self):
         from .. import proc

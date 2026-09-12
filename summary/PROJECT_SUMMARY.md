@@ -70,8 +70,8 @@ PySide6 升级验证退出崩溃）。
 崩溃捕获 + `_prepare_data_dirs` 便携迁移 + QtFatalMsg 直写 crash.log）；`main_window.py`
 （侧边栏 10 页导航；诊断/修复/设置/日志内建页；`_release_worker` 复位前 wait；quit_app
 等待全部线程与 worker；`_save_settings` 热键 parse 验证 + 即时重注册；`_stop_diag`/
-`_stop_combo` 中止接线）；`dashboard_page.py`；`wifi_page.py`；`toolbox_page.py`（六组
-Tab：测速/局域网/端口/DNS 子网/ping 路由/HostsTab）；`system_page.py`（性能/启动项/电池/
+`_stop_combo` 中止接线）；`dashboard_page.py`；`wifi_page.py`（AP 扫描/配置文件枚举 showEvent 首显懒加载）；`toolbox_page.py`（六组
+Tab（PortTab 首显懒扫描）：测速/局域网/端口/DNS 子网/ping 路由/HostsTab）；`system_page.py`（性能/启动项/电池/
 清理/磁盘/ClipboardTab（搜索分类置顶暂停/规则动作/图片缩略图/隐私暂停）/ModesTab）；
 `disk_page.py`；`vault_page.py`（左右分栏 + DictListModel/DictFilterProxy；`_require_master_verified`
 主密码门；一键显示/隐藏 + 20s 自动隐藏；敏感剪贴板）；`palette.py`（CommandPalette +
