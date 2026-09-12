@@ -90,7 +90,7 @@ class TestDiagnose:
         assert "[fix_nlasvc]" in text and "修复 NlaSvc" in text
 
     def test_warns_when_not_admin(self, monkeypatch, fake_logger, admin_off):
-        monkeypatch.setattr(netcheck, "run_all", lambda progress=None, quick=False: [])
+        monkeypatch.setattr(netcheck, "run_all", lambda progress=None, quick=False, should_stop=None: [])
         monkeypatch.setattr(netcheck, "verdict", lambda rs: ("normal", "网络正常"))
         rc = cli.cmd_diagnose()
         assert rc == 0
@@ -99,7 +99,7 @@ class TestDiagnose:
     def test_quick_flag_passed_to_run_all(self, monkeypatch, admin_on):
         seen = {}
 
-        def fake_run_all(progress=None, quick=False):
+        def fake_run_all(progress=None, quick=False, should_stop=None):
             seen["quick"] = quick
             return []
 

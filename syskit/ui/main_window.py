@@ -486,6 +486,12 @@ class MainWindow(QMainWindow):
         self.btn_diag = QPushButton("开始完整诊断")
         self.btn_diag.clicked.connect(lambda: self.run_diagnosis(quick=False))
         btns.addWidget(self.btn_diag)
+        self.btn_diag_stop = QPushButton("停止")
+        self.btn_diag_stop.setProperty("danger", True)
+        self.btn_diag_stop.setToolTip("中止诊断：当前检查完成后停止，已完成项保留")
+        self.btn_diag_stop.setEnabled(False)
+        self.btn_diag_stop.clicked.connect(self._stop_diag)
+        btns.addWidget(self.btn_diag_stop)
         self.btn_copy_report = QPushButton("复制报告")
         self.btn_copy_report.clicked.connect(self._copy_report)
         btns.addWidget(self.btn_copy_report)
@@ -539,6 +545,22 @@ class MainWindow(QMainWindow):
         self._diag_worker.progress.connect(self._diag_progress)
         self._diag_worker.finished_ok.connect(lambda rs: self._diag_done(rs, silent))
         self._diag_worker.start()
+        self.btn_diag_stop.setEnabled(True)
+
+    def _stop_diag(self):
+        """中止诊断：当前检查完成后停止，已完成项照常展示。"""
+        if self._diag_worker is not None:
+            self._diag_worker.cancel()
+            self.btn_diag_stop.setEnabled(False)
+            self.statusBar().showMessage("正在停止诊断（等当前检查完成）…", 4000)
+
+    def _stop_combo(self):
+        """中止组合修复：当前动作完成后停止；已执行的系统操作无法撤销。"""
+        if self._combo_worker is not None:
+            self._combo_worker.cancel()
+            self.btn_combo_stop.setEnabled(False)
+            self.statusBar().showMessage(
+                "正在中止组合修复（等当前动作完成；已执行的操作不可撤销）…", 6000)
 
     def _clear_fix_buttons(self):
         while self.fix_btn_row.count():
@@ -557,6 +579,7 @@ class MainWindow(QMainWindow):
 
     def _diag_done(self, results, silent):
         self._release_worker("_diag_worker")
+        self.btn_diag_stop.setEnabled(False)
         self.btn_diag.setEnabled(True)
         self.btn_diag.setText("开始完整诊断")
         self.pb_diag.hide()
@@ -627,6 +650,12 @@ class MainWindow(QMainWindow):
         layc.addWidget(self.btn_combo_fast)
         layc.addWidget(self.btn_combo_full)
         layc.addWidget(self.btn_combo_stack)
+        self.btn_combo_stop = QPushButton("中止")
+        self.btn_combo_stop.setProperty("danger", True)
+        self.btn_combo_stop.setToolTip("中止组合修复：当前动作完成后停止（已执行的系统操作不可撤销），剩余动作跳过")
+        self.btn_combo_stop.setEnabled(False)
+        self.btn_combo_stop.clicked.connect(self._stop_combo)
+        layc.addWidget(self.btn_combo_stop)
         layc.addStretch(1)
         lay.addWidget(grp_combo)
 
@@ -1010,6 +1039,7 @@ class MainWindow(QMainWindow):
         self._combo_worker.all_done.connect(self._combo_done)
         self._combo_results = []
         self._combo_worker.start()
+        self.btn_combo_stop.setEnabled(True)
 
     def _combo_item(self, payload):
         aid, result = payload
@@ -1018,12 +1048,23 @@ class MainWindow(QMainWindow):
         LOGGER.info("组合修复 [{}] -> {}: {}", aid, result.success, result.message)
 
     def _combo_done(self):
-        self._release_worker("_combo_worker")
+        worker, self._combo_worker = self._combo_worker, None
+        if worker is not None:
+            worker.wait(3000)
+        self.btn_combo_stop.setEnabled(False)
         ok = sum(1 for _, r in self._combo_results if r.success)
         lines = "\n".join(f"{'√' if r.success else '×'} {repairs.get_action(a).title}: {r.message[:80]}"
                           for a, r in self._combo_results)
         self._set_busy(False)
-        QMessageBox.information(self, "组合修复完成", f"{ok}/{len(self._combo_results)} 项成功：\n\n{lines}")
+        if getattr(worker, "cancelled", False):
+            skipped = getattr(worker, "action_ids", []) and \
+                len(worker.action_ids) - len(self._combo_results)
+            QMessageBox.information(
+                self, "组合修复已中止",
+                f"已执行 {ok}/{len(self._combo_results)} 项成功，剩余约 {max(0, skipped)} 项未执行。\n\n"
+                f"注意：已执行的系统操作不会自动撤销。\n\n{lines}")
+        else:
+            QMessageBox.information(self, "组合修复完成", f"{ok}/{len(self._combo_results)} 项成功：\n\n{lines}")
         self.run_diagnosis(quick=True, silent=True)
 
     # ---------------- 监控回调（UI 线程） ----------------

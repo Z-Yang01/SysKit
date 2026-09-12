@@ -15,10 +15,17 @@ class DiagnosisWorker(QThread):
     def __init__(self, quick=False, parent=None):
         super().__init__(parent)
         self.quick = quick
+        self._cancelled = False
+
+    def cancel(self):
+        """请求中止：正在执行的检查不可中断，其余检查跳过。"""
+        self._cancelled = True
 
     def run(self):
         try:
-            results = netcheck.run_all(progress=lambda r: self.progress.emit(r), quick=self.quick)
+            results = netcheck.run_all(
+                progress=lambda r: self.progress.emit(r), quick=self.quick,
+                should_stop=lambda: self._cancelled)
             self.finished_ok.emit(results)
         except Exception:
             LOGGER.error("诊断线程异常:\n{}", traceback.format_exc())
@@ -51,10 +58,19 @@ class ComboWorker(QThread):
     def __init__(self, action_ids, parent=None):
         super().__init__(parent)
         self.action_ids = action_ids
+        self._cancelled = False
+        self.cancelled = False     # run 结束后供主线程读取：是否被中止
+
+    def cancel(self):
+        """请求中止：正在执行的动作不可中断（系统操作无法撤销），其余跳过。"""
+        self._cancelled = True
 
     def run(self):
         try:
             for aid in self.action_ids:
+                if self._cancelled:
+                    self.cancelled = True
+                    break
                 act = repairs.get_action(aid)
                 if not act:
                     continue
@@ -65,6 +81,8 @@ class ComboWorker(QThread):
             # 否则调用方的 _combo_worker 永不复位、界面永久忙碌。
             LOGGER.error("组合修复线程异常:\n{}", traceback.format_exc())
         finally:
+            if self._cancelled:
+                self.cancelled = True
             self.all_done.emit()
 
 

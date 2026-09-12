@@ -515,10 +515,19 @@ class VaultPage(QWidget):
 
     def _require_master_verified(self) -> bool:
         """查看/复制密码的安全门：设置了主密码则每次都验证；
-        DPAPI 免密模式（无主密码可验证）仅要求解锁。"""
-        if not self._ensure_unlocked():
-            return False
+        DPAPI 免密模式（无主密码可验证）仅要求解锁。
+        锁定态只弹一次框：输入的密码同时用于解锁与验证。"""
         if not self.crypto.has_master_password():
+            return self._ensure_unlocked()
+        if not self.crypto.is_unlocked:
+            pwd = self._ask_password("解锁密码库")
+            if pwd is None:
+                return False
+            if not self.crypto.unlock(pwd):
+                QMessageBox.warning(self, "SysKit", "主密码错误")
+                return False
+            self._refresh_state()
+            self._restart_autolock()
             return True
         pwd = self._ask_password("验证主密码")
         if pwd is None:

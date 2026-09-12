@@ -427,8 +427,12 @@ ALL_CHECKS = [
 ]
 
 
-def run_all(progress=None, quick=False) -> list:
-    """quick=True 时跳过慢速外网探测（供监控轮询）。"""
+def run_all(progress=None, quick=False, should_stop=None) -> list:
+    """quick=True 时跳过慢速外网探测（供监控轮询）。
+
+    should_stop: 可选回调，返回 True 时停止后续检查（中止按钮）。已完成
+    的检查照常返回，末尾追加一条 skip 状态的「诊断中止」记录。
+    """
     checks = list(ALL_CHECKS)
     if quick:
         checks = [c for c in checks if c not in (chk_dns_pollution, chk_ncsi_registry, chk_power, chk_ipv6, chk_wlan)]
@@ -436,6 +440,13 @@ def run_all(progress=None, quick=False) -> list:
     snap = take_snap()
     results = []
     for fn in checks:
+        if should_stop is not None and should_stop():
+            aborted = CheckResult("diag_aborted", "诊断中止", SKIP,
+                                  "已被用户中止，剩余检查未执行")
+            results.append(aborted)
+            if progress:
+                progress(aborted)
+            break
         try:
             res = fn(snap)
         except Exception as e:

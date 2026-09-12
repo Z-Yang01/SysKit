@@ -209,7 +209,7 @@ def test_worker_diagnosis_signal_chain(monkeypatch):
     expect = [CheckResult("real_conn", "真实连通性探测", "pass", "204探测:OK"),
               CheckResult("dns_cfg", "静态 DNS", "fail", "8.8.8.8", fix_ids=["dns_auto"])]
 
-    def fake_run_all(progress=None, quick=False):
+    def fake_run_all(progress=None, quick=False, should_stop=None):
         if progress:
             for r in expect:
                 progress(r)
@@ -309,6 +309,105 @@ def test_worker_exception_still_emits_done(monkeypatch):
     lw.done.connect(out.append)
     lw.run()
     assert out == [[]]                           # 异常后仍发 done，按钮可复位
+
+
+def test_combo_worker_cancel_skips_remaining(monkeypatch):
+    """回归：组合修复中止——cancel 后剩余动作跳过，all_done 照常发出。"""
+    from syskit import repairs
+    from syskit.repairs import RepairResult
+    from syskit.ui.workers import ComboWorker
+
+    executed = []
+
+    class _Act:
+        def __init__(self, name):
+            self.title = name
+
+        def execute(self, param):
+            executed.append(self.title)
+            return RepairResult(True, "ok")
+
+    acts = {aid: _Act(aid) for aid in ("a1", "a2", "a3")}
+    monkeypatch.setattr(repairs, "get_action", lambda aid: acts.get(aid))
+
+    cw = ComboWorker(["a1", "a2", "a3"])
+    cw.run()                                     # 不取消 → 全执行
+    assert executed == ["a1", "a2", "a3"] and cw.cancelled is False
+
+    executed.clear()
+    cw2 = ComboWorker(["a1", "a2", "a3"])
+    cw2.cancel()                                 # 预先取消 → 一项都不执行
+    done = []
+    cw2.all_done.connect(lambda: done.append(1))
+    cw2.run()
+    assert executed == [] and cw2.cancelled is True and done == [1]
+
+    # 运行中途取消：第 1 项执行后置位（模拟当前项完成后再取消）
+    executed.clear()
+    cw3 = ComboWorker(["a1", "a2", "a3"])
+    orig_execute = acts["a1"].execute
+
+    def exec_then_cancel(param):
+        r = orig_execute(param)
+        cw3.cancel()
+        return r
+
+    monkeypatch.setattr(acts["a1"], "execute", exec_then_cancel)
+    cw3.run()
+    assert executed == ["a1"]                    # 当前项完成后停止
+    assert cw3.cancelled is True
+
+
+def test_netcheck_run_all_should_stop(monkeypatch):
+    """run_all 的 should_stop：命中后停止并追加 skip 状态的「诊断中止」记录。"""
+    from syskit import netcheck
+    from syskit.netcheck import CheckResult, PASS
+
+    c1 = CheckResult("c1", "检查一", PASS, "ok")
+    c2 = CheckResult("c2", "检查二", PASS, "ok")
+    from syskit import snapshot as snap_mod
+    monkeypatch.setattr(netcheck, "ALL_CHECKS", [lambda s: c1, lambda s: c2])
+    monkeypatch.setattr(snap_mod, "take", lambda use_ps=True: object())
+    n = {"calls": 0}
+
+    def stop_after_first():
+        n["calls"] += 1
+        return n["calls"] > 1                    # 第 2 项前中止
+
+    out = netcheck.run_all(should_stop=stop_after_first)
+    assert [r.id for r in out] == ["c1", "diag_aborted"]
+    assert out[-1].status == "skip" and "中止" in out[-1].detail
+
+    assert [r.id for r in netcheck.run_all()] == ["c1", "c2"]   # 不传 → 原行为
+
+
+def test_diag_and_combo_stop_buttons(make_main_window, monkeypatch):
+    """停止按钮接线：busy 时启用、点击调用 worker.cancel、完成后禁用。"""
+    win = make_main_window()
+    assert not win.btn_diag_stop.isEnabled()
+    assert not win.btn_combo_stop.isEnabled()
+
+    class _FakeWorker:
+        def __init__(self):
+            self.cancel_called = 0
+
+        def cancel(self):
+            self.cancel_called += 1
+
+    win._diag_worker = _FakeWorker()
+    win._stop_diag()
+    assert win._diag_worker.cancel_called == 1
+    assert not win.btn_diag_stop.isEnabled()     # 点击后立即置灰防重复
+
+    class _FakeCombo(_FakeWorker):
+        def __init__(self):
+            super().__init__()
+            self.action_ids = ["a", "b"]
+
+    win._combo_worker = _FakeCombo()
+    win._stop_combo()
+    assert win._combo_worker.cancel_called == 1
+    assert not win.btn_combo_stop.isEnabled()
 
 
 # ---------------- dashboard_page.py ----------------
@@ -839,7 +938,7 @@ def make_main_window(qtbot, monkeypatch):
                     fix_ids=["fix_nlasvc"]),
     ]
 
-    def fake_run_all(progress=None, quick=False):
+    def fake_run_all(progress=None, quick=False, should_stop=None):
         if progress:
             for r in results:
                 progress(r)
