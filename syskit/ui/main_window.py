@@ -878,6 +878,7 @@ class MainWindow(QMainWindow):
                                 f"热键「{self.cmb_hotkey.currentText()}」无法识别（示例：Ctrl+Alt+K）。\n"
                                 "本次保存不更改全局热键，其余设置将继续保存。")
             hotkey_text = settings.load().get("palette_hotkey", "Ctrl+Alt+K")
+        previous_hotkey = settings.load().get("palette_hotkey", hotkey_text)  # 保存前快照（新键被占用时回退用）
         patch = {
             "auto_repair_enabled": self.chk_auto.isChecked(),
             "poll_interval_sec": self.spin_interval.value(),
@@ -909,10 +910,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, config.DISPLAY_NAME,
                                 f"设置写入失败：{e}\n本次改动在当前运行中仍生效，重启后会丢失。")
             return
-        # 命令面板热键即时重注册（失败静默降级：托盘菜单/Ctrl+K 仍可用）
+        # 命令面板热键即时重注册；新键被占用时回退旧键（避免全局热键全丢）
         from .palette import setup_global_hotkey, teardown_global_hotkey
         teardown_global_hotkey(self)
-        setup_global_hotkey(self)
+        if not setup_global_hotkey(self) and hotkey_text != previous_hotkey:
+            settings.save({"palette_hotkey": previous_hotkey})
+            self.cmb_hotkey.setCurrentText(previous_hotkey)
+            if setup_global_hotkey(self):
+                QMessageBox.information(
+                    self, config.DISPLAY_NAME,
+                    f"热键「{hotkey_text}」已被其他程序占用，已恢复为「{previous_hotkey}」。")
         # 主题即时切换
         if theme.is_dark() != self.chk_dark.isChecked():
             from PySide6.QtWidgets import QApplication

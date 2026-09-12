@@ -573,3 +573,16 @@ QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗�
   check_events.ps1 移入 tools/（内容已匹配 SysKit，崩溃排查实用）。
 - 文档内全部代码路径经脚本校验存在；check_events.ps1 实测可用（并证实 13:01 AppHang
   与两次 BEX64 同窗发生，同源判定成立）。
+
+### 补充12（同日）：bug 排查（真实使用路径行为盲区）
+
+- **fix(settings/hotkey)**：新热键被占用（格式合法但 RegisterHotKey 失败）时旧热键已注销
+  → 全局热键全丢。现 setup 失败自动回退旧键重注册并提示；修的过程中又发现并修正了
+  previous_hotkey 快照位置错误（原写在 settings.save 之后，读到的是新值）。
+- **fix(modes)**：场景模式静音/取消静音用 waveOutSetVolume 直接置 0/0xFFFFFFFF——
+  用户进模式前 30% 的音量，退出后变 100% 且原值永久丢失。现静音前
+  waveOutGetVolume 读当前音量存 settings（modes_prev_volume），取消静音恢复记录值；
+  无记录（非本工具的静音）保持旧行为置最大并注明；静音失败保留 stderr 截断详情。
+- **fix(cli)**：cmd_repair 的 combos 与 repairs.COMBOS 重复定义（未来改动会悄悄与 UI
+  分叉）→ 复用 COMBOS 同源。
+- 测试 +4（占用回退/原音量恢复/无记录分支/既有签名适配）；全量 775 例全绿；已重新打包。

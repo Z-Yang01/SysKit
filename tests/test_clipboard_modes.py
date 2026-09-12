@@ -188,21 +188,51 @@ class TestModeSteps:
         assert r["ok"] and "勿扰" in r["detail"]
 
     def test_set_mute_uses_ps(self, monkeypatch):
-        seen = {}
+        seen = []
 
         def fake_ps(script, timeout=40):
-            seen["script"] = script
+            seen.append(script)
+            if "waveOutGetVolume" in script:
+                return CmdResult(0, "1073741823\n", "")      # 模拟当前音量 25%
             return CmdResult(0, "", "")
 
         monkeypatch.setattr(modes.proc, "run_ps", fake_ps)
+        monkeypatch.setattr("syskit.settings.save", lambda patch: None)
+        monkeypatch.setattr("syskit.settings.load", lambda: {})
         r = modes.set_mute(True)
-        assert r["ok"]
-        assert "waveOutSetVolume" in seen["script"]
-        assert "0," in seen["script"] or "0)" in seen["script"]
+        assert r["ok"] and "已静音" in r["detail"]
+        assert any("waveOutGetVolume" in s for s in seen)    # 静音前先读原音量
+        assert any("waveOutSetVolume" in s and "0u" in s for s in seen)
+
+    def test_unmute_restores_previous_volume(self, monkeypatch):
+        """回归：取消静音必须恢复进模式前的音量，而不是置最大音量
+        （旧行为把用户 30% 的音量变成 100%）。"""
+        seen = []
+
+        def fake_ps(script, timeout=40):
+            seen.append(script)
+            return CmdResult(0, "", "")
+
+        monkeypatch.setattr(modes.proc, "run_ps", fake_ps)
+        monkeypatch.setattr("syskit.settings.load",
+                            lambda: {"modes_prev_volume": 805306368})  # ≈50%
+        r = modes.set_mute(False)
+        assert r["ok"] and "已恢复原音量" in r["detail"]
+        assert any("805306368" in s for s in seen)           # 恢复的是记录值
+        assert not any("0xFFFFFFFF" in s for s in seen)
+
+    def test_unmute_without_record_sets_max(self, monkeypatch):
+        # 无记录（非本工具做的静音）→ 保持旧行为置最大，并注明
+        monkeypatch.setattr(modes.proc, "run_ps",
+                            lambda script, timeout=40: CmdResult(0, "", ""))
+        monkeypatch.setattr("syskit.settings.load", lambda: {})
+        r = modes.set_mute(False)
+        assert r["ok"] and "未找到" in r["detail"]
 
     def test_set_mute_fail(self, monkeypatch):
         monkeypatch.setattr(modes.proc, "run_ps",
                             lambda *a, **k: CmdResult(1, "", "boom"))
+        monkeypatch.setattr("syskit.settings.load", lambda: {})
         r = modes.set_mute(False)
         assert r["ok"] is False
 

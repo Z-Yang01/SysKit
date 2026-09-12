@@ -38,14 +38,11 @@ def cmd_repair(args) -> int:
     if not admin.is_admin():
         log.error("修复操作需要管理员权限。请以管理员身份运行。")
         return 2
-    combos = {
-        "fast": ["flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan"],
-        "full": ["flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan", "power_off", "dns_auto", "ncsi_restore"],
-        "stack": ["winsock_reset", "ipstack_reset"],
-    }
-    ids = combos.get(args.combo) or ([args.combo] if repairs.get_action(args.combo) else None)
+    # 组合定义复用 repairs.COMBOS（与 UI 同源，避免两处定义悄悄分叉）
+    ids = (list(repairs.COMBOS[args.combo][1]) if args.combo in repairs.COMBOS
+           else ([args.combo] if repairs.get_action(args.combo) else None))
     if not ids:
-        log.error(f"未知修复项/组合: {args.combo}；可用: {', '.join(combos)} 或单项 {', '.join(repairs.ACTION_IDS)}")
+        log.error(f"未知修复项/组合: {args.combo}；可用: {', '.join(repairs.COMBOS)} 或单项 {', '.join(repairs.ACTION_IDS)}")
         return 2
     for fid in ids:
         act = repairs.get_action(fid)

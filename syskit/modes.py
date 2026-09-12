@@ -81,25 +81,51 @@ def set_notifications(enabled: bool) -> dict:
 
 # ---------------- 静音 ----------------
 
+_PS_AUDIO_PREAMBLE = (
+    "$sig = @'\n"
+    "using System.Runtime.InteropServices;\n"
+    "public class W {\n"
+    "  [DllImport(\"winmm.dll\")] public static extern int waveOutSetVolume(IntPtr h, uint v);\n"
+    "  [DllImport(\"winmm.dll\")] public static extern int waveOutGetVolume(IntPtr h, out uint v);\n"
+    "}\n"
+    "'@\n"
+    "Add-Type -MemberDefinition $sig -Name Wv -Namespace SysKitAudio -PassThru | Out-Null\n"
+)
+
+
 def set_mute(mute: bool) -> dict:
-    """默认输出设备静音/取消静音（PowerShell + winmm，无需管理员）。"""
-    vol = 0 if mute else 0xFFFFFFFF
-    script = (
-        "$sig = @'\n"
-        "using System.Runtime.InteropServices;\n"
-        "public class W {\n"
-        "  [DllImport(\"winmm.dll\")] public static extern int waveOutSetVolume(IntPtr h, uint v);\n"
-        "}\n"
-        "'@\n"
-        "Add-Type -MemberDefinition $sig -Name Wv -Namespace SysKitAudio -PassThru | Out-Null\n"
-        f"[SysKitAudio.Wv]::waveOutSetVolume([IntPtr]::Zero, {vol})\n"
-    )
-    r = proc.run_ps(script, timeout=15)
+    """默认输出设备静音/取消静音（PowerShell + winmm，无需管理员）。
+
+    静音前先读当前音量存入设置（modes_prev_volume），取消静音时恢复它——
+    而不是想当然地置最大音量（旧行为会把用户 30% 的音量变成 100%）。
+    """
+    from . import settings
+    if mute:
+        prev = None
+        r = proc.run_ps(_PS_AUDIO_PREAMBLE +
+                        "$v = 0u; [SysKitAudio.Wv]::waveOutGetVolume([IntPtr]::Zero, [ref]$v) | Out-Null; $v\n",
+                        timeout=15)
+        try:
+            prev = int(r.stdout.strip().split()[-1]) if r.ok and r.stdout.strip() else None
+        except (ValueError, IndexError):
+            prev = None
+        if prev is not None and 0 <= prev <= 0xFFFFFFFF:
+            settings.save({"modes_prev_volume": prev})
+        ok = proc.run_ps(_PS_AUDIO_PREAMBLE +
+                         "[SysKitAudio.Wv]::waveOutSetVolume([IntPtr]::Zero, 0u)\n",
+                         timeout=15).ok
+        detail = "已静音" if ok else (r.stderr or r.stdout)[-120:]
+        return _step("系统静音", ok, detail)
+    prev = settings.load().get("modes_prev_volume")
+    vol = prev if isinstance(prev, int) and 0 <= prev <= 0xFFFFFFFF else 0xFFFFFFFF
+    r = proc.run_ps(_PS_AUDIO_PREAMBLE +
+                    f"[SysKitAudio.Wv]::waveOutSetVolume([IntPtr]::Zero, {vol}u)\n",
+                    timeout=15)
     ok = bool(r.ok)
-    return _step(
-        "系统静音", ok,
-        ("已静音" if mute else "已取消静音") if ok else (r.stderr or r.stdout)[-120:],
-    )
+    note = "已恢复原音量" if ok and prev is not None else \
+           ("已取消静音（未找到进模式前的音量，已设为最大）" if ok else
+            (r.stderr or r.stdout)[-120:])
+    return _step("系统静音", ok, note)
 
 
 # ---------------- 常用软件 ----------------
