@@ -29,7 +29,12 @@ def _enable_crash_log():
 
 
 def _prepare_data_dirs():
-    """启动即建好数据目录；便携模式首次运行时从旧 %APPDATA% 位置迁移历史数据。"""
+    """启动即建好数据目录；便携模式首次运行时从旧 %APPDATA% 位置迁移历史数据。
+
+    反向场景（便携 → 非便携）不做自动回迁——避免覆盖 %APPDATA% 里可能更新的
+    数据（§16 原状态语义）；但若检测到安装目录 data\\ 中有历史数据且当前
+    数据目录为全新，必须记日志指明数据实际位置，防止用户误以为丢失。
+    """
     import shutil
 
     from ..logger import LOGGER
@@ -37,10 +42,23 @@ def _prepare_data_dirs():
         os.makedirs(config.APPDATA_DIR, exist_ok=True)
         os.makedirs(config.LOCALAPPDATA_DIR, exist_ok=True)
         if not getattr(config, "_PORTABLE", ""):
+            if getattr(sys, "frozen", False):
+                leftover_cfg = os.path.join(os.path.dirname(sys.executable),
+                                            "data", "config")
+                has_leftover = os.path.exists(os.path.join(leftover_cfg, "settings.json")) \
+                    or os.path.exists(os.path.join(leftover_cfg, "vault.db"))
+                fresh_current = not os.path.exists(
+                    os.path.join(config.APPDATA_DIR, "settings.json"))
+                if has_leftover and fresh_current:
+                    LOGGER.warning(
+                        "检测到安装目录 {} 中存在便携模式历史数据（settings/密码库/剪贴板），"
+                        "当前以非便携模式运行（数据目录 {}）。数据未丢失；如需沿用，"
+                        "请将上述目录内容复制到 {}，或重装时勾选「数据保存在安装目录」。",
+                        leftover_cfg, config.APPDATA_DIR, config.APPDATA_DIR)
             return
         old, new = config._APP_DATA_ROOT, config.APPDATA_DIR
         if not (os.path.isdir(old) and os.path.isdir(new)) or os.listdir(new):
-            return                         # 非便携 / 无旧数据 / 已有新数据（不覆盖）
+            return                         # 无旧数据 / 已有新数据（不覆盖）
         for name in ("settings.json", "vault.db", "vault.key",
                      "clipboard.json", "traffic.json", "events.json"):
             src = os.path.join(old, name)

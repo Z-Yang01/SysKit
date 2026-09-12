@@ -33,6 +33,43 @@ def test_normal_data_dirs_when_no_marker():
     assert cfg.BACKUP_DIR.startswith(cfg.LOCALAPPDATA_DIR)
 
 
+def test_non_portable_warns_on_leftover_portable_data(tmp_path, monkeypatch):
+    """回归：便携→非便携切换后，检测到安装目录 data\ 有历史数据且当前目录全新
+    → 必须记日志指明数据位置（防用户误以为丢失）；不自动回迁。"""
+    import os
+
+    from syskit import config as cfg
+    from syskit.ui import app as app_mod
+
+    app = tmp_path / "app"
+    data_cfg = app / "data" / "config"
+    data_cfg.mkdir(parents=True)
+    (data_cfg / "vault.db").write_text("db", encoding="utf-8")
+    current = tmp_path / "cur"          # 当前 %APPDATA%：全新（无 settings.json）
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(app / "SysKit.exe"))
+    monkeypatch.setattr(cfg, "_PORTABLE", "", raising=False)
+    monkeypatch.setattr(cfg, "APPDATA_DIR", str(current), raising=False)
+    monkeypatch.setattr(cfg, "LOCALAPPDATA_DIR", str(tmp_path / "curlocal"), raising=False)
+
+    warnings_log = []
+    monkeypatch.setattr("syskit.logger.LOGGER.warning",
+                        lambda msg, *a, **k: warnings_log.append(msg.format(*a, **k)))
+
+    app_mod._prepare_data_dirs()
+    assert len(warnings_log) == 1
+    assert "数据" in warnings_log[0] and str(data_cfg) in warnings_log[0]
+    # 当前目录已建好但不写任何迁移数据
+    assert os.path.isdir(current)
+
+    # 当前目录已有 settings.json（非全新）→ 不提示
+    warnings_log.clear()
+    (current / "settings.json").write_text("{}", encoding="utf-8")
+    app_mod._prepare_data_dirs()
+    assert warnings_log == []
+
+
 def test_vault_connect_creates_missing_dirs(tmp_path, monkeypatch):
     """回归：便携首启 data\config 不存在时，密码库自动建目录而不是报
     unable to open database file。"""
