@@ -111,33 +111,28 @@ class ClipboardHistory:
         self._load()
 
     def _load(self):
-        try:
-            with open(self._path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                items = []
-                for it in data:
-                    if isinstance(it, dict) and isinstance(it.get("text"), str):
-                        items.append({
-                            "ts": int(it.get("ts", 0)),
-                            "text": it["text"],
-                            "kind": it.get("kind") or "text",
-                            "pinned": bool(it.get("pinned", False)),
-                            "data": it.get("data", "") or "",
-                        })
-                self._items = items
-        except Exception:
-            self._items = []
+        """读取历史；DPAPI 密封容器为本格式，兼容旧明文文件（下次保存自动密封）。"""
+        from .secure_store import load_sealed_json
+        data, _sealed = load_sealed_json(self._path, [])
+        items = data if isinstance(data, list) else []
+        parsed = []
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("text"), str):
+                parsed.append({
+                    "ts": int(it.get("ts", 0)),
+                    "text": it["text"],
+                    "kind": it.get("kind") or "text",
+                    "pinned": bool(it.get("pinned", False)),
+                    "data": it.get("data", "") or "",
+                })
+        self._items = parsed
 
     def save(self):
         with _lock:
             try:
-                os.makedirs(config.APPDATA_DIR, exist_ok=True)
-                tmp = self._path + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(self._items, f, ensure_ascii=False)
-                os.replace(tmp, self._path)
-            except OSError:
+                from .secure_store import save_sealed_json
+                save_sealed_json(self._path, self._items)   # DPAPI 密封（绑定当前用户）
+            except Exception:
                 pass
 
     def add(self, text, kind: str = "text", data: str = "") -> bool:

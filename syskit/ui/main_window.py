@@ -842,7 +842,7 @@ class MainWindow(QMainWindow):
         self.spin_autolock.setRange(0, 240)
         self.spin_autolock.setValue(int(s.get("vault_autolock_min", 10)))
         self.spin_autolock.setSuffix(" 分钟")
-        self.spin_autolock.setToolTip("密码库解锁后自动重新锁定；0=不自动锁定")
+        self.spin_autolock.setToolTip("密码库自动重锁（DPAPI 免密模式）；主密码模式下自动对齐免验证窗口）")
         form3.addRow("密码库自动锁定", self.spin_autolock)
 
         self.cmb_hotkey = QComboBox()

@@ -31,7 +31,7 @@ UninstallDisplayIcon={app}\SysKit.exe
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescription: "附加任务："
-Name: "portabledata"; Description: "数据保存在安装目录（便携模式：设置/密码库/日志随目录整体搬迁）(&P)"; GroupDescription: "附加任务："
+Name: "portabledata"; Description: "数据保存在安装目录（便携模式：设置/密码库/日志随目录整体搬迁，卸载即清）(&P)"; GroupDescription: "附加任务："
 Name: "autostart"; Description: "开机自动启动（后台托盘守护）(&S)"; GroupDescription: "附加任务："; Flags: unchecked
 
 [Files]

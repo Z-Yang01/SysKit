@@ -169,6 +169,13 @@ def _patch_site_dialog(monkeypatch, name_value="", accept=True):
 
 
 def _select(page, lst, needle):
+    from PySide6.QtWidgets import QTableWidget
+    if isinstance(lst, QTableWidget):
+        for r in range(lst.rowCount()):
+            if needle in (lst.item(r, 0).text() or ""):
+                lst.selectRow(r)
+                return r
+        raise AssertionError(f"{needle} 不在表格中")
     for i in range(lst.count()):
         if needle in lst.item(i).text():
             lst.setCurrentRow(i)
@@ -204,7 +211,7 @@ class TestModelAndState:
         page._auto_lock()
         assert not page.crypto.is_unlocked
         assert "已锁定" in page.lbl_state.text()
-        assert page.lbl_detail.text() == "已自动锁定"
+        assert "已自动锁定" in page.lbl_detail.text()
 
     def test_refresh_sites_read_error_recovers(self, qtbot, seeded, monkeypatch):
         page = _page(qtbot)
@@ -222,7 +229,7 @@ class TestModelAndState:
 
     def test_current_acct_row_edges(self, qtbot, seeded, monkeypatch):
         page = _page(qtbot)
-        page.lst_accts.setCurrentRow(-1)                       # 构造时会自动选中行 0，先清掉
+        page.tbl_accts.setCurrentCell(-1, -1)                       # 构造时会自动选中行 0，先清掉
         assert page._current_acct_row() is None                # 未选中账号
         monkeypatch.setattr(page, "_selected_account_id", lambda: 99999)
         assert page._current_acct_row() is None                # 陈旧 id 不在模型中
@@ -231,16 +238,16 @@ class TestModelAndState:
         page = _page(qtbot)
         _select(page, page.lst_sites, "GitHub")
         page.refresh_accounts()
-        page.lst_accts.setCurrentRow(-1)
+        page.tbl_accts.setCurrentCell(-1, -1)
         page._on_acct_selected(-1)                             # 无选中 → 恢复默认提示
-        assert "双击复制密码" in page.lbl_detail.text()
+        assert "单击账号/密码/标签列即复制" in page.lbl_detail.text()
 
         gh = vault.search_sites("GitHub")[0]
         alice = next(a for a in vault.list_accounts(gh["id"])
                      if a["username"] == "alice")
         vault.mark_used(alice["id"])
         page.refresh_accounts()
-        row = _select(page, page.lst_accts, "alice")
+        row = _select(page, page.tbl_accts, "alice")
         assert row == 0                                        # 有 last_used 置顶无关，alice 按名序
         text = page.lbl_detail.text()
         assert "含TOTP" in text and "最近使用" in text and "alice" in text
@@ -518,7 +525,7 @@ class TestAccountFlows:
         _select(page, page.lst_sites, "GitHub")
         page.refresh_accounts()
 
-        page.lst_accts.setCurrentRow(-1)
+        page.tbl_accts.setCurrentCell(-1, -1)
         made = _patch_account_dialog(monkeypatch)
         page._edit_account()                                   # 无选中 → 不弹框
         assert made == []
@@ -528,7 +535,7 @@ class TestAccountFlows:
             page._edit_account()                               # 陈旧 id → 不弹框
             assert made == []
 
-        row = _select(page, page.lst_accts, "alice")
+        row = _select(page, page.tbl_accts, "alice")
         gh = vault.search_sites("GitHub")[0]
         alice = next(a for a in vault.list_accounts(gh["id"])
                      if a["username"] == "alice")
@@ -546,7 +553,7 @@ class TestAccountFlows:
                       if a["id"] == alice["id"])
         assert alice2["username"] == "alice2"
         assert vault.get_secret(alice["id"], page.crypto, "password") == "pw-alice"
-        assert page.lst_accts.currentRow() == row
+        assert page.tbl_accts.currentRow() == row
 
     def test_edit_account_locked_cancel_blocks(self, qtbot, seeded_master,
                                                monkeypatch):
@@ -554,7 +561,7 @@ class TestAccountFlows:
         qtbot.addWidget(page)
         _select(page, page.lst_sites, "GitHub")
         page.refresh_accounts()
-        page.lst_accts.setCurrentRow(0)
+        page.tbl_accts.selectRow(0)
         made = _patch_account_dialog(monkeypatch)
         _patch_ask(monkeypatch, [("", False)])                 # 解锁弹窗取消
         page._edit_account()
@@ -566,11 +573,11 @@ class TestAccountFlows:
         _select(page, page.lst_sites, "GitHub")
         page.refresh_accounts()
 
-        page.lst_accts.setCurrentRow(-1)
+        page.tbl_accts.setCurrentCell(-1, -1)
         page._del_account()                                    # 无选中 → no-op
         assert len(vault.list_accounts(vault.search_sites("GitHub")[0]["id"])) == 2
 
-        _select(page, page.lst_accts, "bob")
+        _select(page, page.tbl_accts, "bob")
         monkeypatch.setattr(QMessageBox, "question",
                             staticmethod(
                                 lambda *a, **k: QMessageBox.StandardButton.No))
@@ -583,17 +590,17 @@ class TestAccountFlows:
         page._del_account()                                    # Yes → 删除并刷新
         gh = vault.search_sites("GitHub")[0]
         assert [a["username"] for a in vault.list_accounts(gh["id"])] == ["alice"]
-        assert page.lst_accts.count() == 1
+        assert page.tbl_accts.rowCount() == 1
 
     def test_toggle_fav_paths(self, qtbot, seeded, monkeypatch):
         page = _page(qtbot)
         _select(page, page.lst_sites, "GitHub")
         page.refresh_accounts()
 
-        page.lst_accts.setCurrentRow(-1)
+        page.tbl_accts.setCurrentCell(-1, -1)
         page._toggle_fav()                                     # 无选中 → no-op
 
-        row = _select(page, page.lst_accts, "bob")
+        row = _select(page, page.tbl_accts, "bob")
         with monkeypatch.context() as m:
             m.setattr(vault, "toggle_favorite", lambda aid: False)
             refreshed = []
@@ -604,7 +611,7 @@ class TestAccountFlows:
         page._toggle_fav()                                     # 真实切换 → 置顶带星
         gh = vault.search_sites("GitHub")[0]
         assert vault.list_accounts(gh["id"])[0]["username"] == "bob"
-        assert page.lst_accts.item(0).text().startswith("★ ")
+        assert page.tbl_accts.item(0, 0).text().startswith("★ ")
 
 
 # ---------------- 敏感剪贴板 / 复制 / 查看 ----------------
@@ -659,7 +666,7 @@ class TestSensitiveClipboard:
         page = _page(qtbot)
         _select(page, page.lst_sites, "GitHub")
         page.refresh_accounts()
-        _select(page, page.lst_accts, "alice")
+        _select(page, page.tbl_accts, "alice")
         fake = _FakeQClipboard()
         monkeypatch.setattr(page, "_clip", lambda: fake)
 
@@ -675,7 +682,7 @@ class TestSensitiveClipboard:
         fake = _FakeQClipboard()
         monkeypatch.setattr(page, "_clip", lambda: fake)
 
-        page.lst_accts.setCurrentRow(-1)
+        page.tbl_accts.setCurrentCell(-1, -1)
         page._copy_username()                                  # 无选中行 → no-op
         assert fake.text_val == ""
         page._copy_password()                                  # 无账号 id → no-op
@@ -683,7 +690,7 @@ class TestSensitiveClipboard:
 
         _select(page, page.lst_sites, "GitHub")
         page.refresh_accounts()
-        _select(page, page.lst_accts, "alice")
+        _select(page, page.tbl_accts, "alice")
 
         def boom(*a, **k):
             raise VaultLockedError("locked")
@@ -700,7 +707,7 @@ class TestSensitiveClipboard:
         page = _page(qtbot)
         _select(page, page.lst_sites, "GitHub")
         page.refresh_accounts()
-        _select(page, page.lst_accts, "bob")                   # bob 无 TOTP
+        _select(page, page.tbl_accts, "bob")                   # bob 无 TOTP
         fake = _FakeQClipboard()
         monkeypatch.setattr(page, "_clip", lambda: fake)
         page._copy_totp()                                      # 空码 → 不复制
@@ -713,28 +720,31 @@ class TestSensitiveClipboard:
 
         page._showing_pw = True
         page._toggle_show_password()                           # 显示中 → 收起
-        assert page.btn_show_pw.text() == "查看"
+        assert page.btn_show_pw.text() == "显示"
         assert page._showing_pw is False
 
-        page.lst_accts.setCurrentRow(-1)
-        page._toggle_show_password()                           # 无选中 → no-op
-        assert page._showing_pw is False
+        page.tbl_accts.setCurrentCell(-1, -1)
+        page._toggle_show_password()                           # 无选中 → 整列显示（新语义）
+        assert page._showing_pw is True
+        page._hide_password()
 
-        _select(page, page.lst_accts, "alice")
+        _select(page, page.tbl_accts, "alice")
 
         def boom(*a, **k):
             raise VaultLockedError("locked")
 
         with monkeypatch.context() as m:
             m.setattr(vault, "get_secret", boom)
-            page._toggle_show_password()                       # 解密被锁 → 静默
-            assert page._showing_pw is False
+            page._toggle_show_password()                       # 解密被锁 → 单格优雅降级 ****
+            assert page._showing_pw is True
+            assert page.tbl_accts.item(0, 1).text() == "****"
+            page._hide_password()
 
         page._toggle_show_password()                           # 显示密码（DPAPI 免密：无需验证）
         assert page._showing_pw is True
         assert page.btn_show_pw.text() == "隐藏"
-        assert page.lbl_detail.text() == "密码：pw-alice（20 秒后自动隐藏）"
-        page._toggle_show_password()                           # 再点收起 → 明文清除
-        assert page.btn_show_pw.text() == "查看"
+        assert page.tbl_accts.item(0, 1).text() == "pw-alice"  # 密码列整列明文
+        page._toggle_show_password()                           # 再点收起 → 整列回 ****
+        assert page.btn_show_pw.text() == "显示"
         assert page._showing_pw is False
-        assert "pw-alice" not in page.lbl_detail.text()
+        assert page.tbl_accts.item(0, 1).text() == "****"

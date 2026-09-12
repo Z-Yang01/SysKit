@@ -224,8 +224,10 @@ def list_accounts(site_id: int, q: str = "") -> list:
         return [dict(r) for r in rows]
 
 
-def get_secret(account_id: int, crypto, field: str = "password") -> str:
-    """按需解密：field ∈ password|totp|notes。取用后更新 last_used_at。"""
+def get_secret(account_id: int, crypto, field: str = "password",
+               touch: bool = True) -> str:
+    """按需解密：field ∈ password|totp|notes。touch=True 更新 last_used_at
+    （复制语义）；整列明文显示等批量读取应传 False，避免 N 次写库。"""
     if field not in ("password", "totp", "notes"):
         raise ValueError(f"未知字段 {field}")
     col = {"password": "password_enc", "totp": "totp_enc", "notes": "notes_enc"}[field]
@@ -234,7 +236,8 @@ def get_secret(account_id: int, crypto, field: str = "password") -> str:
                            (account_id,)).fetchone()
     if not row or row[col] is None:
         return ""
-    mark_used(account_id)
+    if touch:
+        mark_used(account_id)
     return crypto.decrypt(row[col]).decode("utf-8", "replace")
 
 

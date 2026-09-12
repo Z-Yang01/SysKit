@@ -1,16 +1,22 @@
 """密码库页：左侧网站（容器）+ 右侧账号（条目）两级模型。
 
 - 搜索两级：网站框匹配名称/域名/别名/标签；账号框只过滤当前网站的 username/label。
-- 解锁语义：无主密码（DPAPI）全程免密；有主密码时冷启动首次解锁，
-  会话内添加/编辑不再验证；查看/复制密码在自动重锁后需再次解锁。
+- 解锁语义：无主密码（DPAPI）全程免密；有主密码时，验证一次进入信任窗口
+  （默认 30 分钟，settings.vault_trust_min），窗口内查看/复制不再重复索要；
+  窗口结束时自动重锁。添加/编辑永不弹验证。
+- 账号列表为三列表格（账号/密码/标签）：密码列未验证显示 ****，验证后「显示」
+  按钮明文 20 秒；单击单元格即复制对应值。
 - 密码/TOTP 复制走敏感剪贴板：不进剪贴板历史，TTL 到期自动清空（清前校验未被覆盖）。
 """
+import time
+
 from PySide6.QtCore import (QAbstractListModel, QModelIndex, QSortFilterProxyModel, Qt,
                             QTimer)
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QFormLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPushButton, QVBoxLayout, QWidget)
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QMessageBox, QPushButton, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import clipboard as clipboard_mod
 from .. import settings, vault
@@ -135,11 +141,19 @@ class VaultPage(QWidget):
         self.edt_acct.setPlaceholderText("搜索账号：用户名 / 标签（如 work、个人）")
         self.edt_acct.setClearButtonEnabled(True)
         rlay.addWidget(self.edt_acct)
-        self.lst_accts = QListWidget()
-        self.lst_accts.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.lst_accts.itemDoubleClicked.connect(lambda *_: self._copy_password())
-        rlay.addWidget(self.lst_accts, 1)
-        self.lbl_detail = QLabel("双击复制密码；查看/复制密码需验证主密码（未设主密码时免验证）；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
+        self.tbl_accts = QTableWidget(0, 3)
+        self.tbl_accts.setHorizontalHeaderLabels(["账号", "密码", "标签"])
+        self.tbl_accts.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tbl_accts.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_accts.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl_accts.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_accts.setAlternatingRowColors(True)
+        self.tbl_accts.verticalHeader().setVisible(False)
+        # 单击单元格即复制：账号列→用户名，密码列→密码（需主密码门），标签列→标签
+        self.tbl_accts.cellClicked.connect(self._on_acct_cell_clicked)
+        rlay.addWidget(self.tbl_accts, 1)
+        self.lbl_detail = QLabel("单击账号/密码/标签列即复制；密码列未解锁时显示 ****；"
+                                 "「显示」按钮明文 20 秒；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
         self.lbl_detail.setObjectName("hint")
         rlay.addWidget(self.lbl_detail)
         rrow = QHBoxLayout()
@@ -159,7 +173,7 @@ class VaultPage(QWidget):
         self.btn_copy_pw.clicked.connect(self._copy_password)
         self.btn_copy_totp = QPushButton("TOTP")
         self.btn_copy_totp.clicked.connect(self._copy_totp)
-        self.btn_show_pw = QPushButton("查看")
+        self.btn_show_pw = QPushButton("显示")
         self.btn_show_pw.clicked.connect(self._toggle_show_password)
         rrow.addWidget(self.btn_add_acct)
         rrow.addWidget(self.btn_edit_acct)
@@ -188,20 +202,21 @@ class VaultPage(QWidget):
         self.edt_acct.textChanged.connect(self.acct_proxy.set_kw)
         self.site_proxy.layoutChanged.connect(lambda: self._sync_list(
             self.lst_sites, self.site_proxy, self._selected_site_id()))
-        self.acct_proxy.layoutChanged.connect(lambda: self._sync_list(
-            self.lst_accts, self.acct_proxy, self._selected_account_id()))
+        self.acct_proxy.layoutChanged.connect(lambda: self._sync_acct_table())
         self.lst_sites.currentRowChanged.connect(self._on_site_selected)
-        self.lst_accts.currentRowChanged.connect(self._on_acct_selected)
+        self.tbl_accts.currentCellChanged.connect(
+            lambda *_: self._on_acct_selected(self.tbl_accts.currentRow()))
 
-        QShortcut(QKeySequence("Ctrl+Return"), self.lst_accts,
+        QShortcut(QKeySequence("Ctrl+Return"), self.tbl_accts,
                   activated=self._copy_username)
-        QShortcut(QKeySequence("Alt+T"), self.lst_accts, activated=self._copy_totp)
+        QShortcut(QKeySequence("Alt+T"), self.tbl_accts, activated=self._copy_totp)
 
         # 自动重锁
         self._autolock = QTimer(self)
         self._autolock.setSingleShot(True)
         self._autolock.timeout.connect(self._auto_lock)
         self._showing_pw = False
+        self._master_until = 0.0                 # 主密码信任窗口截止时间（会话内）
         self._show_timer = QTimer(self)          # 明文显示 20 秒后自动隐藏
         self._show_timer.setSingleShot(True)
         self._show_timer.timeout.connect(self._hide_password)
@@ -239,16 +254,24 @@ class VaultPage(QWidget):
         self._hide_password()
 
     def _restart_autolock(self):
+        """调度自动重锁。主密码模式下对齐信任窗口（到期即锁）；DPAPI 模式用设置值。"""
+        if not self.crypto.is_unlocked:
+            self._autolock.stop()
+            return
+        if self.crypto.has_master_password() and self._master_until > time.time():
+            self._autolock.start(max(1000, int((self._master_until - time.time()) * 1000)))
+            return
         minutes = int(settings.load().get("vault_autolock_min", 10))
-        if minutes > 0 and self.crypto.is_unlocked:
+        if minutes > 0:
             self._autolock.start(minutes * 60_000)
         else:
             self._autolock.stop()
 
     def _auto_lock(self):
         self.crypto.lock()
+        self._master_until = 0.0
         self._refresh_state()
-        self.lbl_detail.setText("已自动锁定")
+        self.lbl_detail.setText("已自动锁定（超过免验证窗口）")
 
     def refresh_sites(self, keep_id=None):
         try:
@@ -287,8 +310,79 @@ class VaultPage(QWidget):
         return item.data(Qt.UserRole) if item else None
 
     def _selected_account_id(self):
-        item = self.lst_accts.currentItem()
-        return item.data(Qt.UserRole) if item else None
+        r = self.tbl_accts.currentRow()
+        if r < 0:
+            return None
+        it = self.tbl_accts.item(r, 0)
+        return it.data(Qt.UserRole) if it else None
+
+    def _sync_acct_table(self, keep_id=None):
+        """把过滤代理的账号行同步到三列表格（账号/密码/标签）。
+
+        密码列按 _showing_pw 显示明文或 ****；每个单元格带悬停提示与
+        UserRole（账号 id），单击即复制对应值。
+        """
+        t = self.tbl_accts
+        t.blockSignals(True)
+        t.setRowCount(0)
+        for i in range(self.acct_proxy.rowCount()):
+            d = self.acct_proxy.index(i, 0).data(Qt.UserRole)
+            row = next((r for r in self.acct_model._rows if r.get("id") == d), None)
+            if row is None:
+                continue
+            r = t.rowCount()
+            t.insertRow(r)
+            who = row.get("username") or row.get("label") or "（未命名）"
+            c0 = QTableWidgetItem((FAV if row.get("is_favorite") else "") + who)
+            c0.setData(Qt.UserRole, row["id"])
+            c0.setToolTip("单击复制用户名")
+            t.setItem(r, 0, c0)
+            c1 = QTableWidgetItem(self._pw_display(row["id"]))
+            c1.setData(Qt.UserRole, row["id"])
+            c1.setToolTip(self._pw_tooltip())
+            t.setItem(r, 1, c1)
+            c2 = QTableWidgetItem(row.get("label") or "")
+            c2.setData(Qt.UserRole, row["id"])
+            c2.setToolTip("单击复制标签")
+            t.setItem(r, 2, c2)
+            if keep_id is not None and row["id"] == keep_id:
+                t.selectRow(r)
+        t.blockSignals(False)
+        if t.currentRow() < 0 and t.rowCount():
+            t.selectRow(0)
+
+    def _pw_display(self, account_id: int) -> str:
+        """密码列文本：明文模式（_showing_pw）显示真实密码，否则 ****。"""
+        if not self._showing_pw:
+            return "****"
+        try:
+            return vault.get_secret(account_id, self.crypto, "password", touch=False) or "****"
+        except VaultLockedError:
+            return "****"
+
+    def _pw_tooltip(self) -> str:
+        if self._showing_pw:
+            return "单击复制密码"
+        return ("**** — 单击复制密码" if not self.crypto.has_master_password()
+                else "**** — 单击复制密码（需验证主密码）")
+
+    def _on_acct_cell_clicked(self, r, c):
+        """单击单元格即复制：0=用户名（免验证），1=密码（主密码门），2=标签。"""
+        if self.tbl_accts.currentRow() != r:
+            return
+        aid = self._selected_account_id()
+        if aid is None:
+            return
+        if c == 0:
+            self._copy_username()
+        elif c == 1:
+            self._copy_password()
+        elif c == 2:
+            row = self._current_acct_row()
+            clip = self._clip()
+            if row and clip and row.get("label"):
+                clip.setText(row["label"])
+                self.lbl_detail.setText("标签已复制")
 
     def _current_acct_row(self):
         aid = self._selected_account_id()
@@ -307,16 +401,16 @@ class VaultPage(QWidget):
         rows = vault.list_accounts(sid) if sid is not None else []
         self.acct_model.set_rows(rows)
         keep = self._selected_account_id()
-        self._sync_list(self.lst_accts, self.acct_proxy, keep)
-        if self.lst_accts.currentRow() < 0 and self.lst_accts.count():
-            self.lst_accts.setCurrentRow(0)
-        self._on_acct_selected(self.lst_accts.currentRow())
+        self._sync_acct_table(keep)
+        if self.tbl_accts.currentRow() < 0 and self.tbl_accts.rowCount():
+            self.tbl_accts.selectRow(0)
+        self._on_acct_selected(self.tbl_accts.currentRow())
 
     def _on_acct_selected(self, row):
-        self._hide_password()
         r = self._current_acct_row()
         if r is None:
-            self.lbl_detail.setText("双击复制密码；查看/复制需验证主密码；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
+            self.lbl_detail.setText("单击账号/密码/标签列即复制；密码列未解锁时显示 ****；"
+                                    "「显示」按钮明文 20 秒；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
             return
         extra = []
         if r.get("has_totp"):
@@ -356,6 +450,7 @@ class VaultPage(QWidget):
 
     def _lock_clicked(self):
         self.crypto.lock()
+        self._master_until = 0.0                # 手动锁定：清除免验证窗口
         self._refresh_state()
 
     def _set_master(self):
@@ -514,11 +609,15 @@ class VaultPage(QWidget):
             clip.clear()
 
     def _require_master_verified(self) -> bool:
-        """查看/复制密码的安全门：设置了主密码则每次都验证；
-        DPAPI 免密模式（无主密码可验证）仅要求解锁。
-        锁定态只弹一次框：输入的密码同时用于解锁与验证。"""
+        """查看/复制密码的安全门：主密码验证一次进入信任窗口（默认 30 分钟），
+        窗口内不再重复索要；DPAPI 免密模式（无主密码可验证）仅要求解锁。"""
         if not self.crypto.has_master_password():
             return self._ensure_unlocked()
+        if time.time() < self._master_until:
+            if not self.crypto.is_unlocked:      # 窗口内但已被锁定（不应发生）：重新解锁
+                self._ensure_unlocked()
+            self._restart_autolock()
+            return self.crypto.is_unlocked
         if not self.crypto.is_unlocked:
             pwd = self._ask_password("解锁密码库")
             if pwd is None:
@@ -526,8 +625,8 @@ class VaultPage(QWidget):
             if not self.crypto.unlock(pwd):
                 QMessageBox.warning(self, "SysKit", "主密码错误")
                 return False
+            self._grant_trust()
             self._refresh_state()
-            self._restart_autolock()
             return True
         pwd = self._ask_password("验证主密码")
         if pwd is None:
@@ -535,8 +634,14 @@ class VaultPage(QWidget):
         if not self.crypto.verify_password(pwd):
             QMessageBox.warning(self, "SysKit", "主密码错误")
             return False
-        self._restart_autolock()
+        self._grant_trust()
         return True
+
+    def _grant_trust(self):
+        """验证通过：开启免验证窗口并让自动重锁对齐窗口截止时间。"""
+        minutes = max(1, int(settings.load().get("vault_trust_min", 30)))
+        self._master_until = time.time() + minutes * 60
+        self._restart_autolock()
 
     def _copy_password(self):
         aid = self._selected_account_id()
@@ -571,30 +676,28 @@ class VaultPage(QWidget):
             self._copy_sensitive(code, f"TOTP {code} 已复制")
 
     def _toggle_show_password(self):
-        """一键显示/隐藏：显示前验证主密码（已设置时），明文 20 秒后自动隐藏。"""
+        """一键显示/隐藏：验证主密码（信任窗口内免验证）后，密码列整列明文
+        （账号：密码 并排显示），明文 20 秒后自动隐藏回 ****。"""
         if self._showing_pw:
             self._hide_password()
-            self.lbl_detail.setText("密码已隐藏")
+            self.lbl_detail.setText("密码已隐藏（显示 ****）")
             return
-        aid = self._selected_account_id()
-        if aid is None or not self._require_master_verified():
-            return
-        try:
-            pw = vault.get_secret(aid, self.crypto, "password")
-        except VaultLockedError:
+        if not self._require_master_verified():
             return
         self._showing_pw = True
         self.btn_show_pw.setText("隐藏")
-        self.lbl_detail.setText(f"密码：{pw}（20 秒后自动隐藏）")
+        self._sync_acct_table(self._selected_account_id())   # 重渲染密码列明文
+        self.lbl_detail.setText("密码明文显示 20 秒后自动隐藏；单击密码格复制")
         self._show_timer.start(20_000)
 
     def _hide_password(self):
         was = self._showing_pw
         self._show_timer.stop()
         self._showing_pw = False
-        self.btn_show_pw.setText("查看")
+        self.btn_show_pw.setText("显示")
         if was:
-            self.lbl_detail.setText("密码已隐藏")
+            self._sync_acct_table(self._selected_account_id())   # 整列回 ****
+            self.lbl_detail.setText("密码已隐藏（显示 ****）")
 
 
 class _SiteDialog(QDialog):

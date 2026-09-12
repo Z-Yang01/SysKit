@@ -63,6 +63,19 @@ class TestClipboardHistory:
 
     # ---------------- 新特性：kind / 置顶 / 搜索 / 敏感 ----------------
 
+    def test_clipboard_file_encrypted_at_rest(self, tmp_path, monkeypatch):
+        """回归：clipboard.json 落盘为 DPAPI 密封容器，磁盘上不含明文历史。"""
+        monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
+        h = clip_mod.ClipboardHistory()
+        h.add("secret-clipboard-content")
+        raw = (tmp_path / "clipboard.json").read_text(encoding="utf-8")
+        assert "secret-clipboard-content" not in raw
+        outer = json.loads(raw)
+        assert outer["enc"] == "dpapi"
+        # 重启（新实例）仍可读回
+        h2 = clip_mod.ClipboardHistory()
+        assert h2.texts() == ["secret-clipboard-content"]
+
     def test_kind_entry_roundtrip(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
         h1 = clip_mod.ClipboardHistory()
