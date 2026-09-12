@@ -398,6 +398,42 @@ class TestVaultPage:
         page.refresh_accounts()
         return page
 
+    def test_edit_dialog_prefills_and_preserves_fields(self, qtbot, seeded, monkeypatch):
+        """P0 回归：编辑对话框必须回填现有值；只改密码不得清空用户名/标签/TOTP/备注
+        （曾因对话框不回填、保存用空串覆盖造成静默数据丢失）。"""
+        from syskit.ui import vault_page as vp_mod
+        page = self._page(qtbot)
+        page.refresh_sites()
+        self._select_site(page, "GitHub")
+        page.refresh_accounts()
+        self._select_acct(page, "alice")
+
+        real_dialog = vp_mod._AccountDialog
+        made = []
+
+        def fake_dialog(parent=None, edit=False, account=None):
+            d = real_dialog(parent, edit=edit, account=account)
+            d.edt_password.setText("pw-new")
+            made.append((dict(account or {}), d))
+            monkeypatch.setattr(d, "exec", lambda: 1)
+            return d
+
+        monkeypatch.setattr(vp_mod, "_AccountDialog", fake_dialog)
+        page._edit_account()
+        acct_in, dlg = made[0]
+        # 对话框回填现有值
+        assert acct_in["username"] == "alice" and acct_in["label"] == "work"
+        assert dlg.edt_username.text() == "alice"
+        assert dlg.edt_label.text() == "work"
+        # 只改密码保存 → 其余字段原值保留
+        gh = vault.search_sites("GitHub")[0]
+        alice = next(a for a in vault.list_accounts(gh["id"]) if a["username"] == "alice")
+        assert vault.get_secret(alice["id"], page.crypto, "password") == "pw-new"
+        assert vault.get_secret(alice["id"], page.crypto, "totp") == RFC_SECRET
+        row = next(a for a in vault.list_accounts(gh["id"]) if a["id"] == alice["id"])
+        assert row["username"] == "alice" and row["label"] == "work"
+        assert vault.get_secret(alice["id"], page.crypto, "notes") == "n1"
+
     def test_copy_password_master_trust_window(self, qtbot, monkeypatch):
         """验证主密码一次 → 免重复输入窗口；窗口外再次索要；错误密码拒绝。"""
         import time as _t

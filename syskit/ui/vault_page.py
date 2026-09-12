@@ -202,14 +202,16 @@ class VaultPage(QWidget):
         self.edt_acct.textChanged.connect(self.acct_proxy.set_kw)
         self.site_proxy.layoutChanged.connect(lambda: self._sync_list(
             self.lst_sites, self.site_proxy, self._selected_site_id()))
-        self.acct_proxy.layoutChanged.connect(lambda: self._sync_acct_table())
+        self.acct_proxy.layoutChanged.connect(lambda: self._sync_acct_table(
+            self._selected_account_id()))
         self.lst_sites.currentRowChanged.connect(self._on_site_selected)
         self.tbl_accts.currentCellChanged.connect(
             lambda *_: self._on_acct_selected(self.tbl_accts.currentRow()))
 
-        QShortcut(QKeySequence("Ctrl+Return"), self.tbl_accts,
-                  activated=self._copy_username)
-        QShortcut(QKeySequence("Alt+T"), self.tbl_accts, activated=self._copy_totp)
+        for _ks, _fn in ((QKeySequence("Ctrl+Return"), self._copy_username),
+                         (QKeySequence("Alt+T"), self._copy_totp)):
+            sc = QShortcut(_ks, self.tbl_accts, activated=_fn)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)   # 仅表格聚焦时生效，避免隐藏页误触
 
         # 自动重锁
         self._autolock = QTimer(self)
@@ -394,6 +396,7 @@ class VaultPage(QWidget):
         return None
 
     def _on_site_selected(self, row):
+        self._hide_password()      # 换站收起明文（不残留跨站明文）
         self.refresh_accounts()
 
     def refresh_accounts(self):
@@ -525,6 +528,18 @@ class VaultPage(QWidget):
 
     # ---------------- 账号操作 ----------------
 
+    def _current_totp_or_blank(self, aid):
+        try:
+            return vault.get_secret(aid, self.crypto, "totp", touch=False)
+        except VaultLockedError:
+            return ""
+
+    def _current_notes_or_blank(self, aid):
+        try:
+            return vault.get_secret(aid, self.crypto, "notes", touch=False)
+        except VaultLockedError:
+            return ""
+
     def _add_account(self):
         sid = self._selected_site_id()
         if sid is None:
@@ -559,7 +574,9 @@ class VaultPage(QWidget):
             return
         if not self._ensure_unlocked():
             return
-        dlg = _AccountDialog(self, edit=True)
+        dlg = _AccountDialog(self, edit=True, account={
+            "username": cur.get("username") or "", "label": cur.get("label") or "",
+            "totp_secret": self._current_totp_or_blank(aid), "notes": self._current_notes_or_blank(aid)})
         if dlg.exec() != QDialog.Accepted:
             return
         f = dlg.fields()
@@ -736,19 +753,26 @@ class _SiteDialog(QDialog):
 
 
 class _AccountDialog(QDialog):
-    def __init__(self, parent=None, edit: bool = False):
+    def __init__(self, parent=None, edit: bool = False, account: dict = None):
         super().__init__(parent)
         self.setWindowTitle("编辑账号" if edit else "添加账号")
         form = QFormLayout(self)
+        acct = account or {}
         self.edt_label = QLineEdit()
         self.edt_label.setPlaceholderText("工作、个人、小号…")
+        self.edt_label.setText(acct.get("label") or "")
         self.edt_username = QLineEdit()
+        self.edt_username.setText(acct.get("username") or "")
         self.edt_password = QLineEdit()
         self.edt_password.setEchoMode(QLineEdit.Password)
         self.edt_password.setPlaceholderText("留空 = 不修改" if edit else "")
         self.edt_totp = QLineEdit()
+        self.edt_totp = QLineEdit()
         self.edt_totp.setPlaceholderText("Base32 密钥（可选）")
+        self.edt_totp.setEchoMode(QLineEdit.Password)
+        self.edt_totp.setText((acct.get("totp_secret") or "") if edit else "")
         self.edt_notes = QLineEdit()
+        self.edt_notes.setText(acct.get("notes") or "")
         form.addRow("标签", self.edt_label)
         form.addRow("用户名", self.edt_username)
         form.addRow("密码", self.edt_password)

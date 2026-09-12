@@ -219,6 +219,28 @@ class StartupTab(QWidget):
 
 # ---------------- 电池 ----------------
 
+class _BatteryWorker(QThread):
+    """电池报告查询（PowerShell CIM，最坏 30s）——后台执行避免冻结 UI。"""
+
+    got = Signal(str)               # 原始 stdout；无论成败都发
+
+    def run(self):
+        from .. import proc
+        script = (
+            "$d=(Get-CimInstance -Namespace root/wmi -ClassName BatteryStaticData "
+            "-ErrorAction SilentlyContinue | Select-Object -First 1).DesignedCapacity; "
+            "$f=(Get-CimInstance -Namespace root/wmi -ClassName BatteryFullChargedCapacity "
+            "-ErrorAction SilentlyContinue | Select-Object -First 1).FullChargedCapacity; "
+            "$r=(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue "
+            "| Select-Object -First 1).EstimatedChargeRemaining; "
+            "@($d,$f,$r) -join ','")
+        try:
+            r = proc.run_ps(script, timeout=30)
+            self.got.emit(r.stdout or "")
+        except Exception:
+            self.got.emit("")
+
+
 class BatteryTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -243,6 +265,7 @@ class BatteryTab(QWidget):
         lay.addWidget(self.lbl_note)
         lay.addStretch(1)
         self._initial_refreshed = False   # 懒加载：首次显示本 Tab 才查电池（构造期不跑 PowerShell）
+        self._bw = None                   # worker 空闲哨兵（防重入）
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -251,17 +274,16 @@ class BatteryTab(QWidget):
             self.refresh()
 
     def refresh(self):
-        from .. import proc
-        script = (
-            "$d=(Get-CimInstance -Namespace root/wmi -ClassName BatteryStaticData "
-            "-ErrorAction SilentlyContinue | Select-Object -First 1).DesignedCapacity; "
-            "$f=(Get-CimInstance -Namespace root/wmi -ClassName BatteryFullChargedCapacity "
-            "-ErrorAction SilentlyContinue | Select-Object -First 1).FullChargedCapacity; "
-            "$r=(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue "
-            "| Select-Object -First 1).EstimatedChargeRemaining; "
-            "@($d,$f,$r) -join ','")
-        r = proc.run_ps(script, timeout=30)
-        parts = r.stdout.strip().split(",")
+        if self._bw is not None:
+            return
+        self.lbl_note.setText("查询中…（PowerShell CIM，最长 30 秒）")
+        self._bw = _BatteryWorker()
+        self._bw.got.connect(self._on_got)
+        self._bw.start()
+
+    def _on_got(self, stdout: str):
+        self._bw = None
+        parts = (stdout or "").strip().split(",")
         try:
             design = int(parts[0]) if len(parts) > 0 and parts[0].strip().isdigit() else None
             full = int(parts[1]) if len(parts) > 1 and parts[1].strip().isdigit() else None
@@ -570,6 +592,10 @@ class ClipboardTab(QWidget):
 
     def _on_clip_change(self):
         if not self.chk_watch.isChecked():
+            try:
+                self._last = self._clip.text() or ""   # 与隐私暂停同语义：不补录
+            except Exception:
+                pass
             return
         try:
             text = self._clip.text() or ""

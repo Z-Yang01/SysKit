@@ -910,6 +910,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, config.DISPLAY_NAME,
                                 f"设置写入失败：{e}\n本次改动在当前运行中仍生效，重启后会丢失。")
             return
+        self._tray_rate = bool(patch["tray_rate_enabled"])   # 托盘速率开关即时生效
         # 命令面板热键即时重注册；新键被占用时回退旧键（避免全局热键全丢）
         from .palette import setup_global_hotkey, teardown_global_hotkey
         teardown_global_hotkey(self)
@@ -962,7 +963,9 @@ class MainWindow(QMainWindow):
     def _reload_log(self):
         if not hasattr(self, "txt_log"):
             return
-        if self.stack.currentIndex() != 8:   # 仅日志页激活时刷新
+        # 构造期首次调用时 page_logs 尚未赋值（_build_log_tab 内部）
+        if getattr(self, "page_logs", None) is None                 or self.stack.currentWidget() is not self.page_logs:
+            return
             return
         name = "error.log" if getattr(self, "cmb_log_src", None) and self.cmb_log_src.currentIndex() == 1 else "syskit.log"
         path = os.path.join(config.LOG_DIR, name)
@@ -1147,6 +1150,13 @@ class MainWindow(QMainWindow):
             self.mon.join(3000)           # Monitor 已修复 _stop 覆盖，join 可用
         except RuntimeError:
             pass
+        # 页面内嵌 worker（剪贴板规则动作，如归属地查询 ≤5s）：退出前等待
+        from PySide6.QtWidgets import QApplication as _QApp
+        from .system_page import ClipboardTab
+        for w in _QApp.allWidgets():
+            if isinstance(w, ClipboardTab) and getattr(w, "_bg", None):
+                w._bg.wait(3000)
+                w._bg = None
         # 页面级 worker（诊断/修复/组合/快照）：退出前等待，杜绝退出期 qFatal
         for attr in ("_snap_worker", "_diag_worker", "_repair_worker", "_combo_worker"):
             w = getattr(self, attr, None)

@@ -525,6 +525,7 @@ class PortTab(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._worker = None
+        self._auto_paused = False
         self._initial_refreshed = False   # 懒加载：首次显示本 Tab 才扫描（启动期不做端口枚举）
 
     def showEvent(self, event):
@@ -532,6 +533,16 @@ class PortTab(QWidget):
         if not self._initial_refreshed:
             self._initial_refreshed = True
             self.refresh()
+        if self.chk_auto.isChecked() or getattr(self, "_auto_paused", False):
+            self.chk_auto.setChecked(True)
+            self._timer.start(5000)      # 页面重新可见：恢复自动刷新
+            self._auto_paused = False
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self._timer.isActive():       # 页面不可见：停表省 netstat/CPU
+            self._timer.stop()
+            self._auto_paused = True
 
     def refresh(self):
         if self._worker:
@@ -751,6 +762,9 @@ class HostsTab(QWidget):
             ipaddress.ip_address(ip)
         except ValueError:
             QMessageBox.warning(self, "SysKit", f"IP 格式不合法：{ip}")
+            return
+        if hostsed.find_entry(self._entries, host) >= 0:
+            QMessageBox.warning(self, "SysKit", f"主机名 {host} 已存在（启用或禁用状态），请先删除或直接启用。")
             return
         hostsed.add_entry(self._entries, ip, host, self.edt_cmt.text())
         self.edt_ip.clear()

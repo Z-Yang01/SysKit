@@ -789,6 +789,8 @@ def test_battery_tab_both_branches(qtbot, monkeypatch):
     from syskit.ui.system_page import BatteryTab
     tab = BatteryTab()                            # 懒加载：构造期无查询
     qtbot.addWidget(tab)
+    monkeypatch.setattr("syskit.ui.system_page._BatteryWorker.start",
+                        lambda self: self.run())            # worker 同步执行（项目惯例）
     tab.refresh()                                 # autouse fake run_ps → 无电池分支
     assert "未检测到电池" in tab.lbl_design.text()
 
@@ -1031,7 +1033,7 @@ def test_main_window_show_switch_all_pages_and_close(main_win):
         win.switch_page(idx)
         QApplication.processEvents()
         assert win.stack.currentIndex() == idx
-    win.switch_page(8)                            # 日志页：隔离环境无日志文件 → 占位文案
+    win.switch_page(9)                            # 日志页（守卫按对象比较；曾因旧索引 8 长期假绿）
     QApplication.processEvents()
     assert "syskit.log" in win.txt_log.toPlainText()
     # 点击侧边栏全部行（分组行 UserRole=None 不应崩溃）

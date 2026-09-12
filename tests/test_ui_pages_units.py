@@ -478,7 +478,7 @@ def test_mw_monitor_settings_logs_then_quit(main_win, monkeypatch, qtbot):
     os.makedirs(config.LOG_DIR, exist_ok=True)
     with open(os.path.join(config.LOG_DIR, "syskit.log"), "w", encoding="utf-8") as f:
         f.write("2026-09-11 INFO SysKit 启动\n" * 3)
-    win.switch_page(8)
+    win.switch_page(9)                            # 日志页（守卫按对象比较；曾因旧索引 8 假绿）
     win._reload_log()
     assert "SysKit 启动" in win.txt_log.toPlainText()
     win.cmb_log_src.setCurrentIndex(1)                # error.log 尚无内容

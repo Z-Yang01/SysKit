@@ -140,8 +140,8 @@ def _patch_account_dialog(monkeypatch, edit_vals=None, accept=True):
     real = vp_mod._AccountDialog
     edit_vals = edit_vals or {}
 
-    def factory(parent=None, edit=False):
-        d = real(parent, edit=edit)
+    def factory(parent=None, edit=False, account=None):
+        d = real(parent, edit=edit, account=account)
         for attr, val in edit_vals.items():
             getattr(d, attr).setText(val)
         monkeypatch.setattr(d, "exec", lambda: 1 if accept else 0)

@@ -680,3 +680,22 @@ QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗�
 - **验证**：vault/secure_store 加密路径测试（真实 AESGCM+DPAPI）→ 全量 784 例全绿 →
   打包（PyInstaller hook 正确收集 cryptography 50 的 _rust.pyd）→ exe 冒烟无 QtFATAL。
 - requirements.txt 注明 cryptography 验证基线。
+
+### 补充21（同日）：多子代理查 bug 第一批（UI 状态机维度）——P0 一枚 + P1 两枚 + P3 批量
+
+- **P0 编辑账号清空数据**：_AccountDialog 不回填现有值，保存用空串覆盖 username/label/
+  TOTP/notes（密码例外）——静默不可逆丢失。修：对话框接 account 参数回填（TOTP 回填框
+  密码遮蔽），_edit_account 传现有值（totp/notes 解密回填 touch=False）。此缺陷曾被
+  "假对话框预填"的旧测试掩盖——mock 恰好绕过真缺陷的实证。
+- **P1 面板绕过密码门**：命令面板"复制密码"只 _ensure_unlocked，绕过 _require_master_verified
+  信任窗口门 → 面板路径改走同一道门。
+- **P1 日志页守卫旧索引**：_reload_log 硬编码 currentIndex()!=8（密码库页插入前的旧页码，
+  现日志=9）→ 日志页刷新/换源全失效、设置页反而空转。改为对象比较 page_logs + 构造期
+  属性守卫；两处 switch_page(8) 假绿测试修正为 9（git 考古确认守卫写于密码库页插入前）。
+- **P2 BatteryTab 异步化**：首显查询从 UI 线程同步 PowerShell（最长 30s 冻结）改
+  _BatteryWorker 后台 + got 信号回填；防重入哨兵。
+- **P3 批量**：明文跨站残留（换站收起）、账号过滤选中保持、直关监听复选框同步 _last
+  （不补录语义统一）、PortTab hideEvent 停自动刷新表、Hosts 加条目查重、剪贴板规则
+  动作 _bg 纳入 quit_app 等待、Ctrl+Return/Alt+T 限定 WidgetWithChildren 作用域、
+  autostart 变更移到 settings.save 之后（消除半完成态）、托盘速率开关即时生效。
+- 测试：+3 新回归（编辑回填/表格掩码单击复制/电池懒加载+异步），全量 **787 例全绿**。

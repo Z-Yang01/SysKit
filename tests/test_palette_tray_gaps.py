@@ -457,14 +457,14 @@ class TestPaletteCopyCallbacks:
         win = _FakeWindow()
         win.page_vault = SimpleNamespace(
             crypto=crypto,
-            _ensure_unlocked=lambda: False,                   # 用户取消解锁
+            _require_master_verified=lambda: False,           # 用户取消验证
             _copy_sensitive=lambda t, note: copied.append(t))
         pal, _ = _palette(qtbot, win)
         pal._copy_vault_password(aid)
         assert copied == []
 
         win.page_vault = SimpleNamespace(
-            crypto=crypto, _ensure_unlocked=lambda: True,
+            crypto=crypto, _require_master_verified=lambda: True,
             _copy_sensitive=lambda t, note: copied.append(t))
         monkeypatch.setattr(vault_mod, "get_secret",
                             lambda *a, **k: (_ for _ in ()).throw(VaultLockedError("locked")))
@@ -481,7 +481,7 @@ class TestPaletteCopyCallbacks:
         copied = []
         win = _FakeWindow()
         win.page_vault = SimpleNamespace(
-            crypto=crypto, _ensure_unlocked=lambda: True,
+            crypto=crypto, _require_master_verified=lambda: True,
             _copy_sensitive=lambda t, note: copied.append((t, note)))
         pal, _ = _palette(qtbot, win)
         pal._copy_vault_password(aid)

@@ -898,6 +898,8 @@ def test_battery_tab_full_data_green_health(qtbot, monkeypatch):
 
     monkeypatch.setattr(proc, "run_ps",
                         lambda script, timeout=30: proc.CmdResult(0, "45000,40000,77", ""))
+    monkeypatch.setattr("syskit.ui.system_page._BatteryWorker.start",
+                        lambda self: self.run())            # worker 同步执行（项目惯例）
     tab = BatteryTab()                                  # 懒加载：构造期不查询
     qtbot.addWidget(tab)
     tab.refresh()                                       # 显式触发（首显由 showEvent 自动）
@@ -916,6 +918,8 @@ def test_battery_tab_no_remain_shows_dash(qtbot, monkeypatch):
 
     monkeypatch.setattr(proc, "run_ps",
                         lambda script, timeout=30: proc.CmdResult(0, "50000,30000,", ""))
+    monkeypatch.setattr("syskit.ui.system_page._BatteryWorker.start",
+                        lambda self: self.run())            # worker 同步执行（项目惯例）
     tab = BatteryTab()
     qtbot.addWidget(tab)
     tab.refresh()                                       # 懒加载：显式触发

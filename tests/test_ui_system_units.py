@@ -322,6 +322,8 @@ def test_battery_parse_error_falls_back_to_no_battery(qtbot, monkeypatch):
     from syskit.ui.system_page import BatteryTab
     monkeypatch.setattr(proc, "run_ps",
                         lambda script, timeout=30: proc.CmdResult(0, "40000,32000,³", ""))
+    monkeypatch.setattr("syskit.ui.system_page._BatteryWorker.start",
+                        lambda self: self.run())            # worker 同步执行（项目惯例）
     tab = BatteryTab()                           # 懒加载：构造期不查询
     qtbot.addWidget(tab)
     tab.refresh()                                # 显式触发（首显由 showEvent 自动）
@@ -544,6 +546,8 @@ def test_battery_tab_lazy_loads_on_show(qtbot, monkeypatch):
     monkeypatch.setattr(proc, "run_ps",
                         lambda script, timeout=30:
                         calls.append(script) or proc.CmdResult(0, "40000,32000,80", ""))
+    monkeypatch.setattr("syskit.ui.system_page._BatteryWorker.start",
+                        lambda self: self.run())            # worker 同步执行（项目惯例）
     tab = BatteryTab()
     qtbot.addWidget(tab)
     assert calls == []                            # 构造期零系统调用
@@ -578,12 +582,16 @@ def test_clipboard_watch_change_and_guards(qtbot, monkeypatch):
 
     fake._text = "aaa"
     tab.chk_watch.setChecked(False)
-    tab._on_clip_change()                        # 未勾选监听 → 忽略
+    tab._on_clip_change()                        # 未勾选监听 → 吞进 _last（不补录语义）
     assert tab.hist.items() == []
 
     tab.chk_watch.setChecked(True)
-    tab._on_clip_change()                        # 新文本 → 入库并刷新
-    assert tab.hist.texts() == ["aaa"]
+    tab._on_clip_change()                        # 同内容已被吞 → 不入库（不补录）
+    assert tab.hist.items() == []
+
+    fake._text = "new-after-resume"
+    tab._on_clip_change()                        # 恢复监听后新文本 → 入库
+    assert tab.hist.texts() == ["new-after-resume"]
     assert tab.tbl.rowCount() == 1
 
     tab._on_clip_change()                        # 与最新一条相同 → 不重复

@@ -266,7 +266,7 @@ class CommandPalette(QDialog):
 
     def _copy_vault_password(self, account_id: int):
         vp = self._window.page_vault
-        if not vp._ensure_unlocked():
+        if not vp._require_master_verified():   # 与 VaultPage 复制路径同一道门
             return
         try:
             pw = vault.get_secret(account_id, vp.crypto, "password")
