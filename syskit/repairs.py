@@ -351,7 +351,8 @@ class PowerOff(RepairAction):
         proc.run(["powercfg", "/setactive", "SCHEME_CURRENT"], timeout=15)
         if not changed:
             return RepairResult(False, "没有需要修改的网卡" + ("；USB选择性暂停:" + ("OK" if usb.ok else "FAIL")))
-        msg = f"已对 {len(changed)} 个网卡禁止断电: {', '.join(changed)}；USB 选择性暂停已关闭"
+        msg = (f"已对 {len(changed)} 个网卡禁止断电: {', '.join(changed)}"
+               f"；USB 选择性暂停{'已关闭' if usb.ok else '关闭失败'}")
         if skipped:
             msg += f"；跳过: {', '.join(skipped)}"
         msg += "。重新启用网卡或重启后生效。"

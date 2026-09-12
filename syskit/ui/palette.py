@@ -203,11 +203,19 @@ class CommandPalette(QDialog):
                         "hint": "浏览器",
                         "callback": (lambda v=q: window.run_palette_command(v))})
 
-        # 剪贴板最近条目
+        # 剪贴板最近条目（缓存：文件 mtime 未变不重读，避免每键一次 DPAPI 解密）
         if q:
             try:
-                max_items = int(settings.load().get("clipboard_max", 50))
-                hist = clipboard_mod.ClipboardHistory(max_items=max_items)
+                import os
+                from .. import config as _cfg
+                path = os.path.join(_cfg.APPDATA_DIR, "clipboard.json")
+                mtime = os.path.getmtime(path) if os.path.exists(path) else 0
+                cache = getattr(self, "_clip_cache", None)
+                if cache is None or cache[0] != mtime:
+                    max_items = int(settings.load().get("clipboard_max", 50))
+                    hist = clipboard_mod.ClipboardHistory(max_items=max_items)
+                    self._clip_cache = (mtime, hist.items()[:5])
+                items = self._clip_cache[1]
                 for i, it in enumerate(hist.items()[:5]):
                     text = it.get("text", "")
                     kind = it.get("kind", "text")

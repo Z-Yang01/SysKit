@@ -120,10 +120,16 @@ def toggle_entry(entries: list, index: int) -> list:
 def read_entries(path: str = None) -> list:
     path = path or HOSTS_PATH
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        # utf-8-sig 兼容 BOM（﻿ 会破坏首 token 的 IP 判定）；utf-16/二进制
+        # 读出含 \x00 的乱码 → 单条 comment 行，write_entries 会拒绝写回保护原文件
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
             return parse(f.read())
     except OSError:
         return []
+
+
+def _looks_binary(text: str) -> bool:
+    return "\x00" in text
 
 
 def backup_hosts(path: str = None) -> str:
@@ -139,8 +145,20 @@ def backup_hosts(path: str = None) -> str:
 
 
 def write_entries(entries: list, path: str = None, backup: bool = True) -> str:
-    """序列化并写回。备份目录返回；备份失败不阻断写入。"""
+    """序列化并写回。备份目录返回；备份失败不阻断写入。
+
+    护栏：当前文件解析结果为乱码（UTF-16/二进制误读，含 \x00）时拒绝写回——
+    否则会用 mojibake 覆盖原文件造成静默损坏。"""
     path = path or HOSTS_PATH
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            if _looks_binary(f.read()):
+                raise OSError("检测到 hosts 文件编码异常（可能为 UTF-16/二进制），"
+                              "已阻止写入以保护原内容；请先用记事本另存为 UTF-8。")
+    except OSError as e:
+        if _looks_binary(str(e)) or "编码异常" in str(e):
+            raise
+        # 文件不存在等其他 OSError：允许继续（首次创建场景）
     dest = backup_hosts(path) if backup else ""
     text = serialize(entries)
     tmp = path + ".syskit.tmp"

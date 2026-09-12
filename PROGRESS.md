@@ -719,3 +719,23 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
 - **R5** 热键"原键被抢"场景：保存时注册失败总是提示（原来同键被抢静默丢失）。
 - **R6** 托盘菜单显式保引用（self._menu，setContextMenu 不取得所有权）。
 - 测试：+1 tracert 中止分支回归；适配占位/守卫 4 处；全量 **790 例全绿**。
+
+### 补充23（同日）：多子代理查 bug 第三批（Windows 交互维度）——两个 P1 实证修复
+
+- **P1 游戏模式方向性错误**：`POWER_HIGH_PERF = "SCHEME_MAX"` 实为**节能**方案
+  （powercfg 官方别名：SCHEME_MIN=高性能/SCHEME_MAX=节能）——进游戏模式实际切到
+  最卡方案。修正为 SCHEME_MIN（测试断言同步）。
+- **P1 静音链路整体失效**（真机实证 CS1529）：_PS_AUDIO_PREAMBLE 给 Add-Type
+  -MemberDefinition 传了完整类定义+using——生成嵌套类致方法不可达、using 在类体内
+  致编译失败；且 PowerShell 不认 C# 的 `0u` 后缀。三连坏，测试 mock 了 run_ps 全程
+  未暴露。修：成员定义式 + [uint32]，**产品代码真机端到端验证**（读原音量→静音→恢复
+  全链 ok）。prev_volume=0 不再覆盖更早记录（重复进模式数据丢失）。
+- **P2 hosts 编码护栏**：utf-8-sig 兼容 BOM（曾致首条目静默降级）；UTF-16/二进制
+  误读（含 NUL）时拒绝写回保护原文件。测试 +2（BOM 解析/护栏）。
+- **P3 批**：hotkey_display OEM 键乱码（字面名表）；PowerOff USB 提示条件拼接；
+  pause_windows_update 文案对齐行为（无限期禁用非"7 天"）；autostart.disable
+  管理员守卫+返回语义（任一成功即 True，+3 测试）；HostsTab 查重改 host+ip 组合
+  （同名多 IP 轮询合法）；面板剪贴板缓存（mtime 变化才重读，免每键 DPAPI 解密）。
+- 过程事故记录：bash heredoc 转义折叠两次向测试文件注入真 NUL/BOM 字节——改用
+  chr() 构造 + Edit 工具修复。
+- 全量 **791 例全绿**。

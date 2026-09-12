@@ -586,15 +586,30 @@ class TestEnable:
 
 class TestDisable:
     def test_deletes_both_tasks(self, monkeypatch):
+        monkeypatch.setattr(autostart.admin, "is_admin", lambda: True)  # 新增管理员守卫
         calls = _proc_run_scripted(monkeypatch, [0, 0])
         assert autostart.disable() is True
         assert len(calls) == 2
         assert calls[0][calls[0].index("/TN") + 1] == autostart.TASK_NAME
         assert calls[1][calls[1].index("/TN") + 1] == autostart.LEGACY_TASK_NAME
 
-    def test_new_task_delete_failure_reports_false(self, monkeypatch):
+    def test_legacy_fallback_success_reports_true(self, monkeypatch):
+        """新任务删除失败但 legacy 删除成功 → 已停用（任一成功即 True）。"""
+        monkeypatch.setattr(autostart.admin, "is_admin", lambda: True)
         _proc_run_scripted(monkeypatch, [-1, 0])
+        assert autostart.disable() is True
+
+    def test_both_fail_reports_false(self, monkeypatch):
+        monkeypatch.setattr(autostart.admin, "is_admin", lambda: True)
+        _proc_run_scripted(monkeypatch, [-1, -1])
         assert autostart.disable() is False
+
+    def test_disable_requires_admin(self, monkeypatch):
+        """新增守卫：非管理员直接拒绝（不发起 schtasks）。"""
+        calls = _proc_run_scripted(monkeypatch, [0, 0])
+        monkeypatch.setattr(autostart.admin, "is_admin", lambda: False)
+        assert autostart.disable() is False
+        assert calls == []
 
 
 class TestEnabled:

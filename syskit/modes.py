@@ -20,7 +20,7 @@ NOTIFY_GLOBAL_VALUE = "NOC_GLOBAL_SETTING_TOASTS_ENABLED"
 WU_POLICY = r"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
 
 # 电源方案别名（powercfg 内置）
-POWER_HIGH_PERF = "SCHEME_MAX"
+POWER_HIGH_PERF = "SCHEME_MIN"
 POWER_BALANCED = "SCHEME_BALANCED"
 
 # 常用软件（办公模式一键打开）
@@ -81,13 +81,16 @@ def set_notifications(enabled: bool) -> dict:
 
 # ---------------- 静音 ----------------
 
+# Add-Type -MemberDefinition 需要的是"成员定义"而非完整类定义（给完整类会生成嵌套类，
+# 方法不可达）；模板自动 using System.Runtime.InteropServices，类体内不得再写 using
+# （CS1529）。另：PowerShell 不认 C# 的 uint 后缀（0u），须用 [uint32]——
+# 曾因 using + 0u 两处连环错误导致整条静音链失效（测试 mock 了 run_ps 未暴露）。
 _PS_AUDIO_PREAMBLE = (
     "$sig = @'\n"
-    "using System.Runtime.InteropServices;\n"
-    "public class W {\n"
-    "  [DllImport(\"winmm.dll\")] public static extern int waveOutSetVolume(IntPtr h, uint v);\n"
-    "  [DllImport(\"winmm.dll\")] public static extern int waveOutGetVolume(IntPtr h, out uint v);\n"
-    "}\n"
+    "[DllImport(\"winmm.dll\")]\n"
+    "public static extern int waveOutSetVolume(IntPtr h, uint v);\n"
+    "[DllImport(\"winmm.dll\")]\n"
+    "public static extern int waveOutGetVolume(IntPtr h, out uint v);\n"
     "'@\n"
     "Add-Type -MemberDefinition $sig -Name Wv -Namespace SysKitAudio -PassThru | Out-Null\n"
 )
@@ -103,23 +106,25 @@ def set_mute(mute: bool) -> dict:
     if mute:
         prev = None
         r = proc.run_ps(_PS_AUDIO_PREAMBLE +
-                        "$v = 0u; [SysKitAudio.Wv]::waveOutGetVolume([IntPtr]::Zero, [ref]$v) | Out-Null; $v\n",
+                        "$v = [uint32]0; "
+                        "[SysKitAudio.Wv]::waveOutGetVolume([IntPtr]::Zero, [ref]$v) | Out-Null; $v\n",
                         timeout=15)
         try:
             prev = int(r.stdout.strip().split()[-1]) if r.ok and r.stdout.strip() else None
         except (ValueError, IndexError):
             prev = None
-        if prev is not None and 0 <= prev <= 0xFFFFFFFF:
+        # prev=0 说明已处于静音（可能是本工具此前所为）：不覆盖更早的原音量记录
+        if prev and 0 < prev <= 0xFFFFFFFF:
             settings.save({"modes_prev_volume": prev})
         ok = proc.run_ps(_PS_AUDIO_PREAMBLE +
-                         "[SysKitAudio.Wv]::waveOutSetVolume([IntPtr]::Zero, 0u)\n",
+                         "[SysKitAudio.Wv]::waveOutSetVolume([IntPtr]::Zero, [uint32]0)\n",
                          timeout=15).ok
         detail = "已静音" if ok else (r.stderr or r.stdout)[-120:]
         return _step("系统静音", ok, detail)
     prev = settings.load().get("modes_prev_volume")
     vol = prev if isinstance(prev, int) and 0 <= prev <= 0xFFFFFFFF else 0xFFFFFFFF
     r = proc.run_ps(_PS_AUDIO_PREAMBLE +
-                    f"[SysKitAudio.Wv]::waveOutSetVolume([IntPtr]::Zero, {vol}u)\n",
+                    f"[SysKitAudio.Wv]::waveOutSetVolume([IntPtr]::Zero, [uint32]{vol})\n",
                     timeout=15)
     ok = bool(r.ok)
     note = "已恢复原音量" if ok and prev is not None else \

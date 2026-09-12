@@ -45,6 +45,13 @@ def _key_to_vk(key: str):
     return _NAMED_KEYS.get(key)
 
 
+# OEM 键的可读显示名（vk → 展示文本）
+_OEM_DISPLAY = {
+    0xBA: ";", 0xBB: "=", 0xBC: ",", 0xBD: "-", 0xBE: ".", 0xBF: "/",
+    0xC0: "`", 0xDB: "[", 0xDD: "]", 0xDE: "'",
+}
+
+
 def parse_hotkey(text: str):
     """'Ctrl+Alt+K' → (mods, vk)；无法解析返回 None（至少要有一个主键）。"""
     mods = 0
@@ -91,6 +98,8 @@ def hotkey_display(text: str) -> str:
     else:
         if 0x70 <= vk <= 0x87:                  # F1-F24
             names.append(f"F{vk - 0x70 + 1}")
+        elif vk in _OEM_DISPLAY:                # OEM 符号键：字面名（chr 会出 Latin-1 乱码）
+            names.append(_OEM_DISPLAY[vk])
         else:
             names.append(chr(vk))
     return "+".join(names)

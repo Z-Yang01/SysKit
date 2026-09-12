@@ -784,8 +784,8 @@ class HostsTab(QWidget):
         except ValueError:
             QMessageBox.warning(self, "SysKit", f"IP 格式不合法：{ip}")
             return
-        if hostsed.find_entry(self._entries, host) >= 0:
-            QMessageBox.warning(self, "SysKit", f"主机名 {host} 已存在（启用或禁用状态），请先删除或直接启用。")
+        if hostsed.find_entry(self._entries, host, ip=ip) >= 0:
+            QMessageBox.warning(self, "SysKit", f"条目 {ip} → {host} 已存在（启用或禁用状态），请先删除或直接启用。")
             return
         hostsed.add_entry(self._entries, ip, host, self.edt_cmt.text())
         self.edt_ip.clear()

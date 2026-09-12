@@ -2,7 +2,13 @@
 import pytest
 
 from syskit import hostsed
+
+BOM = chr(0xFEFF).encode('utf-8')
+NUL = chr(0).encode()
 from test_ui_system_units import msgbox_recorder, recorder_kinds  # noqa: F401 复用弹窗记录夹具
+
+BOM = chr(0xFEFF).encode('utf-8')   # UTF-8 BOM 字节
+NUL = chr(0).encode()               # UTF-16 误读产生的 NUL 字节
 
 
 SAMPLE = """# Copyright comment
@@ -126,6 +132,25 @@ class TestIO:
     def test_read_missing_file_returns_empty(self, tmp_path):
         assert hostsed.read_entries(str(tmp_path / "nope")) == []
 
+    def test_utf8_bom_first_entry_parsed(self, tmp_path):
+        """回归：BOM 不得破坏首行 IP 判定（曾致首条目静默降级为注释）。"""
+        p = tmp_path / "hosts_bom"
+        p.write_bytes(BOM + b"127.0.0.1 first.local\n")
+        es = hostsed.read_entries(str(p))
+        assert es[0]["kind"] == "entry" and es[0]["host"] == "first.local"
+
+    def test_binary_utf16_read_rejected_on_write(self, tmp_path, monkeypatch):
+        """护栏：UTF-16/二进制误读（含 NUL 乱码）时拒绝写回，保护原文件。"""
+        from syskit import config as cfg
+        p = tmp_path / "hosts_u16"
+        p.write_bytes("127.0.0.1 a.local\n".encode("utf-16"))
+        monkeypatch.setattr(cfg, "BACKUP_DIR", str(tmp_path / "bk"), raising=False)
+        es = hostsed.read_entries(str(p))
+        with pytest.raises(OSError, match="编码异常"):
+            hostsed.write_entries(es, str(p), backup=True)
+        # 原文件未被破坏
+        assert p.read_bytes() == "127.0.0.1 a.local\n".encode("utf-16")
+
     def test_backup_missing_source(self, tmp_path):
         assert hostsed.backup_hosts(str(tmp_path / "nope")) == ""
 
@@ -173,6 +198,7 @@ class TestHostsTab:
 
     def test_save_requires_admin(self, qtbot, hosts_file, monkeypatch, msgbox_recorder):
         from syskit import hostsed as h
+
         tab = self._tab(qtbot, hosts_file, monkeypatch, is_admin=False)
         tab.tbl.selectRow(2)
         tab._toggle()
@@ -190,6 +216,7 @@ class TestHostsTab:
 
     def test_save_noop_when_clean(self, qtbot, hosts_file, monkeypatch):
         from syskit import hostsed as h
+
         tab = self._tab(qtbot, hosts_file, monkeypatch)
         writes = []
         monkeypatch.setattr(h, "write_entries", lambda *a, **k: writes.append(a) or "")

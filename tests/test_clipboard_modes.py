@@ -215,7 +215,7 @@ class TestModeSteps:
         r = modes.set_mute(True)
         assert r["ok"] and "已静音" in r["detail"]
         assert any("waveOutGetVolume" in s for s in seen)    # 静音前先读原音量
-        assert any("waveOutSetVolume" in s and "0u" in s for s in seen)
+        assert any("waveOutSetVolume" in s and "[uint32]0" in s for s in seen)
 
     def test_unmute_restores_previous_volume(self, monkeypatch):
         """回归：取消静音必须恢复进模式前的音量，而不是置最大音量
@@ -288,7 +288,7 @@ class TestModeSteps:
 
         monkeypatch.setattr(modes.proc, "run", fake_run)
         r = modes.set_power_plan(True)
-        assert r["ok"] and seen["cmd"] == ["powercfg", "/setactive", "SCHEME_MAX"]
+        assert r["ok"] and seen["cmd"] == ["powercfg", "/setactive", "SCHEME_MIN"]   # SCHEME_MIN=高性能（别名语义）
         r = modes.set_power_plan(False)
         assert seen["cmd"][-1] == "SCHEME_BALANCED"
 

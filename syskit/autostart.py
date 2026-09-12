@@ -2,7 +2,7 @@
 import os
 import sys
 
-from . import proc, admin, config
+from . import admin, proc, config
 from .logger import LOGGER
 
 TASK_NAME = "SysKitAutostart"
@@ -32,9 +32,11 @@ def enable() -> bool:
 
 
 def disable() -> bool:
-    ok = proc.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"], timeout=20).ok
-    proc.run(["schtasks", "/Delete", "/TN", LEGACY_TASK_NAME, "/F"], timeout=15)
-    return ok
+    if not admin.is_admin():
+        return False                       # schtasks 删除需管理员；调用方自行提示
+    ok_new = proc.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"], timeout=20).ok
+    ok_legacy = proc.run(["schtasks", "/Delete", "/TN", LEGACY_TASK_NAME, "/F"], timeout=15).ok
+    return ok_new or ok_legacy             # 任一删除成功即视为已停用
 
 
 def enabled() -> bool:
