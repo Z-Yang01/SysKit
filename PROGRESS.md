@@ -656,3 +656,15 @@ QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗�
   剪贴板历史 DPAPI 加密落盘、安装器默认便携数据）。
 - 产物启动验证（§42）：--minimized 拉起，主进程 137MB 运行正常（另见 onefile 引导进程），
   crash.log 无 QtFATAL。
+
+### 补充19（同日）：PySide6 验证收结 + git 历史清理
+
+- **dist/* 移出 git 历史**（用户二选一指定"移出历史"）：HEAD 解除跟踪 → bundle 全量备份
+  → git-filter-repo（python -m，Scripts 不在 PATH）清除全部历史中 dist/ → 双重验证
+  （`git log --all -- dist/` 0 条、磁盘产物完好）→ 强推覆盖远端（远端仅此一分支，
+  push 前为空仓库，67MB 警告 blob 即我们自己的历史）。强推后 GitHub 大文件警告消失。
+  仓库备份：Temp\SysKit-backup-pre-rewrite.bundle。
+- **PySide6 验证收结**：pip index 确认 **6.11.2 即当前最新版本**（无可升级目标）；
+  "升级验证"转为最新版稳定性验收——三轮全量回归全绿 **0 崩溃**（修复前基线约 1/3），
+  证实退出路径修复（quit_app 等待 worker/_release_worker/qFatal 落盘）已根治偶发崩溃。
+  requirements.txt 注明验证基线。PROGRESS 遗留项关闭。
