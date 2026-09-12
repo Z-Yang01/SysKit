@@ -139,6 +139,24 @@ install.bat    :: 安装/升级到 %LOCALAPPDATA%\Programs\SysKit，创建桌面
   - `sc config` 的 `start= auto` 参数不能带引号 → subprocess 参数拆分
   - netsh 输出编码随系统设置在 UTF-8/GBK 间漂移 → 双编码自适应解码
 
+## 开发与测试
+
+```bat
+python -m pip install -r dev-requirements.txt   :: 运行时依赖 + 测试工具（钉版本）
+python -m pytest                                 :: 全量测试（tests/，775 例）
+python -m pytest tests/test_vault.py -q          :: 单文件
+python -m pyflakes syskit/ tools/                :: 静态扫描（bug 排查例行）
+python tools\ui_preview.py                       :: 离屏 14 张页面截图验收
+```
+
+- 测试安全网见 `conftest.py`：持久化路径重定向临时目录；未显式 mock 的
+  proc/subprocess/winreg 写/socket/urlopen 一律抛 AssertionError（漏 mock 即失败），
+  绝不触真实系统。
+- 测试工具版本钉在 `dev-requirements.txt`（pytest/pytest-qt/pytest-cov/pytest-timeout/pyflakes）；
+  升级其中任何一个前先跑全量回归。
+- 新增测试请遵守「局部夹具写在自己测试文件」的约定（conftest 由主线程独占维护）。
+- 代码结构详解见 `summary/PROJECT_SUMMARY.md`；会话日志见 `PROGRESS.md`。
+
 ## 常见问题
 
 **Q：为什么显示「无Internet、安全」但网页能打开？**

@@ -586,3 +586,12 @@ QThread（无 parent）仅剩 Python 引用，emit 后线程收尾的微秒窗�
 - **fix(cli)**：cmd_repair 的 combos 与 repairs.COMBOS 重复定义（未来改动会悄悄与 UI
   分叉）→ 复用 COMBOS 同源。
 - 测试 +4（占用回退/原音量恢复/无记录分支/既有签名适配）；全量 775 例全绿；已重新打包。
+
+### 补充13（同日）：开发依赖固化（维护章程遗留项 #1）
+
+- 新增 dev-requirements.txt：-r requirements.txt + pytest==9.1.1 / pytest-qt==4.5.0 /
+  pytest-cov==7.1.0 / pytest-timeout==2.4.0 / pyflakes==3.4.0（钉当前全量验证过的版本），
+  pip --dry-run 依赖解析通过。
+- README 新增「开发与测试」章节（安装/运行/单文件/静态扫描/截图验收/安全网说明）。
+- PROJECT_SUMMARY 技术债表同步（移除"开发依赖未固化"）。
+- 维护章程生效后首个任务；后续遗留：PySide6 升级验证（需明确要求）、VaultPage 状态模型化（待功能驱动）。

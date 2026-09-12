@@ -34,7 +34,7 @@ PySide6 升级验证退出崩溃）。
 | 后台/系统调用 | 标准库 subprocess/winreg/socket/urllib/ctypes/threading | proc.py 双编码自适应；icmp.py ctypes IPHLPAPI |
 | 加密 | cryptography >=42.0 | 密码库 AES-256-GCM + PBKDF2（600k 迭代）；DPAPI 走 stdlib ctypes |
 | 其他运行时 | loguru、psutil、qrcode、pillow | 日志/进程/二维码（剪贴板与 WiFi 复用） |
-| 测试 | pytest + pytest-qt（offscreen）+ pytest-cov + pytest-timeout | 开发依赖未固化（不在 requirements.txt），29 个测试文件 775 例 |
+| 测试 | pytest + pytest-qt（offscreen）+ pytest-cov + pytest-timeout（dev-requirements.txt 钉版本） | 29 个测试文件 775 例 |
 | 打包 | PyInstaller >=6.0 onefile + `uac_admin` 清单 | SysKit.spec 排除 Qt 重型模块 + numpy/OpenBLAS/opengl32sw 等（exe 67.6→37.7MB） |
 | 安装器 | Inno Setup 6.3+/7（installer/SysKit.iss） | 下一步式向导：可选目录/桌面快捷方式/开机自启/卸载信息/便携数据标记；build.bat 第 5 步自动探测 ISCC |
 
@@ -121,7 +121,7 @@ block_system_calls 哨兵 / fake_cmd_result 工厂 + 会话级 QThread 排空兜
 **已知技术债**（详见 PROGRESS.md 各会话遗留）：浏览器扩展自动填充（vault.find_by_domain
 API 边界已留）；TOTP 二维码导入；退出阶段偶发原生崩溃已定位 QThread 析构竞态并修复
 （quit_app 等待 + _release_worker），PySide6 升级验证待做；测试环境 PySide6 离屏偶发
-fail-fast（约 1/3、重跑即绿、位置漂移）仍属环境性问题；开发依赖未固化（B10，沿用）。
+fail-fast（约 1/3、重跑即绿、位置漂移）仍属环境性问题。
 
 ## 目录树
 
