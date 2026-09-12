@@ -849,7 +849,7 @@ class MainWindow(QMainWindow):
         self.cmb_hotkey.setEditable(True)
         self.cmb_hotkey.addItems(["Ctrl+Alt+K", "Ctrl+Alt+Space", "Alt+C", "Ctrl+Shift+K", "F9"])
         self.cmb_hotkey.setCurrentText(str(s.get("palette_hotkey", "Ctrl+Alt+K")))
-        self.cmb_hotkey.setToolTip("命令面板全局热键（重启后生效）")
+        self.cmb_hotkey.setToolTip("命令面板全局热键（保存后立即生效；被占用时自动降级为托盘菜单呼出）")
         form3.addRow("命令面板热键", self.cmb_hotkey)
         outer.addWidget(g3)
 
@@ -902,6 +902,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, config.DISPLAY_NAME,
                                 f"设置写入失败：{e}\n本次改动在当前运行中仍生效，重启后会丢失。")
             return
+        # 命令面板热键即时重注册（失败静默降级：托盘菜单/Ctrl+K 仍可用）
+        from .palette import setup_global_hotkey, teardown_global_hotkey
+        teardown_global_hotkey(self)
+        setup_global_hotkey(self)
         # 主题即时切换
         if theme.is_dark() != self.chk_dark.isChecked():
             from PySide6.QtWidgets import QApplication

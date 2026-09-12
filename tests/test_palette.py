@@ -327,6 +327,20 @@ def test_main_window_palette_integration(qtbot, monkeypatch, make_main_window):
     win.run_palette_command("https://example.com")
     assert opened == ["https://example.com"]
 
+    # 热键即时生效：保存设置 → 旧热键反注册、新热键立即重注册（无需重启）
+    from syskit import hotkey as hotkey_mod
+    monkeypatch.setattr("syskit.admin.is_admin", lambda: False)   # 跳过自启分支
+    reg_calls = []
+
+    def fake_register(mods, vk, hotkey_id=1):
+        reg_calls.append((mods, vk))
+        return True
+
+    monkeypatch.setattr(hotkey_mod, "register", fake_register)
+    win.cmb_hotkey.setCurrentText("Ctrl+Alt+P")     # _save_settings 读 UI 控件值
+    win._save_settings()
+    assert (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("P")) in reg_calls
+
     # 清理全局热键与原生过滤器，避免悬空回调
     from syskit.ui.palette import teardown_global_hotkey
     teardown_global_hotkey(win)
