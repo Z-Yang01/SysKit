@@ -139,7 +139,7 @@ class VaultPage(QWidget):
         self.lst_accts.setSelectionMode(QAbstractItemView.SingleSelection)
         self.lst_accts.itemDoubleClicked.connect(lambda *_: self._copy_password())
         rlay.addWidget(self.lst_accts, 1)
-        self.lbl_detail = QLabel("双击账号复制密码；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
+        self.lbl_detail = QLabel("双击复制密码；查看/复制密码需验证主密码（未设主密码时免验证）；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
         self.lbl_detail.setObjectName("hint")
         rlay.addWidget(self.lbl_detail)
         rrow = QHBoxLayout()
@@ -202,6 +202,9 @@ class VaultPage(QWidget):
         self._autolock.setSingleShot(True)
         self._autolock.timeout.connect(self._auto_lock)
         self._showing_pw = False
+        self._show_timer = QTimer(self)          # 明文显示 20 秒后自动隐藏
+        self._show_timer.setSingleShot(True)
+        self._show_timer.timeout.connect(self._hide_password)
 
         self.crypto = VaultCrypto()
         self._ensure_provisioned()
@@ -313,7 +316,7 @@ class VaultPage(QWidget):
         self._hide_password()
         r = self._current_acct_row()
         if r is None:
-            self.lbl_detail.setText("双击账号复制密码；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
+            self.lbl_detail.setText("双击复制密码；查看/复制需验证主密码；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
             return
         extra = []
         if r.get("has_totp"):
@@ -370,7 +373,7 @@ class VaultPage(QWidget):
             QMessageBox.warning(self, "SysKit", f"设置失败: {e}")
             return
         self._refresh_state()
-        QMessageBox.information(self, "SysKit", "主密码已设置；查看/复制密码在重锁后需要解锁")
+        QMessageBox.information(self, "SysKit", "主密码已设置；此后查看/复制密码每次都需要验证主密码")
 
     def _remove_master(self):
         if not self._ensure_unlocked():
@@ -510,9 +513,25 @@ class VaultPage(QWidget):
         if clip and clip.text() == text:            # 未被新内容覆盖才清
             clip.clear()
 
+    def _require_master_verified(self) -> bool:
+        """查看/复制密码的安全门：设置了主密码则每次都验证；
+        DPAPI 免密模式（无主密码可验证）仅要求解锁。"""
+        if not self._ensure_unlocked():
+            return False
+        if not self.crypto.has_master_password():
+            return True
+        pwd = self._ask_password("验证主密码")
+        if pwd is None:
+            return False
+        if not self.crypto.verify_password(pwd):
+            QMessageBox.warning(self, "SysKit", "主密码错误")
+            return False
+        self._restart_autolock()
+        return True
+
     def _copy_password(self):
         aid = self._selected_account_id()
-        if aid is None or not self._ensure_unlocked():
+        if aid is None or not self._require_master_verified():
             return
         try:
             pw = vault.get_secret(aid, self.crypto, "password")
@@ -543,11 +562,13 @@ class VaultPage(QWidget):
             self._copy_sensitive(code, f"TOTP {code} 已复制")
 
     def _toggle_show_password(self):
+        """一键显示/隐藏：显示前验证主密码（已设置时），明文 20 秒后自动隐藏。"""
         if self._showing_pw:
             self._hide_password()
+            self.lbl_detail.setText("密码已隐藏")
             return
         aid = self._selected_account_id()
-        if aid is None or not self._ensure_unlocked():
+        if aid is None or not self._require_master_verified():
             return
         try:
             pw = vault.get_secret(aid, self.crypto, "password")
@@ -555,11 +576,16 @@ class VaultPage(QWidget):
             return
         self._showing_pw = True
         self.btn_show_pw.setText("隐藏")
-        self.lbl_detail.setText(f"密码：{pw}")
+        self.lbl_detail.setText(f"密码：{pw}（20 秒后自动隐藏）")
+        self._show_timer.start(20_000)
 
     def _hide_password(self):
+        was = self._showing_pw
+        self._show_timer.stop()
         self._showing_pw = False
         self.btn_show_pw.setText("查看")
+        if was:
+            self.lbl_detail.setText("密码已隐藏")
 
 
 class _SiteDialog(QDialog):

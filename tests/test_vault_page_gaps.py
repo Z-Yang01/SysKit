@@ -233,7 +233,7 @@ class TestModelAndState:
         page.refresh_accounts()
         page.lst_accts.setCurrentRow(-1)
         page._on_acct_selected(-1)                             # 无选中 → 恢复默认提示
-        assert "双击账号复制密码" in page.lbl_detail.text()
+        assert "双击复制密码" in page.lbl_detail.text()
 
         gh = vault.search_sites("GitHub")[0]
         alice = next(a for a in vault.list_accounts(gh["id"])
@@ -730,10 +730,11 @@ class TestSensitiveClipboard:
             page._toggle_show_password()                       # 解密被锁 → 静默
             assert page._showing_pw is False
 
-        page._toggle_show_password()                           # 显示密码
+        page._toggle_show_password()                           # 显示密码（DPAPI 免密：无需验证）
         assert page._showing_pw is True
         assert page.btn_show_pw.text() == "隐藏"
-        assert page.lbl_detail.text() == "密码：pw-alice"
-        page._toggle_show_password()                           # 再点收起
+        assert page.lbl_detail.text() == "密码：pw-alice（20 秒后自动隐藏）"
+        page._toggle_show_password()                           # 再点收起 → 明文清除
         assert page.btn_show_pw.text() == "查看"
         assert page._showing_pw is False
+        assert "pw-alice" not in page.lbl_detail.text()

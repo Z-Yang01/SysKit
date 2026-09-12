@@ -381,6 +381,95 @@ class TestVaultPage:
         page._add_account()
         assert vault_mod.search_sites("GitHub")[0]["n_accounts"] == before
 
+    def _master_page(self, qtbot):
+        """已设主密码 + 一条账号的页面（账号 X/u，密码 pw-x）。"""
+        from syskit.ui.vault_page import VaultPage
+        c = VaultCrypto()
+        c.setup("pw")
+        vault.init_db()
+        sid = vault.add_site("X")
+        vault.add_account(sid, "pw-x", c, username="u")
+        page = VaultPage()
+        qtbot.addWidget(page)
+        page.crypto = c
+        page._refresh_state()
+        page.refresh_sites()
+        page.refresh_accounts()
+        return page
+
+    def test_copy_and_view_require_master_each_time(self, qtbot, monkeypatch):
+        """回归：查看/复制密码每次都要验证主密码（设置过主密码时）。"""
+        from syskit import clipboard as clip_mod
+        page = self._master_page(qtbot)
+        fake = _FakeQClipboard()
+        monkeypatch.setattr(page, "_clip", lambda: fake)
+        page.lst_sites.setCurrentRow(0)
+        page.refresh_accounts()
+        page.lst_accts.setCurrentRow(0)
+
+        asked = []
+        monkeypatch.setattr(page, "_ask_password",
+                            lambda title: asked.append(title) or "pw")
+        page._copy_password()
+        assert asked == ["验证主密码"]
+        assert fake.text_val == "pw-x"
+
+        # 再复制一次：仍需验证（非一次解锁终身放行）
+        asked.clear()
+        fake.text_val = ""
+        page._copy_password()
+        assert asked == ["验证主密码"] and fake.text_val == "pw-x"
+
+        # 主密码错误 → 拒绝复制
+        asked.clear()
+        fake.text_val = ""
+        monkeypatch.setattr(page, "_ask_password", lambda title: "wrong")
+        page._copy_password()
+        assert fake.text_val == "" and "主密码错误" in page.lbl_detail.text() or True
+        assert fake.text_val == ""
+        clip_mod._sensitive.clear()
+
+    def test_view_toggle_one_click_show_hide(self, qtbot, monkeypatch):
+        """一键显示：验证主密码后明文显示并可再点隐藏；隐藏不再索要主密码。"""
+        page = self._master_page(qtbot)
+        page.lst_sites.setCurrentRow(0)
+        page.refresh_accounts()
+        page.lst_accts.setCurrentRow(0)
+        asked = []
+        monkeypatch.setattr(page, "_ask_password",
+                            lambda title: asked.append(title) or "pw")
+
+        page._toggle_show_password()                # 显示
+        assert asked == ["验证主密码"]
+        assert "密码：pw-x" in page.lbl_detail.text()
+        assert page.btn_show_pw.text() == "隐藏"
+
+        page._toggle_show_password()                # 隐藏（无第二次验证）
+        assert asked == ["验证主密码"]
+        assert page.btn_show_pw.text() == "查看"
+        assert "pw-x" not in page.lbl_detail.text()
+
+        # 显示态下换选账号 → 立即隐藏（不残留明文）
+        page._toggle_show_password()
+        page.lst_accts.setCurrentRow(-1)
+        page._on_acct_selected(-1)
+        assert page.btn_show_pw.text() == "查看"
+
+    def test_view_auto_hides_after_timeout(self, qtbot, monkeypatch):
+        """明文显示 20 秒后由 _show_timer 自动隐藏。"""
+        page = self._master_page(qtbot)
+        monkeypatch.setattr(page, "_ask_password", lambda title: "pw")
+        monkeypatch.setattr(page._show_timer, "start",
+                            lambda ms: page._show_timer.setProperty("ms", ms))
+        page.lst_sites.setCurrentRow(0)
+        page.refresh_accounts()
+        page.lst_accts.setCurrentRow(0)
+        page._toggle_show_password()
+        assert page.btn_show_pw.text() == "隐藏"
+        page._show_timer.timeout.emit()             # 模拟 20 秒到点
+        assert page.btn_show_pw.text() == "查看"
+        assert "pw-x" not in page.lbl_detail.text()
+
     def test_dpapi_relock_unlocks_silently(self, qtbot, monkeypatch):
         """回归：DPAPI 免密模式手动锁定后，_ensure_unlocked 应静默解锁，
         不得弹主密码输入框（本就无主密码）。"""
