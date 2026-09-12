@@ -6,11 +6,9 @@
 - 全局热键走 RegisterHotKey(None,…)（与 Qt 主线程同队列）+ HotkeyFilter 接收
   WM_HOTKEY；注册失败静默降级（托盘菜单 / Ctrl+K 仍可用）。
 """
-import ctypes
 from ctypes import wintypes
 
 from PySide6.QtCore import QAbstractNativeEventFilter, Qt
-from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (QApplication, QDialog, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QVBoxLayout)
 

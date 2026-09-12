@@ -314,6 +314,26 @@ class TestVaultPage:
         page.edt_acct.setText("")
         assert page.lst_accts.count() == 2
 
+    def test_del_last_site_clears_account_list(self, qtbot, seeded, monkeypatch):
+        """回归：删除最后一个网站后，右侧账号列表必须清空——
+        refresh_sites 依赖 setCurrentRow 间接触发账号刷新，列表为空时不触发。"""
+        page = self._page(qtbot)
+        page.refresh_sites()
+        self._select_site(page, "GitHub")
+        page.refresh_accounts()
+        assert page.lst_accts.count() > 0
+        # 删除两个网站（确认弹窗一律 Yes）
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+        page.refresh_sites()
+        while page.lst_sites.count():
+            page.lst_sites.setCurrentRow(0)
+            page._del_site()
+        assert page.lst_sites.count() == 0
+        assert page.lst_accts.count() == 0
+        assert page.acct_model.rowCount() == 0
+
     def test_add_account_through_dialog(self, qtbot, seeded, monkeypatch):
         """回归：_add_account 必须把对话框里的密码传给 vault.add_account
         （曾因 pop 后漏传报 missing positional argument 'password'）。"""

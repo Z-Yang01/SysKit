@@ -352,7 +352,7 @@ class _CleanWorker(QThread):
                         size = os.path.getsize(path)
                         os.remove(path)
                         freed += size
-                except OSError as e:
+                except OSError:
                     errors.append(os.path.basename(path))
         self.done.emit(freed, errors[:10])
 
@@ -898,7 +898,6 @@ class ModesTab(QWidget):
 
     def _show_steps(self, steps, title):
         self.txt.setRowCount(len(steps))
-        ok_color = theme_ok = None
         try:
             from . import theme
             p = theme.pal()

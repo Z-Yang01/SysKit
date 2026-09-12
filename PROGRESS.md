@@ -481,3 +481,13 @@
 - **exe 体积 67.6 → 37.7 MB（-44%）**：spec 排除 numpy/OpenBLAS（psutil、qrcode 均不需要）、
   软件 OpenGL 备胎 opengl32sw.dll(20MB)、Qt6 Quick/Qml/Pdf/Network 运行库、PIL avif 编解码。
   10 页离屏渲染 + 全量 767 例回归全绿后打包。
+
+### 补充5（同日）：bug 排查第二轮（pyflakes 全量 + 逻辑审查）
+
+- **fix(vault UI)**：删除最后一个网站后右侧账号列表残留旧账号——refresh_sites 依赖
+  setCurrentRow 间接触发账号刷新，列表清空时 currentRowChanged 不触发。现 refresh_sites
+  在行号未变/列表清空时主动幂等刷新账号列表（回归用例证实修复：删空后 acct 2→0）。
+- pyflakes 全量扫描：0 未定义名；清理新增代码无用导入（palette ctypes/QImage 顶层、
+  main_window hotkey、system_page theme_ok/except e）——纯风格，无逻辑影响。
+- 已知遗留（评估后接受）：ClipboardTab._ClipActionWorker 3s DNS 窗口内退出理论上可遇
+  QThread 析构竞态——onefile 退出不跑 GC 析构 + conftest 会话兜底，实际风险极低。

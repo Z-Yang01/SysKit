@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLay
                                QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import admin, autostart, config, hotkey, monitor, netcheck, repairs, settings
+from .. import admin, autostart, config, monitor, netcheck, repairs, settings
 from .. import logger as _logging
 from ..logger import LOGGER
 from ..stores import EventStore

@@ -255,7 +255,12 @@ class VaultPage(QWidget):
             LOGGER.warning("密码库读取失败: {}", e)
             rows = []
         self.site_model.set_rows(rows)
+        before = self.lst_sites.currentRow()
         self._sync_list(self.lst_sites, self.site_proxy, keep_id)
+        # _sync_list 内部 blockSignals：行号未变（或列表清空）时收不到
+        # currentRowChanged，账号列表须主动刷新一次（幂等）
+        if self.lst_sites.currentRow() == before or not self.lst_sites.count():
+            self.refresh_accounts()
         if self.lst_sites.currentRow() < 0 and self.lst_sites.count():
             self.lst_sites.setCurrentRow(0)
 
