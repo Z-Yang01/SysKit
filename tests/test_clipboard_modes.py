@@ -47,6 +47,7 @@ class TestClipboardHistory:
         monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
         h1 = clip_mod.ClipboardHistory()
         h1.add("persist-me")
+        h1.flush_if_dirty()                    # 防抖语义：显式刷盘
         h2 = clip_mod.ClipboardHistory()
         assert "persist-me" in h2.texts()
 
@@ -72,6 +73,7 @@ class TestClipboardHistory:
         monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
         h = clip_mod.ClipboardHistory()
         h.add("secret-clipboard-content")
+        h.flush_if_dirty()                     # 防抖语义：显式刷盘
         raw = (tmp_path / "clipboard.json").read_text(encoding="utf-8")
         assert "secret-clipboard-content" not in raw
         outer = json.loads(raw)
@@ -85,6 +87,7 @@ class TestClipboardHistory:
         h1 = clip_mod.ClipboardHistory()
         assert h1.add("C:\\a\\b.txt", kind="file")
         assert h1.add("[图片 4×4]", kind="image", data="abc.png")
+        h1.flush_if_dirty()                    # 防抖语义：显式刷盘
         h2 = clip_mod.ClipboardHistory()
         kinds = {it["text"]: it["kind"] for it in h2.items()}
         assert kinds["C:\\a\\b.txt"] == "file"

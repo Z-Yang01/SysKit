@@ -343,6 +343,7 @@ class TestDynamicActionsGaps:
         hist = clip_mod.ClipboardHistory()
         hist.add("first entry")
         hist.add("second entry")
+        hist.flush_if_dirty()                 # 防抖语义：跨实例读取前刷盘
         win = _FakeWindow()
         fake = _patch_clipboard(monkeypatch, _FakeClip())
         pal, _ = _palette(qtbot, win)
@@ -540,6 +541,7 @@ class TestTrayGaps:
         hist.add("alpha clip entry")
         name = _save_png()
         hist.add("[图片 4×4]", kind="image", data=name)
+        hist.flush_if_dirty()                 # 防抖语义：跨实例读取前刷盘
         fake = _patch_clipboard(monkeypatch, _FakeClip())
         clip_menu = self._clip_menu(tray)
         clip_menu.aboutToShow.emit()                          # 惰性重建

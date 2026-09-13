@@ -1168,6 +1168,10 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QApplication as _QApp
         app_inst = _QApp.instance()
         if app_inst is not None:
+            from .system_page import ClipboardTab as _CT
+            for widget in app_inst.allWidgets():
+                if isinstance(widget, _CT):
+                    widget.flush_disk()      # 剪贴板防抖未落盘内容退出前刷盘
             for widget in app_inst.allWidgets():
                 for th in widget.findChildren(_QThread):
                     if th.isRunning():

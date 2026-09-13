@@ -106,6 +106,7 @@ class ClipboardHistory:
         self.max_items = max(1, int(max_items))
         self.max_len = max(64, int(max_len))
         self._items = []          # 最新在前
+        self._dirty = False
         self._path = os.path.join(config.APPDATA_DIR, "clipboard.json")
         self._load()
 
@@ -125,6 +126,22 @@ class ClipboardHistory:
                     "data": it.get("data", "") or "",
                 })
         self._items = parsed
+
+    def mark_dirty(self):
+        """防抖落盘标记：复制瞬间只改内存；由 ClipboardTab 的定时器与退出时机刷盘。
+
+        权衡（§15）：程序崩溃最多丢最近一个刷盘周期内的几条历史——
+        换取高频复制场景不在 UI 线程做 O(N) 序列化+DPAPI 密封+写盘。
+        """
+        self._dirty = True
+
+    def flush_if_dirty(self):
+        with _lock:
+            if not getattr(self, "_dirty", False):
+                return False
+            self._dirty = False
+            self.save()
+            return True
 
     def save(self):
         with _lock:
@@ -159,7 +176,7 @@ class ClipboardHistory:
                                    "kind": kind, "pinned": False, "data": data})
             self._resort()
             self._evict()
-            self.save()
+            self.mark_dirty()          # 防抖：连发复制只动内存，由定时器/退出刷盘
         return True
 
     def _evict(self):
@@ -212,7 +229,7 @@ class ClipboardHistory:
             it["pinned"] = not it.get("pinned", False)
             self._resort()
             self._evict()
-            self.save()
+            self.mark_dirty()
             return True
 
     @staticmethod
@@ -233,7 +250,7 @@ class ClipboardHistory:
             if 0 <= index < len(self._items):
                 removed = self._items.pop(index)
                 self._delete_image_files([removed])
-                self.save()
+                self.mark_dirty()
                 return True
             return False
 
@@ -241,7 +258,7 @@ class ClipboardHistory:
         with _lock:
             self._delete_image_files(self._items)
             self._items = []
-            self.save()
+            self.mark_dirty()
 
     @staticmethod
     def preview(text: str, n: int = 80) -> str:

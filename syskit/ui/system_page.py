@@ -573,7 +573,21 @@ class ClipboardTab(QWidget):
         self._bg = None
         if self._clip:
             self._clip.dataChanged.connect(self._on_clip_change)
+        # 防抖刷盘：add 只标脏，10s 周期落盘（连发复制不在 UI 线程反复 DPAPI 写）
+        self._flush_timer = QTimer(self)
+        self._flush_timer.timeout.connect(self._flush_disk)
+        self._flush_timer.start(10_000)
         self.reload()
+
+    def _flush_disk(self):
+        try:
+            self.hist.flush_if_dirty()
+        except Exception:
+            pass
+
+    def flush_disk(self):
+        """退出路径调用：立即刷盘（quit_app 全树扫尾时触发）。"""
+        self._flush_disk()
 
     # ---------------- 列表 ----------------
 
