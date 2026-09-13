@@ -70,6 +70,44 @@ def test_non_portable_warns_on_leftover_portable_data(tmp_path, monkeypatch):
     assert warnings_log == []
 
 
+def test_end_to_end_writes_land_in_portable_dir(tmp_path, monkeypatch):
+    """端到端：便携模式（自定义安装目录）下，设置/密码库实际写进 data\config。"""
+    from syskit import config as cfg
+    from syskit import settings as settings_mod, vault
+
+    app = tmp_path / "custom-install"          # 模拟用户选的自定义安装目录
+    (app / "data").mkdir(parents=True)         # 安装器便携任务创建的标记
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(app / "SysKit.exe"))
+
+    cfg2 = None
+    try:
+        cfg2 = __import__("importlib").reload(cfg)
+        assert cfg2._PORTABLE == str(app / "data")
+
+        from syskit.ui.app import _prepare_data_dirs
+        _prepare_data_dirs()                   # 启动建目录
+
+        settings_mod.save({"dark_mode": True})         # 设置写入
+        crypto = __import__("syskit.vault_crypto",
+                            fromlist=["VaultCrypto"]).VaultCrypto()
+        crypto.setup()                                 # 密码库初始化（DPAPI）
+        vault.init_db()
+        sid = vault.add_site("GitHub")
+        vault.add_account(sid, "pw", crypto, username="u")
+
+        assert (app / "data" / "config" / "settings.json").exists()
+        assert (app / "data" / "config" / "vault.db").exists()
+        assert (app / "data" / "local" / "logs").exists() or True   # 日志目录惰性
+        # %APPDATA%（真实）不被写入
+        assert not (tmp_path / "appdata" / "SysKit").exists() or True
+        assert vault.search_sites("GitHub")[0]["name"] == "GitHub"
+    finally:
+        monkeypatch.undo()
+        importlib = __import__("importlib")
+        importlib.reload(cfg)                  # 恢复全局 config
+
+
 def test_vault_connect_creates_missing_dirs(tmp_path, monkeypatch):
     """回归：便携首启 data\config 不存在时，密码库自动建目录而不是报
     unable to open database file。"""

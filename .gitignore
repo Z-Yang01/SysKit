@@ -52,3 +52,5 @@ Thumbs.db
 .coverage
 .coverage.*
 htmlcov/
+# 便携模式数据目录（源码根误建时避免误入库）
+data/
