@@ -242,7 +242,12 @@ def close_background(processes=None) -> dict:
         if pid <= 0:
             continue
         try:
-            psutil.Process(pid).kill()
+            proc_obj = psutil.Process(pid)
+            # PID 复用防护：击杀前复验进程名，避免误杀复用了 PID 的无关进程
+            if proc_obj.name() and proc_obj.name().lower() != str(name).lower():
+                failed.append(f"{name}(PID已复用，跳过)")
+                continue
+            proc_obj.kill()
             killed.append(name)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             failed.append(name)

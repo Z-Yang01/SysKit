@@ -370,6 +370,9 @@ class TestModeSteps:
             def __init__(self, pid):
                 self.pid = pid
 
+            def name(self):
+                return "Spotify.exe"
+
             def kill(self):
                 killed.append(self.pid)
 
@@ -379,6 +382,17 @@ class TestModeSteps:
         import syskit.modes as m
         r = m.close_background([{"pid": 123, "name": "Spotify.exe"}])
         assert r["ok"] and killed == [123]
+
+        # PID 复用防护：kill 前复验进程名——名字不匹配（PID 被无关进程复用）→ 跳过不杀
+        class RenamedProc(FakeProc):
+            def name(self):
+                return "explorer.exe"
+
+        monkeypatch.setattr("psutil.Process", lambda pid: RenamedProc(pid), raising=False)
+        r2 = m.close_background([{"pid": 123, "name": "Spotify.exe"}])
+        assert killed == [123]                    # 未新增击杀
+        assert any("已复用" in x for x in r2["detail"].split("；")) or "失败" in r2["detail"]
+
 
     def test_run_office_mode_order(self, monkeypatch):
         order = []

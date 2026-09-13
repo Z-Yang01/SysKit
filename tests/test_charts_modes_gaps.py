@@ -242,8 +242,13 @@ class TestBackgroundCleanup:
         killed = []
 
         class _FakeProc:
+            _names = {1: "A.exe", 2: "B.exe", 3: "C.exe"}
+
             def __init__(self, pid):
                 self.pid = pid
+
+            def name(self):
+                return self._names.get(self.pid, "")
 
             def kill(self):
                 if self.pid == 2:
