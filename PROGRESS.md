@@ -794,3 +794,12 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
 - PNG 载荷清理仍同步在变更点（内存操作+unlink，廉价且保证不留盘）。
 - 测试适配 6 处（跨实例读取前显式 `flush_if_dirty()`，即防抖语义的显式落盘点）；
   全量 **792 例全绿**。
+
+### 补充27（2026-09-13）：build.bat 运行实例检测修复（find→findstr）
+
+- 上一轮的实例检测用 `find /I`——在 Git Bash 环境跑 build.bat 时被 GNU find 劫持
+  （`find: '/I': No such file or directory`），检测静默失效。换 **findstr**（Windows
+  独有无同名冲突）并实测：检测触发、明确提示"检测到正在运行的 SysKit…请先退出"。
+- 附带发现：检测失效只影响从 Git Bash 调 build.bat 的场景（资源管理器双击时
+  find 为 Windows 版，检测正常）——但 findstr 对两种环境都稳定。
+- dist 打包继续待运行实例退出：现在退出后跑 build.bat，若仍有实例会得到明确提示。
