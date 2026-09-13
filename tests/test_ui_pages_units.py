@@ -1085,6 +1085,8 @@ def test_wifi_passwords_load_copy_and_worker(qtbot, monkeypatch):
 
     page._pw_done([("HomeWiFi", "WPA2-PSK", "pw123"), ("Cafe", "?", None)])
     assert page.btn_pw.isEnabled()
+    assert page.tbl_pw.item(1, 2).text() == "••••••••"          # 默认掩码
+    page.chk_show_pw.setChecked(True)                           # 显示 → 明文
     assert page.tbl_pw.item(1, 2).text() == "(开放网络)"        # 空密码占位
 
     page.tbl_pw.setCurrentCell(-1, -1)

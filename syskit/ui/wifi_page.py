@@ -334,8 +334,11 @@ class WifiPage(QWidget):
         self.btn_pw.clicked.connect(self._load_passwords)
         self.btn_copy = QPushButton("复制选中密码")
         self.btn_copy.clicked.connect(self._copy_password)
+        self.chk_show_pw = QCheckBox("显示密码")
+        self.chk_show_pw.toggled.connect(self._toggle_pw_mask)
         row.addWidget(self.btn_pw)
         row.addWidget(self.btn_copy)
+        row.addWidget(self.chk_show_pw)
         row.addStretch(1)
         self.lbl_pw = QLabel(" ")
         self.lbl_pw.setProperty("hint", True)
@@ -344,6 +347,7 @@ class WifiPage(QWidget):
 
         self.tbl_pw = QTableWidget(0, 3)
         self.tbl_pw.setHorizontalHeaderLabels(["名称", "认证", "密码"])
+        self._pw_rows = []               # 明文缓存（掩码/显示切换用）
         self.tbl_pw.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tbl_pw.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_pw.setAlternatingRowColors(True)
@@ -366,18 +370,30 @@ class WifiPage(QWidget):
     def _pw_done(self, rows):
         self._pw_worker = None
         self.btn_pw.setEnabled(True)
+        self._pw_rows = list(rows)
+        self._reload_pw_table()
+        self.lbl_pw.setText(f"共 {len(rows)} 个配置文件（密码默认掩码，勾选「显示密码」查看）")
+
+    def _reload_pw_table(self):
+        rows = self._pw_rows
         self.tbl_pw.setRowCount(len(rows))
         for i, (name, auth, pwd) in enumerate(rows):
-            for c, v in enumerate([name, auth, pwd or "(开放网络)"]):
+            shown = "••••••••" if not self.chk_show_pw.isChecked() else (pwd or "(开放网络)")
+            for c, v in enumerate([name, auth, shown]):
                 self.tbl_pw.setItem(i, c, QTableWidgetItem(v))
-        self.lbl_pw.setText(f"共 {len(rows)} 个配置文件")
+
+    def _toggle_pw_mask(self):
+        self._reload_pw_table()
 
     def _copy_password(self):
         row = self.tbl_pw.currentRow()
-        if row < 0:
+        if row < 0 or row >= len(self._pw_rows):
             return
         from PySide6.QtWidgets import QApplication
-        QApplication.clipboard().setText(self.tbl_pw.item(row, 2).text())
+        from .. import clipboard as clipboard_mod
+        pwd = self._pw_rows[row][2] or ""
+        clipboard_mod.mark_sensitive(pwd)      # WLAN 密码同走敏感路径：不进历史
+        QApplication.clipboard().setText(pwd)
         self.lbl_pw.setText("密码已复制")
 
 

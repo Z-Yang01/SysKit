@@ -161,7 +161,8 @@ def backup_config() -> dict:
     try:
         os.makedirs(dest, exist_ok=True)
         copied = []
-        for name in ("settings.json", "traffic.json", "events.json", "clipboard.json"):
+        for name in ("settings.json", "traffic.json", "events.json", "clipboard.json",
+                     "vault.db", "vault.key"):
             src = os.path.join(config.APPDATA_DIR, name)
             if os.path.isfile(src):
                 shutil.copy2(src, os.path.join(dest, name))

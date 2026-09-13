@@ -464,7 +464,7 @@ class ProxyOff(RepairAction):
                          "把 WinINET 系统代理（ProxyEnable）关闭并立即通知系统刷新。"
                          "代理软件异常退出后残留的代理会让所有流量发往已失效的本地端口，"
                          "表现为'已连接但所有应用都无法上网'。",
-                         "在代理软件或 Windows 设置中重新开启代理即可")
+                         "在代理软件或 Windows 设置中重新开启代理即可；被清除的 PAC 脚本地址见备份文件")
 
     def _run(self, param):
         from . import proxy

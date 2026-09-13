@@ -504,6 +504,8 @@ def test_wifi_page_password_table_fill(qtbot):
     qtbot.addWidget(page)
     page._pw_done([("HomeWiFi", "WPA2", "pw123"), ("Cafe", "?", "?")])
     assert page.tbl_pw.rowCount() == 2
+    assert page.tbl_pw.item(0, 2).text() == "••••••••"           # 默认掩码
+    page.chk_show_pw.setChecked(True)                            # 显示 → 明文
     assert page.tbl_pw.item(0, 2).text() == "pw123"
     assert "共 2" in page.lbl_pw.text()
 
@@ -1071,7 +1073,8 @@ def test_quit_app_waits_page_workers(make_main_window, qtbot, monkeypatch):
             self.done.emit()
 
     win = make_main_window()
-    slow = _Slow()
+    from syskit.ui.workers import reap
+    slow = reap(_Slow(), win)          # 真实 worker 均挂宿主对象树（quit_app 全树扫尾可见）
     win._repair_worker = slow
     slow.start()
     # 主线程直接调 quit_app：先停后台线程，再等 slow

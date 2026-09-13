@@ -173,6 +173,10 @@ class VaultPage(QWidget):
         self.btn_copy_pw.clicked.connect(self._copy_password)
         self.btn_copy_totp = QPushButton("TOTP")
         self.btn_copy_totp.clicked.connect(self._copy_totp)
+        self.btn_totp_qr = QPushButton("TOTP 码")
+        self.btn_totp_qr.setToolTip("显示当前账号的 TOTP 实时验证码与二维码（手机验证器扫描导入）")
+        self.btn_totp_qr.clicked.connect(self._show_totp_dialog)
+        self.btn_totp_qr.setVisible(False)   # 仅选中含 TOTP 的账号时可见
         self.btn_show_pw = QPushButton("显示")
         self.btn_show_pw.clicked.connect(self._toggle_show_password)
         rrow.addWidget(self.btn_add_acct)
@@ -183,6 +187,7 @@ class VaultPage(QWidget):
         rrow.addWidget(self.btn_copy_user)
         rrow.addWidget(self.btn_copy_pw)
         rrow.addWidget(self.btn_copy_totp)
+        rrow.addWidget(self.btn_totp_qr)
         rrow.addWidget(self.btn_show_pw)
         rlay.addLayout(rrow)
         cols.addWidget(right, 1)
@@ -415,6 +420,7 @@ class VaultPage(QWidget):
             self.lbl_detail.setText("单击账号/密码/标签列即复制；密码列未解锁时显示 ****；"
                                     "「显示」按钮明文 20 秒；Ctrl+Enter 复制用户名，Alt+T 复制 TOTP")
             return
+        self.btn_totp_qr.setVisible(bool(r.get("has_totp")))
         extra = []
         if r.get("has_totp"):
             extra.append("含TOTP")
@@ -705,6 +711,58 @@ class VaultPage(QWidget):
         code = vault.totp_code(secret)
         if code:
             self._copy_sensitive(code, f"TOTP {code} 已复制")
+
+    def _show_totp_dialog(self):
+        """TOTP 二维码 + 实时验证码：otpauth URI 供手机验证器扫描导入。"""
+        aid = self._selected_account_id()
+        if aid is None or not self._ensure_unlocked():
+            return
+        try:
+            secret = vault.get_secret(aid, self.crypto, "totp", touch=False)
+        except VaultLockedError:
+            return
+        code = vault.totp_code(secret)
+        if not code:
+            QMessageBox.information(self, "SysKit", "该账号未配置 TOTP 密钥")
+            return
+        r = self._current_acct_row() or {}
+        site = next((s2.get("name") for s2 in self.site_model._rows
+                     if s2.get("id") == self._selected_site_id()), "SysKit")
+        who = r.get("username") or r.get("label") or ""
+        uri = (f"otpauth://totp/{site}:{who}?secret={secret}"
+               f"&issuer={site}&digits=6&period=30")
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"TOTP — {who or site}")
+        v = QVBoxLayout(dlg)
+        try:
+            import io
+            import qrcode
+            from PySide6.QtGui import QPixmap
+            img = qrcode.make(uri, box_size=6, border=2)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            pix = QPixmap()
+            pix.loadFromData(buf.getvalue(), "PNG")
+            lbl_qr = QLabel()
+            lbl_qr.setPixmap(pix.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            lbl_qr.setAlignment(Qt.AlignCenter)
+            v.addWidget(lbl_qr)
+        except Exception as e:
+            v.addWidget(QLabel(f"二维码生成失败: {e}"))
+        lbl_code = QLabel(code)
+        lbl_code.setAlignment(Qt.AlignCenter)
+        lbl_code.setStyleSheet("font-size: 28px; font-weight: bold; letter-spacing: 6px;")
+        v.addWidget(lbl_code)
+        tip = QLabel("用手机验证器（Google Authenticator 等）扫描导入；"
+                     "上方为当前验证码（每 30 秒刷新）。重新打开刷新。")
+        tip.setObjectName("hint")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        btn = QPushButton("复制验证码")
+        btn.setProperty("primary", True)
+        btn.clicked.connect(lambda: self._copy_sensitive(code, f"TOTP {code} 已复制"))
+        v.addWidget(btn, 0, Qt.AlignCenter)
+        dlg.exec()
 
     def _toggle_show_password(self):
         """一键显示/隐藏：验证主密码（信任窗口内免验证）后，密码列整列明文

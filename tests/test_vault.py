@@ -533,6 +533,38 @@ class TestVaultPage:
         assert page.btn_show_pw.text() == "显示"
         assert page.tbl_accts.item(0, 1).text() == "****"
 
+    def test_totp_qr_button_visibility_and_dialog(self, qtbot, seeded, monkeypatch):
+        """TOTP 码按钮：仅含 TOTP 的账号可见；对话框显示实时验证码与 otpauth 二维码。"""
+        page = self._page(qtbot)
+        fake = _FakeQClipboard()
+        monkeypatch.setattr(page, "_clip", lambda: fake)
+        page.refresh_sites()
+        self._select_site(page, "GitHub")
+        page.refresh_accounts()
+        self._select_acct(page, "alice")            # 有 TOTP
+        assert not page.btn_totp_qr.isHidden()
+        self._select_acct(page, "bob")              # 无 TOTP → 隐藏
+        assert page.btn_totp_qr.isHidden()
+
+        self._select_acct(page, "alice")
+        dialogs = []
+        from syskit.ui.vault_page import QDialog as _QD
+
+        class _FakeDialog(_QD):
+            def exec(self):
+                dialogs.append(1)
+                return 0
+
+        import syskit.ui.vault_page as vp_mod
+        monkeypatch.setattr(vp_mod, "QDialog", _FakeDialog)
+        page._show_totp_dialog()                # 二维码真生成（qrcode 纯计算无副作用）
+        assert dialogs == [1]
+        assert fake.text_val == ""                  # 未点复制 → 不写剪贴板
+        from PySide6.QtWidgets import QLabel
+        codes = [w.text() for w in page.findChildren(QLabel)
+                 if w.text().isdigit() and len(w.text()) == 6]
+        assert codes, "对话框应显示 6 位实时验证码"
+
     def test_dpapi_relock_unlocks_silently(self, qtbot, monkeypatch):
         """回归：DPAPI 免密模式手动锁定后，_ensure_unlocked 应静默解锁，
         不得弹主密码输入框（本就无主密码）。"""
