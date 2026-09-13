@@ -819,3 +819,15 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
 - **临时文件清理**：Temp 下测试脚本/patch/innosetup 安装包已删（保留
   SysKit-backup-pre-rewrite.bundle 历史重写前恢复点）。
 - 测试 +2（TOTP 按钮/对话框、WLAN 掩码）+ 适配 3；全量 **795 例全绿**。
+
+### 补充29（2026-09-13）：覆盖率审计——总覆盖率 97%（基线 80%→97%）
+
+- **全量带覆盖统计**：7705 语句 / 245 未覆盖 = **97%**（9/10 pytest 建设初期基线 80%）；
+  全部 42 个模块 ≥83%、20 个模块 100%、无 <70% 盲区。
+- 新功能核心路径全部高覆盖：clipboard 93%/cliprules 100%/secure_store 83%+补/vault 97%/
+  vault_crypto 88%/hostsed 99%/hotkey 99%/palette_actions 99%/palette 100%/vault_page 95%。
+- 补测 4 例：main.py 未知子命令报错（§10 补漏）+ GUI --minimized 路径、
+  secure_store 密封失败两分支（DPAPI 不可用 AttributeError/磁盘满 OSError 无 tmp 残留）。
+- 覆盖率数字同步 PROJECT_SUMMARY。打桩细节：secure_store 的 from-import 绑定需在
+  secure_store 命名空间打桩（vault_crypto 源头无效）。
+- 全量 797 例全绿。

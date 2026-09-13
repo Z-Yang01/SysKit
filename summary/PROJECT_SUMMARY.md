@@ -34,7 +34,7 @@ PySide6 升级验证退出崩溃）。
 | 后台/系统调用 | 标准库 subprocess/winreg/socket/urllib/ctypes/threading | proc.py 双编码自适应；icmp.py ctypes IPHLPAPI |
 | 加密 | cryptography >=42.0 | 密码库 AES-256-GCM + PBKDF2（600k 迭代）；DPAPI 走 stdlib ctypes |
 | 其他运行时 | loguru、psutil、qrcode、pillow | 日志/进程/二维码（剪贴板与 WiFi 复用） |
-| 测试 | pytest + pytest-qt（offscreen）+ pytest-cov + pytest-timeout（dev-requirements.txt 钉版本） | 29 个测试文件 775 例 |
+| 测试 | pytest + pytest-qt（offscreen）+ pytest-cov + pytest-timeout（dev-requirements.txt 钉版本） | 29 个测试文件 795 例（行覆盖率 97%，全部模块 ≥83%） |
 | 打包 | PyInstaller >=6.0 onefile + `uac_admin` 清单 | SysKit.spec 排除 Qt 重型模块 + numpy/OpenBLAS/opengl32sw 等（exe 67.6→37.7MB） |
 | 安装器 | Inno Setup 6.3+/7（installer/SysKit.iss） | 下一步式向导：可选目录/桌面快捷方式/开机自启/卸载信息/便携数据标记；build.bat 第 5 步自动探测 ISCC |
 

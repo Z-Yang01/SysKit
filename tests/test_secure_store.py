@@ -50,3 +50,24 @@ class TestCorruptAndEdge:
         p = str(tmp_path / "at.json")
         ss.save_sealed_json(p, {"a": 1})
         assert not (tmp_path / "at.json.tmp").exists()
+
+
+class TestSealFailure:
+    def test_save_returns_false_when_dpapi_unavailable(self, tmp_path, monkeypatch):
+        """DPAPI 不可用（非 OSError 的 AttributeError 等）→ save 返回 False 不穿透。"""
+        from syskit.vault_crypto import _dpapi_protect
+
+        def boom(data):
+            raise AttributeError("no windll on this platform")
+
+        monkeypatch.setattr("syskit.secure_store._dpapi_protect", boom)
+        assert ss.save_sealed_json(str(tmp_path / "x.json"), {"a": 1}) is False
+
+    def test_save_failure_leaves_no_tmp(self, tmp_path, monkeypatch):
+        from syskit.vault_crypto import _dpapi_protect
+
+        monkeypatch.setattr("syskit.secure_store._dpapi_protect",
+                            lambda data: (_ for _ in ()).throw(OSError("disk full")))
+        p = str(tmp_path / "y.json")
+        assert ss.save_sealed_json(p, {"a": 1}) is False
+        assert not (tmp_path / "y.json.tmp").exists()

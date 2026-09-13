@@ -143,3 +143,39 @@ def test_cli_main_no_argv_uses_sys_argv(monkeypatch):
     rc = cli_mod.main(None)
     assert rc == 42
     assert seen["quick"] is False
+
+
+def test_unknown_subcommand_errors_instead_of_gui(monkeypatch, capsys):
+    """回归：未知子命令明确报错 exit 2（曾静默弹整个 GUI 掩盖拼写错误）。"""
+    from syskit import main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["syskit", "dianose"])   # 拼写错误
+    gui_called = []
+    import importlib
+    real = main_mod.run
+    # 不真跑 run_gui：patch 掉 GUI 导入路径的行为不可行（函数内 import），
+    # 直接断言 run() 的 sys.exit(2) 且未进入 GUI
+    monkeypatch.setattr(sys, "exit", lambda code=0: (_ for _ in ()).throw(
+        SystemExit(code)))
+    with pytest.raises(SystemExit) as ei:
+        main_mod.run()
+    assert ei.value.code == 2
+    out = capsys.readouterr().out
+    assert "未知命令" in out and "dianose" in out
+
+
+def test_minimized_flag_still_launches_gui(monkeypatch):
+    """--minimized 不被未知命令误判：仍走 GUI。"""
+    from syskit import main as main_mod
+    monkeypatch.setattr(sys, "argv", ["syskit", "--minimized"])
+    called = []
+    import types
+    fake_app = types.ModuleType("syskit.ui.app")
+    fake_app.run_gui = lambda: called.append(1)
+    fake_ui = types.ModuleType("syskit.ui")
+    fake_ui.app = fake_app
+    monkeypatch.setitem(sys.modules, "syskit.ui.app", fake_app)
+    monkeypatch.setitem(sys.modules, "syskit.ui", fake_ui)
+    monkeypatch.setattr(sys, "exit", lambda code=0: None)
+    main_mod.run()
+    assert called == [1]
