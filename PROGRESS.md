@@ -831,3 +831,14 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
 - 覆盖率数字同步 PROJECT_SUMMARY。打桩细节：secure_store 的 from-import 绑定需在
   secure_store 命名空间打桩（vault_crypto 源头无效）。
 - 全量 797 例全绿。
+
+### 补充30（2026-09-13）：ModesTab 场景模式异步化（最后一处 UI 冻结点）
+
+- **测量**：游戏/办公模式四入口在 UI 线程同步执行 modes.run_*（PowerShell×2+
+  注册表+进程清理，真实环境数秒~数十秒），整窗冻结且按钮禁用来不及重绘。
+- **改造**：统一 `_start_mode(fn, title)` 走 `_ModeWorker(QThread)` 后台执行——
+  run 兜底异常为失败步骤（不再向 UI 线程抛异常），steps_done 信号回 UI 展示 +
+  busy 恢复；reap 挂宿主（生命周期设施统一）。管理员的警告弹窗保持在 UI 线程前置。
+- 调试记录：重构中曾丢 `_set_mode_busy(False)`（旧代码在 finally）——脱离 pytest
+  的最小复现脚本定位；测试嵌套函数误用 self 调用两次修正。
+- 测试：2 个流程测试适配同步 worker 模式 + 异常兜底语义；全量 **793 例全绿**。

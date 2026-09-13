@@ -845,6 +845,12 @@ def test_modes_office_flow_reentry_and_error_recovery(qtbot, monkeypatch,
     from syskit.ui.system_page import ModesTab
     tab = ModesTab()
     qtbot.addWidget(tab)
+    def _sync_worker(monkeypatch):
+        """_ModeWorker.start() 同步执行（emit 直连回填，便于断言）。"""
+        from syskit.ui import system_page as sp
+        monkeypatch.setattr(sp._ModeWorker, "start",
+                            lambda self: self.run())
+
 
     calls = []
 
@@ -857,6 +863,7 @@ def test_modes_office_flow_reentry_and_error_recovery(qtbot, monkeypatch,
     monkeypatch.setattr(sp.modes, "run_office_mode", fake_office)
     monkeypatch.setattr(sp.modes, "restore_office_defaults",
                         lambda: [{"name": "r", "ok": True, "detail": ""}])
+    _sync_worker(monkeypatch)
 
     tab._enter_office()                          # 默认勾选打开常用软件
     assert calls == [True]
@@ -878,14 +885,14 @@ def test_modes_office_flow_reentry_and_error_recovery(qtbot, monkeypatch,
     tab._enter_office()
     assert counter["n"] == 1
 
-    # 执行异常 → finally 恢复按钮，不永久锁死
+    # 执行异常 → 后台线程兜底为失败步骤（不再向 UI 线程抛异常），按钮恢复不锁死
     def bad(open_apps):
         raise RuntimeError("mode failed")
 
     monkeypatch.setattr(sp.modes, "run_office_mode", bad)
-    with pytest.raises(RuntimeError):
-        tab._enter_office()
+    tab._enter_office()
     assert not tab._busy and tab.btn_office.isEnabled()
+    assert "进入办公模式：0/1 步成功" in tab.lbl.text()   # 异常兜底为失败步骤
 
     tab._exit_office()                           # 退出模式走恢复链
     assert recorder_kinds(msgbox_recorder)[-1] == "information"
@@ -906,6 +913,10 @@ def test_modes_game_admin_downgrade_and_restore(qtbot, monkeypatch,
     monkeypatch.setattr(sp.modes, "restore_game_defaults",
                         lambda: [{"name": "rg", "ok": False, "detail": ""}])
     monkeypatch.setattr(sp.admin, "is_admin", lambda: False)
+
+    def _sync_worker(monkeypatch):
+        monkeypatch.setattr(sp._ModeWorker, "start", lambda self: self.run())
+    _sync_worker(monkeypatch)
 
     tab._enter_game()                            # 无管理员：先警告再继续执行
     assert game_calls == [True]

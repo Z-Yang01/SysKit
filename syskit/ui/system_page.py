@@ -969,24 +969,29 @@ class ModesTab(QWidget):
         self.lbl.setText(f"{title}：{ok}/{len(steps)} 步成功")
         QMessageBox.information(self, title, f"{ok}/{len(steps)} 步成功。\n详见下表逐步说明。")
 
-    def _enter_office(self):
+    def _start_mode(self, fn, title):
+        """场景模式统一异步入口：PowerShell/注册表/进程清理在后台线程执行，
+        不再冻结 UI（步骤多时可达数十秒）。完成信号回 UI 展示。"""
         if self._busy:
             return
         self._set_mode_busy(True)
-        try:
-            steps = modes.run_office_mode(open_apps=self.chk_open_apps.isChecked())
-            self._show_steps(steps, "进入办公模式")
-        finally:
-            self._set_mode_busy(False)
+        self._mw = reap(_ModeWorker(fn, title), self)
+        self._mw.steps_done.connect(self._mode_done)
+        self._mw.start()
+
+    def _mode_done(self, steps_title):
+        steps, title = steps_title
+        self._mw = None
+        self._show_steps(steps, title)
+        self._set_mode_busy(False)          # 后台执行完成：恢复按钮（原 finally 语义）
+
+    def _enter_office(self):
+        self._start_mode(
+            lambda: modes.run_office_mode(open_apps=self.chk_open_apps.isChecked()),
+            "进入办公模式")
 
     def _exit_office(self):
-        if self._busy:
-            return
-        self._set_mode_busy(True)
-        try:
-            self._show_steps(modes.restore_office_defaults(), "退出办公模式")
-        finally:
-            self._set_mode_busy(False)
+        self._start_mode(modes.restore_office_defaults, "退出办公模式")
 
     def _enter_game(self):
         if self._busy:
@@ -1006,13 +1011,26 @@ class ModesTab(QWidget):
             self._set_mode_busy(False)
 
     def _exit_game(self):
-        if self._busy:
-            return
-        self._set_mode_busy(True)
+        self._start_mode(modes.restore_game_defaults, "退出游戏模式")
+
+
+class _ModeWorker(QThread):
+    """场景模式后台执行：fn() → [(name, ok, detail)] 经信号回 UI。"""
+
+    steps_done = Signal(list)
+
+    def __init__(self, fn, title, parent=None):
+        super().__init__(parent)
+        self._fn, self._title = fn, title
+
+    def run(self):
         try:
-            self._show_steps(modes.restore_game_defaults(), "退出游戏模式")
-        finally:
-            self._set_mode_busy(False)
+            steps = self._fn()
+        except Exception as e:
+            from ..logger import LOGGER
+            LOGGER.exception("场景模式线程异常")
+            steps = [{"name": self._title, "ok": False, "detail": str(e)}]
+        self.steps_done.emit((steps, self._title))
 
 
 class SystemPage(QWidget):
