@@ -52,6 +52,7 @@ def disable_proxy() -> bool:
         original = winregread.values(_INTERNET_SETTINGS)
     except Exception:
         original = {}
+    backup = _backup_values(original) if original else ""   # 先备份落盘再修改（§13）
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                              _INTERNET_SETTINGS.split("\\", 1)[1], 0, winreg.KEY_SET_VALUE)
@@ -67,7 +68,6 @@ def disable_proxy() -> bool:
     except OSError as e:
         LOGGER.error("关闭系统代理失败: {}", e)
         return False
-    backup = _backup_values(original) if original else ""
     # 通知系统设置已变更并刷新（WinINET 系列选项 39/37）
     wininet = ctypes.windll.wininet
     wininet.InternetSetOptionW(None, 39, None, 0)   # INTERNET_OPTION_SETTINGS_CHANGED

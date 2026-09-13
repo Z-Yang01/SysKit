@@ -584,6 +584,11 @@ class MainWindow(QMainWindow):
         self.btn_diag.setEnabled(True)
         self.btn_diag.setText("开始完整诊断")
         self.pb_diag.hide()
+        if any(r.id == "diag_aborted" for r in results):
+            # 中止的不完整结果不得用于判定网络状态（缺 real_conn 会被误判"外网不可达"）
+            self.lbl_verdict.setText("诊断已中止（状态保持此前判定）")
+            self.statusBar().showMessage("诊断已中止：已完成项保留在列表中", 5000)
+            return
         base, text = netcheck.verdict(results)
         color = STATUS_TEXT.get(base, ("", "#000000"))[1]
         self._set_status(text, color, sub=f"{time.strftime('%H:%M')} 诊断完成")
@@ -1153,8 +1158,8 @@ class MainWindow(QMainWindow):
         self.tele.stop()
         self.tele.wait(3000)              # 等遥测线程退出，避免 QThread destroyed while running
         try:
-            self.mon.join(3000)           # Monitor 已修复 _stop 覆盖，join 可用
-        except RuntimeError:
+            self.mon.join(3)              # join 单位是秒（曾误传 3000 = 50 分钟）；
+        except RuntimeError:              # stop() 已同时置 force 唤醒 poll 等待，通常 <1s
             pass
         # 全树扫尾：沿对象树枚举所有仍存活的工作线程统一等待（reap 已挂 parent，
         # findChildren 可枚举；telemetry 的 netsh 最坏 8s → 上限 10s），杜绝退出期
@@ -1166,9 +1171,15 @@ class MainWindow(QMainWindow):
             for widget in app_inst.allWidgets():
                 for th in widget.findChildren(_QThread):
                     if th.isRunning():
+                        stop = getattr(th, "stop", None)
+                        if callable(stop):
+                            stop()               # tracert 等：先请求停止再等
                         th.wait(10_000)
-        # 主窗口引用照旧复位（C++ 对象由 reap 的 deleteLater 托管，提前清引用安全）
+        # 主窗口 4 worker 显式等待（reap 已挂 self；findChildren 之外的双保险）
         for attr in ("_snap_worker", "_diag_worker", "_repair_worker", "_combo_worker"):
+            w = getattr(self, attr, None)
+            if w is not None and w.isRunning():
+                w.wait(10_000)
             setattr(self, attr, None)
         self.tele.traffic.save_if_dirty()
         self.tray.hide()

@@ -762,3 +762,22 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
   打包被用户正在运行的实例阻塞——build.bat 增加运行实例检测（明确提示代替
   PermissionError），产物待用户退出后补打。
 - 全量 **792 例全绿**。
+
+### 补充25（同日）：多子代理查 bug 第五批（CLI/Monitor 一致性维度）——P0 一枚 + P1 一枚 + P2×3 + P3 批
+
+- **P0 退出冻结**：quit_app 的 `mon.join(3000)` 把毫秒当秒传给 threading.Thread.join
+  （=3000 秒！）；且 Monitor.stop() 只置 _stop_evt 而 run 的可中断等待只监听
+  _force_check——每次退出 UI 冻结 0~600s（默认 30s）。修：join(3) + stop 同时置
+  force 唤醒。**这是用户每次退出都踩的 bug**。
+- **P1 中止误判**：中止的不完整诊断（缺 real_conn）被 verdict 判为"外网不可达"，
+  大徽章+托盘变红误导。修：_diag_done 检测 diag_aborted → 状态保持此前判定。
+- **P2×3**：L3 冷却时间戳移到梯度级别（restart_wlan 早退时不再绕过限频）；
+  cmd_repair 失败退出码 1（原恒 0，自动化无法感知失败）+ input EOFError 兜底；
+  DnsAuto 备份补 IPv6（原只备 v4 却同清 v6 静态值，永久丢失）。
+- **P3 批**：冷却时间戳 time.monotonic（防系统时间回拨绕过冷却）；quit_app 全树
+  扫尾对有 stop() 的线程先请求停止（tracert 27s>10s 上限）；未知子命令报错退出
+  （曾静默弹 GUI 掩盖拼写错误）；proxy_off 备份先于修改落盘。
+- 代理确认无问题：reap 设施与 quit_app 全树扫尾在位未被破坏；netcheck 各 chk_* 单项
+  防御完备；repairs 备份覆盖良好；proc 超时无孤儿（除面板 shell=True 刻意保留）。
+- 测试：+3（DnsAuto v6 断言×2 适配 / disable 管理员守卫与 legacy 兜底语义拆分），
+  全量 **792 例全绿**。dist 打包待运行实例退出（build.bat 检测提示待修 cmd 管道）。

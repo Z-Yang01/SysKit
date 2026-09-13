@@ -229,9 +229,16 @@ def _static_dns_adapter() -> str:
 
 
 def _backup_dns(adapter: str) -> str:
+    """备份 v4+v6 DNS（dns_auto 会同时清两者的静态配置，只备 v4 会让 v6 静态值
+    被永久清除且不可恢复）。任一段失败则返回 ""（调用方应视为备份未完成）。"""
     try:
-        r = proc.run(["netsh", "interface", "ipv4", "show", "dnsservers", adapter], timeout=10)
-        return _save_note(f"dns_backup_{re.sub(r'[^A-Za-z0-9]+', '_', adapter)}.txt", r.stdout)
+        out = []
+        for ip in ("ipv4", "ipv6"):
+            r = proc.run(["netsh", "interface", ip, "show", "dnsservers", adapter],
+                         timeout=10)
+            out.append("===== {} =====\n{}".format(ip, r.stdout))
+        return _save_note(f"dns_backup_{re.sub(r'[^A-Za-z0-9]+', '_', adapter)}.txt",
+                          "\n".join(out))
     except Exception:
         return ""
 

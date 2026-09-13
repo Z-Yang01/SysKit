@@ -44,6 +44,7 @@ def cmd_repair(args) -> int:
     if not ids:
         log.error(f"未知修复项/组合: {args.combo}；可用: {', '.join(repairs.COMBOS)} 或单项 {', '.join(repairs.ACTION_IDS)}")
         return 2
+    failed = 0
     for fid in ids:
         act = repairs.get_action(fid)
         if not act:
@@ -59,9 +60,11 @@ def cmd_repair(args) -> int:
         log.info(f"\n>>> 执行 [{fid}] {act.title} ...")
         result = act.execute()
         log.info(f"<<< {'成功' if result.success else '失败'}: {result.message}")
+        if not result.success:
+            failed += 1
         if result.need_reboot:
             log.info("*** 此修复需要重启电脑后生效 ***")
-    return 0
+    return 1 if failed else 0
 
 
 def main(argv=None) -> int:

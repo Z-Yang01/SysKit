@@ -449,7 +449,8 @@ def test_dns_auto_restores_dhcp_and_backs_up_first(recorder, events):
     r = repairs.get_action("dns_auto").execute({"adapter": "WLAN"})
     assert r.success is True
     assert recorder.cmds == [
-        ["netsh", "interface", "ipv4", "show", "dnsservers", "WLAN"],   # 备份读取
+        ["netsh", "interface", "ipv4", "show", "dnsservers", "WLAN"],   # 备份读取（v4）
+        ["netsh", "interface", "ipv6", "show", "dnsservers", "WLAN"],   # 备份读取（v6，dns_auto 同清两者）
         ["netsh", "interface", "ipv4", "set", "dnsservers", "name=WLAN", "source=dhcp"],
         ["netsh", "interface", "ipv6", "set", "dnsservers", "name=WLAN", "source=dhcp"],
         ["ipconfig", "/flushdns"],
@@ -457,7 +458,8 @@ def test_dns_auto_restores_dhcp_and_backs_up_first(recorder, events):
     # 备份（show）先于修改（set）
     seq = [e[1] for e in events]
     assert seq[0].startswith("netsh interface ipv4 show dnsservers")
-    assert "set dnsservers" in seq[1]
+    assert seq[1].startswith("netsh interface ipv6 show dnsservers")
+    assert "set dnsservers" in seq[2]
     # 备份 note 落在重定向后的 BACKUP_DIR
     notes = list(Path(config.BACKUP_DIR).rglob("dns_backup_*.txt"))
     assert notes and "8.8.8.8" in notes[0].read_text(encoding="utf-8")
@@ -495,7 +497,8 @@ def test_dns_preset_applies_configured_preset_with_backup(recorder):
     assert r.success is True
     assert (primary, secondary) == ("119.29.29.29", "182.254.116.116")   # 预设值来自 config
     assert recorder.cmds == [
-        ["netsh", "interface", "ipv4", "show", "dnsservers", "WLAN"],    # 备份读取
+        ["netsh", "interface", "ipv4", "show", "dnsservers", "WLAN"],    # 备份读取（v4）
+        ["netsh", "interface", "ipv6", "show", "dnsservers", "WLAN"],    # 备份读取（v6）
         ["netsh", "interface", "ipv4", "set", "dnsservers",
          "name=WLAN", "static", primary, "primary"],
         ["netsh", "interface", "ipv4", "add", "dnsservers",

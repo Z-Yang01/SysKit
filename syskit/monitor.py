@@ -40,7 +40,10 @@ class Monitor(threading.Thread):
         self._last_l3_ts = 0.0
 
     def stop(self):
+        # 同时置 force：run() 的可中断等待只监听 _force_check，
+        # 否则 stop 后仍要等满 poll_interval（默认 30s）才能醒来
         self._stop_evt.set()
+        self._force_check.set()
 
     def force_check(self):
         self._force_check.set()
@@ -98,19 +101,23 @@ class Monitor(threading.Thread):
         self.on_status(ST_NO_NET, f"连通性探测失败 ×{self._fail_streak}")
         if not st["enabled"] or self._fail_streak < st["fail_threshold"]:
             return
-        now = time.time()
+        now = time.monotonic()
         if now - self._last_repair_ts < st["cooldown_sec"]:
             return
 
         self._fail_streak = 0
         self._last_repair_ts = now
         level = self._repair_level(st)
+        if level >= 3:
+            # L3 限频记在梯度级别：restart_wlan 修复后探测恢复（早退）也计入冷却，
+            # 避免反复全量 L3（重启 WlanSvc + 断合网卡）
+            self._last_l3_ts = now
         LOGGER.info("自动修复触发, 级别 L%d", level)
         self._run_ladder(level)
 
     def _repair_level(self, st) -> int:
         """根据距上次 L3 的时间决定本轮修复上限，避免频繁重启网卡。"""
-        if time.time() - self._last_l3_ts < st["level3_cooldown_sec"]:
+        if time.monotonic() - self._last_l3_ts < st["level3_cooldown_sec"]:
             return 2
         return st["max_level"]
 
