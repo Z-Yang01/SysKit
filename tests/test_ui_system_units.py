@@ -558,6 +558,26 @@ def test_battery_tab_lazy_loads_on_show(qtbot, monkeypatch):
     assert len(calls) == 1
 
 
+def test_clipboard_purge_hint_survives_initial_reload(qtbot, monkeypatch):
+    """回归：构造序列 reload 在 purge 之后执行——清理提示不得被 reload 覆盖。"""
+    import time
+    from syskit import settings as settings_mod
+    from syskit.ui.system_page import ClipboardTab
+
+    tab = ClipboardTab()
+    qtbot.addWidget(tab)
+    tab.hist.clear()
+    tab.hist._items = [
+        {"ts": int(time.time()) - 5 * 86400, "text": "old", "kind": "text", "pinned": False, "data": ""},
+        {"ts": int(time.time()), "text": "fresh", "kind": "text", "pinned": False, "data": ""},
+    ]
+    # 按构造序列：先 reload 再 purge（与 __init__ 一致）
+    tab.reload()
+    tab._purge_expired()
+    assert "清理 1 条" in tab.lbl.text()      # 修复前此处被 "共 1 条" 覆盖
+    assert [it["text"] for it in tab.hist.items()] == ["fresh"]
+
+
 def test_clipboard_purge_expired_on_setup_and_refresh(qtbot, monkeypatch):
     """按天过期：构造期清理一次（过期条目被删并提示），设置 0 天则不清理。"""
     import time

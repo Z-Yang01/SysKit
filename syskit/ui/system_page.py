@@ -578,11 +578,12 @@ class ClipboardTab(QWidget):
         self._flush_timer.timeout.connect(self._flush_disk)
         self._flush_timer.start(10_000)
         # 按天过期：启动清一次 + 每 24h 清一次（用户可设保留天数，0=永不过期）
+        # reload 在前：purge 的清理提示才不会被 reload 覆盖
+        self.reload()
         self._purge_expired()
         self._purge_timer = QTimer(self)
         self._purge_timer.timeout.connect(self._purge_expired)
         self._purge_timer.start(24 * 3600_000)
-        self.reload()
 
     def _purge_expired(self):
         try:
