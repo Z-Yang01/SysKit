@@ -881,3 +881,22 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
   保留（宁留勿误删，§15/§16），+1 回归（ts=0 保留、真过期删除）。
 - 附带核验：条数淘汰 _evict 对 ts=0 条目仍生效（容量语义≠时效语义，符合设计）。
 - 全量重跑全绿（前轮 entry_stdio 两例失败为已知环境性偶发，单文件/重跑即绿）。
+
+### 补充35（2026-09-16）：覆盖率收口第二批 + 入口哨兵兼容补测（夜间挂机总任务）
+
+- **逻辑模块缺口清零**（子 Agent D，42 例）：vault_crypto 88%→100%（DPAPI 失败/
+  verifier 篡改/InvalidTag 等防御分支，全程打桩 crypt32，成功路径走本地无副作用
+  DPAPI）、winregread 90%→100%、dnsquery 93%→100%（假 socket 零外连）、
+  clipboard 93%→100%、secure_store 94%→100%（目录双失败驱动，无全局补丁）。
+  conftest 哨兵全程未绕过未削弱。
+- **入口补测**（总控，5 例，tests/test_entry_stdio_gaps.py）：__main__.py 0%→100%
+  与 main.py:27（__main__ 守卫）用 runpy 进程内直跑（subprocess 方案被哨兵正确
+  拦截——按设计改道，不再复现历史"环境性偶发"）；__init__ _fix_windows_stdio
+  无句柄重定向路径纯 mock 驱动（os.open/dup2/fdopen 全替换）。
+- **杂项**：删除根目录未跟踪垃圾文件 `nul`（重定向误产物）；.gitignore 补
+  `.workbuddy/`。
+- 覆盖率：TOTAL **97%→98%**（miss 242→176）；剩余低洼：ui/app.py 88%（Qt
+  fatal handler 落盘路径）、__init__ 92%、telemetry/workers/config/theme 95%。
+- 全量复验：**966 passed / 1 skipped**（41s），0 failed。
+- 疑似 Bug：无新增（vault_crypto:188-189 与 clipboard:172-174 两条"极窄防御
+  分支"备注已固化测试，非缺陷）。
