@@ -190,7 +190,12 @@ class ClipboardHistory:
         with _lock:
             keep, expired = [], []
             for it in self._items:
-                (expired if int(it.get("ts", 0)) < cutoff else keep).append(it)
+                ts = int(it.get("ts", 0) or 0)
+                # ts 缺失/为 0（旧版本条目）视为时效不可判定 → 保留（宁留勿误删，§15）
+                if ts <= 0:
+                    keep.append(it)
+                    continue
+                (expired if ts < cutoff else keep).append(it)
             if not expired:
                 return 0
             self._items = keep

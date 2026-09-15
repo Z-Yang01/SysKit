@@ -177,6 +177,20 @@ class TestClipboardHistory:
         monkeypatch.setattr(clip_mod, "foreground_process_name", lambda: "notepad")
         assert clip_mod.should_record_now(blacklist="KEEPASS.EXE,bitwarden") is True
 
+    def test_purge_skips_entries_without_timestamp(self, tmp_path, monkeypatch):
+        """回归：无 ts 的旧版本条目（ts=0）不得被按天清理误删（宁留勿误删）。"""
+        import time
+        monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
+        h = clip_mod.ClipboardHistory()
+        now = time.time()
+        h._items = [
+            {"ts": 0, "text": "无时间戳旧条目", "kind": "text", "pinned": False, "data": ""},
+            {"ts": int(now - 5 * 86400), "text": "真过期", "kind": "text", "pinned": False, "data": ""},
+        ]
+        assert h.purge_older_than(1) == 1
+        assert h.texts() == ["无时间戳旧条目"]     # 无时效数据保留
+        assert h.texts() != ["真过期"]
+
     def test_purge_older_than_daily_semantics(self, tmp_path, monkeypatch):
         """按天过期：过期条目删除（含图片载荷与置顶条目），未过期保留；0=永不过期。"""
         import time
