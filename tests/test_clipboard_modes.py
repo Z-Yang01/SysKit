@@ -9,6 +9,8 @@ from syskit import clipboard as clip_mod
 from syskit import config, modes
 from syskit.proc import CmdResult
 
+PNG_DAY = bytes([0x89]) + b'PNG-day'
+
 PNG1 = bytes([0x89]) + b'PNG-fake-1'
 PNG2 = bytes([0x89]) + b'PNG-fake-2'
 PNG3 = bytes([0x89]) + b'PNG-fake-3'
@@ -174,6 +176,29 @@ class TestClipboardHistory:
         assert clip_mod.should_record_now(blacklist="") is True
         monkeypatch.setattr(clip_mod, "foreground_process_name", lambda: "notepad")
         assert clip_mod.should_record_now(blacklist="KEEPASS.EXE,bitwarden") is True
+
+    def test_purge_older_than_daily_semantics(self, tmp_path, monkeypatch):
+        """按天过期：过期条目删除（含图片载荷与置顶条目），未过期保留；0=永不过期。"""
+        import time
+        monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path), raising=False)
+        h = clip_mod.ClipboardHistory()
+        name = clip_mod.save_image_bytes(PNG_DAY)
+        now = time.time()
+        h._items = [
+            {"ts": int(now - 3 * 86400), "text": "三天前", "kind": "text", "pinned": False, "data": ""},
+            {"ts": int(now - 2 * 86400), "text": "两天前图", "kind": "image", "pinned": True, "data": name},
+            {"ts": int(now - 3600), "text": "一小时前", "kind": "text", "pinned": False, "data": ""},
+            {"ts": int(now), "text": "刚刚", "kind": "text", "pinned": False, "data": ""},
+        ]
+        removed = h.purge_older_than(1)             # 一天一删
+        assert removed == 2                          # 三天前 + 两天前图（置顶同样过期）
+        texts = h.texts()
+        assert set(texts) == {"刚刚", "一小时前"}    # 过期删除，未过期保留
+        assert not os.path.exists(clip_mod.image_path(name))   # 图片载荷同删
+        assert h._dirty                              # 已标脏（待定时器刷盘）
+        # 0 = 永不过期
+        assert h.purge_older_than(0) == 0
+        assert len(h.items()) == 2
 
     def test_image_payload_removed_on_remove_clear_evict(self, tmp_path, monkeypatch):
         """回归：删除/清空/超额淘汰图片条目时，明文 PNG 载荷同步删除（不留磁盘残留）。"""

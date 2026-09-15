@@ -179,6 +179,25 @@ class ClipboardHistory:
             self.mark_dirty()          # 防抖：连发复制只动内存，由定时器/退出刷盘
         return True
 
+    def purge_older_than(self, days: int) -> int:
+        """删除超过 days 天的条目（含其图片载荷；置顶条目同样过期——按天是时间语义）。
+
+        days<=0 表示永不按天清理。返回删除条数。由每日定时器与启动时调用。
+        """
+        if days <= 0:
+            return 0
+        cutoff = time.time() - days * 86400
+        with _lock:
+            keep, expired = [], []
+            for it in self._items:
+                (expired if int(it.get("ts", 0)) < cutoff else keep).append(it)
+            if not expired:
+                return 0
+            self._items = keep
+            self._delete_image_files(expired)
+            self.mark_dirty()
+            return len(expired)
+
     def _evict(self):
         """超额裁剪：只删最老的非置顶条目，置顶不受 max_items 限制。"""
         unpinned = [i for i, it in enumerate(self._items) if not it.get("pinned")]

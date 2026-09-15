@@ -558,6 +558,31 @@ def test_battery_tab_lazy_loads_on_show(qtbot, monkeypatch):
     assert len(calls) == 1
 
 
+def test_clipboard_purge_expired_on_setup_and_refresh(qtbot, monkeypatch):
+    """按天过期：构造期清理一次（过期条目被删并提示），设置 0 天则不清理。"""
+    import time
+    from syskit import settings as settings_mod
+    from syskit.ui.system_page import ClipboardTab
+
+    tab = ClipboardTab()
+    qtbot.addWidget(tab)
+    tab.hist.clear()
+    now = time.time()
+    tab.hist._items = [
+        {"ts": int(now - 5 * 86400), "text": "old", "kind": "text", "pinned": False, "data": ""},
+        {"ts": int(now), "text": "fresh", "kind": "text", "pinned": False, "data": ""},
+    ]
+    tab._purge_expired()                          # 默认保留 1 天 → old 删除
+    assert [it["text"] for it in tab.hist.items()] == ["fresh"]
+    assert "清理 1 条" in tab.lbl.text()
+
+    settings_mod.save({"clipboard_retain_days": 0})
+    tab.hist._items.append(
+        {"ts": int(now - 9 * 86400), "text": "ancient", "kind": "text", "pinned": False, "data": ""})
+    tab._purge_expired()                          # 0 天 = 永不过期
+    assert any(it["text"] == "ancient" for it in tab.hist.items())
+
+
 def test_clipboard_reload_rows_preview_and_bad_ts(qtbot):
     tab = _make_clip_tab(qtbot)
     tab.hist._items = [{"ts": int(time.time()), "text": "hello\nworld  foo"},

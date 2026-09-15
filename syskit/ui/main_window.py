@@ -832,6 +832,13 @@ class MainWindow(QMainWindow):
         self.chk_clip_images.setChecked(bool(s.get("clip_capture_images", True)))
         form3.addRow(self.chk_clip_images)
 
+        self.spin_clip_days = QSpinBox()
+        self.spin_clip_days.setRange(0, 365)
+        self.spin_clip_days.setValue(int(s.get("clipboard_retain_days", 1)))
+        self.spin_clip_days.setSuffix(" 天")
+        self.spin_clip_days.setToolTip("剪贴板历史超过该天数自动删除（启动与每日清理；0=永不过期）")
+        form3.addRow("剪贴板保留", self.spin_clip_days)
+
         self.spin_clip_ttl = QSpinBox()
         self.spin_clip_ttl.setRange(0, 300)
         self.spin_clip_ttl.setValue(int(s.get("clip_sensitive_ttl", 25)))
@@ -896,6 +903,7 @@ class MainWindow(QMainWindow):
             "dark_mode": self.chk_dark.isChecked(),
             "dns_preset": self.cmb_dns.currentText(),
             "clip_capture_images": self.chk_clip_images.isChecked(),
+            "clipboard_retain_days": self.spin_clip_days.value(),
             "clip_sensitive_ttl": self.spin_clip_ttl.value(),
             "clip_process_blacklist": self.edt_blacklist.text().strip(),
             "vault_autolock_min": self.spin_autolock.value(),
