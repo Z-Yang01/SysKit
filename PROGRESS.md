@@ -900,3 +900,26 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
 - 全量复验：**966 passed / 1 skipped**（41s），0 failed。
 - 疑似 Bug：无新增（vault_crypto:188-189 与 clipboard:172-174 两条"极窄防御
   分支"备注已固化测试，非缺陷）。
+
+### 补充36（2026-09-16 夜间）：防御分支收口第三批——五模块缺口清零
+
+- **ui/app.py 88%→100%**（总控，2 例）：`_qt_msg_handler` QtFatalMsg 分支（截获
+  run_gui 安装的消息钩子直驱：fatal 落盘 crash.log + 句柄缓存复用 + 句柄失效写失败
+  被吞——全程 conftest 重定向目录，crash.log 不触真实 %LOCALAPPDATA%）、
+  `_prepare_data_dirs` 外层异常吞并（os.makedirs 打桩只读卷 + LOGGER.exception 侦察）。
+- **ui/theme.py 95%→100%、ui/workers.py 95%→100%**（1 文件 8 例）：
+  sub_color、add_shadow 特效构造失败降级 None（打桩 QGraphicsDropShadowEffect.__init__）、
+  DiagnosisWorker.cancel 中止标记与 run() 异常兜底发空结果（netcheck.run_all 打桩，
+  同步直跑不起线程）。
+- **stores.py 96%→100%**：_save 落盘失败清理 tmp（replace 打桩）+ unlink 二次失败
+  仍 False；TrafficStore.add 零增量早退不标脏。
+- **telemetry.py 95%→96%**：_top_procs 单进程读取异常跳过。剩余 miss 5 行
+  （153-156/167）论证为不可达防御代码：`name = (p.info or {}).get("name") or str(pid)`
+  恒真值使 `if not name:` 永假；非重建轮 seen 恒等于缓存键集使过期清理永空——
+  按"防御分支不强凑"惯例固化记录，不改源码。
+- 教训入档：无 QApplication 时创建 QWidget 会 Qt fatal abort（进程级 127），
+  纯逻辑测试文件用到 QWidget 必须显式挂 qapp fixture——本轮实测踩坑后修正。
+- 摸底插曲：首轮全量 `test_portable.py::test_end_to_end_writes_land_in_portable_dir`
+  失败 1 例，单跑与后续全量均绿，未复现——按既有"环境性偶发"口径记录，不臆断根因。
+- 全量复验（总控亲跑）：**976 passed / 1 skipped**（44s），0 failed；TOTAL miss
+  **176→151**（98%）。哨兵未绕过未削弱，零真实系统调用。

@@ -1185,3 +1185,63 @@ def test_run_gui_full_bootstrap_and_minimized(patched_gui, monkeypatch):
         app_mod.run_gui()
     win2 = _FakeWin.instances[-1]
     assert win2.minimized is True and win2.shown is False
+
+
+# ---------------- app.py 防御分支收口（2026-09-16 夜间批）----------------
+
+
+def test_prepare_data_dirs_outer_exception_is_swallowed(monkeypatch):
+    """数据目录准备整体异常（如目录所在卷只读）→ 记日志不外抛，启动不被阻断。"""
+    import os as _os
+    import syskit.logger as logger_mod
+    from syskit.ui import app as app_mod
+
+    calls = []
+
+    class SpyLogger:
+        @staticmethod
+        def exception(*a, **k):
+            calls.append(a)
+
+    monkeypatch.setattr(logger_mod, "LOGGER", SpyLogger)
+
+    def boom(*a, **k):
+        raise OSError("readonly volume")
+
+    monkeypatch.setattr(_os, "makedirs", boom)
+    assert app_mod._prepare_data_dirs() is None
+    assert calls, "异常路径必须留下 LOGGER.exception 记录"
+
+
+def test_run_gui_qt_fatal_branch_writes_crash_log(patched_gui, monkeypatch):
+    """QtFatalMsg：同步直写 crash.log 并 flush/fsync；句柄缓存复用；写失败被吞。"""
+    import os
+    from PySide6 import QtCore
+    from syskit import config
+    from syskit.ui import app as app_mod
+
+    captured = []
+    real_install = QtCore.qInstallMessageHandler
+    monkeypatch.setattr(
+        QtCore, "qInstallMessageHandler",
+        lambda handler: (captured.append(handler),
+                         real_install(lambda *a: None))[1])
+
+    with pytest.raises(SystemExit):
+        app_mod.run_gui()
+    assert captured, "run_gui 必须安装 Qt 消息钩子"
+    handler = captured[0]
+
+    crash_log = os.path.join(config.LOCALAPPDATA_DIR, "crash.log")
+
+    handler(3, None, "[test] fatal one")      # QtFatalMsg：开句柄落盘并缓存
+    handler(3, None, "[test] fatal two")      # 第二条：复用缓存句柄
+    assert os.path.exists(crash_log)
+    data = open(crash_log, "rb").read().decode("utf-8", errors="replace")
+    assert "QtFATAL: [test] fatal one" in data
+    assert "QtFATAL: [test] fatal two" in data
+    assert getattr(handler, "_fatal_fh", None) is not None
+
+    # 句柄失效（文件已关）→ 写失败被吞，不影响后续 LOGGER.debug 兜底
+    handler._fatal_fh.close()
+    handler(3, None, "[test] fatal after close")
