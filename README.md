@@ -145,10 +145,11 @@ install.bat    :: 安装/升级到 %LOCALAPPDATA%\Programs\SysKit，创建桌面
 
 ```bat
 python -m pip install -r dev-requirements.txt   :: 运行时依赖 + 测试工具（钉版本）
-python -m pytest                                 :: 全量测试（tests/，775 例）
-python -m pytest tests/test_vault.py -q          :: 单文件
-python -m pyflakes syskit/ tools/                :: 静态扫描（bug 排查例行）
-python tools\ui_preview.py                       :: 离屏 14 张页面截图验收
+python -m pytest --timeout=300                  :: 全量测试（tests/，1001 例，coverage 99%）
+python -m pytest tests/test_vault.py -q         :: 单文件
+python -m pytest --cov=syskit --cov-report=term-missing  :: 带覆盖率
+python -m pyflakes syskit/ tools/               :: 静态扫描（bug 排查例行）
+python tools\ui_preview.py                      :: 离屏 14 张页面截图验收
 ```
 
 - 测试安全网见 `conftest.py`：持久化路径重定向临时目录；未显式 mock 的

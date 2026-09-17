@@ -923,3 +923,25 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
   失败 1 例，单跑与后续全量均绿，未复现——按既有"环境性偶发"口径记录，不臆断根因。
 - 全量复验（总控亲跑）：**976 passed / 1 skipped**（44s），0 failed；TOTAL miss
   **176→151**（98%）。哨兵未绕过未削弱，零真实系统调用。
+
+### 补充37（2026-09-17 夜间）：UI 层缺口收口 + 疑似 bug #11 清算
+
+- **摸底**：976 passed / 1 skipped（44s），TOTAL 98%（miss 151/7755），与上轮一致。
+- **UI 四文件收口**（子 Agent，26 例新增 `tests/test_ui_coverage_round_2026_09_17.py`，
+  总控复验）：`ui/main_window.py` 96%→**100%**（palette 三岔/五路径、热键与自启四条
+  错误路径、quit_app 三道扫尾等）；`ui/vault_page.py` 95%→**100%**（自动锁/补选/
+  陈旧代理行/主密码安全门全分支/TOTP 弹窗守卫等）；`ui/toolbox_page.py` 95%→**100%**
+  （测速失败双路/LAN 扫描/PingRoute 记忆/端口懒扫描/Hosts 全 CRUD，写盘仅落临时目录）；
+  `ui/system_page.py` 98%→**100%**。`ui/charts.py` 剩 1 行论证为编译期不可达死代码
+  （human_bytes 循环内恒返回），按"不强凑"惯例保留。
+- **疑似 bug #11（P1，子 Agent 发现、总控确认并修复）**：`vault_page._add_account`
+  对对话框 `exec()` 两次——首次接受后 565 行再次模态弹出，二次取消静默丢弃输入。
+  修复：删除二次 exec，沿用首次结果（557-567 最小化）；测试改写为"仅一次 exec 且
+  接受后入库"回归钉住。
+- **死代码清理**：`main_window.py:988` 的 `return` 后重复 `return`（不可达残留）删除。
+- **文档同步**：README「开发与测试」更新——775 例→1001 例、补 coverage 命令、
+  全量命令统一带 `--timeout=300`。
+- **收尾（总控亲跑）**：**1000 passed / 1 skipped / 0 failed**；TOTAL **98%→99%**
+  （miss 151→34/7752）。剩余 34 miss 均为既有论证的防御分支（repairs 7、vault 5、
+  telemetry 5、netcheck 4 等），维持"不强凑"决定。哨兵未绕过未削弱，零真实系统调用。
+
