@@ -557,12 +557,9 @@ class VaultPage(QWidget):
         try:
             dlg = _AccountDialog(self)
             accepted = dlg.exec() == QDialog.Accepted
-            f = dlg.fields() if accepted else None
         finally:
             self._restart_autolock()
         if not accepted:
-            return
-        if dlg.exec() != QDialog.Accepted:
             return
         f = dlg.fields()
         password = f.pop("password")

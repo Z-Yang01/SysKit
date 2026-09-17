@@ -985,7 +985,6 @@ class MainWindow(QMainWindow):
         # 构造期首次调用时 page_logs 尚未赋值（_build_log_tab 内部）
         if getattr(self, "page_logs", None) is None                 or self.stack.currentWidget() is not self.page_logs:
             return
-            return
         name = "error.log" if getattr(self, "cmb_log_src", None) and self.cmb_log_src.currentIndex() == 1 else "syskit.log"
         path = os.path.join(config.LOG_DIR, name)
         try:
