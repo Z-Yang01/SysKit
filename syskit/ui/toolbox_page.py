@@ -1,6 +1,5 @@
 """工具箱：速度测试 / 局域网设备发现 / DNS查询与子网计算 / 持续ping与路由追踪 / 端口占用 / Hosts 编辑。"""
 import ipaddress
-import os
 import re
 import socket
 import subprocess
@@ -12,9 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 import psutil
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFormLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QListWidget, QMessageBox, QProgressBar, QPushButton, QRadioButton,
+                               QListWidget, QMessageBox, QProgressBar, QPushButton,
                                QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
@@ -239,6 +238,27 @@ class LanTab(QWidget):
 
 # ---------------- DNS 查询 + 子网计算 ----------------
 
+class _DnsQueryWorker(QThread):
+    """DNS 查询后台线程：系统默认分支走 getaddrinfo（无超时参数，系统 DNS
+    故障时最长可冻 UI 数十秒），指定服务器分支超时 3s——都不该在 UI 线程跑。"""
+    done = Signal(list)            # IP 列表，或 ["查询失败: ..."]
+
+    def __init__(self, domain, server, parent=None):
+        super().__init__(parent)
+        self._domain = domain
+        self._server = server
+
+    def run(self):
+        try:
+            if self._server == "系统默认":
+                infos = socket.getaddrinfo(self._domain, None, socket.AF_INET)
+                self.done.emit(sorted({i[4][0] for i in infos}))
+            else:
+                self.done.emit(dnsquery.query(self._domain, self._server, timeout=3))
+        except Exception as e:
+            self.done.emit([f"查询失败: {e}"])
+
+
 class DnsSubnetTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -287,22 +307,21 @@ class DnsSubnetTab(QWidget):
         lay.addWidget(grp_sub, 1)
 
     def query(self):
+        # 上一查询未完成时忽略本次点击（防抖），不清空在跑查询将要回填的列表
+        if getattr(self, "_qw", None) is not None:
+            return
         self.list_dns.clear()
         domain = self.ed_domain.text().strip()
         if not domain:
             return
         server = self.cmb_server.currentText().split("（")[0]
-        try:
-            if server == "系统默认":
-                import socket as _s
-                infos = _s.getaddrinfo(domain, None, _s.AF_INET)
-                ips = sorted({i[4][0] for i in infos})
-            else:
-                ips = dnsquery.query(domain, server, timeout=3)
-        except Exception as e:
-            self.list_dns.addItem(f"查询失败: {e}")
-            return
-        for ip in ips:
+        self._qw = reap(_DnsQueryWorker(domain, server), self)
+        self._qw.done.connect(self._query_done)
+        self._qw.start()
+
+    def _query_done(self, rows):
+        self._qw = None
+        for ip in rows:
             self.list_dns.addItem(f"{ip}")
 
     def calc(self):
@@ -368,7 +387,20 @@ class _TracertWorker(QThread):
                                 "ms": ms_list,
                                 "ip": ip_m.group(1) if ip_m else "*"})
         except Exception:
-            pass
+            LOGGER.warning("tracert 线程异常", exc_info=True)
+
+
+class _PingWorker(QThread):
+    """单发 ICMP：icmp.ping 同步等待最长 1.5s，放后台线程跑——
+    持续 ping 一个不通的目标时，UI 线程不能每秒被冻 1.5s。"""
+    done = Signal(object)          # float|None（延迟 ms；不可达为 None）
+
+    def __init__(self, target, parent=None):
+        super().__init__(parent)
+        self._target = target
+
+    def run(self):
+        self.done.emit(icmp.ping(self._target))
 
 
 class PingRouteTab(QWidget):
@@ -405,6 +437,7 @@ class PingRouteTab(QWidget):
         self._ping_timer.timeout.connect(self._ping_once)
         self._tracert = None
         self._ping_was_active = False
+        self._ping_worker = None
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -432,9 +465,15 @@ class PingRouteTab(QWidget):
 
     def _ping_once(self):
         target = self.ed_target.text().strip()
-        if not target:
+        # 上一发还在跑就跳过本 tick：不可达目标 ping 耗时(1.5s)可能超过定时周期(1s)
+        if not target or self._ping_worker is not None:
             return
-        ms = icmp.ping(target)
+        self._ping_worker = reap(_PingWorker(target), self)
+        self._ping_worker.done.connect(self._ping_done)
+        self._ping_worker.start()
+
+    def _ping_done(self, ms):
+        self._ping_worker = None
         self.chart.push([ms])
 
     def tracert(self):

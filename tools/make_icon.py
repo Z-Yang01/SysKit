@@ -29,7 +29,7 @@ def _rounded_mask(size: int, radius: int) -> Image.Image:
 def _draw_s(d: ImageDraw.ImageDraw, s: int, stroke: int):
     """几何化 S：上右开口弧 + 下左开口弧 + 中间横连。"""
     # 用椭圆边框模拟圆弧笔画（比 arc 更可控）
-    cx, cy = s // 2, s // 2
+    cy = s // 2
     # 上半环（右下开口）
     box_t = [int(s * 0.20), int(s * 0.14), int(s * 0.80), int(s * 0.56)]
     d.arc(box_t, start=15, end=250, fill=C_S, width=stroke)

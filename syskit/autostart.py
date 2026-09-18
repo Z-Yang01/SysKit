@@ -1,5 +1,4 @@
 """开机自启：schtasks 最高权限计划任务（登录静默运行，免 UAC）。"""
-import os
 import sys
 
 from . import admin, proc, config

@@ -196,7 +196,11 @@ def set_power_plan(high_perf: bool) -> dict:
 
 
 def pause_windows_update(days: int = 7) -> dict:
-    """通过 AU 策略暂停自动更新（需管理员）。days>0 写入 NoAutoUpdate=1。"""
+    """通过 AU 策略关闭自动更新（需管理员）。days>0 写 NoAutoUpdate=1，0=恢复。
+
+    注意：NoAutoUpdate 策略是无限期的（不是"暂停 days 天"），days 只影响
+    开/关方向；文案不得暗示到期自动恢复。
+    """
     if not admin.is_admin():
         return _step("暂停 Windows 更新", False, "需要管理员权限")
     try:
@@ -210,7 +214,7 @@ def pause_windows_update(days: int = 7) -> dict:
             winreg.SetValueEx(k, "NoAutoUpdate", 0, winreg.REG_DWORD, 1 if days > 0 else 0)
         finally:
             k.Close()
-        return _step("暂停 Windows 更新", True, f"已暂停约 {days} 天（策略）" if days > 0 else "已恢复自动更新")
+        return _step("暂停 Windows 更新", True, "已关闭自动更新（策略持久生效，退出游戏模式可恢复）" if days > 0 else "已恢复自动更新")
     except Exception as e:
         return _step("暂停 Windows 更新", False, str(e))
 

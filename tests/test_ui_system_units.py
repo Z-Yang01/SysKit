@@ -989,6 +989,35 @@ def test_modes_game_admin_downgrade_and_restore(qtbot, monkeypatch,
     assert tab.lbl.text() == "退出游戏模式：0/1 步成功"
 
 
+def test_enter_game_runs_via_mode_worker(qtbot, monkeypatch, msgbox_recorder):
+    """进入游戏模式必须走 _start_mode/_ModeWorker 后台执行。
+
+    回归：四入口异步化时漏掉了本入口——它曾在 UI 线程同步跑 run_game_mode
+    （powercfg + PowerShell + 进程清理，冻结 UI 数秒~数十秒），且旧测试的
+    _sync_worker 补丁对该路径是 no-op，掩盖了分叉。
+    """
+    from syskit.ui import system_page as sp
+    from syskit.ui.system_page import ModesTab
+    tab = ModesTab()
+    qtbot.addWidget(tab)
+
+    seen = {}
+    monkeypatch.setattr(sp.admin, "is_admin", lambda: True)
+
+    def fake_run(clear_bg):
+        seen["clear_bg"] = clear_bg
+        return [{"name": "g", "ok": True, "detail": ""}]
+
+    monkeypatch.setattr(sp.modes, "run_game_mode", fake_run)
+    monkeypatch.setattr(sp._ModeWorker, "start", lambda self: self.run())
+
+    tab.chk_clear_bg.setChecked(True)
+    tab._enter_game()
+    assert seen["clear_bg"] is True              # 参数经 lambda 传入 worker
+    assert not tab._busy and tab._mw is None     # _start_mode 的 worker 生命周期收尾
+    assert tab.txt.rowCount() == 1 and tab.btn_game.isEnabled()
+
+
 # ---------------- app.py ----------------
 
 

@@ -204,7 +204,9 @@ class DiskTab(QWidget):
         self.pb.show()
         self.lbl_progress.setText(f"正在扫描 {path} …")
         self.lbl_result.setText(" ")
-        self._worker = DiskScanWorker(path)
+        # reap：挂对象树 + finished→deleteLater——这是全项目唯一没走 reap 的
+        # worker 曾重蹈 QThread 析构竞态（emit 后置 None 的微秒窗口 → qFatal）
+        self._worker = reap(DiskScanWorker(path), self)
         self._worker.progress.connect(self.lbl_progress.setText)
         self._worker.done.connect(self._scan_done)
         self._worker.start()

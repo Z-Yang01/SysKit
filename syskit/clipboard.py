@@ -13,6 +13,7 @@ import threading
 import time
 
 from . import config
+from .logger import LOGGER
 
 # RLock：add/remove 在持锁时调用 save，必须可重入
 _lock = threading.RLock()
@@ -147,9 +148,13 @@ class ClipboardHistory:
         with _lock:
             try:
                 from .secure_store import save_sealed_json
-                save_sealed_json(self._path, self._items)   # DPAPI 密封（绑定当前用户）
+                # DPAPI 密封（绑定当前用户）；返回 False=密封/写盘失败，
+                # 历史将不再持久化——必须留痕，否则用户无痕丢历史无从排查
+                if not save_sealed_json(self._path, self._items):
+                    LOGGER.warning("剪贴板历史密封写盘失败（DPAPI/磁盘），本次变更未持久化: {}",
+                                   self._path)
             except Exception:
-                pass
+                LOGGER.warning("剪贴板历史写盘异常", exc_info=True)
 
     def add(self, text, kind: str = "text", data: str = "") -> bool:
         """追加一条。空白/敏感内容/与最新条相同/与置顶条目相同则不入库。"""

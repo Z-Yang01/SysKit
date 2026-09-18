@@ -856,33 +856,35 @@ def test_port_tab_kill_selected_all_branches(qtbot, monkeypatch):
 # syskit/ui/wifi_page.py
 # ============================================================
 
+# 真实 netsh wlan show networks mode=bssid 的输出形态：SSID 名在带索引行上
+# （`SSID 1 : 名字`），输出中不存在裸 `SSID:` 行（那是 show interfaces 的格式）。
+# 隐藏网络的 SSID 行值为空。旧 fixture 凭空造了一条裸 SSID 行，恰好掩盖了
+# 解析器丢弃带索引行、全部 SSID 落到 "(隐藏)" 的缺陷。
 NETSH_TEXT = """接口名称: WLAN
 There are 3 networks currently visible.
 
 SSID 1 : HomeWiFi
+    网络类型: 结构
     身份验证: WPA2-PSK
-
-SSID: HomeWiFi
     BSSID 1: aa:bb:cc:dd:ee:01
         信号: 82%
         信道: 6
         无线电类型: 802.11ax
 
-SSID:
-    身份验证: Open
+SSID 2 :
     BSSID 1: aa:bb:cc:dd:ee:02
         信号: 40%
 
-SSID: Office5G
+SSID 3 : Office5G
+    身份验证: WPA3-SAE
     BSSID 1: aa:bb:cc:dd:ee:03
         信号: 55%
         信道: 36
-        身份验证: WPA3-SAE
 """
 
 
 def test_wifi_signal_color_and_scan_networks_parsing(monkeypatch):
-    """_signal_color 兜底 + scan_networks 全量解析：SSID 跳过/隐藏网络/auth 回填/频段/排序（24 / 32-74）。"""
+    """_signal_color 兜底 + scan_networks 全量解析：带索引 SSID 行/隐藏网络/auth 回填/频段/排序（24 / 32-74）。"""
     from syskit import proc
 
     import syskit.ui.wifi_page as wp
@@ -897,8 +899,10 @@ def test_wifi_signal_color_and_scan_networks_parsing(monkeypatch):
     assert aps[0]["signal"] == 82 and aps[0]["channel"] == 6
     assert aps[0]["band"] == "2.4G" and aps[0]["radio"] == "802.11ax"
     assert aps[1]["band"] == "5G"
-    assert aps[1]["auth"] == "WPA3-SAE"               # BSSID 之后才出现的认证 → 回填
-    assert aps[2]["auth"] == "Open" and aps[2]["band"] == "?"
+    assert aps[1]["auth"] == "WPA3-SAE"
+    assert aps[2]["ssid"] == "(隐藏)"                 # SSID 行值为空 → 隐藏兜底
+    # 尾部回填：无认证行的条目继承「整个输出最后见到的认证」（既有语义）
+    assert aps[2]["auth"] == "WPA3-SAE" and aps[2]["band"] == "?"
 
     monkeypatch.setattr(proc, "run",
                         lambda cmd, timeout=20: proc.CmdResult(

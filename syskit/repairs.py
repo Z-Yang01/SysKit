@@ -1,9 +1,8 @@
 """修复动作库：风险分级、改前备份、还原提示。所有动作 execute(param) -> RepairResult。"""
-import json
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from . import config, proc, winregread
 from .logger import LOGGER
@@ -99,7 +98,9 @@ class StartNlaSvc(RepairAction):
         r = proc.run(["sc", "start", "NlaSvc"], timeout=30)
         ok = r.ok or "1056" in r.stdout + r.stderr  # 1056=已在运行
         q = proc.run(["sc", "query", "NlaSvc"], timeout=10)
-        running = "RUNNING" in q.stdout or "4" in q.stdout
+        # 不能用 "4" in stdout 兜底：WIN32_EXIT_CODE / REFERENCE COUNT 等
+        # 任何含数字 4 的字段都会把"未运行"误判成"运行中"
+        running = "RUNNING" in q.stdout
         return RepairResult(ok and running, f"NlaSvc 当前状态: {'运行中' if running else '未运行'} " + (r.stdout[:100] if not ok else ""))
 
 
@@ -139,7 +140,7 @@ class ToggleAdapter(RepairAction):
         name = param.get("adapter") or _pick_adapter()
         if not name:
             return RepairResult(False, "未指定网卡且无法自动选择")
-        d = proc.run(["netsh", "interface", "set", "interface", f"name={name}", "disable"], timeout=20)
+        proc.run(["netsh", "interface", "set", "interface", f"name={name}", "disable"], timeout=20)
         time.sleep(2)
         e = proc.run(["netsh", "interface", "set", "interface", f"name={name}", "enable"], timeout=25)
         return RepairResult(e.ok, f"{name} 已重新启用" if e.ok else f"启用失败: {e.stdout[-100:]}{e.stderr[-100:]}")
@@ -189,7 +190,7 @@ class FixNlaSvc(RepairAction):
         c = proc.run(["sc", "config", "NlaSvc", "start=", "auto"], timeout=15)
         if not c.ok:
             return RepairResult(False, "sc config 失败: " + (c.stdout + c.stderr)[-120:])
-        s = proc.run(["sc", "start", "NlaSvc"], timeout=30)
+        proc.run(["sc", "start", "NlaSvc"], timeout=30)   # 成败以随后的 query 为准
         q = proc.run(["sc", "query", "NlaSvc"], timeout=10)
         running = "RUNNING" in q.stdout
         return RepairResult(running, "NlaSvc 已设为自动启动" + ("，且已成功启动" if running else "，但启动失败，请重启后再试"))
@@ -206,12 +207,21 @@ class DnsAuto(RepairAction):
         name = param.get("adapter") or _static_dns_adapter()
         if not name:
             return RepairResult(False, "未找到配置了静态 DNS 的网卡")
-        _backup_dns(name)
+        backup = _backup_dns(name)
+        if not backup:
+            # 改前备份是动作描述对用户的承诺：备份失败时保留原配置不改，
+            # 否则用户唯一的还原凭据（静态 DNS 原值）会被静默抹掉
+            return RepairResult(False, "备份原 DNS 失败，已保留原配置未修改（检查备份目录/磁盘）")
         r = proc.run(["netsh", "interface", "ipv4", "set", "dnsservers", f"name={name}", "source=dhcp"], timeout=15)
         v6 = proc.run(["netsh", "interface", "ipv6", "set", "dnsservers", f"name={name}", "source=dhcp"], timeout=15)
-        ok = r.ok
+        ok = r.ok and v6.ok
         proc.run(["ipconfig", "/flushdns"], timeout=10)
-        return RepairResult(ok, f"{name} 的 DNS 已恢复自动获取" + ("" if ok else ": " + (r.stdout + r.stderr)[-100:]))
+        if ok:
+            return RepairResult(True, f"{name} 的 DNS 已恢复自动获取")
+        errs = "" if r.ok else (r.stdout + r.stderr)[-100:]
+        if not v6.ok:
+            errs += (" v6: " if errs else "") + (v6.stdout + v6.stderr)[-100:]
+        return RepairResult(False, f"{name} DNS 恢复自动获取失败: {errs}")
 
 
 def _static_dns_adapter() -> str:
@@ -240,6 +250,7 @@ def _backup_dns(adapter: str) -> str:
         return _save_note(f"dns_backup_{re.sub(r'[^A-Za-z0-9]+', '_', adapter)}.txt",
                           "\n".join(out))
     except Exception:
+        LOGGER.warning("DNS 备份失败（{}）", adapter, exc_info=True)
         return ""
 
 
@@ -259,12 +270,20 @@ class DnsPreset(RepairAction):
         if not name:
             return RepairResult(False, "未指定网卡且无法自动选择")
         primary, secondary = config.DNS_PRESETS[preset]
-        _backup_dns(name)
+        backup = _backup_dns(name)
+        if not backup:
+            # 与 dns_auto 同语义：备份失败不改原值（覆盖静态 DNS 后旧值即丢失）
+            return RepairResult(False, "备份原 DNS 失败，已保留原配置未修改（检查备份目录/磁盘）")
         r1 = proc.run(["netsh", "interface", "ipv4", "set", "dnsservers", f"name={name}", "static", primary, "primary"], timeout=15)
         r2 = proc.run(["netsh", "interface", "ipv4", "add", "dnsservers", f"name={name}", secondary, "index=2"], timeout=15)
         proc.run(["ipconfig", "/flushdns"], timeout=10)
-        ok = r1.ok
-        return RepairResult(ok, f"{name} DNS → {primary}, {secondary}（{preset}）" + ("" if ok else ": " + (r1.stdout + r1.stderr)[-100:]))
+        ok = r1.ok and r2.ok
+        if ok:
+            return RepairResult(True, f"{name} DNS → {primary}, {secondary}（{preset}）")
+        errs = "" if r1.ok else (r1.stdout + r1.stderr)[-100:]
+        if not r2.ok:
+            errs += (" 备用DNS: " if errs else "") + (r2.stdout + r2.stderr)[-100:]
+        return RepairResult(False, f"{name} DNS 设置失败: {errs}")
 
 
 def settings_default_preset() -> str:
@@ -343,7 +362,7 @@ class PowerOff(RepairAction):
                 continue
             if str(vals.get("PnPCapabilities")) == "24":
                 continue
-            backup = _save_note(f"pnp_backup_{sub}.txt", f"{kpath}\nDriverDesc={desc}\nPnPCapabilities={vals.get('PnPCapabilities', '<缺省=允许断电>')}")
+            _save_note(f"pnp_backup_{sub}.txt", f"{kpath}\nDriverDesc={desc}\nPnPCapabilities={vals.get('PnPCapabilities', '<缺省=允许断电>')}")
             try:
                 key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, kpath, 0, winreg.KEY_SET_VALUE)
                 try:

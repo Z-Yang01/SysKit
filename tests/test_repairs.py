@@ -339,6 +339,39 @@ def test_start_nlasvc_query_says_stopped(recorder):
     assert "未运行" in r.message
 
 
+def test_start_nlasvc_stray_digit4_not_running(recorder):
+    """sc query 输出里含数字 4 的字段（如 WIN32_EXIT_CODE）不得误判为运行中。"""
+    recorder.respond_sub("sc query NlaSvc",
+                         stdout="STATE : 1 STOPPED\nWIN32_EXIT_CODE : 4242\n")
+    r = repairs.get_action("start_nlasvc").execute({})
+    assert r.success is False and "未运行" in r.message
+
+
+def test_dns_auto_backup_failure_aborts_without_changes(recorder, monkeypatch):
+    """备份失败（返回 ""）→ 不清静态 DNS：原值是用户唯一的还原凭据。"""
+    monkeypatch.setattr(repairs, "_backup_dns", lambda adapter: "")
+    r = repairs.get_action("dns_auto").execute({"adapter": "WLAN"})
+    assert r.success is False and "备份" in r.message
+    assert not any("set dnsservers" in _cmd_str(c) for c in recorder.cmds)
+    assert not any("flushdns" in _cmd_str(c) for c in recorder.cmds)
+
+
+def test_dns_preset_backup_failure_aborts_without_changes(recorder, monkeypatch):
+    monkeypatch.setattr(repairs, "_backup_dns", lambda adapter: "")
+    r = repairs.get_action("dns_preset").execute({"adapter": "WLAN"})
+    assert r.success is False and "备份" in r.message
+    assert not any("set dnsservers" in _cmd_str(c) for c in recorder.cmds)
+
+
+def test_dns_auto_v6_failure_reports_failure(recorder):
+    """v6 恢复失败 → 整体失败并带 v6 详情（此前 v6 结果被丢弃、恒报成功）。"""
+    recorder.respond_sub("show dnsservers", stdout="静态配置的 DNS 服务器:\n    8.8.8.8")
+    recorder.respond_sub("ipv6 set dnsservers", code=1, stdout="v6失败详情")
+    r = repairs.get_action("dns_auto").execute({"adapter": "WLAN"})
+    assert r.success is False
+    assert "v6" in r.message and "v6失败详情" in r.message
+
+
 def test_restart_wlan_reconnects_current_ssid(recorder):
     recorder.respond_sub("netsh wlan show interfaces",
                          stdout="    SSID                  : HomeWifi\r\n"

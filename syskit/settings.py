@@ -4,6 +4,7 @@ import os
 import threading
 
 from . import config
+from .logger import LOGGER
 
 _lock = threading.Lock()
 _cache = None
@@ -19,8 +20,13 @@ def load() -> dict:
             stored = json.load(f)
         if isinstance(stored, dict):
             data.update(stored)
-    except Exception:
+    except FileNotFoundError:
         pass
+    except Exception:
+        # 设置文件损坏（半截 JSON/权限）→ 回退默认值，但必须留痕，否则用户的
+        # 个性化设置无痕丢失、无从排查
+        LOGGER.warning("settings.json 读取失败，已回退默认设置: {}", config.SETTINGS_FILE,
+                       exc_info=True)
     _cache = data
     return dict(_cache)
 

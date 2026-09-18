@@ -1,6 +1,5 @@
 """修复确认对话框：展示动作说明 / 风险 / 还原方式。"""
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QLabel, QVBoxLayout,
-                               QFrame, QHBoxLayout)
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout, QFrame
 
 from ..repairs import RISK_LABEL
 from . import theme

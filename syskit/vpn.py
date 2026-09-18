@@ -5,8 +5,7 @@
 """
 import re
 
-from . import config, proxy
-from .logger import LOGGER
+from . import proxy
 
 # 与 netcheck.TUNNEL_PAT 对齐，并补充常见客户端特征
 TUNNEL_PAT = re.compile(

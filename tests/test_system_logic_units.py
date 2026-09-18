@@ -166,7 +166,9 @@ class TestTopProcs:
         monkeypatch.setattr(tel_mod.psutil, "process_iter", lambda attrs=None: iter([p]))
         w = tel_mod.TelemetryWorker()
         w._procs = {99: object()}       # 上个快照的陈旧 pid
-        w._tickno = 61                  # 61 % 60 == 1 → 重建快照
+        # 重建轮取 %60==0（偶数）：_top_procs 只在偶数 tick 被调用，
+        # 旧条件 %60==1 恒为奇数 → 生产中永不重建（新进程永远进不了表）
+        w._tickno = 60
         out = w._top_procs()
         assert 99 not in w._procs and w._procs[7] is p
         assert out[0]["pid"] == 7 and out[0]["mem"] == 2048

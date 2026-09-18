@@ -154,7 +154,7 @@ def _patch_no_thread_workers(monkeypatch):
 # ============================================================
 
 
-def test_mw_palette_toggle_and_run_command(main_win, monkeypatch, msgbox_recorder):
+def test_mw_palette_toggle_and_run_command(main_win, qtbot, monkeypatch, msgbox_recorder):
     """命令面板：创建/toggle/销毁后吞 RuntimeError；面板命令五条路径。"""
     win = main_win
 
@@ -192,7 +192,8 @@ def test_mw_palette_toggle_and_run_command(main_win, monkeypatch, msgbox_recorde
     ret["v"] = QMessageBox.StandardButton.Yes
     monkeypatch.setattr(proc, "run",
                         lambda cmd, timeout=30: proc.CmdResult(code=0, stdout="  ok-out ", stderr=""))
-    win.run_palette_command("echo hi")         # 执行成功 → 托盘气泡「完成: …」
+    win.run_palette_command("echo hi")         # 执行成功 → 托盘气泡「完成: …」（后台线程）
+    qtbot.wait_until(lambda: win._cmd_worker is None)
     assert questions and "echo hi" in questions[-1]  # question 弹窗内容含命令
 
     def _boom_run(cmd, timeout=30):
@@ -200,6 +201,7 @@ def test_mw_palette_toggle_and_run_command(main_win, monkeypatch, msgbox_recorde
 
     monkeypatch.setattr(proc, "run", _boom_run)
     win.run_palette_command("echo hi")         # 执行异常 → 失败气泡，不抛
+    qtbot.wait_until(lambda: win._cmd_worker is None)
 
 
 def test_mw_diag_aborted_and_save_window_state_error(main_win, monkeypatch):
@@ -209,11 +211,14 @@ def test_mw_diag_aborted_and_save_window_state_error(main_win, monkeypatch):
 
     win = main_win
     win._release_worker("_diag_worker")
+    win._set_busy(True, "诊断中…")             # 模拟完整诊断进行中
     aborted = [CheckResult("diag_aborted", "诊断中止", "skip", "用户中止")]
     win._diag_done(aborted, silent=False)      # 中止结果不得用于判定网络状态
     assert "诊断已中止" in win.lbl_verdict.text()
     assert win.statusBar().currentMessage().startswith("诊断已中止")
     assert win.pb_diag.isHidden()
+    assert win._busy is False                  # 中止早退也必须复位忙碌态（否则全按钮闸死）
+    assert win.btn_full.isEnabled() and win.btn_diag.isEnabled()
 
     def _boom_save(patch):
         raise OSError("disk full")
@@ -725,8 +730,11 @@ def test_pingroute_show_hide_resume(qtbot, monkeypatch):
     tab.show()                                 # 未开启 ping → showEvent 不恢复
     assert not tab._ping_timer.isActive()
 
-    tab.toggle_ping()                          # 启动（icmp 已 mock，立即回报一次）
+    tab.toggle_ping()                          # 启动（icmp 已 mock，后台线程回报一次）
     assert tab._ping_timer.isActive()
+    # 持续 ping 现为真实 QThread：等在飞 worker 收尾再隐藏，避免 tab 回收时
+    # 线程仍运行触发 qFatal（生产由 quit_app 全树等待兜底）
+    qtbot.wait_until(lambda: tab._ping_worker is None, timeout=10000)
     tab.hide()                                 # 隐藏 → 停表 + 记忆（418-421）
     assert not tab._ping_timer.isActive()
     assert tab._ping_was_active is True
@@ -735,8 +743,10 @@ def test_pingroute_show_hide_resume(qtbot, monkeypatch):
     tab.show()                                 # 重新显示 → 恢复持续 ping（411-413）
     assert tab._ping_timer.isActive()
     assert tab._ping_was_active is False
+    qtbot.wait_until(lambda: tab._ping_worker is None, timeout=10000)
     tab.toggle_ping()                          # 收尾停表，测试内不残留定时器
     assert not tab._ping_timer.isActive()
+    qtbot.wait_until(lambda: tab._ping_worker is None, timeout=10000)
 
 
 def test_port_tab_show_hide_auto_refresh(qtbot, monkeypatch):

@@ -85,7 +85,7 @@ def chk_nlasvc(snap: Snapshot) -> CheckResult:
         return r
     running = svc["status"] == "Running"
     start_type = svc["startType"]
-    trigger_info = winregread.subkeys(rf"HKLM\SYSTEM\CurrentControlSet\Services\NlaSvc\TriggerInfo")
+    trigger_info = winregread.subkeys(r"HKLM\SYSTEM\CurrentControlSet\Services\NlaSvc\TriggerInfo")
     if running:
         r.detail = f"运行中; 启动类型={start_type}; 触发器={'有' if trigger_info else '无'}"
         if start_type in ("Manual",) and not trigger_info:

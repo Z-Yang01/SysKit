@@ -1,9 +1,6 @@
 """网络监控仪表盘：统计卡 + 延迟/速率曲线 + 断网事件时间线。"""
-import time
-
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QFrame, QGroupBox, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QVBoxLayout, QWidget)
 
 from . import theme

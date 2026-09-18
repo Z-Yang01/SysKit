@@ -409,6 +409,32 @@ class TestRunLadder:
         # 之后 _repair_level 进入 L3 冷却 → 上限 2
         assert m._repair_level(dict(ST, max_level=3)) == 2
 
+    def test_toggle_adapter_l3_timestamp_is_monotonic(self, monkeypatch):
+        """L3 时间戳必须写 monotonic 轴：曾误写 epoch 秒，(monotonic - ts) 变
+        巨负 → 冷却恒命中，本进程内 L3 永久锁死（自动修复静默降级 L2）。"""
+        class FakeTime:
+            mono = 5000.0
+            epoch = 1_789_000_000.0
+
+            @classmethod
+            def monotonic(cls):
+                return cls.mono
+
+            @classmethod
+            def time(cls):
+                return cls.epoch
+
+            @staticmethod
+            def sleep(_s):
+                pass
+
+        monkeypatch.setattr(monitor_mod, "time", FakeTime)
+        m, seen = make_mon()
+        self._patch_actions(monkeypatch, m, seen)
+        monkeypatch.setattr(monitor_mod, "probe_quick", lambda: False)
+        m._run_ladder(3)
+        assert m._last_l3_ts == FakeTime.mono       # 是 monotonic 值，不是 epoch
+
     def test_execute_receives_empty_param(self, monkeypatch):
         m, seen = make_mon()
         actions = self._patch_actions(monkeypatch, m, seen)

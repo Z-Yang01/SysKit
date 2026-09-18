@@ -68,14 +68,25 @@ class TrayHost(QSystemTrayIcon):
             self.show_window()
 
     def _fill_clip_menu(self, m):
-        """重建「最近剪贴板」子菜单：最近 5 条，点击回填剪贴板。"""
+        """重建「最近剪贴板」子菜单：最近 5 条，点击回填剪贴板。
+
+        缓存（mtime, items)：每次弹出菜单都新建 ClipboardHistory 会触发
+        DPAPI 全量解密（与 palette 同款缓存）；文件 mtime 未变直接复用。
+        """
         m.clear()
         try:
-            max_items = int(config.DEFAULTS.get("clipboard_max", 50))
-            from .. import settings as settings_mod
-            max_items = int(settings_mod.load().get("clipboard_max", max_items))
-            hist = clipboard_mod.ClipboardHistory(max_items=max_items)
-            items = hist.items()[:5]
+            import os
+            path = os.path.join(config.APPDATA_DIR, "clipboard.json")
+            mtime = os.path.getmtime(path) if os.path.exists(path) else 0
+            cache = getattr(self, "_clip_cache", None)
+            if cache is None or cache[0] != mtime:
+                max_items = int(config.DEFAULTS.get("clipboard_max", 50))
+                from .. import settings as settings_mod
+                max_items = int(settings_mod.load().get("clipboard_max", max_items))
+                hist = clipboard_mod.ClipboardHistory(max_items=max_items)
+                cache = (mtime, hist.items()[:5])
+                self._clip_cache = cache
+            items = cache[1]
         except Exception:
             items = []
         if not items:

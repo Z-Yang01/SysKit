@@ -3,7 +3,7 @@ import threading
 import time
 import urllib.request
 
-from . import config, netcheck, repairs, settings
+from . import config, repairs, settings
 from .logger import LOGGER
 
 # 状态码
@@ -149,7 +149,9 @@ class Monitor(threading.Thread):
             LOGGER.info("自动修复 [{}] -> {}: {}", fid, result.success, result.message[:120])
             self.on_action(fid, result)
             if fid == "toggle_adapter":
-                self._last_l3_ts = time.time()
+                # 必须用 monotonic：_repair_level 拿它和 time.monotonic() 相减，
+                # 写入 epoch 秒会让差值为巨负、L3 冷却永久命中（自动修复静默降级到 L2）
+                self._last_l3_ts = time.monotonic()
             time.sleep(3)
             if probe_quick():
                 self.on_status(ST_OK, f"自动修复成功（{act.title}）")

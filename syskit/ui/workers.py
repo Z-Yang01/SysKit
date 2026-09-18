@@ -116,6 +116,27 @@ class SnapshotWorker(QThread):
         self.got.emit(snap)
 
 
+class PlainCmdWorker(QThread):
+    """一次性本地命令（命令面板自定义命令）：proc.run 最长可阻塞 30s，
+    必须在后台线程跑，结果经 done 回 UI 气泡。"""
+    done = Signal(bool, str)       # (ok, 合并后的输出摘要)
+
+    def __init__(self, cmd, timeout=30, parent=None):
+        super().__init__(parent)
+        self._cmd = cmd
+        self._timeout = timeout
+
+    def run(self):
+        from .. import proc
+        try:
+            r = proc.run(self._cmd, timeout=self._timeout)
+            ok = getattr(r, "code", 1) == 0
+            out = (getattr(r, "stdout", "") or getattr(r, "stderr", "") or "").strip()
+        except Exception as e:
+            ok, out = False, str(e)
+        self.done.emit(ok, out)
+
+
 def action_summary(aid: str):
     act = repairs.get_action(aid)
     return act

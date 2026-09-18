@@ -945,3 +945,82 @@ BatteryTab._bw 30s 窗口完全无人等待）。本轮按 Qt 正解统一重构
   （miss 151→34/7752）。剩余 34 miss 均为既有论证的防御分支（repairs 7、vault 5、
   telemetry 5、netcheck 4 等），维持"不强凑"决定。哨兵未绕过未削弱，零真实系统调用。
 
+### 补充38（2026-09-18/19）：性能/响应性优化轮 + 六个真 bug 修复
+
+任务：优化。双子代理审计（性能·UI 线程维度 / 代码质量维度）→ 总控逐条核实（审计
+结论全部有代码证据，无空报）→ 实施 → 回归。
+
+**逻辑 bug 修复（7 项，全部有回归锁定）**：
+
+1. **P1 WiFi 周边 AP 的 SSID 全部显示「(隐藏)」**：`wifi_page.scan_networks` 把
+   携带 SSID 名的带索引行（真实 netsh 输出 `SSID 1 : 名字`）直接 continue 丢弃，
+   只匹配真实输出中不存在的裸 `SSID:` 行（那是 `show interfaces` 的格式）。
+   旧 fixture 反向编造了一条裸行让断言恰好通过——测试先行固化 bug 的实证。
+   修：带索引行捕获式解析（隐藏网络空值仍落 `(隐藏)` 兜底），fixture 重写为真实格式。
+2. **P1 诊断中止后主窗体永久锁死**：`_diag_done` 中止分支提前 return 跳过
+   `_set_busy(False)` → 诊断/修复/组合/刷新全被 `_busy` 闸死直到重启。
+3. **P1 telemetry Top 进程缓存永不重建**：`_top_procs` 只在偶数 tick 被调用（%2 门），
+   重建条件 `%60==1` 恒为奇数 → 恒假，新启动的进程永远进不了表。修：`%60==0`。
+4. **P1 toggle_adapter 后 L3 自动修复永久锁死**：`_last_l3_ts` 误写 `time.time()`
+   （epoch ~1.79e9）混入 monotonic 轴 → 冷却差值恒巨负 → 本进程内自动修复静默
+   降级到 L2。修：`time.monotonic()`（FakeTime 双轴测试锁定）。
+5. **P2 DNS 修复动作的备份承诺可能静默未兑现**：`_backup_dns` 返回 ""（备份失败）
+   被两个调用方丢弃，静态 DNS 原值（用户唯一还原凭据）照清。修：备份失败拒绝修改；
+   DnsAuto 的 v6 结果并入 ok（原失败被吞恒报成功）；`sc query` 判定删掉
+   `"4" in stdout`（WIN32_EXIT_CODE 任何含 4 字段都会把未运行误判成运行中）。
+6. **P2 DiskScanWorker 全项目唯一没走 reap() 的 worker**：emit 后置 None 的 GC
+   窗口 + 退出全树扫尾枚举不到 → qFatal 家族。修：套 `reap(w, self)`。
+7. **P2 文案/行为对齐**：`pause_windows_update` 文案谎称「已暂停约 N 天」——
+   NoAutoUpdate=1 是无限期策略，改为如实说明；存储层 settings/stores/clipboard
+   数据丢失路径（设置损坏回退/统计重置/密封写盘失败）补 `LOGGER.warning`。
+
+**UI 响应性优化（8 项，全部后台化/懒加载，冻结窗口实测消除）**：
+
+1. `_enter_game` 异步化——补充30「四入口统一 _start_mode」漏了它，UI 线程同步跑
+   powercfg+PowerShell+进程清理（0.5~数十秒冻结）；现与其余三入口一致。
+2. 持续 ping 后台单发 worker（`_PingWorker`，in-flight 跳过 tick）——不可达目标
+   每秒冻 UI 最长 1.5s → 0（页面可见时也生效，hideEvent 原缓解只覆盖不可见态）。
+3. DNS 查询后台 worker（`_DnsQueryWorker`）——系统默认分支原为无超时 getaddrinfo，
+   系统 DNS 故障时（恰是本工具目标场景）点击冻 UI 5~15s+。
+4. 日志页增量读（偏移续读 + 轮转重读 + 换源重载）——原每 5s 全量 readlines
+   （rotation 后最大 5MB）且 setPlainText 把用户上翻位置拽回顶部。
+5. 命令面板自定义命令后台执行（`PlainCmdWorker`）——原 UI 线程 `proc.run(30s)`。
+6. 托盘「最近剪贴板」子菜单 mtime 缓存（palette 同款）——原每次弹出全量 DPAPI 解密。
+7. 启动懒加载补完：`autostart.enabled()`（schtasks 1-2 发，可达 1s）延到首访设置页、
+   修复页 WLAN 配置枚举（netsh + XML glob）延到首访修复页（`_on_page_changed` 统一
+   懒加载口）；保存时读的是回填后的勾选态。
+8. 遥测只喂可见页——挂机时不再每 2s 重建隐藏页 PerfTab 的 32 个 item / 图表 push；
+   托盘速率不受影响；WiFi 首显 share profiles 枚举与二维码密码读取一并后台化
+   （`_ProfilesWorker`/`_ProfilePwdWorker`）。
+
+**杂项**：pyflakes 全量清零（约 20 处：无用导入/os 引入的 `json`、`field`、
+dashboard/system/toolbox/wifi 的冗余 import、两处无占位 f-string、app mutex 赋值、
+vault edt_totp 双赋值、repairs 三处 assigned-unused——其中 v6/backup 两处转为真实
+使用）。monotonic 教训第三次入档（34 行注释、252 行冷却、本轮 toggle_adapter）。
+
+**测试（+11 新增 / 12 处适配）**：
+- 新增：test_repairs 4（备份失败拒绝修改 ×2、v6 失败、stray digit-4）；
+  test_monitor 1（FakeTime 双轴锁定 monotonic）；test_ui_system_units 1
+  （_enter_game 走 _ModeWorker 生命周期）；test_toolbox_calc 1（查询防抖）；
+  test_optimization_round_2026_09_18.py 4（懒加载 ×2、日志增量读、托盘 mtime 缓存）
+  +3（新 worker run 体同步直跑 ×2、裸 SSID 兼容分支）。
+- 适配：wifi fixture 按真实 netsh 格式重写；dns_tab/ping/二维码/面板命令 5 处改
+  qtbot.wait_until 等后台 worker；telemetry 60-tick 用例改 `%60==0`；中止分支补
+  忙碌态断言；遥测可见性用例先 setCurrentWidget；smoke 首显等待补 `_share_worker`。
+- 过程记录：持续 ping 引入真实 QThread 后，`test_pingroute_show_hide_resume` 以
+  2/3 频率触发 qFatal（tab 回收时一次性 worker 仍在飞）——补 wait_until 后 4/4
+  全绿；生产等价路径由 reap 挂树 + quit_app 全树等待兜底。
+
+**收尾（总控亲跑）**：全量 **1012 例两轮 EXIT=0**（1 已知 skip）；pyflakes 清零；
+段1 coverage **97%→98%**（miss 222→193；main_window/tray 剩余缺失行均为 smoke
+文件独占路径，两段式合计口径下与既有 99% 基线同量级）。哨兵未绕过未削弱。
+
+**遗留（记录不凑，按收益/风险排序）**：端口表自动刷新整表重建（模型/视图化）；
+netcheck 完整诊断 NCSI 键重复读 + 每网卡全子键扫描（pnpcapabilities 可一次建表）；
+vault 明文显示每行新开 SQLite 连接 + O(N²) 查找；mac_random_state 每次切换 glob；
+四处重复实现收敛（TUNNEL_PAT 已实际分叉 / SSID 提取 ×3 / 静态 DNS 正则 ×2 /
+204 探测 ×2）；`netcheck.verdict` else 死分支与 `config_issues` 假状态；
+`toggle_adapter/restart_wlan` 在 repairs=RISK_SAFE 与 monitor=L3 最高危的语义矛盾；
+SpeedTest Mbps 实为 Mibit/s（与运营商口径差 ~4.9%）；仅测试存活的函数
+（action_summary/hotkey_display/texts/diskusage.human_bytes/adapter/items）。
+

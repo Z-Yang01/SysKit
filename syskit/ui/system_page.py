@@ -1,16 +1,13 @@
 """系统助手：性能监控 / 启动项管理 / 电池健康 / 安全清理 / 剪贴板历史 / 场景模式。"""
 import glob
 import os
-import shutil
-import tempfile
 import time
 
-import psutil
 from PySide6.QtCore import Qt, QBuffer, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QClipboard, QDesktopServices, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-                               QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
+                               QMessageBox, QProgressBar,
                                QPushButton, QTableWidget, QTableWidgetItem, QTabWidget,
                                QLineEdit, QVBoxLayout, QWidget)
 
@@ -1012,6 +1009,8 @@ class ModesTab(QWidget):
     def _enter_game(self):
         if self._busy:
             return
+        # 与其余三个入口统一走 _start_mode 后台线程：run_game_mode 串行执行
+        # powercfg/PowerShell/进程清理，同步跑会冻结 UI 数秒~数十秒
         if not admin.is_admin():
             QMessageBox.warning(
                 self, "游戏模式",
@@ -1019,12 +1018,9 @@ class ModesTab(QWidget):
                 "· 暂停 Windows 更新 可能失败\n"
                 "· 高性能电源 / 关通知 仍会尝试\n\n"
                 "可点窗口底部「以管理员重启」后再进入游戏模式。")
-        self._set_mode_busy(True)
-        try:
-            steps = modes.run_game_mode(clear_bg=self.chk_clear_bg.isChecked())
-            self._show_steps(steps, "进入游戏模式")
-        finally:
-            self._set_mode_busy(False)
+        self._start_mode(
+            lambda: modes.run_game_mode(clear_bg=self.chk_clear_bg.isChecked()),
+            "进入游戏模式")
 
     def _exit_game(self):
         self._start_mode(modes.restore_game_defaults, "退出游戏模式")

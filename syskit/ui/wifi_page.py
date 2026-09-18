@@ -6,14 +6,13 @@ import time
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+                               QHBoxLayout, QHeaderView, QLabel,
                                QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
 from .charts import BarChart
 from .workers import reap
 from .. import admin, proc
-from ..logger import LOGGER
 
 SIGNAL_COLORS = [(60, "#2e9e44"), (40, "#ef6c00"), (0, "#c62828")]
 
@@ -35,9 +34,15 @@ def scan_networks() -> list:
         raise RuntimeError("需要开启系统「位置」服务才能扫描 WiFi（设置→隐私和安全性→位置）")
     aps, cur, net_auth = [], None, ""
     for line in r.stdout.splitlines():
-        if re.match(r"\s*SSID\s+\d+\s*[:：]", line):
+        # SSID 名在带索引行上（真实 netsh 输出：`SSID 1 : MyHomeWiFi`；
+        # `show networks` 输出不存在裸 `SSID:` 行——那来自 show interfaces）。
+        # 隐藏网络的 SSID 行值为空 → cur 为空串，落到 `(隐藏)` 兜底。
+        m = re.match(r"\s*SSID\s+\d+\s*[:：]\s*(.*)", line)
+        if m:
+            cur = m.group(1).strip()
+            net_auth = ""
             continue
-        m = re.match(r"\s*SSID\s*[:：]\s*(.*)", line)
+        m = re.match(r"\s*SSID\s*[:：]\s*(.*)", line)   # 兼容异常/旧格式，正常不命中
         if m:
             cur = m.group(1).strip()
             net_auth = ""
@@ -101,12 +106,42 @@ class ScanWorker(QThread):
             self.failed.emit(str(e))
 
 
+class _ProfilesWorker(QThread):
+    """WLAN 配置文件枚举（netsh，可达数百 ms）：后台取，回 UI 填下拉。"""
+    done = Signal(list)
+
+    def run(self):
+        from ..repairs import wlan_profiles
+        try:
+            self.done.emit(wlan_profiles())
+        except Exception:
+            self.done.emit([])
+
+
+class _ProfilePwdWorker(QThread):
+    """读取配置文件明文密码（netsh key=clear，超时 15s）：后台线程执行。"""
+    done = Signal(str, str)        # (auth, password)
+
+    def __init__(self, name, parent=None):
+        super().__init__(parent)
+        self._name = name
+
+    def run(self):
+        try:
+            auth, pwd = profile_password(self._name)
+        except Exception:
+            auth, pwd = "", ""
+        self.done.emit(auth, pwd)
+
+
 class WifiPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._aps = []
         self._scan_worker = None
         self._pw_worker = None
+        self._share_worker = None
+        self._qr_worker = None
         self._initial_scanned = False
         self._resume_auto = False
         lay = QVBoxLayout(self)
@@ -279,15 +314,30 @@ class WifiPage(QWidget):
         return w
 
     def _refresh_share_profiles(self):
-        from ..repairs import wlan_profiles
+        """配置文件枚举走后台线程（netsh 同步可达数百 ms，不在 showEvent 里冻 UI）。"""
+        if self._share_worker is not None:
+            return
+        self._share_worker = reap(_ProfilesWorker(), self)
+        self._share_worker.done.connect(self._share_profiles_done)
+        self._share_worker.start()
+
+    def _share_profiles_done(self, names):
+        self._share_worker = None
         self.cmb_share.clear()
-        self.cmb_share.addItems(wlan_profiles())
+        self.cmb_share.addItems(names)
 
     def _gen_qr(self):
         name = self.cmb_share.currentText()
-        if not name:
+        if not name or self._qr_worker is not None:
             return
-        auth, pwd = profile_password(name)
+        # 读取明文密码（netsh key=clear，超时 15s）走后台线程
+        self._qr_worker = reap(_ProfilePwdWorker(name), self)
+        self._qr_worker.done.connect(self._qr_ready)
+        self._qr_worker.start()
+
+    def _qr_ready(self, auth, pwd):
+        self._qr_worker = None
+        name = self.cmb_share.currentText() or ""
         auth_type = "nopass"
         if auth:
             a = auth.upper()

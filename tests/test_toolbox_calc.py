@@ -179,7 +179,7 @@ def test_query_empty_domain_noop(dns_tab):
     assert dns_tab.list_dns.count() == 0
 
 
-def test_query_success_custom_server(dns_tab, monkeypatch):
+def test_query_success_custom_server(dns_tab, qtbot, monkeypatch):
     calls = {}
 
     def fake_query(host, server, timeout=3.0, qtype=1):
@@ -189,12 +189,13 @@ def test_query_success_custom_server(dns_tab, monkeypatch):
     monkeypatch.setattr(dnsquery, "query", fake_query)
     dns_tab.ed_domain.setText(" example.com ")
     dns_tab.cmb_server.setCurrentIndex(1)      # “223.5.5.5（阿里）”
-    dns_tab.query()
+    dns_tab.query()                            # 后台线程执行 → 等完成信号
+    qtbot.wait_until(lambda: dns_tab._qw is None)
     assert _rows(dns_tab.list_dns) == ["1.2.3.4", "5.6.7.8"]
     assert calls == {"host": "example.com", "server": "223.5.5.5", "timeout": 3.0}
 
 
-def test_query_failure_shows_error(dns_tab, monkeypatch):
+def test_query_failure_shows_error(dns_tab, qtbot, monkeypatch):
     def boom(host, server, timeout=3.0, qtype=1):
         raise RuntimeError("超时")
 
@@ -202,11 +203,12 @@ def test_query_failure_shows_error(dns_tab, monkeypatch):
     dns_tab.ed_domain.setText("example.com")
     dns_tab.cmb_server.setCurrentIndex(2)      # “119.29.29.29（腾讯）”
     dns_tab.query()
+    qtbot.wait_until(lambda: dns_tab._qw is None)
     assert _rows(dns_tab.list_dns) == ["查询失败: 超时"]
 
 
-def test_query_system_default_dedup_sorted(dns_tab, monkeypatch):
-    """系统默认分支：getaddrinfo 结果去重 + 排序。"""
+def test_query_system_default_dedup_sorted(dns_tab, qtbot, monkeypatch):
+    """系统默认分支：getaddrinfo 结果去重 + 排序（后台线程内执行）。"""
     infos = [(socket.AF_INET, 1, 6, "", ("9.9.9.9", 0)),
              (socket.AF_INET, 1, 6, "", ("1.1.1.1", 0)),
              (socket.AF_INET, 1, 6, "", ("9.9.9.9", 0))]
@@ -214,10 +216,11 @@ def test_query_system_default_dedup_sorted(dns_tab, monkeypatch):
     dns_tab.ed_domain.setText("example.com")
     dns_tab.cmb_server.setCurrentIndex(0)      # 系统默认
     dns_tab.query()
+    qtbot.wait_until(lambda: dns_tab._qw is None)
     assert _rows(dns_tab.list_dns) == ["1.1.1.1", "9.9.9.9"]
 
 
-def test_query_system_default_error_shown(dns_tab, monkeypatch):
+def test_query_system_default_error_shown(dns_tab, qtbot, monkeypatch):
     def boom(*a, **k):
         raise socket.gaierror(-2, "Name or service not known")
 
@@ -225,8 +228,31 @@ def test_query_system_default_error_shown(dns_tab, monkeypatch):
     dns_tab.ed_domain.setText("no-such.invalid")
     dns_tab.cmb_server.setCurrentIndex(0)
     dns_tab.query()
+    qtbot.wait_until(lambda: dns_tab._qw is None)
     rows = _rows(dns_tab.list_dns)
     assert len(rows) == 1 and rows[0].startswith("查询失败")
+
+
+def test_query_in_flight_ignored(dns_tab, monkeypatch):
+    """上一查询未完成时，再次点击查询被忽略（防抖，不中和在跑的结果回填）。"""
+    import threading
+    release = threading.Event()
+
+    def slow_query(host, server, timeout=3.0, qtype=1):
+        release.wait(2)
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(dnsquery, "query", slow_query)
+    dns_tab.ed_domain.setText("example.com")
+    dns_tab.cmb_server.setCurrentIndex(1)
+    dns_tab.query()
+    assert dns_tab._qw is not None
+    dns_tab.ed_domain.setText("other.com")
+    dns_tab.query()                            # 在跑 → 忽略，不清空/不换 worker
+    assert dns_tab._qw._domain == "example.com"
+    release.set()
+    dns_tab._qw.wait(2000)
+    dns_tab._qw = None
 
 
 # ---------------- dnsquery：报文构造 / 响应解析（假 socket，无真实 UDP） ----------------

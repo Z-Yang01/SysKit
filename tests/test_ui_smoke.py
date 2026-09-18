@@ -470,7 +470,8 @@ def test_wifi_page_scan_fills_table_and_channel_advice(qtbot, monkeypatch):
     assert page._scan_worker is None                  # 构造时不自动扫描
     page.show()                                       # 首次可见才扫
     assert page._initial_scanned is True
-    qtbot.wait_until(lambda: page._scan_worker is None and page.tbl_aps.rowCount() >= 2,
+    qtbot.wait_until(lambda: page._scan_worker is None and page._share_worker is None
+                     and page.tbl_aps.rowCount() >= 2,
                      timeout=10000)
 
     tabs = page.findChildren(QTabWidget)[0]
@@ -492,8 +493,9 @@ def test_wifi_page_generate_qr(qtbot, monkeypatch):
     assert not page.btn_save_qr.isEnabled()
     page.cmb_share.addItem("HomeWiFi")
     page.cmb_share.setCurrentText("HomeWiFi")
-    page._gen_qr()
-    assert page.btn_save_qr.isEnabled()
+    page._gen_qr()                              # 密码读取在后台线程
+    qtbot.wait_until(lambda: page._qr_worker is None and page.btn_save_qr.isEnabled(),
+                     timeout=10000)
     pix = page.lbl_qr.pixmap()
     assert pix is not None and not pix.isNull()
 
@@ -670,16 +672,18 @@ def test_dns_subnet_tab_smoke(qtbot, monkeypatch):
     assert tab.ed_domain.text() and tab.ed_ip.text()      # 有默认输入
     tab.calc()
     assert tab.list_sub.count() == 6
-    tab.query()                                           # 系统默认分支
+    # 查询已异步化：先 mock 再触发，等后台 worker 回填（不再真实出网）
     monkeypatch.setattr(socket_mod, "getaddrinfo",
                         lambda *a, **k: [(socket_mod.AF_INET, 1, 6, "",
                                          ("223.5.5.5", 0))])
-    tab.query()
+    tab.query()                                           # 系统默认分支
+    qtbot.wait_until(lambda: tab._qw is None)
     assert tab.list_dns.item(0).text() == "223.5.5.5"
     monkeypatch.setattr(dnsquery, "query",
                         lambda host, server, timeout=3.0, qtype=1: ["119.29.29.29"])
     tab.cmb_server.setCurrentIndex(2)
     tab.query()
+    qtbot.wait_until(lambda: tab._qw is None)
     assert tab.list_dns.item(0).text() == "119.29.29.29"
 
 
@@ -691,8 +695,9 @@ def test_ping_route_tab(qtbot, monkeypatch):
     qtbot.addWidget(tab)
 
     monkeypatch.setattr(icmp, "ping", lambda host, timeout_ms=1500: 8.0)
-    tab._ping_once()
-    assert 8.0 in list(tab.chart._series[0][2])           # 延迟点已入图
+    tab._ping_once()                                      # 后台线程 ping → 等回填
+    qtbot.wait_until(lambda: tab._ping_worker is None
+                     and 8.0 in list(tab.chart._series[0][2]), timeout=10000)
 
     tab.toggle_ping()                                     # 启动 1s 定时器
     assert tab._ping_timer.isActive()
@@ -1104,11 +1109,16 @@ def test_main_window_monitor_status_and_telemetry(main_win):
     assert win.tray._state == "no_net"
     assert "已连接但无法上网" in win.tray.toolTip()
 
-    win._on_telemetry({"lat_gw": 5.0, "lat_pub": 9.0, "gateway": "192.168.1.1",
-                       "down": 2048.0, "up": 1024.0, "cpu": 3.0, "mem": 30.0,
-                       "top_procs": []})
+    d = {"lat_gw": 5.0, "lat_pub": 9.0, "gateway": "192.168.1.1",
+         "down": 2048.0, "up": 1024.0, "cpu": 3.0, "mem": 30.0,
+         "top_procs": []}
+    # 遥测只喂当前可见页（挂机省 CPU）：不在前台的页不更新
+    win.stack.setCurrentWidget(win.page_dash)
+    win._on_telemetry(d)
     assert "5" in win.page_dash.card_gw.value_label.text()
-    assert "↓" in win.tray.toolTip()              # 托盘实时速率
+    assert "↓" in win.tray.toolTip()              # 托盘实时速率（不受页面可见性影响）
+    win.stack.setCurrentWidget(win.page_system)
+    win._on_telemetry(d)
     assert win.page_system.perf.tbl.rowCount() == 0       # 空 top_procs 不崩
 
 

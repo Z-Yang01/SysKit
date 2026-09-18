@@ -5,6 +5,7 @@ import threading
 import time
 
 from . import config
+from .logger import LOGGER
 
 _lock = threading.Lock()
 
@@ -18,7 +19,11 @@ def _load(name: str, default):
     try:
         with open(_path(name), "r", encoding="utf-8") as f:
             return json.load(f)
+    except FileNotFoundError:
+        return default
     except Exception:
+        # 数据文件损坏 → 回退默认（流量/事件清零），留痕供排查
+        LOGGER.warning("{} 读取失败，对应统计数据已重置", _path(name), exc_info=True)
         return default
 
 

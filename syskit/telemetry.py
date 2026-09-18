@@ -125,9 +125,11 @@ class TelemetryWorker(QThread):
 
         优化：优先走缓存（self._procs），仅当缓存为空（首启/全退出/每 60 秒
         重建轮）才 process_iter 全表枚举；非重建轮对已退出 pid 清缓存。
+        注意 _top_procs 只在偶数 tick 被调用（%2 门），重建轮必须取偶数
+        （%60==0），否则该分支永不命中、新启动的进程永远进不了表。
         """
-        rebuild = self._tickno % 60 == 1 or not self._procs
-        if self._tickno % 60 == 1:
+        rebuild = self._tickno % 60 == 0 or not self._procs
+        if self._tickno % 60 == 0:
             self._procs = {}
         procs = []
         if rebuild:

@@ -53,7 +53,7 @@ def cmd_repair(args) -> int:
             log.info(f"\n[{fid}] {act.title}")
             log.info(f"  说明: {act.description}")
             log.info(f"  还原: {act.restore_hint}")
-            ans = input(f"  执行? (y/N) ").strip().lower()
+            ans = input("  执行? (y/N) ").strip().lower()
             if ans != "y":
                 log.info("  已跳过")
                 continue

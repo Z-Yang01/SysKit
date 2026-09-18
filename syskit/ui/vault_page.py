@@ -836,7 +836,6 @@ class _AccountDialog(QDialog):
         self.edt_password.setEchoMode(QLineEdit.Password)
         self.edt_password.setPlaceholderText("留空 = 不修改" if edit else "")
         self.edt_totp = QLineEdit()
-        self.edt_totp = QLineEdit()
         self.edt_totp.setPlaceholderText("Base32 密钥（可选）")
         self.edt_totp.setEchoMode(QLineEdit.Password)
         self.edt_totp.setText((acct.get("totp_secret") or "") if edit else "")

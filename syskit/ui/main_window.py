@@ -18,7 +18,6 @@ from ..logger import LOGGER
 from ..stores import EventStore
 from ..telemetry import TelemetryWorker
 from . import theme
-from .charts import human_bytes
 from .confirm_dialog import ConfirmDialog
 from .dashboard_page import DashboardPage
 from .palette import CommandPalette, setup_global_hotkey
@@ -27,7 +26,8 @@ from .toolbox_page import ToolboxPage
 from .tray import TrayHost
 from .vault_page import VaultPage
 from .wifi_page import WifiPage
-from .workers import ComboWorker, DiagnosisWorker, RepairWorker, SnapshotWorker, reap
+from .workers import (ComboWorker, DiagnosisWorker, PlainCmdWorker, RepairWorker,
+                      SnapshotWorker, reap)
 
 STATUS_TEXT = {
     "normal": ("网络正常", "#2e9e44"),
@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self._repair_worker = None
         self._combo_worker = None
         self._snap_worker = None
+        self._cmd_worker = None
         self._busy = False
         self._diag_results = []
         self._last_state = None
@@ -157,7 +158,7 @@ class MainWindow(QMainWindow):
         self._log_timer = QTimer(self)
         self._log_timer.timeout.connect(self._reload_log)
         self._log_timer.start(5000)
-        self.stack.currentChanged.connect(lambda _i: self._reload_log())
+        self.stack.currentChanged.connect(lambda _i: self._on_page_changed())
 
         self._admin_banner()
         self._restore_window_state()
@@ -195,14 +196,15 @@ class MainWindow(QMainWindow):
                                    QMessageBox.Yes | QMessageBox.No)
         if ret != QMessageBox.Yes:
             return
-        from .. import proc
-        try:
-            r = proc.run(v, timeout=30)
-            ok = getattr(r, "code", 1) == 0
-            out = (getattr(r, "stdout", "") or getattr(r, "stderr", "") or "").strip()
-        except Exception as e:
-            ok, out = False, str(e)
-        self.tray.notify("命令面板", ("完成: " if ok else "失败: ") + out[:120])
+        # 后台执行：str 命令走 shell，proc.run 最长可阻塞 30s，绝不能冻住 UI
+        self._cmd_worker = reap(PlainCmdWorker(v, timeout=30), self)
+
+        def _cmd_done(ok, out):
+            self._cmd_worker = None
+            self.tray.notify("命令面板", ("完成: " if ok else "失败: ") + out[:120])
+
+        self._cmd_worker.done.connect(_cmd_done)
+        self._cmd_worker.start()
 
     # ---------------- 品牌头 ----------------
     def _build_brand(self) -> QWidget:
@@ -281,8 +283,13 @@ class MainWindow(QMainWindow):
 
     # ---------------- 遥测 ----------------
     def _on_telemetry(self, d: dict):
-        self.page_dash.update_tick(d)
-        self.page_system.update_tick(d)
+        # 隐藏页不做 UI 工作（PerfTab 每 2s 重建 32 个 item / 图表 push）：
+        # 挂机时托盘速率照常，页面回到前台后下一跳自然续上
+        cur = self.stack.currentWidget()
+        if cur is self.page_dash:
+            self.page_dash.update_tick(d)
+        if cur is self.page_system:
+            self.page_system.update_tick(d)
         if self._tray_rate and "down" in d:
             self.tray.update_rate(d["down"], d["up"])
 
@@ -588,6 +595,7 @@ class MainWindow(QMainWindow):
             # 中止的不完整结果不得用于判定网络状态（缺 real_conn 会被误判"外网不可达"）
             self.lbl_verdict.setText("诊断已中止（状态保持此前判定）")
             self.statusBar().showMessage("诊断已中止：已完成项保留在列表中", 5000)
+            self._set_busy(False)   # 早退也必须复位：否则诊断/修复/组合全被 _busy 闸死
             return
         base, text = netcheck.verdict(results)
         color = STATUS_TEXT.get(base, ("", "#000000"))[1]
@@ -712,7 +720,9 @@ class MainWindow(QMainWindow):
         lay.addWidget(grp_log, 1)
 
         self._fill_actions()
-        self._refresh_profiles()
+        # 配置文件枚举（netsh，可达数百 ms）+ XML glob 不在构造期执行：
+        # 首次切到修复页才查（_on_page_changed），加快主窗体首帧
+        self._profiles_loaded = False
         return w
 
     def _fill_actions(self):
@@ -801,7 +811,9 @@ class MainWindow(QMainWindow):
         g2 = QGroupBox("常规")
         form2 = QFormLayout(g2)
         self.chk_start = QCheckBox("开机自动启动（计划任务，免 UAC）")
-        self.chk_start.setChecked(autostart.enabled())
+        # autostart.enabled() 要 spawn 1-2 个 schtasks /Query（可达 1s），
+        # 不在构造期查：首次切到设置页时回填（_on_page_changed）
+        self._autostart_loaded = False
         form2.addRow(self.chk_start)
 
         self.chk_tray = QCheckBox("关闭窗口时最小化到托盘")
@@ -979,20 +991,62 @@ class MainWindow(QMainWindow):
         self._reload_log()
         return w
 
+    def _on_page_changed(self):
+        """页面切换：日志增量刷新 + 重 IO 的懒加载（首次进入该页才执行）。"""
+        cur = self.stack.currentWidget()
+        if cur is self.page_repair and not getattr(self, "_profiles_loaded", True):
+            self._profiles_loaded = True
+            self._refresh_profiles()
+        if cur is self.page_settings and not getattr(self, "_autostart_loaded", True):
+            self._autostart_loaded = True
+            self.chk_start.setChecked(autostart.enabled())
+        self._reload_log()
+
     def _reload_log(self):
         if not hasattr(self, "txt_log"):
             return
         # 构造期首次调用时 page_logs 尚未赋值（_build_log_tab 内部）
-        if getattr(self, "page_logs", None) is None                 or self.stack.currentWidget() is not self.page_logs:
+        if getattr(self, "page_logs", None) is None or self.stack.currentWidget() is not self.page_logs:
             return
         name = "error.log" if getattr(self, "cmb_log_src", None) and self.cmb_log_src.currentIndex() == 1 else "syskit.log"
         path = os.path.join(config.LOG_DIR, name)
+        # 增量读：日志页每 5s 刷新，全量 readlines 最多 5MB 且 setPlainText 会把
+        # 用户正在上翻的滚动位置拽回顶部；只追加新字节，Qt 在用户位于底部时才跟随滚动
+        state = getattr(self, "_log_state", None)
+        if state is None or state[0] != name:               # 首次 / 换源 → 尾部载入
+            self._log_state = [name, self._log_tail_load(path, name)]
+            return
+        offset = state[1]
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-            self.txt_log.setPlainText("".join(lines[-800:]))
+            if os.path.getsize(path) < offset:              # 轮转/截断 → 重读尾部
+                self._log_state[1] = self._log_tail_load(path, name)
+                return
+            with open(path, "rb") as f:
+                f.seek(offset)
+                data = f.read()
+            cut = data.rfind(b"\n")                         # 只取完整行，剩余下轮再读
+            if cut == -1:
+                return
+            self._log_state[1] = offset + cut + 1
+            chunk = data[: cut + 1].decode("utf-8", errors="replace").rstrip("\n")
+            if chunk:
+                self.txt_log.appendPlainText(chunk)
         except OSError:
             self.txt_log.setPlainText(f"（{name} 尚无内容）")
+
+    def _log_tail_load(self, path: str, name: str) -> int:
+        """尾部载入当前视图，返回新的读取偏移（字节数，供增量续读）。"""
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - 200_000))
+                lines = f.read().decode("utf-8", errors="replace").splitlines()
+            self.txt_log.setPlainText("\n".join(lines[-800:]))
+            return size
+        except OSError:
+            self.txt_log.setPlainText(f"（{name} 尚无内容）")
+            return 0
 
     # ---------------- 修复执行 ----------------
     def run_repair(self, aid, param=None):

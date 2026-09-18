@@ -84,7 +84,8 @@ def _prepare_data_dirs():
 
 
 def run_gui():
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "SysKit_SingleInstance_Mutex")
+    # 命名互斥量把手无需保存：句柄保持打开直到进程退出，内核对象即存活
+    ctypes.windll.kernel32.CreateMutexW(None, False, "SysKit_SingleInstance_Mutex")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         from PySide6.QtWidgets import QMessageBox, QApplication
         app = QApplication(sys.argv)
