@@ -258,16 +258,9 @@ def _fail(name="x"):
 
 
 class TestModeSteps:
-    def test_set_notifications_success(self, monkeypatch):
-        calls = {}
-
-        def fake_set(enabled):
-            calls["en"] = enabled
-            return modes._step("通知/勿扰", True, "已关闭（勿扰）" if not enabled else "已开启")
-
-        monkeypatch.setattr(modes, "set_notifications", fake_set)
-        r = modes.set_notifications(False)
-        assert r["ok"] and "勿扰" in r["detail"]
+    # （test_set_notifications_success 已删除：曾替换被测函数自身后断言 fake 的
+    #   硬编码返回值，恒真零检出；真本体注册表路径由 test_charts_modes_gaps
+    #   的假 winreg 用例覆盖。）
 
     def test_set_mute_uses_ps(self, monkeypatch):
         seen = []

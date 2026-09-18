@@ -1024,3 +1024,81 @@ vault 明文显示每行新开 SQLite 连接 + O(N²) 查找；mac_random_state 
 SpeedTest Mbps 实为 Mibit/s（与运营商口径差 ~4.9%）；仅测试存活的函数
 （action_summary/hotkey_display/texts/diskusage.human_bytes/adapter/items）。
 
+### 补充39（2026-09-19）：多子代理查 bug 第六批——四维度并行审计
+
+任务：优化和测试、检查 bug、多代理。4 个只读审计代理并行，各查一个新维度：
+A 密码库与敏感数据安全 / B 网络逻辑正确性（首派撞限流，重派后完成）/
+C UI 交互流与信号接线 / D 测试质量与「mock 掩盖真 bug」模式。总控逐条核实，
+**误报 1 条**（B 的 P1「telemetry .info 缺失」——缓存对象唯一来源是
+process_iter(attrs)，必带 .info；代理用裸 Process() 实测以偏概全），其余确认后实施。
+
+**测试质量线（代理 D）——P1 生产 bug 被测试钉死至今**：
+
+1. **P1 `chk_nlasvc` 元组解包必崩**：`r.status, r.fix_ids = WARN, ..., [...]`
+   三元组对两目标 → ValueError（NlaSvc 运行中+手动+无触发器分支，恰是本工具
+   核心目标场景）；被 run_all 兜底降级为原始异常文本、丢失 fix_nlasvc 建议。
+   两个测试分别用 `pytest.raises(ValueError)` 和「断言降级后文案」把崩溃钉死
+   （docstring 写了「疑似 bug 只记录」但断言方向相反）。修：三目标解包；测试
+   改回正向断言 WARN+fix_ids。教训入档：**记录型测试的断言方向必须指向"应然"**。
+2. 恒真 mock 实例清除：test_set_notifications_success（替换被测函数自身）删除；
+   `or True` 恒真断言 ×3 改真断言/删除；monitor 冷却测试种 epoch 时间戳改
+   monotonic（对轴写错零检出的反模式）；test_proc GBK 用例加 ACP 守卫；
+   test_monitor/test_snapshot 陈旧文件头按现状更新；NETSH_TEXT 混排行修正。
+3. 隐藏 AP 认证「继承输出中最后一个网络的认证」语义（上轮 fixture 断言顺手
+   固化的错误）→ 生产改为仅当前网络块内回填，跨网络不再继承。
+
+**密码库安全线（代理 A，P2×5 落地 + P3 择要）**：
+
+- P2 KDF iter 只写盘不读回（commit 曾声称已修、代码未修——git 考古证实）→
+  读回落盘迭代数，调参升级不再锁死存量库（双 KDF 值回归锁定）。
+- P2 信任窗口内免验旧密码即可更改主密码 → 30 分钟窗口内接触键盘半分钟即可
+  接管库；与「移除需验证」基线对齐：先验当前密码。
+- P2 敏感复制未排除系统侧 → `clipboard.exclude_os_history()`：附加
+  ExcludeClipboardContentFromMonitorProcessing / CanIncludeInClipboardHistory /
+  CanUploadToCloudClipboard 三格式（KeePass 同款），密码不再进 Win+V 历史/云同步；
+  密码库与 WLAN 密码两处复制点接入。
+- P2 TOTP base32 零容错（带 padding/小写/空格粘贴即抛 binascii.Error，Qt 槽
+  穿透功能整体静默失效）→ 容错清洗 + 非法字符返回 ""；UI 区分「未配置/密钥无效」。
+- P2 TOTP 二维码对话框不暂停 autolock（自动锁定后种子二维码驻留屏幕）→
+  与编辑对话框同构 stop/finally restart + 验证码每秒对时刷新 + 复制点击时实时取码
+  （曾闭包捕获打开时的旧码）+ otpauth URI 百分号编码。
+- P3：search_sites/list_accounts LIKE 通配符转义（4df6bbb 同样声称已修未落地）；
+  find_by_domain 别名改逗号分词精确匹配（子串会域混淆）；DPAPI 解封失败时
+  引导提示替代无限「主密码错误」（删库误导）；解锁成功授予信任窗口（门禁语义
+  与复制路径一致）；「＋ 网站」后选中新站（曾落第 0 行 → 账号写错站）。
+- 记录不修：字段密文 AAD 无 (账号,字段) 绑定、备份目录密钥材料无限累积且
+  改主密码不轮换数据密钥（设计级，需迁移方案）。
+
+**UI 交互线（代理 C）**：启动文件夹禁用项三连（glob 命中 .disabled 显示「已启用」+
+UI 永不可恢复 + 连锁 .disabled.disabled）；WiFi 二维码错配（后台取密码期间切走
+下拉 → A 名 B 密码，worker 信号带回 profile 名校验）；启动项启用守卫对称 + 失败
+汇总提示（HKLM 静默失败像"没按到"）；性能表选中按 PID 跟随；LAN 扫描按
+telemetry 同款排除表过滤虚拟网卡（WSL/VPN 环境曾扫错网段）；持续 ping hide/show
+恢复后按钮文案同步；复制报告空/中止守卫（不再输出矛盾结论）；面板命令防重入 +
+sender 校验；_toggle_proxy 不再刷新异步前的旧状态；run_repair busy 静默返回改
+状态栏提示；命令面板单击执行改双击/Enter（第二击曾穿透到下层窗口控件）。
+
+**网络逻辑线（代理 B）**：chk_wlan MAC 随机化正则对齐真实输出（词组间有说明
+文字+冒号，旧正则永不命中 → 该 WARN 从未产生）；探测强制直连（urlopen 默认经
+系统代理，残留代理把「代理挂了」误判成断网并驱动无效 L2/L3 修复）；dnsquery
+UDP 丢包重发 ×3 + TC 截断显式报错（偶发丢包曾被误判「DNS 故障」诱导改配置）；
+resolve_system 改 daemon 线程（线程池 atexit join 曾在 DNS 挂死时拖住退出）；
+PowerOff 改 REG_DWORD（REG_SZ "24" 不被电源策略识别，且与读回判定互洽出
+假阳性闭环）；RestartServices 用 flushdns 替代受保护服务 Dnscache（net stop 恒
+System error 5，动作恒失败）；_pick_adapter 认英文 "Wi-Fi" 命名 + 优先在线物理
+网卡（曾选未接线网卡还报成功）；physical_up_adapters 排除虚拟网卡（TUN fake-ip
+不再污染网关/DNS 对比）；污染特征判定先于交集 PASS；DnsPreset 同清 v6 残留；
+icmp default_gateway 限定 IPv4；TUNNEL_PAT 收敛单源（netcheck 复用 vpn 版，
+上轮遗留销账）。记录不修：速率按适配器名称过滤的局限、DNS 解析逐字节边界
+防护、_dns_is_static 多语言、mac_randomization 权限语义。
+
+**测试**：新增 24（multiagent_round 文件 14 + coverage_round vault 门禁 2 +
+netcheck/repairs/monitor 适配新增 8）；适配重写 18 处。全量 **1034 例两轮
+EXIT=0**（1 已知 skip）；段1 coverage 97%（miss 218，新增代码与分支为主）；
+pyflakes syskit/+tools 清零。哨兵未绕过未削弱。
+
+**本轮方法论记录**：①「声称已修、代码未修」出现 2 例（KDF iter、LIKE 转义）
+——commit 信息不可作为验证依据；②审计 P1 级发现必须总控实测复核（.info 误报
+的教训与 chk_nlasvc 确认各一）；③测试质量维度（专门审"测试是否在掩盖 bug"）
+收益极高，建议每季度做一轮。
+

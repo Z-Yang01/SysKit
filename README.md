@@ -16,7 +16,7 @@ Python 3.10 + PySide6 + loguru + psutil + cryptography 实现，托盘常驻、�
 - **🔧 修复**：一键快速/深度/重置组合（执行中可「中止」，已执行项不自动撤销）+ 17 个单项动作（按风险分级）+ WiFi 专区（MAC 随机化开关/重连）+ 修复记录
 - **⚡ 工具箱**：速度测试、局域网设备发现、**端口占用查看器（找进程/结束进程）**、DNS/子网计算、持续 ping 与路由追踪、**Hosts 编辑器**（增删改/一键启用禁用，保存前自动备份）
 - **🧰 系统助手**：性能监控（CPU/内存/磁盘曲线 + Top 进程）、启动项管理、电池健康、白名单垃圾清理、**磁盘空间分析**（目录占用树/文件类型分布/大文件排行，删除仅移入回收站）、**剪贴板历史**（文本/图片/文件/HTML，搜索+分类+置顶，敏感内容与密码管理器前台进程防记录，规则引擎：JSON 格式化 / URL 二维码 / 色块 / 打开目录 / DNS+ping+归属地）、**场景模式**（办公：勿扰+静音+常用软件+备份配置；游戏：关通知+高性能+暂停更新+白名单清后台）
-- **🔐 密码库**：网站/账号两级密码管理（SQLite + AES-256-GCM 密文落盘），主密码可选（未设时 Windows DPAPI 免密保护）；搜索先定位网站再过滤账号，全局搜索 `github alice` 直达账号；TOTP 动态码；复制的密码不进剪贴板历史且 25 秒自动清空；自动重锁
+- **🔐 密码库**：网站/账号两级密码管理（SQLite + AES-256-GCM 密文落盘），主密码可选（未设时 Windows DPAPI 免密保护）；搜索先定位网站再过滤账号，全局搜索 `github alice` 直达账号；TOTP 动态码；复制的密码不进剪贴板历史、不进系统 Win+V 历史、不上云剪贴板，25 秒自动清空；更改主密码需验证当前密码；自动重锁
 - **⌘ 命令面板**（全局热键 `Ctrl+Alt+K` 保存设置后即时生效 / 应用内 `Ctrl+K`）：输入即搜统一入口——页面与工具跳转、快捷诊断修复、剪贴板最近条目回填、密码库全局直达、`ping 主机` / `dns 域名` / 粘贴网址语法、自定义命令（URL / 本地命令）
 - **⚙ 设置 / 📋 日志**：自动修复策略、声音提醒、深色模式、开机自启、剪贴板/密码库/命令面板选项；loguru 双日志（syskit.log / error.log）7 天自动清理
 
@@ -145,7 +145,7 @@ install.bat    :: 安装/升级到 %LOCALAPPDATA%\Programs\SysKit，创建桌面
 
 ```bat
 python -m pip install -r dev-requirements.txt   :: 运行时依赖 + 测试工具（钉版本）
-python -m pytest --timeout=300                  :: 全量测试（tests/，1012 例，coverage 99%）
+python -m pytest --timeout=300                  :: 全量测试（tests/，1034 例，coverage 99%）
 python -m pytest tests/test_vault.py -q         :: 单文件
 python -m pytest --cov=syskit --cov-report=term-missing  :: 带覆盖率
 python -m pyflakes syskit/ tools/               :: 静态扫描（bug 排查例行）

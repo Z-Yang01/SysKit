@@ -857,11 +857,11 @@ def test_port_tab_kill_selected_all_branches(qtbot, monkeypatch):
 # ============================================================
 
 # 真实 netsh wlan show networks mode=bssid 的输出形态：SSID 名在带索引行上
-# （`SSID 1 : 名字`），输出中不存在裸 `SSID:` 行（那是 show interfaces 的格式）。
+# （`SSID 1 : MyHomeWiFi`），输出中不存在裸 `SSID:` 行（那是 show interfaces 的格式）。
 # 隐藏网络的 SSID 行值为空。旧 fixture 凭空造了一条裸 SSID 行，恰好掩盖了
 # 解析器丢弃带索引行、全部 SSID 落到 "(隐藏)" 的缺陷。
-NETSH_TEXT = """接口名称: WLAN
-There are 3 networks currently visible.
+NETSH_TEXT = """接口名称 : WLAN
+中共有 3 个网络，目前可见。
 
 SSID 1 : HomeWiFi
     网络类型: 结构
@@ -901,8 +901,7 @@ def test_wifi_signal_color_and_scan_networks_parsing(monkeypatch):
     assert aps[1]["band"] == "5G"
     assert aps[1]["auth"] == "WPA3-SAE"
     assert aps[2]["ssid"] == "(隐藏)"                 # SSID 行值为空 → 隐藏兜底
-    # 尾部回填：无认证行的条目继承「整个输出最后见到的认证」（既有语义）
-    assert aps[2]["auth"] == "WPA3-SAE" and aps[2]["band"] == "?"
+    assert aps[2]["auth"] == "" and aps[2]["band"] == "?"   # 无认证行 → 空串，不继承其他网络的认证
 
     monkeypatch.setattr(proc, "run",
                         lambda cmd, timeout=20: proc.CmdResult(

@@ -127,25 +127,25 @@ class _FakeResp:
 
 class TestHttpGet:
     def test_ok_with_body(self, monkeypatch):
-        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _FakeResp())
+        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", lambda req, timeout=None: _FakeResp())
         code, body, err = netcheck._http_get("http://example/x", need_body=True)
         assert (code, body, err) == (204, "resp-body", None)
 
     def test_ok_without_body(self, monkeypatch):
-        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _FakeResp())
+        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", lambda req, timeout=None: _FakeResp())
         code, body, err = netcheck._http_get("http://example/x")
         assert (code, body, err) == (204, "", None)
 
     def test_http_error_returns_code(self, monkeypatch):
         def boom(req, timeout=None):
             raise urllib.error.HTTPError("http://example/x", 404, "Not Found", None, None)
-        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", boom)
         assert netcheck._http_get("http://example/x") == (404, "", None)
 
     def test_generic_error_returns_err_text(self, monkeypatch):
         def boom(req, timeout=None):
             raise OSError("connection refused")
-        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", boom)
         code, body, err = netcheck._http_get("http://example/x")
         assert code is None and body == "" and err == "connection refused"
 
@@ -300,17 +300,18 @@ class TestChkNlaSvc:
         assert r.fix_ids == []
 
     def test_running_manual_no_trigger_warns(self, monkeypatch):
-        """NlaSvc 启动类型异常检测：手动 + 无触发器 → 本应 WARN（重启后不会自启）。
+        """NlaSvc 启动类型异常检测：手动 + 无触发器 → WARN + fix_nlasvc 建议。
 
-        疑似业务 bug（只记录，不改源码）：syskit/netcheck.py:92
-        `r.status, r.fix_ids = WARN, r.detail + "；...", ["fix_nlasvc"]`
-        左侧 2 个目标对右侧 3 元组 → ValueError: too many values to unpack。
-        该分支一旦修复，本用例应改回断言 status == WARN。
+        回归：该分支曾写成二元组解包（r.status, r.fix_ids = WARN, ..., [...]）
+        必抛 ValueError、被 run_all 兜底降级成原始异常文本并丢失修复建议——
+        恰是本工具的核心目标场景；被 pytest.raises(ValueError) 钉死掩盖至今。
         """
         self._patch(monkeypatch)
         svc = {"NlaSvc": {"status": "Running", "startType": "Manual"}}
-        with pytest.raises(ValueError):
-            netcheck.chk_nlasvc(make_snap(services=svc))
+        r = netcheck.chk_nlasvc(make_snap(services=svc))
+        assert r.status == netcheck.WARN
+        assert "手动启动且无触发器" in r.detail
+        assert r.fix_ids == ["fix_nlasvc"]
 
     def test_running_manual_with_trigger_pass(self, monkeypatch):
         self._patch(monkeypatch, trigger=["0"])
@@ -930,9 +931,18 @@ class TestChkWlan:
         assert "已连接: HomeWiFi" in r.detail and r.status == netcheck.INFO
 
     def test_mac_randomization_warns(self, monkeypatch):
-        r = self._run(monkeypatch, "SSID: HomeWiFi", settings="已启用 MAC 随机化")
-        assert r.status == netcheck.WARN
-        assert "MAC 随机化已启用" in r.detail and "已连接: HomeWiFi" in r.detail
+        """用真实 netsh 输出格式（词组间有说明文字与冒号）锁定 WARN。
+        旧正则的紧邻匹配在真实输出上永不命中，该 WARN 从未产生过。"""
+        for text in ("MAC randomization for all networks: ENABLED",
+                     "MAC 随机化(全部网络): 已启用"):
+            r = self._run(monkeypatch, "SSID: HomeWiFi", settings=text)
+            assert r.status == netcheck.WARN, text
+            assert "MAC 随机化已启用" in r.detail and "已连接: HomeWiFi" in r.detail
+
+    def test_mac_randomization_disabled_no_warn(self, monkeypatch):
+        r = self._run(monkeypatch, "SSID: HomeWiFi",
+                      settings="MAC randomization for all networks: DISABLED")
+        assert r.status == netcheck.INFO
 
     def test_no_text(self, monkeypatch):
         r = self._run(monkeypatch, "")
@@ -1016,8 +1026,8 @@ class TestRunAll:
             assert "检查执行异常" in by_id[cid].detail
             assert "mock boom" in by_id[cid].detail
 
-    def test_nlasvc_unpack_bug_degrades_to_warn(self, monkeypatch, fake_cmd_result):
-        """netcheck.py:92 的元组解包 bug 在 run_all 中被兜底降级为 WARN，不中断聚合。"""
+    def test_nlasvc_manual_no_trigger_flows_through_run_all(self, monkeypatch, fake_cmd_result):
+        """NlaSvc 运行中+手动+无触发器：经 run_all 正常产出 WARN 与修复建议（不触发异常兜底）。"""
         patch_all_boundaries(monkeypatch, fake_cmd_result)
         snap = full_snap()
         snap.services["NlaSvc"] = {"status": "Running", "startType": "Manual"}
@@ -1025,9 +1035,9 @@ class TestRunAll:
         results = netcheck.run_all()
         by_id = {r.id: r for r in results}
         assert len(results) == 15
-        # 异常兜底结果的 id 是函数名 chk_nlasvc（源码：CheckResult(fn.__name__, ...)）
-        assert by_id["chk_nlasvc"].status == netcheck.WARN
-        assert "检查执行异常" in by_id["chk_nlasvc"].detail
+        assert by_id["nlasvc"].status == netcheck.WARN
+        assert by_id["nlasvc"].fix_ids == ["fix_nlasvc"]
+        assert "检查执行异常" not in by_id["nlasvc"].detail
 
 
 # ---------------- verdict 综合判定 ----------------

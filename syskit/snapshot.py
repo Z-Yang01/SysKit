@@ -80,9 +80,13 @@ class Snapshot:
         return None
 
     def physical_up_adapters(self) -> list:
-        """状态 Up 且持有 IPv4 的网卡（不判断是否虚拟/是否有网关）。"""
+        """状态 Up 且持有 IPv4 的非虚拟网卡（网关/DNS 对比检查的判定对象）。
+
+        排除虚拟网卡：Clash TUN（Up, 198.18.0.1, fake-ip DNS）参与网关连通与
+        DNS 对比会让两项核心判定的对象变成隧道假象。
+        """
         return [a for a in self.adapters
-                if a.status.lower() == "up" and a.ipv4]
+                if a.status.lower() == "up" and a.ipv4 and not a.virtual]
 
     def service(self, name: str):
         return self.services.get(name)

@@ -65,6 +65,53 @@ def _is_sensitive(text) -> bool:
         return any(s["digest"] == digest for s in _sensitive)
 
 
+def exclude_os_history() -> None:
+    """给「当前」剪贴板内容附加 Windows 排除格式：不进 Win+V 历史记录、
+    不上传云剪贴板（Win10+）。mark_sensitive 只防得住本应用自己的历史，
+    系统侧历史/跨设备同步需要这三个 RegisterClipboardFormat 标记（KeePass 同款）。
+
+    必须在 setText **之后**调用（对当前剪贴板补设格式）；尽力而为——
+    非 Windows / 打不开剪贴板 / 老系统无此格式名时静默跳过。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        u32 = ctypes.windll.user32
+        k32 = ctypes.windll.kernel32
+        if not u32.OpenClipboard(None):
+            return
+        try:
+            GMEM_MOVEABLE = 0x0002
+
+            def _set_zero(fmt_name: str):
+                fid = u32.RegisterClipboardFormatW(fmt_name)
+                if not fid:
+                    return
+                h = k32.GlobalAlloc(GMEM_MOVEABLE, wintypes.DWORD.sizeof)
+                if not h:
+                    return
+                p = k32.GlobalLock(h)
+                if not p:
+                    k32.GlobalFree(h)
+                    return
+                ctypes.memmove(p, ctypes.byref(wintypes.DWORD(0)),
+                               wintypes.DWORD.sizeof)
+                k32.GlobalUnlock(h)
+                # 成功后句柄归系统所有；失败则系统不接管，无需手动释放
+                u32.SetClipboardData(fid, h)
+
+            _set_zero("ExcludeClipboardContentFromMonitorProcessing")
+            _set_zero("CanIncludeInClipboardHistory")
+            _set_zero("CanUploadToCloudClipboard")
+        finally:
+            u32.CloseClipboard()
+    except Exception:
+        pass
+
+
 def foreground_process_name() -> str:
     """前台窗口进程名（小写）；非 Windows / 失败返回 ""。"""
     if sys.platform != "win32":

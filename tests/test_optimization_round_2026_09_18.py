@@ -12,7 +12,6 @@
 注册表/socket；文件读写全部落在 pytest 临时目录。
 """
 import os
-import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -114,9 +113,9 @@ def test_wifi_share_workers_run_bodies(monkeypatch):
     monkeypatch.setattr(wp, "profile_password", lambda name: ("WPA2", "pw"))
     got3 = []
     pp = wp._ProfilePwdWorker("Home")
-    pp.done.connect(lambda a, p: got3.append((a, p)))
+    pp.done.connect(lambda n, a, p: got3.append((n, a, p)))
     pp.run()
-    assert got3 == [("WPA2", "pw")]
+    assert got3 == [("Home", "WPA2", "pw")]   # 带回 profile 名：完成时可校验错配
 
     def boom_pw(name):
         raise RuntimeError("x")
@@ -124,9 +123,9 @@ def test_wifi_share_workers_run_bodies(monkeypatch):
     monkeypatch.setattr(wp, "profile_password", boom_pw)
     got4 = []
     pp2 = wp._ProfilePwdWorker("Home")
-    pp2.done.connect(lambda a, p: got4.append((a, p)))
+    pp2.done.connect(lambda n, a, p: got4.append((n, a, p)))
     pp2.run()
-    assert got4 == [("", "")]                 # 异常 → 双空兜底
+    assert got4 == [("Home", "", "")]         # 异常 → 双空兜底
 
 
 def test_scan_networks_bare_ssid_compat_line(monkeypatch):

@@ -4,10 +4,9 @@ Mock 边界（配合 conftest 哨兵双保险）：
 - proc.run_ps 打桩返回可控 stdout（空输出 / 带杂讯 JSON / 损坏 JSON / 全量数据），
   conftest 哨兵保证漏打桩时直接失败而非真实执行。
 
-疑似业务 bug（只记录，不改源码）：
-1. syskit/snapshot.py:82-85 physical_up_adapters 的 docstring 写"有网关或已连接"，
-   实现却只看 `status==Up 且有 ipv4`（不看 gw4/conn_v4）：有网关但状态非 Up 的网卡
-   与 docstring 描述不符，属文档与实现不一致（监控离线判定依赖它，行为偏保守）。
+历史记录（已清算）：
+1. physical_up_adapters 的 docstring 曾与实现不一致（只看 Up+IPv4），已按实现
+   对齐 docstring（PROGRESS 疑似 bug #10 结案）。
 """
 import json
 

@@ -10,12 +10,17 @@ from .logger import LOGGER
 ST_OK, ST_NO_NET, ST_NCSI_FALSE, ST_OFFLINE = "ok", "no_net", "ncsi_false", "offline"
 
 
+# 直连 opener：urlopen 默认经系统代理转发，残留代理会把「代理挂了」误判成
+# 断网并触发对代理无效的 L2/L3 自动修复（续租/重启 WLAN/网卡）
+_PROBE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def probe_quick(timeout: float = 4.0) -> bool:
     """轻量探测：任一 204 端点可达即有网。遍历全部端点，避免单点故障误报断网。"""
     for url in config.PROBE_204_URLS:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "SysKit/1.0"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _PROBE_OPENER.open(req, timeout=timeout) as resp:
                 if resp.status == 204:
                     return True
         except Exception:

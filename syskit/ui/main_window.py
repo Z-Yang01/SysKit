@@ -196,15 +196,20 @@ class MainWindow(QMainWindow):
                                    QMessageBox.Yes | QMessageBox.No)
         if ret != QMessageBox.Yes:
             return
+        if self._cmd_worker is not None:      # 防重入：一条命令未完成不再启动第二条
+            self.tray.notify("命令面板", "上一条命令仍在执行，请稍候")
+            return
         # 后台执行：str 命令走 shell，proc.run 最长可阻塞 30s，绝不能冻住 UI
-        self._cmd_worker = reap(PlainCmdWorker(v, timeout=30), self)
+        worker = reap(PlainCmdWorker(v, timeout=30), self)
+        self._cmd_worker = worker
 
         def _cmd_done(ok, out):
-            self._cmd_worker = None
+            if self._cmd_worker is worker:    # 只清自己：防止完成回调误清新引用
+                self._cmd_worker = None
             self.tray.notify("命令面板", ("完成: " if ok else "失败: ") + out[:120])
 
-        self._cmd_worker.done.connect(_cmd_done)
-        self._cmd_worker.start()
+        worker.done.connect(_cmd_done)
+        worker.start()
 
     # ---------------- 品牌头 ----------------
     def _build_brand(self) -> QWidget:
@@ -449,9 +454,11 @@ class MainWindow(QMainWindow):
         from .. import proxy
         if proxy.get_proxy_status()["enabled"]:
             self.run_repair("proxy_off")
+            # 不在此处刷新标签：proxy_off 是异步修复，此刻读到的是旧状态
+            # （完成回调 _repair_done 已兜底刷新）
         else:
             os.startfile("ms-settings:network-proxy")
-        self._refresh_proxy_label()
+            self._refresh_proxy_label()
 
     def refresh_adapters(self):
         if self._snap_worker:
@@ -631,12 +638,22 @@ class MainWindow(QMainWindow):
 
     def _copy_report(self):
         from PySide6.QtWidgets import QApplication
+        if not self._diag_results:
+            self.statusBar().showMessage("暂无诊断结果可复制（请先完成一次诊断）", 4000)
+            return
         lines = [f"SysKit 诊断报告  {time.strftime('%Y-%m-%d %H:%M')}", "-" * 50]
+        aborted = any(r.id == "diag_aborted" for r in self._diag_results)
         for r in self._diag_results:
             lines.append(f"[{netcheck.STATUS_MARK.get(r.status, '?')}] {r.name}")
             lines.append(f"      {r.detail}")
-        base, text = netcheck.verdict(self._diag_results)
-        lines += ["-" * 50, f"结论：{text}"]
+        lines.append("-" * 50)
+        if aborted:
+            # 中止的不完整结果缺 real_conn，verdict 会误判成「外网不可达」——
+            # 复制出去的报告必须与界面判定一致（界面保持此前状态）
+            lines.append("结论：诊断已中止，本次结果不完整（不构成网络状态判定）")
+        else:
+            base, text = netcheck.verdict(self._diag_results)
+            lines.append(f"结论：{text}")
         QApplication.clipboard().setText("\n".join(lines))
         self.statusBar().showMessage("报告已复制到剪贴板", 4000)
 
@@ -1051,7 +1068,11 @@ class MainWindow(QMainWindow):
     # ---------------- 修复执行 ----------------
     def run_repair(self, aid, param=None):
         act = repairs.get_action(aid)
-        if not act or self._busy:
+        if not act:
+            return
+        if self._busy:
+            # 按钮可点但静默无效会被当成"功能坏了"：至少给一句解释
+            self.statusBar().showMessage("有诊断/修复任务进行中，请等其完成后再操作", 4000)
             return
         if not admin.is_admin() and act.risk != repairs.RISK_SAFE:
             QMessageBox.warning(self, config.DISPLAY_NAME, "该操作需要管理员权限，请以管理员身份运行。")

@@ -10,10 +10,8 @@ Mock 边界（配合 conftest 哨兵双保险）：
 已修复行为（原 PROGRESS 疑似 bug，现已改源码）：
 1. probe_quick 遍历全部 PROBE_204_URLS，首端点失败时继续尝试后续端点。
 2. Monitor 停止事件命名为 _stop_evt（不可覆盖 Thread._stop）。
-
-仍记录的设计取舍：
-- force_check 请求的"立即复检"仍要先等满本轮 poll_interval 再额外等 1 秒
-  （force 后并未跳过周期等待），手动刷新体感延迟最长约 poll+1s。
+3. force_check 可中断等待（_force_check.wait）——置位立即醒来（1s 节流），
+   不再等满 poll_interval；见 test_force_check_wakes_early_and_rechecks。
 """
 import threading
 import time
@@ -126,10 +124,11 @@ class TestProbeQuick:
     def patch_urlopen(self, monkeypatch, behavior):
         seen = []
 
-        def fake_urlopen(req, timeout=None):
+        def fake_open(req, timeout=None):
             seen.append((req, timeout))
             return behavior(req, timeout)
-        monkeypatch.setattr(monitor_mod.urllib.request, "urlopen", fake_urlopen)
+        # 探测走直连 opener（不经系统代理）：patch 的是 opener.open
+        monkeypatch.setattr(monitor_mod._PROBE_OPENER, "open", fake_open)
         return seen
 
     def test_204_ok(self, monkeypatch):
@@ -296,7 +295,7 @@ class TestOnce:
         monkeypatch.setattr(monitor_mod, "probe_quick", lambda: False)
         m, seen = make_mon()
         monkeypatch.setattr(m, "_run_ladder", lambda level: pytest.fail("冷却中不应修复"))
-        m._last_repair_ts = time.time()                # 刚修过
+        m._last_repair_ts = time.monotonic()           # 刚修过（生产为 monotonic 轴）
         m._once(ST)                                    # streak=1
         m._once(ST)                                    # 达阈值但冷却中
         assert m._fail_streak == 2                     # 未重置
@@ -308,7 +307,8 @@ class TestOnce:
 class TestRepairLevel:
     def test_within_level3_cooldown_caps_at_2(self):
         m, _ = make_mon()
-        m._last_l3_ts = time.time()                    # 刚做过 L3
+        # 必须种入 monotonic：种 epoch 会让断言对「轴写错」这个回归零检出
+        m._last_l3_ts = time.monotonic()               # 刚做过 L3
         assert m._repair_level(dict(ST, max_level=3)) == 2
 
     def test_outside_cooldown_uses_max_level(self):

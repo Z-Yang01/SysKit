@@ -107,8 +107,10 @@ class CommandPalette(QDialog):
         self.edt.returnPressed.connect(self._exec_current)
         lay.addWidget(self.edt)
         self.lst = QListWidget()
+        # 执行走 itemActivated（双击/Enter）而非单击：单击执行会 hide 面板，
+        # 双击的第二击穿透到下层主窗口同坐标控件造成误触
         self.lst.itemActivated.connect(lambda item: self._exec_row(self.lst.row(item)))
-        self.lst.itemClicked.connect(lambda item: self._exec_row(self.lst.row(item)))
+        self.lst.itemClicked.connect(lambda item: self.lst.setCurrentRow(self.lst.row(item)))
         lay.addWidget(self.lst, 1)
         self.lbl_hint = QLabel("↑↓ 选择 · Enter 执行 · Esc 关闭")
         self.lbl_hint.setObjectName("hint")

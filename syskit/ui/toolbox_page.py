@@ -155,9 +155,18 @@ class _LanScanWorker(QThread):
             rows = []
         self.done.emit(rows)
 
+    # 与 telemetry._PHYSICAL_EXCLUDE 同款：WSL/Hyper-V/VPN 虚拟网卡优先时
+    # 会扫到虚拟网段，「发现 0 台设备」但真实局域网被跳过
+    _EXCLUDE = ("loopback", "vmnet", "vmware", "vethernet", "bluetooth",
+                "wan miniport", "tap", "wintun", "utun", "vgate", "hyper-v")
+
     def _scan(self) -> list:
         subnet = None
-        for addr in psutil.net_if_addrs().values():
+        ifaces = psutil.net_if_addrs()
+        for name, addr in ifaces.items():
+            lname = name.lower()
+            if lname == "loopback" or any(x in lname for x in self._EXCLUDE):
+                continue
             for a in addr:
                 if a.family == socket.AF_INET and a.address and not a.address.startswith("127.") \
                         and not a.address.startswith("169.254."):
@@ -166,6 +175,16 @@ class _LanScanWorker(QThread):
                     break
             if subnet:
                 break
+        if not subnet:
+            # 全是虚拟网卡/找不到候选时，回退旧逻辑（无名字过滤的枚举序）
+            for addr in ifaces.values():
+                for a in addr:
+                    if a.family == socket.AF_INET and a.address and not a.address.startswith("127.") \
+                            and not a.address.startswith("169.254."):
+                        subnet = ipaddress.ip_network(f"{a.address}/255.255.255.0", strict=False)
+                        break
+                if subnet:
+                    break
         if not subnet:
             return []
         hosts = [str(h) for h in subnet.hosts()]
@@ -444,6 +463,9 @@ class PingRouteTab(QWidget):
         if self._ping_was_active and not self._ping_timer.isActive():
             self._ping_timer.start(1000)     # 页面重新可见：恢复持续 ping
             self._ping_was_active = False
+            # 定时器恢复了，按钮必须同步回「停止 ping」——否则用户点「开始」
+            # 实际触发的是停止分支（文案与状态相反）
+            self.btn_ping.setText("停止 ping")
 
     def hideEvent(self, event):
         super().hideEvent(event)

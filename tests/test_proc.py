@@ -9,6 +9,7 @@ Mock 边界（配合 conftest 哨兵双保险）：
 均转为失败 CmdResult，不再向上抛穿调用方。
 """
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -83,10 +84,16 @@ class TestRun:
         assert calls["kwargs"]["shell"] is True
 
     def test_gbk_output_falls_back_to_mbcs(self, monkeypatch, real_run):
-        """非 UTF-8 字节回退 ANSI 解码（本机 ACP=936 → GBK）。"""
+        """非 UTF-8 字节回退 ANSI（mbcs）解码；期望文本随机器 ACP 而异。"""
+        import ctypes
+        acp = ctypes.windll.kernel32.GetACP() if sys.platform == "win32" else 0
+        expected = b"\xd6\xd0\xce\xc4".decode("mbcs")   # 与生产同源解码：ACP=936 → "中文"
         self._patch_run(monkeypatch, (0, b"\xd6\xd0\xce\xc4", b""))
         r = proc.run(["cmd"])
-        assert r.stdout == "中文"                          # CP936 下 GBK "中文"
+        assert r.code == 0
+        assert r.stdout == expected
+        if acp == 936:
+            assert expected == "中文"
 
     def test_timeout_returns_partial_output(self, monkeypatch, real_run):
         e = subprocess.TimeoutExpired("cmd", 20, output=b"partial", stderr=b"err!")

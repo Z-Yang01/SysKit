@@ -67,7 +67,10 @@ def ping(host: str, timeout_ms: int = 1500):
 def default_gateway() -> str:
     """从路由表取当前默认网关（经 PowerShell，启动/网络变化时调用）。"""
     from . import proc
-    r = proc.run_ps("Get-NetRoute -DestinationPrefix 0.0.0.0/0 -ErrorAction SilentlyContinue "
+    # -AddressFamily IPv4：不限定时 IPv6 ::/0 跃点更低会排第一，
+    # 被 v4 点分校验过滤成空 → 网关延迟缺失（telemetry 每 5 分钟才刷新网关）
+    r = proc.run_ps("Get-NetRoute -DestinationPrefix 0.0.0.0/0 -AddressFamily IPv4 "
+                    "-ErrorAction SilentlyContinue "
                     "| Sort-Object {$_.RouteMetric+$_.InterfaceMetric} "
                     "| Select-Object -First 1 -ExpandProperty NextHop", timeout=25)
     gw = r.stdout.strip()

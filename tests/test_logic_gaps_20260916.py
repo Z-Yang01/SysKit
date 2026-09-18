@@ -362,24 +362,28 @@ class TestDnsQueryGaps:
         assert dns_mod.query("mail.example.com", "10.0.0.1", qtype=28) == ["fe80::1"]
 
     def test_resolve_system_future_error_returns_empty(self, monkeypatch):
-        """fut.result 抛异常（超时等）→ 返回 []（109-110 行），不向调用方穿透。"""
+        """getaddrinfo 抛错（daemon 线程内捕获）→ 返回 []，不向调用方穿透。"""
+        import socket as socket_mod
 
-        class _BrokenFuture:
-            def result(self, timeout=None):
-                raise RuntimeError("simulated timeout")
+        def boom(*a, **k):
+            raise RuntimeError("getaddrinfo down")
 
-        class _BrokenExecutor:
-            def __init__(self, *a, **k):
-                pass
+        monkeypatch.setattr(dns_mod.socket, "getaddrinfo", boom)
+        assert dns_mod.resolve_system("www.example.com", timeout=2.0) == []
 
-            def submit(self, fn, *a, **k):
-                return _BrokenFuture()
+    def test_resolve_system_hung_dns_times_out_without_exit_block(self, monkeypatch):
+        """系统 DNS 挂死：join 超时返回 []；解析线程为 daemon，不拖住进程退出。
 
-            def shutdown(self, wait=False):
-                pass
+        回归：ThreadPoolExecutor.shutdown(wait=False) 的 atexit 钩子仍会 join
+        未完成 worker——DNS 挂死时应用退出被卡住（改 daemon 线程后消除）。
+        """
+        import threading
 
-        monkeypatch.setattr(dns_mod, "ThreadPoolExecutor", _BrokenExecutor)
-        assert dns_mod.resolve_system("www.example.com") == []
+        def hang(*a, **k):
+            threading.Event().wait(5)          # 模拟挂死的 getaddrinfo
+
+        monkeypatch.setattr(dns_mod.socket, "getaddrinfo", hang)
+        assert dns_mod.resolve_system("www.example.com", timeout=0.2) == []
 
     def test_query_safe_swallows_and_passes(self, monkeypatch):
         """query_safe：异常 → []，正常 → 透传（兼收本文件独立运行的覆盖）。"""

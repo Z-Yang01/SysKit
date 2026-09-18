@@ -93,8 +93,20 @@ def _open_seal(key: bytes, blob: bytes, aad: bytes = b"") -> bytes:
     return _aesgcm(key).decrypt(nonce, ct, aad)
 
 
-def _derive(password: str, salt: bytes) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, KDF_ITER)
+def _derive(password: str, salt: bytes, iterations: int = None) -> bytes:
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt,
+                               iterations or KDF_ITER)
+
+
+def _meta_iter(kdf: dict) -> int:
+    """读回落盘时的迭代数。iter 只在新库/改密时写入当前值——若升级调参
+    （KDF_ITER 上调）后仍用新常量派生，存量库 verifier 将解不开，全部用户
+    会得到「主密码错误」并可能误删整个库。"""
+    try:
+        n = int(kdf.get("iter", KDF_ITER))
+    except (TypeError, ValueError):
+        return KDF_ITER
+    return n if n > 0 else KDF_ITER
 
 
 class VaultCrypto:
@@ -183,7 +195,7 @@ class VaultCrypto:
             except Exception:
                 return False
         kdf = meta.get("kdf", {})
-        dk = _derive(password or "", _unb64(kdf.get("salt", "")))
+        dk = _derive(password or "", _unb64(kdf.get("salt", "")), _meta_iter(kdf))
         try:
             if _open_seal(dk, _unb64(meta["verifier"]), aad=b"vault-verify") != _VERIFIER:
                 return False
@@ -211,7 +223,7 @@ class VaultCrypto:
         if meta.get("mode") != "password":
             return False
         kdf = meta.get("kdf", {})
-        dk = _derive(password or "", _unb64(kdf.get("salt", "")))
+        dk = _derive(password or "", _unb64(kdf.get("salt", "")), _meta_iter(kdf))
         try:
             return _open_seal(dk, _unb64(meta["verifier"]), aad=b"vault-verify") == _VERIFIER
         except Exception:

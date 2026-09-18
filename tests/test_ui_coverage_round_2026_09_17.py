@@ -630,7 +630,7 @@ def test_vault_show_totp_guards_and_qrcode_missing(qtbot, seeded_master, monkeyp
     monkeypatch.setitem(sys.modules, "qrcode", None)     # import qrcode → ImportError
     _select(page, page.tbl_accts, "alice")
     page._show_totp_dialog()                   # 二维码降级为失败标签（750-751）
-    assert page.findChildren(QDialog) or True  # exec 已短路，无阻塞
+    assert page.findChildren(QDialog)          # 对话框已构造（exec 已短路防阻塞）
 
 
 def test_vault_toggle_show_password_requires_master(qtbot, seeded_master, monkeypatch):
@@ -643,6 +643,40 @@ def test_vault_toggle_show_password_requires_master(qtbot, seeded_master, monkey
     page._toggle_show_password()
     assert page._showing_pw is False
     assert page.btn_show_pw.text() == "显示"
+
+
+def test_vault_change_master_verifies_current_password(qtbot, seeded_master,
+                                                       monkeypatch, msgbox_recorder):
+    """信任窗口内更改主密码必须先验证旧密码（曾免验 → 接触键盘即可接管库）；
+    解锁成功同时授予信任窗口（与复制路径同语义，曾只解锁不授信）。"""
+    page = _page(qtbot)
+    _select(page, page.lst_sites, "GitHub")
+    _patch_ask(monkeypatch, [("pw-master", True)])
+    assert page._ensure_unlocked() is True
+    assert page._master_until > time.time()            # 解锁即授信
+
+    _patch_ask(monkeypatch, [("wrong", True)])         # 旧密码错误 → 拒绝
+    page._set_master()
+    assert any("当前主密码错误" in a[2] for _k, a in msgbox_recorder)
+
+    _patch_ask(monkeypatch, [("pw-master", True), ("new-pw", True)])
+    page._set_master()                                 # 旧密码正确 → 设新主密码
+    assert page.crypto.verify_password("new-pw") is True
+
+
+def test_vault_dpapi_unlock_failure_guides_not_password_loop(qtbot, seeded,
+                                                              monkeypatch,
+                                                              msgbox_recorder):
+    """DPAPI 库解封失败：给引导提示并保持未解锁，不再进入「主密码错误」循环。"""
+    page = _page(qtbot)
+    assert page.crypto.has_master_password() is False
+    page.crypto.lock()                                   # seeded 为解锁态：先锁定
+    assert page.crypto.is_unlocked is False
+    monkeypatch.setattr(page.crypto, "unlock", lambda pw=None: False)
+    asked = _patch_ask(monkeypatch, [("whatever", True)])   # 若被弹出即失败证据
+    assert page._ensure_unlocked() is False
+    assert asked == []                               # 不索要主密码（本库没有）
+    assert any("DPAPI" in a[2] for _k, a in msgbox_recorder)
 
 
 # ============================================================

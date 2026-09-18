@@ -445,12 +445,21 @@ class VaultPage(QWidget):
             if self.crypto.unlock(None):
                 self._refresh_state()
                 return True
+            # key 损坏 / DPAPI 不可用（如重装系统换账户）：本库本无主密码，
+            # 再弹主密码框只会得到无限「主密码错误」，误导用户删库
+            QMessageBox.warning(
+                self, "SysKit",
+                "密码库解锁失败：key 文件可能损坏，或 Windows 账户凭据变化导致"
+                " DPAPI 无法解封（详见日志）。\n如确认放弃历史数据，可删除 "
+                "vault.key 后重启重建；否则请保留文件排查。")
+            return False
         pwd = self._ask_password("解锁密码库")
         if pwd is None:
             return False
         if not self.crypto.unlock(pwd):
             QMessageBox.warning(self, "SysKit", "主密码错误")
             return False
+        self._grant_trust()                     # 与复制路径同语义：验证主密码即授信
         self._refresh_state()
         return True
 
@@ -465,7 +474,17 @@ class VaultPage(QWidget):
     def _set_master(self):
         if not self._ensure_unlocked():
             return
-        pwd = self._ask_password("设置主密码")
+        if self.crypto.has_master_password():
+            # 信任窗口内不验旧密码即可换主密码 = 离座 30 分钟窗口内接触键盘
+            # 半分钟就能接管整个密码库（与移除主密码需验证的安全基线对齐）
+            cur = self._ask_password("验证当前主密码")
+            if cur is None:
+                return
+            if not self.crypto.verify_password(cur):
+                QMessageBox.warning(self, "SysKit", "当前主密码错误")
+                return
+        pwd = self._ask_password("设置新主密码" if self.crypto.has_master_password()
+                                 else "设置主密码")
         if pwd is None:
             return
         if not pwd:
@@ -507,8 +526,11 @@ class VaultPage(QWidget):
         if not f["name"]:
             QMessageBox.warning(self, "SysKit", "网站名称不能为空")
             return
-        vault.add_site(**f)
-        self.refresh_sites(keep_id=None)
+        new_id = vault.add_site(**f)
+        # 选中新建站点：兜底「选中第 0 行」会让紧接着的「＋ 账号」
+        # 静默写进字典序第一个站（用户以为在给新站录账号）
+        self.refresh_sites(keep_id=new_id)
+        self.refresh_accounts()
 
     def _edit_site(self):
         sid = self._selected_site_id()
@@ -632,6 +654,7 @@ class VaultPage(QWidget):
         ttl = int(settings.load().get("clip_sensitive_ttl", 25))
         clipboard_mod.mark_sensitive(text, ttl if ttl > 0 else 3600)
         clip.setText(text)
+        clipboard_mod.exclude_os_history()   # 不进 Win+V 历史 / 不上云剪贴板
         self.lbl_detail.setText(note + (f"；{ttl}s 后自动清空" if ttl > 0 else ""))
         self._restart_autolock()
         if ttl > 0:
@@ -708,6 +731,9 @@ class VaultPage(QWidget):
         code = vault.totp_code(secret)
         if code:
             self._copy_sensitive(code, f"TOTP {code} 已复制")
+        elif (secret or "").strip():
+            QMessageBox.information(self, "SysKit",
+                                    "TOTP 密钥无效（应为 Base32 密钥），未复制")
 
     def _show_totp_dialog(self):
         """TOTP 二维码 + 实时验证码：otpauth URI 供手机验证器扫描导入。"""
@@ -718,16 +744,20 @@ class VaultPage(QWidget):
             secret = vault.get_secret(aid, self.crypto, "totp", touch=False)
         except VaultLockedError:
             return
-        code = vault.totp_code(secret)
-        if not code:
-            QMessageBox.information(self, "SysKit", "该账号未配置 TOTP 密钥")
+        if not vault.totp_code(secret):
+            msg = ("该账号未配置 TOTP 密钥" if not (secret or "").strip()
+                   else "TOTP 密钥无效（应为 Base32 密钥，如 JBSWY3DPEHPK3PXP）")
+            QMessageBox.information(self, "SysKit", msg)
             return
         r = self._current_acct_row() or {}
         site = next((s2.get("name") for s2 in self.site_model._rows
                      if s2.get("id") == self._selected_site_id()), "SysKit")
         who = r.get("username") or r.get("label") or ""
-        uri = (f"otpauth://totp/{site}:{who}?secret={secret}"
-               f"&issuer={site}&digits=6&period=30")
+        # otpauth 规范要求 label 段与 issuer 参数百分号编码：
+        # 站点名含空格/&/冒号时未编码的 URI 会被验证器解析错乱甚至拒绝导入
+        from urllib.parse import quote
+        uri = (f"otpauth://totp/{quote(site, safe='')}:{quote(who, safe='')}"
+               f"?secret={secret}&issuer={quote(site, safe='')}&digits=6&period=30")
         dlg = QDialog(self)
         dlg.setWindowTitle(f"TOTP — {who or site}")
         v = QVBoxLayout(dlg)
@@ -746,20 +776,42 @@ class VaultPage(QWidget):
             v.addWidget(lbl_qr)
         except Exception as e:
             v.addWidget(QLabel(f"二维码生成失败: {e}"))
-        lbl_code = QLabel(code)
+        lbl_code = QLabel()
         lbl_code.setAlignment(Qt.AlignCenter)
         lbl_code.setStyleSheet("font-size: 28px; font-weight: bold; letter-spacing: 6px;")
         v.addWidget(lbl_code)
         tip = QLabel("用手机验证器（Google Authenticator 等）扫描导入；"
-                     "上方为当前验证码（每 30 秒刷新）。重新打开刷新。")
+                     "上方为当前验证码（每秒对时刷新，30 秒一换）。")
         tip.setObjectName("hint")
         tip.setWordWrap(True)
         v.addWidget(tip)
+
+        def _refresh_code():
+            lbl_code.setText(vault.totp_code(secret))
+
         btn = QPushButton("复制验证码")
         btn.setProperty("primary", True)
-        btn.clicked.connect(lambda: self._copy_sensitive(code, f"TOTP {code} 已复制"))
+
+        def _copy_current():
+            # 点击时实时取当前码：闭包捕获打开时旧值会复制到过期验证码
+            c = vault.totp_code(secret)
+            if c:
+                self._copy_sensitive(c, f"TOTP {c} 已复制")
+
+        btn.clicked.connect(_copy_current)
         v.addWidget(btn, 0, Qt.AlignCenter)
-        dlg.exec()
+        timer = QTimer(dlg)
+        timer.timeout.connect(_refresh_code)
+        _refresh_code()
+        timer.start(1000)
+        # 展示的是账号长期种子（高于密码明文的敏感级）：模态期间暂停自动锁，
+        # 否则信任窗口到期自动锁后二维码仍驻留屏幕
+        self._autolock.stop()
+        try:
+            dlg.exec()
+        finally:
+            timer.stop()
+            self._restart_autolock()
 
     def _toggle_show_password(self):
         """一键显示/隐藏：验证主密码（信任窗口内免验证）后，密码列整列明文

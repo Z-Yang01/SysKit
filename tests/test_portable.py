@@ -98,9 +98,8 @@ def test_end_to_end_writes_land_in_portable_dir(tmp_path, monkeypatch):
 
         assert (app / "data" / "config" / "settings.json").exists()
         assert (app / "data" / "config" / "vault.db").exists()
-        assert (app / "data" / "local" / "logs").exists() or True   # 日志目录惰性
-        # %APPDATA%（真实）不被写入
-        assert not (tmp_path / "appdata" / "SysKit").exists() or True
+        # （日志目录按惰性创建，不在此断言；真实 %APPDATA% 的不可触碰性
+        #   由 conftest 的持久化重定向哨兵保证，不在此重复断言）
         assert vault.search_sites("GitHub")[0]["name"] == "GitHub"
     finally:
         monkeypatch.undo()

@@ -71,9 +71,9 @@ def scan_networks() -> list:
         m = re.match(r"\s*(?:身份验证|Authentication)\s*[:：]\s*(\S+)", line)
         if m:
             net_auth = m.group(1)
+            if isinstance(cur, dict) and not cur["auth"]:
+                cur["auth"] = net_auth      # 认证行在 BSSID 之后时补上（限当前网络）
     for ap in aps:
-        if not ap["auth"]:
-            ap["auth"] = net_auth
         ch = ap["channel"]
         ap["band"] = "2.4G" if 0 < ch <= 14 else ("5G" if ch > 14 else "?")
     aps.sort(key=lambda a: -a["signal"])
@@ -120,7 +120,7 @@ class _ProfilesWorker(QThread):
 
 class _ProfilePwdWorker(QThread):
     """读取配置文件明文密码（netsh key=clear，超时 15s）：后台线程执行。"""
-    done = Signal(str, str)        # (auth, password)
+    done = Signal(str, str, str)   # (profile, auth, password)——带名字防错配
 
     def __init__(self, name, parent=None):
         super().__init__(parent)
@@ -131,7 +131,7 @@ class _ProfilePwdWorker(QThread):
             auth, pwd = profile_password(self._name)
         except Exception:
             auth, pwd = "", ""
-        self.done.emit(auth, pwd)
+        self.done.emit(self._name, auth, pwd)
 
 
 class WifiPage(QWidget):
@@ -335,9 +335,18 @@ class WifiPage(QWidget):
         self._qr_worker.done.connect(self._qr_ready)
         self._qr_worker.start()
 
-    def _qr_ready(self, auth, pwd):
+    def _qr_ready(self, profile, auth, pwd):
         self._qr_worker = None
-        name = self.cmb_share.currentText() or ""
+        # 用发起时的 profile 名渲染：完成后用户可能已切走下拉，
+        # 若仍用 currentText 会生成「A 的 SSID + B 的密码」错配二维码
+        if self.cmb_share.currentText() != profile:
+            self.lbl_qr.setText(f"{profile} 的二维码已过期（下拉已切换），请重新生成")
+            self.lbl_qr.setStyleSheet("")       # 覆盖白底样式恢复默认 hint 观感
+            self.lbl_qr.setAlignment(Qt.AlignCenter)
+            self.btn_save_qr.setEnabled(False)
+            self._qr_png = None
+            return
+        name = profile
         auth_type = "nopass"
         if auth:
             a = auth.upper()
@@ -444,6 +453,7 @@ class WifiPage(QWidget):
         pwd = self._pw_rows[row][2] or ""
         clipboard_mod.mark_sensitive(pwd)      # WLAN 密码同走敏感路径：不进历史
         QApplication.clipboard().setText(pwd)
+        clipboard_mod.exclude_os_history()     # 不进 Win+V 历史 / 不上云
         self.lbl_pw.setText("密码已复制")
 
 

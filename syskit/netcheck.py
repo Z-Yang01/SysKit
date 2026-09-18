@@ -26,10 +26,15 @@ class CheckResult:
 
 # ---------------- HTTP 探测 ----------------
 
+# 直连 opener：urlopen 默认走系统代理——被检测对象（残留代理）会劫持全部
+# 探测，把「代理挂了」误判成「断网」，进而驱动重启网卡等无效修复
+_OPENER_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _http_get(url: str, timeout: float = 6.0, need_body: bool = False):
     req = urllib.request.Request(url, headers={"User-Agent": "SysKit/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER_DIRECT.open(req, timeout=timeout) as resp:
             body = resp.read(512).decode("utf-8", errors="replace") if need_body else ""
             return resp.status, body, None
     except urllib.error.HTTPError as e:
@@ -89,7 +94,9 @@ def chk_nlasvc(snap: Snapshot) -> CheckResult:
     if running:
         r.detail = f"运行中; 启动类型={start_type}; 触发器={'有' if trigger_info else '无'}"
         if start_type in ("Manual",) and not trigger_info:
-            r.status, r.fix_ids = WARN, r.detail + "；本机被改为手动启动且无触发器（非原版配置，重启后仍不会自启）", ["fix_nlasvc"]
+            # 三目标解包（曾写成二元组 → ValueError，被 run_all 兜底降级为
+            # 原始异常文本、丢失 fix_nlasvc 建议——恰是本工具的核心目标场景）
+            r.status, r.detail, r.fix_ids = WARN, r.detail + "；本机被改为手动启动且无触发器（非原版配置，重启后仍不会自启）", ["fix_nlasvc"]
         return r
     # stopped
     if start_type in ("Disabled",):
@@ -223,10 +230,12 @@ def chk_dns_pollution(snap: Snapshot) -> CheckResult:
     if not sys_ips:
         r.status, r.detail = FAIL, f"系统解析 www.msftconnecttest.com 失败（公共 DNS 可解析 {ref[:2]}）→ 会直接导致 NCSI 探测失败"
         r.fix_ids = ["dns_auto", "dns_preset"]
+    elif _bogus(sys_ips):
+        # 污染特征判定必须先于交集 PASS：系统应答可同时含污染地址和与公共
+        # DNS 重叠的真实地址，先交集会把污染掩盖成「解析一致」
+        r.status, r.detail = WARN, f"系统结果 {sys_ips[:2]} 是无效地址（污染特征），公共 DNS 为 {ref[:2]}"
     elif set(sys_ips) & set(ref):
         r.status, r.detail = PASS, f"解析一致: {sys_ips[:2]}"
-    elif _bogus(sys_ips):
-        r.status, r.detail = WARN, f"系统结果 {sys_ips[:2]} 是无效地址（污染特征），公共 DNS 为 {ref[:2]}"
     else:
         r.status, r.detail = INFO, f"结果不同但均为有效公网地址（CDN 分流，非污染）: {sys_ips[:2]} vs {ref[:2]}"
     return r
@@ -327,7 +336,10 @@ def chk_services(snap: Snapshot) -> CheckResult:
     return r
 
 
-TUNNEL_PAT = re.compile(r"wintun|tap|utun|tunnel|wireguard|openvpn|vgate|clash|sing-box|uu", re.I)
+# 与 vpn.should_skip_auto_repair 共用同一份隧道识别（vpn 版覆盖更多客户端）：
+# 两套正则曾分叉——同一 TUN 网卡在护栏处被跳过、在 chk_proxy 处不被认为是
+# 隧道，反而对 TUN 客户端误报「代理残留」并建议 proxy_off
+from .vpn import TUNNEL_PAT
 
 
 def chk_proxy(snap: Snapshot) -> CheckResult:
@@ -413,7 +425,10 @@ def chk_wlan(snap: Snapshot) -> CheckResult:
     elif ssid:
         lines.append(f"已连接: {ssid}")
     rr = proc.run(["netsh", "wlan", "show", "settings"], timeout=10)
-    if re.search(r"MAC 随机化\s*已启用|MAC randomization ENABLED|已启用 MAC 随机化", rr.stdout, re.I):
+    # 真实输出形如「MAC randomization for all networks: ENABLED」/「MAC 随机化(全部网络): 已启用」：
+    # 词组间有说明文字与冒号，旧正则的紧邻匹配永不命中 → 该 WARN 从未产生过
+    if re.search(r"MAC\s*随机化[^\r\n]*(已启用|ENABLED)|MAC\s*randomization[^\r\n]*ENABLED",
+                 rr.stdout, re.I):
         lines.append("接口级 MAC 随机化已启用（部分路由器/公寓网对此不友好，连不上或频繁掉线时可尝试关闭）")
         r.status = WARN
     r.detail = "；".join(lines) if lines else "无法读取 WLAN 设置"

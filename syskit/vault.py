@@ -8,6 +8,7 @@ cryptography，便于离线单测。
 import hashlib
 import hmac
 import os
+import re
 import sqlite3
 import struct
 import time
@@ -110,29 +111,47 @@ def list_sites() -> list:
         return _site_rows(conn)
 
 
+def _escape_like(q: str) -> str:
+    """LIKE 通配符转义（配 ESCAPE '\' 使用）：用户输入的 % / _ 按字面匹配。"""
+    return q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def search_sites(q: str) -> list:
     """匹配 name/domain/url/aliases/tags；显示账号数量。"""
-    q = (q or "").strip()
+    q = _escape_like((q or "").strip().lower())
     with _connect() as conn:
         if not q:
             return _site_rows(conn)
-        like = f"%{q.lower()}%"
-        cond = ("WHERE lower(name) LIKE ? OR lower(coalesce(domain,'')) LIKE ?"
-                " OR lower(coalesce(url,'')) LIKE ? OR lower(coalesce(aliases,'')) LIKE ?"
-                " OR lower(coalesce(tags,'')) LIKE ?")
+        like = f"%{q}%"
+        cond = ("WHERE lower(name) LIKE ? ESCAPE '\\' OR lower(coalesce(domain,'')) LIKE ? ESCAPE '\\'"
+                " OR lower(coalesce(url,'')) LIKE ? ESCAPE '\\'"
+                " OR lower(coalesce(aliases,'')) LIKE ? ESCAPE '\\'"
+                " OR lower(coalesce(tags,'')) LIKE ? ESCAPE '\\'")
         return _site_rows(conn, cond, (like,) * 5)
 
 
 def find_by_domain(domain: str) -> dict | None:
-    """按域名精确匹配（为浏览器扩展/自动填充预留的 API 边界）。"""
+    """按域名精确匹配（为浏览器扩展/自动填充预留的 API 边界）。
+
+    别名走「逗号分词后精确相等」而非子串 LIKE：子串会让 mail.com 命中
+    别名 gmail.com 的站点——自动填充接入后即凭据授错域。
+    """
     domain = (domain or "").lower().strip()
     if not domain:
         return None
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM sites WHERE lower(domain)=? OR lower(url)=?"
-            " OR lower(coalesce(aliases,'')) LIKE ?",
-            (domain, f"https://{domain}", f"%{domain}%")).fetchall()
+            "SELECT * FROM sites WHERE lower(domain)=? OR lower(url)=?",
+            (domain, f"https://{domain}")).fetchall()
+        if not rows:
+            candidates = conn.execute(
+                "SELECT * FROM sites WHERE lower(coalesce(aliases,'')) <> ''").fetchall()
+            rows = []
+            for r in candidates:
+                toks = [t.strip().lower()
+                        for t in re.split(r"[,，;；]", r["aliases"] or "") if t.strip()]
+                if domain in toks:
+                    rows.append(r)
         return dict(rows[0]) if rows else None
 
 
@@ -206,12 +225,12 @@ def mark_used(account_id: int):
 
 def list_accounts(site_id: int, q: str = "") -> list:
     """账号元数据列表（不含任何明文 secrets）。q 匹配 username/label。"""
-    q = (q or "").strip().lower()
+    q = _escape_like((q or "").strip().lower())
     with _connect() as conn:
         cond, params = "WHERE a.site_id=?", [site_id]
         if q:
-            cond += (" AND (lower(coalesce(a.username,'')) LIKE ?"
-                     " OR lower(coalesce(a.label,'')) LIKE ?)")
+            cond += (" AND (lower(coalesce(a.username,'')) LIKE ? ESCAPE '\\'"
+                     " OR lower(coalesce(a.label,'')) LIKE ? ESCAPE '\\')")
             params += [f"%{q}%", f"%{q}%"]
         rows = conn.execute(
             "SELECT a.id, a.site_id, a.label, a.username, a.is_favorite,"
@@ -276,12 +295,22 @@ def global_search(q: str) -> list:
 # ---------------- TOTP（RFC 6238，stdlib 实现） ----------------
 
 def totp_code(secret_b32: str, at: float = None, digits: int = 6, period: int = 30) -> str:
-    """Base32 密钥 → TOTP 验证码。空密钥返回 ""。"""
+    """Base32 密钥 → TOTP 验证码。空密钥或密钥非法返回 ""（UI 提示密钥无效）。
+
+    RFC 4648 base32 字母表只有 A-Z2-7：兼容「已带 = padding」「含空格/连字符」
+    的常见粘贴格式；含 0/1/8/9 等字母表外字符属录入错误，返回空串而非抛异常
+    （此前 binascii.Error 会从 Qt 槽里穿透，TOTP 功能整体静默失效）。
+    """
     import base64
-    clean = (secret_b32 or "").replace(" ", "").upper()
+    clean = re.sub(r"[\s\-=]", "", (secret_b32 or "").upper())
     if not clean:
         return ""
-    key = base64.b32decode(clean + "=" * (-len(clean) % 8))
+    if any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567" for c in clean):
+        return ""
+    try:
+        key = base64.b32decode(clean + "=" * (-len(clean) % 8))
+    except Exception:
+        return ""
     counter = int((at if at is not None else time.time()) // period)
     digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
     offset = digest[-1] & 0x0F

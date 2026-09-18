@@ -147,13 +147,17 @@ class ToggleAdapter(RepairAction):
 
 
 def _pick_adapter() -> str:
-    """优先选 WLAN，其次第一个有连接意图的物理网卡。"""
+    """优先选无线网卡（中英命名都认），其次第一个「在线」的物理网卡。"""
     from .snapshot import take
     snap = take()
-    for a in snap.adapters:
-        if a.name.upper() == "WLAN":
+    wifi_names = {"WLAN", "WI-FI", "WI FI", "WIRELESS", "无线网络连接"}
+    for a in snap.adapters:                     # 无线网卡（含英文系统的 "Wi-Fi"）
+        if a.name.upper() in wifi_names or a.name.upper().replace("-", " ") in wifi_names:
             return a.name
-    for a in snap.adapters:
+    for a in snap.adapters:                     # 在线的物理网卡
+        if not a.virtual and a.status.lower() == "up" and "WAN Miniport" not in a.desc:
+            return a.name
+    for a in snap.adapters:                     # 兜底：第一个物理属性网卡（原行为）
         if not a.virtual and a.status.lower() != "up" and "WAN Miniport" not in a.desc:
             return a.name
     return ""
@@ -161,16 +165,20 @@ def _pick_adapter() -> str:
 
 class RestartServices(RepairAction):
     def __init__(self):
-        super().__init__("restart_services", "重启 DHCP/DNS 缓存服务", RISK_SAFE,
-                         "重启 Dhcp 与 Dnscache 服务，清理卡死的服务状态。",
+        super().__init__("restart_services", "重启 DHCP 服务并刷新 DNS 缓存", RISK_SAFE,
+                         "重启 Dhcp 服务；Dnscache 是受保护服务（net stop 恒被拒绝），"
+                         "改用 ipconfig /flushdns 达到等效的清缓存目的。",
                          "无需还原")
 
     def _run(self, param):
         msgs = []
-        for svc in ("Dhcp", "Dnscache"):
-            proc.run(["net", "stop", svc], timeout=30)
-            r = proc.run(["net", "start", svc], timeout=30)
-            msgs.append(f"{svc}:{'OK' if r.ok else '失败'}")
+        # Dnscache 自 Win10 1809 起为受保护服务：管理员 net stop 也返回
+        # System error 5，此前的「stop+start」在本动作上恒失败
+        proc.run(["net", "stop", "Dhcp"], timeout=30)
+        r = proc.run(["net", "start", "Dhcp"], timeout=30)
+        msgs.append(f"Dhcp:{'OK' if r.ok else '失败'}")
+        f = proc.run(["ipconfig", "/flushdns"], timeout=15)
+        msgs.append(f"DNS缓存:{'OK' if f.ok else '失败'}")
         ok = all("OK" in m for m in msgs)
         return RepairResult(ok, "，".join(msgs))
 
@@ -276,10 +284,14 @@ class DnsPreset(RepairAction):
             return RepairResult(False, "备份原 DNS 失败，已保留原配置未修改（检查备份目录/磁盘）")
         r1 = proc.run(["netsh", "interface", "ipv4", "set", "dnsservers", f"name={name}", "static", primary, "primary"], timeout=15)
         r2 = proc.run(["netsh", "interface", "ipv4", "add", "dnsservers", f"name={name}", secondary, "index=2"], timeout=15)
+        # v6 残留静态 DNS 同步清掉：检测端扫的是 v4+v6 混合列表，只改 v4 会让
+        # 诊断复检仍 WARN、解析仍可能走污染的 v6 DNS
+        r3 = proc.run(["netsh", "interface", "ipv6", "set", "dnsservers", f"name={name}", "source=dhcp"], timeout=15)
         proc.run(["ipconfig", "/flushdns"], timeout=10)
         ok = r1.ok and r2.ok
         if ok:
-            return RepairResult(True, f"{name} DNS → {primary}, {secondary}（{preset}）")
+            v6_note = "，v6 已恢复自动获取" if r3.ok else "（v6 恢复自动获取失败）"
+            return RepairResult(True, f"{name} DNS → {primary}, {secondary}（{preset}）{v6_note}")
         errs = "" if r1.ok else (r1.stdout + r1.stderr)[-100:]
         if not r2.ok:
             errs += (" 备用DNS: " if errs else "") + (r2.stdout + r2.stderr)[-100:]
@@ -366,7 +378,9 @@ class PowerOff(RepairAction):
             try:
                 key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, kpath, 0, winreg.KEY_SET_VALUE)
                 try:
-                    winreg.SetValueEx(key, "PnPCapabilities", 0, winreg.REG_SZ, "24")
+                    # 标准存储为 REG_DWORD 0x18：REG_SZ "24" 不被 NDIS 电源
+                    # 策略识别，修复会静默无效（读回 str()==\"24\" 恰好自洽假成功）
+                    winreg.SetValueEx(key, "PnPCapabilities", 0, winreg.REG_DWORD, 24)
                 finally:
                     key.Close()
                 changed.append(f"{desc[:30]}")

@@ -441,19 +441,35 @@ def test_pick_adapter_falls_back_to_first_physical_down(monkeypatch):
     assert repairs._pick_adapter() == "以太网 2"
 
 
-def test_pick_adapter_empty_when_no_candidate(monkeypatch):
+def test_pick_adapter_prefers_connected_physical(monkeypatch):
+    """无无线命名时：选「在线」的物理网卡（旧逻辑选未接线的网卡还报成功）。"""
     from syskit.snapshot import Adapter
     adapters = [Adapter(name="以太网", desc="Realtek", virtual=False, status="Up")]
+    _patch_snapshot(monkeypatch, _snap(adapters=adapters))
+    assert repairs._pick_adapter() == "以太网"
+
+    # 英文系统的无线网卡名 "Wi-Fi" 同样被第一优先识别
+    adapters_b = [Adapter(name="Wi-Fi", desc="Intel AX201", virtual=False, status="Up"),
+                  Adapter(name="以太网", desc="Realtek", virtual=False, status="Up")]
+    _patch_snapshot(monkeypatch, _snap(adapters=adapters_b))
+    assert repairs._pick_adapter() == "Wi-Fi"
+
+
+def test_pick_adapter_empty_when_no_physical(monkeypatch):
+    from syskit.snapshot import Adapter
+    adapters = [Adapter(name="vEthernet (WSL)", desc="Hyper-V Virtual",
+                        virtual=True, status="Up")]
     _patch_snapshot(monkeypatch, _snap(adapters=adapters))
     assert repairs._pick_adapter() == ""
 
 
 def test_restart_services(recorder):
+    """Dnscache 是受保护服务（net stop 恒拒绝）：用 flushdns 达成等效语义。"""
     r = repairs.get_action("restart_services").execute({})
     assert r.success is True
     assert recorder.cmds == [["net", "stop", "Dhcp"], ["net", "start", "Dhcp"],
-                             ["net", "stop", "Dnscache"], ["net", "start", "Dnscache"]]
-    assert "Dhcp:OK" in r.message and "Dnscache:OK" in r.message
+                             ["ipconfig", "/flushdns"]]
+    assert "Dhcp:OK" in r.message and "DNS缓存:OK" in r.message
 
 
 # ---------------- 改配置类：命令构造 + 改前备份 ----------------
@@ -536,9 +552,11 @@ def test_dns_preset_applies_configured_preset_with_backup(recorder):
          "name=WLAN", "static", primary, "primary"],
         ["netsh", "interface", "ipv4", "add", "dnsservers",
          "name=WLAN", secondary, "index=2"],
+        ["netsh", "interface", "ipv6", "set", "dnsservers",
+         "name=WLAN", "source=dhcp"],                                    # v6 残留同清
         ["ipconfig", "/flushdns"],
     ]
-    assert f"DNS → {primary}" in r.message
+    assert f"DNS → {primary}" in r.message and "v6 已恢复自动获取" in r.message
     notes = list(Path(config.BACKUP_DIR).rglob("dns_backup_*.txt"))
     assert notes
 
@@ -643,9 +661,10 @@ def test_power_off_writes_pnpcapabilities_24_and_disables_usb_suspend(
     reg_spy.fail_paths = ["\\0001"]          # Realtek 模拟写入失败（应计入跳过）
     r = repairs.get_action("power_off").execute({})
     assert r.success is True
-    # 只对 0000 写 PnPCapabilities="24"（REG_SZ）；0002 虚拟/0003 WAN Miniport/0004 已是 24 均跳过
+    # 只对 0000 写 PnPCapabilities=24（REG_DWORD——标准存储类型，REG_SZ 不被
+    # NDIS 电源策略识别）；0002 虚拟/0003 WAN Miniport/0004 已是 24 均跳过
     assert [(w[0].rsplit("\\", 1)[-1], w[1], w[2], w[3]) for w in reg_spy.written] == \
-        [("0000", "PnPCapabilities", winreg.REG_SZ, "24")]
+        [("0000", "PnPCapabilities", winreg.REG_DWORD, 24)]
     assert (f"HKLM\\{base}\\0000", winreg.KEY_SET_VALUE) in reg_spy.opened
     # 改前 note 备份记录原值，落在 BACKUP_DIR
     notes = list(Path(config.BACKUP_DIR).rglob("pnp_backup_0000.txt"))

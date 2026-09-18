@@ -21,6 +21,7 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 DISABLED_KEY = r"Software\NetTool\DisabledRun"
 USER_STARTUP = os.path.join(os.environ.get("APPDATA", ""),
                             r"Microsoft\Windows\Start Menu\Programs\Startup")
+_STARTUP_DISABLED_SUFFIX = ".disabled"   # 启动文件夹项禁用 = 改名加此后缀
 
 
 # ---------------- 性能 ----------------
@@ -63,6 +64,10 @@ class PerfTab(QWidget):
         header = self.tbl.horizontalHeader()
         sort_col = header.sortIndicatorSection()
         sort_order = header.sortIndicatorOrder()
+        # 选中按 PID 跟随：整表重建+重排序后行号会指向另一个进程
+        selected_pid = None
+        if self.tbl.currentItem() is not None:
+            selected_pid = self.tbl.item(self.tbl.currentItem().row(), 0).text()
         self.tbl.setSortingEnabled(False)
         self.tbl.setRowCount(len(procs))
         for i, pr in enumerate(procs):
@@ -72,6 +77,12 @@ class PerfTab(QWidget):
                 self.tbl.setItem(i, c, QTableWidgetItem(v))
         self.tbl.setSortingEnabled(True)
         self.tbl.sortItems(sort_col, sort_order)
+        if selected_pid is not None:
+            for i in range(self.tbl.rowCount()):
+                it = self.tbl.item(i, 0)
+                if it is not None and it.text() == selected_pid:
+                    self.tbl.setCurrentCell(i, self.tbl.currentColumn() or 0)
+                    break
 
 
 # ---------------- 启动项 ----------------
@@ -126,7 +137,15 @@ class StartupTab(QWidget):
                 i += 1
             k.Close()
         for f in glob.glob(os.path.join(USER_STARTUP, "*")):
-            items.append(("启动文件夹", os.path.basename(f), f, True))
+            base = os.path.basename(f)
+            if base.endswith(_STARTUP_DISABLED_SUFFIX):
+                # 已禁用的启动文件夹项：以原名 + 已禁用态列出。否则会显示成
+                # 「已启用」且永远无法从 UI 恢复（启用按钮只在禁用态生效），
+                # 用户再点一次禁用还会连锁改名 .disabled.disabled
+                items.append(("启动文件夹", base[: -len(_STARTUP_DISABLED_SUFFIX)],
+                              f, False))
+            else:
+                items.append(("启动文件夹", base, f, True))
         # 已禁用项
         for name, raw in winregread.values(rf"HKCU\{DISABLED_KEY}").items():
             try:
@@ -164,13 +183,14 @@ class StartupTab(QWidget):
         return out
 
     def _toggle_selected(self, disable: bool):
-        if disable and not admin.is_admin():
+        if not admin.is_admin():
             QMessageBox.warning(self, "SysKit", "禁用/启用启动项需要管理员权限（涉及 HKLM）。")
             return
         targets = self._selected()
         if not targets:
             QMessageBox.information(self, "SysKit", "请先在表格中选中要操作的启动项。")
             return
+        failed = []
         for loc, name, enabled in targets:
             try:
                 if disable and enabled:
@@ -179,6 +199,11 @@ class StartupTab(QWidget):
                     self._enable_one(loc, name)
             except Exception as e:
                 LOGGER.error("启动项操作失败 {} {}: {}", name, loc, e)
+                failed.append(name)
+        if failed:
+            # HKLM 项非管理员写注册表必 PermissionError：只进日志用户会以为"没按到"
+            QMessageBox.warning(self, "SysKit",
+                                "以下启动项操作失败（需要管理员权限）：\n" + "\n".join(failed))
         self.reload()
 
     def _disable_one(self, loc, name):
@@ -186,7 +211,7 @@ class StartupTab(QWidget):
         if loc == "启动文件夹":
             path = os.path.join(USER_STARTUP, name)
             if os.path.exists(path):
-                os.rename(path, path + ".disabled")
+                os.rename(path, path + _STARTUP_DISABLED_SUFFIX)
             return
         hive = winregread._HIVES["HKCU"] if loc == "HKCU-Run" else winregread._HIVES["HKLM"]
         acc = winreg.KEY_READ | winreg.KEY_WRITE
@@ -200,9 +225,9 @@ class StartupTab(QWidget):
     def _enable_one(self, loc, name):
         import winreg
         if loc == "启动文件夹":
-            path = os.path.join(USER_STARTUP, name + ".disabled")
+            path = os.path.join(USER_STARTUP, name + _STARTUP_DISABLED_SUFFIX)
             if os.path.exists(path):
-                os.rename(path, path[:-len(".disabled")])
+                os.rename(path, path[: -len(_STARTUP_DISABLED_SUFFIX)])
             return
         stored = winregread.value(rf"HKCU\{DISABLED_KEY}", name)
         if not stored:
