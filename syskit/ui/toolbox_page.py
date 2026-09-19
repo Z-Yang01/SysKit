@@ -291,6 +291,7 @@ class DnsSubnetTab(QWidget):
         self.ed_domain = QLineEdit()
         self.ed_domain.setPlaceholderText("要查询的域名，如 www.baidu.com")
         self.ed_domain.setText("www.baidu.com")
+        self.ed_domain.returnPressed.connect(self.query)   # 回车即查（原须点按钮）
         row1.addWidget(QLabel("域名:"))
         row1.addWidget(self.ed_domain, 1)
         dlay.addLayout(row1)
@@ -432,6 +433,7 @@ class PingRouteTab(QWidget):
         row = QHBoxLayout()
         row.addWidget(QLabel("目标:"))
         self.ed_target = QLineEdit("223.5.5.5")
+        self.ed_target.returnPressed.connect(self._return_start_ping)   # 回车即开始
         row.addWidget(self.ed_target, 1)
         self.btn_ping = QPushButton("开始持续 ping")
         self.btn_ping.clicked.connect(self.toggle_ping)
@@ -486,6 +488,11 @@ class PingRouteTab(QWidget):
             self._ping_timer.start(1000)
             self._ping_once()
             self.btn_ping.setText("停止 ping")
+
+    def _return_start_ping(self):
+        """目标框回车：未在跑则开始持续 ping；在跑则不重复启动（Esc 语义交给按钮）。"""
+        if not self._ping_timer.isActive():
+            self.toggle_ping()
 
     def _ping_once(self):
         target = self.ed_target.text().strip()

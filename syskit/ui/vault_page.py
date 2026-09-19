@@ -120,6 +120,7 @@ class VaultPage(QWidget):
         self.edt_site = QLineEdit()
         self.edt_site.setPlaceholderText("搜索网站：名称 / 域名 / 别名 / 标签")
         self.edt_site.setClearButtonEnabled(True)
+        self.edt_site.returnPressed.connect(self._select_first_site)   # 回车选中首个结果
         llay.addWidget(self.edt_site)
         self.lst_sites = QListWidget()
         llay.addWidget(self.lst_sites, 1)
@@ -144,6 +145,9 @@ class VaultPage(QWidget):
         self.tbl_accts = QTableWidget(0, 3)
         self.tbl_accts.setHorizontalHeaderLabels(["账号", "密码", "标签"])
         self.tbl_accts.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        # 密码/标签列固定合理宽度：曾随内容收缩到极窄，掩码 **** 和按钮提示被挤压
+        self.tbl_accts.setColumnWidth(1, 150)
+        self.tbl_accts.setColumnWidth(2, 170)
         self.tbl_accts.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_accts.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_accts.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -315,6 +319,12 @@ class VaultPage(QWidget):
     def _selected_site_id(self):
         item = self.lst_sites.currentItem()
         return item.data(Qt.UserRole) if item else None
+
+    def _select_first_site(self):
+        """搜索框回车：选中过滤结果的第一项并聚焦账号表（键盘流：搜→回车→选账号）。"""
+        if self.lst_sites.count():
+            self.lst_sites.setCurrentRow(0)      # currentRowChanged 已联动账号刷新
+            self.tbl_accts.setFocus()
 
     def _selected_account_id(self):
         r = self.tbl_accts.currentRow()

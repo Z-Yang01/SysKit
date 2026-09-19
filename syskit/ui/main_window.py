@@ -402,10 +402,12 @@ class MainWindow(QMainWindow):
         self.tbl_adapters = QTableWidget(0, 6)
         self.tbl_adapters.setHorizontalHeaderLabels(["名称", "状态", "IPv4", "网关", "DNS", "NLM判定"])
         self.tbl_adapters.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        # 最后一列吃掉剩余宽度：避免横向滚动条（NLM 判定文案最长）
+        self.tbl_adapters.horizontalHeader().setStretchLastSection(True)
         self.tbl_adapters.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_adapters.setAlternatingRowColors(True)
         self.tbl_adapters.verticalHeader().setVisible(False)
-        lay.addWidget(self.tbl_adapters)
+        lay.addWidget(self.tbl_adapters, 1)     # 拉伸填满页面剩余高度（否则下方留大片空白）
         self.refresh_adapters()
         return w
 
@@ -758,7 +760,10 @@ class MainWindow(QMainWindow):
             btn.setToolTip(f"{a.description}\n还原：{act_hint(a)}")
             btn.clicked.connect(lambda _, aid=a.id: self.run_repair(aid))
             self.tbl_actions.setCellWidget(i, 3, btn)
-        self.tbl_actions.setRowHeight(0, 42)
+        # 所有行统一行高（曾只设第 0 行 → 首行比其他行高，观感不一致）；
+        # 40px 保证行内「执行」按钮完整显示
+        self.tbl_actions.verticalHeader().setDefaultSectionSize(40)
+        self.tbl_actions.verticalHeader().setVisible(False)
 
     def _apply_action_filter(self):
         kw = self.ed_filter.text().strip().lower()
@@ -894,10 +899,15 @@ class MainWindow(QMainWindow):
         form3.addRow("命令面板热键", self.cmb_hotkey)
         outer.addWidget(g3)
 
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
         btn = QPushButton("保存设置")
         btn.setProperty("primary", True)
+        btn.setMinimumWidth(140)
         btn.clicked.connect(self._save_settings)
-        outer.addWidget(btn)
+        btn_row.addWidget(btn)
+        outer.addLayout(btn_row)        # 右对齐常规宽度（全窗宽拉伸过重）
+        self.btn_save_settings = btn
 
         note = QLabel(
             f"{config.DISPLAY_NAME} v{config.VERSION}　|　"
