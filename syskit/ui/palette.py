@@ -210,6 +210,8 @@ class CommandPalette(QDialog):
             try:
                 import os
                 from .. import config as _cfg
+                from .. import clipboard as _cb
+                _cb.flush_pending()      # 先把防抖窗口内的未落盘复制刷盘，再读磁盘态
                 path = os.path.join(_cfg.APPDATA_DIR, "clipboard.json")
                 mtime = os.path.getmtime(path) if os.path.exists(path) else 0
                 cache = getattr(self, "_clip_cache", None)

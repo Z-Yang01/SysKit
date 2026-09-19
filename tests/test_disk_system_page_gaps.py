@@ -926,3 +926,13 @@ def test_battery_tab_no_remain_shows_dash(qtbot, monkeypatch):
     assert tab.lbl_health.text() == "60.0%"             # 边界：不 >80、不 >60 → 红
     assert tab.lbl_health.styleSheet().startswith("color:#c62828")
     assert tab.lbl_remain.text() == "—"
+
+
+def test_scan_blocked_while_delete_in_flight(qtbot, monkeypatch):
+    """删除进行中 scan() 早退：否则自动重扫被在跑扫描顶掉、pending_msg 错挂。"""
+    from syskit.ui import disk_page as dp
+    tab = dp.DiskTab()
+    qtbot.addWidget(tab)
+    tab._delete_worker = object()          # 哨兵：模拟删除线程在飞
+    tab.scan()
+    assert tab._worker is None             # 早退，未起扫描

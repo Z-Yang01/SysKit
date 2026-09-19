@@ -11,12 +11,17 @@ import os
 import sys
 import threading
 import time
+import weakref
 
 from . import config
 from .logger import LOGGER
 
 # RLock：add/remove 在持锁时调用 save，必须可重入
 _lock = threading.RLock()
+
+# 存活实例弱引用表：托盘/命令面板读磁盘态前先 flush_pending()，
+# 消除 10s 防抖窗口内"最新复制内容看不到"的滞后（无强引用，不阻碍 GC）
+_instances = weakref.WeakSet()
 
 # 敏感内容摘要：[(digest, until_ts)]，过期自动清理。密码库等来源标记后监听跳过。
 _sensitive = []
@@ -179,6 +184,7 @@ class ClipboardHistory:
         self._dirty = False
         self._path = os.path.join(config.APPDATA_DIR, "clipboard.json")
         self._load()
+        _instances.add(self)
 
     def _load(self):
         """读取历史；DPAPI 密封容器为本格式，兼容旧明文文件（下次保存自动密封）。"""
@@ -365,3 +371,18 @@ class ClipboardHistory:
         if len(one_line) <= n:
             return one_line
         return one_line[: n - 1] + "…"
+
+
+def flush_pending() -> int:
+    """把所有存活实例的未落盘变更刷盘，返回发生刷盘的实例数。
+
+    托盘「最近剪贴板」/命令面板读的是磁盘态：不先刷盘，最近一次复制
+    （≤10s 防抖窗口内）恰恰是最可能想放回的条目——会看不到。"""
+    n = 0
+    for inst in list(_instances):
+        try:
+            if inst.flush_if_dirty():
+                n += 1
+        except Exception:
+            LOGGER.debug("剪贴板 flush_pending 单实例失败", exc_info=True)
+    return n

@@ -445,8 +445,11 @@ def test_dashboard_update_tick_and_event_timeline(qtbot):
     assert "B" in page.card_traffic.value_label.text()
     assert page.card_gw.toolTip() == "192.168.1.1"
 
-    page.update_tick({"lat_gw": None, "lat_pub": None})
-    assert "超时" in page.card_gw.value_label.text()
+    page.update_tick({"lat_gw": None, "lat_pub": None, "gateway": "192.168.1.1"})
+    assert "超时" in page.card_gw.value_label.text()      # 有网关而 ping 失败
+
+    page.update_tick({"lat_gw": None, "lat_pub": None})   # 无网关字段 → 第三态
+    assert "无网关" in page.card_gw.value_label.text()
 
 
 # ---------------- wifi_page.py ----------------

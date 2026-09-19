@@ -1189,3 +1189,43 @@ dnsquery 重发同 txid 语义、_on_theme_changed 与 _snap_worker 竞态。
 ——桩用裸函数命名空间，绑定方法设属性会 AttributeError 的特性顺带验证了
 异常兜底路径）。全量 **1044 例**两段式 2×SEG1 + smoke 全绿。
 
+### 补充44（2026-09-19 续5）：未深审模块专项（1 代理，限流下降并发重试成功）
+
+代理精读 cliprules/hostsed/diskusage/charts/dashboard/disk_page/palette_actions/
+palette，产出 2 P2 + 12 P3（关键结论均实测验证）。总控核实后落地 8 项：
+
+1. **P2 cliprules URL 尾部粘连中文标点**：`[^\s<>"']+` 不排除 CJK/全角——
+   `https://example.com/x。谢谢` 整串进二维码/打开链接；同时 ASCII `)` 又被
+   无条件误剥（维基括号 URL 断尾）。修：正则排除 CJK 区段 + 尾部 `)` 按括号
+   配对智能剥离（`_trim_url`）。本工具主力用户场景的静默错误。
+2. **P2 hosts GBK 注释写回永久损坏**：errors="replace" 读入 ANSI 中文注释产生
+   U+FFFD，保存原样写回 → 注释永久变问号。修：write_entries 与 UTF-16 护栏
+   同款，检出 U+FFFD 拒绝写回。
+3. P3 diskusage 批量删除重试误报：整批部分失败的重试把首轮已删文件再删一遍
+   计为"失败（无权限）"——重试前剔除已消失路径。
+4. P3 disk_page 删除/扫描无互锁：删除中可点扫描 → 自动重扫被顶掉、pending_msg
+   错挂到下次扫描——scan() 增加守卫 + 删除期间禁用扫描按钮。
+5. P3 cliprules 路径 exists() 冻结 UI：失效网络盘符（Z: 已断开）上选中剪贴板
+   记录即卡死 UI 线程数秒~数十秒——`_path_probe_safe` 按盘型预检（远程/未知盘跳过）。
+6. P3 palette/tray 读磁盘态滞后 10s 防抖窗口（最新复制看不到）：ClipboardHistory
+   增加弱引用实例注册表 + `flush_pending()`，托盘/面板读前调用。
+7. P3 dashboard 无网关显示"超时/丢包"误导排障（实情是没得 ping）：第三态
+   "无网关"（灰）。
+8. P3 charts 两处：clear_data 不触发重绘（旧折线滞留）；y_fixed 窗口被超窗值
+   击穿画出绘图区——update() + frac 夹紧。
+
+**记录不修**：hosts `# IP host` 说明性注释被解析为禁用条目（hosts 禁用约定的
+固有歧义，启用是显式操作且行内容展示明确）；serialize 不保留未修改行的原始
+缩进（docstring 已如实标注，语义不变）；backup_hosts 失败中断写入（安全侧
+语义，docstring 已对齐）；read_entries OSError 返回空表（写前有备份兜底，
+完整修复需 API 语义变更）；页面隐藏期间曲线时间轴压缩（设计级）；8 位
+hex/rgb() 颜色识别缺口（语义未定，宁缺）。
+
+**核实自洽**（代理同时确认）：删除路径不逃逸扫描根、懒加载 ROLE_FILLED 双守卫、
+进度信号无重入、hostsed 内联注释/IPv6/BOM 解析、palette_actions 稳定排序与
+回调异常捕获、JSON 顶层类型过滤。
+
+**过程记录**：heredoc 双重转义第三次注入真换行进测试文件（补充23/24 同款事故）
+——按档案惯例改用 Edit 工具修复，教训再次入档。新增回归 6；适配 3。
+全量 **1052 例**两段式 2×SEG1 + smoke 全绿；pyflakes 清零。
+

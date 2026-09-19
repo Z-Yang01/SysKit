@@ -62,7 +62,9 @@ def parse(text: str) -> list:
 
 
 def serialize(entries: list) -> str:
-    """条目列表 → hosts 文本。entry/disabled 重建规范行，comment 保留原文。"""
+    """条目列表 → hosts 文本。entry/disabled 重建为规范行（空格分隔；原文件的
+    制表符/对齐缩进不保留——语义不变，避免为保真引入逐字段 diff 复杂度），
+    comment/空行逐字保留原文。"""
     lines = []
     for e in entries:
         if e.get("kind") == "comment" or not e.get("host"):
@@ -145,16 +147,18 @@ def backup_hosts(path: str = None) -> str:
 
 
 def write_entries(entries: list, path: str = None, backup: bool = True) -> str:
-    """序列化并写回。备份目录返回；备份失败不阻断写入。
+    """序列化并写回。备份目录返回；备份失败则拒绝写入（安全侧：宁可不改）。
 
-    护栏：当前文件解析结果为乱码（UTF-16/二进制误读，含 \x00）时拒绝写回——
-    否则会用 mojibake 覆盖原文件造成静默损坏。"""
+    护栏：当前文件解析结果为乱码（UTF-16/二进制误读，含 \\x00，或 ANSI/GBK
+    注释解出的 U+FFFD）时拒绝写回——否则保存会把注释永久写成问号。"""
     path = path or HOSTS_PATH
     try:
         with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-            if _looks_binary(f.read()):
-                raise OSError("检测到 hosts 文件编码异常（可能为 UTF-16/二进制），"
-                              "已阻止写入以保护原内容；请先用记事本另存为 UTF-8。")
+            content = f.read()
+        if _looks_binary(content) or "\ufffd" in content:
+            raise OSError("检测到 hosts 文件编码异常（UTF-16/二进制，或非 UTF-8 的"
+                          " ANSI 中文注释），已阻止写入以保护原内容；"
+                          "请先用记事本另存为 UTF-8。")
     except OSError as e:
         if _looks_binary(str(e)) or "编码异常" in str(e):
             raise

@@ -109,7 +109,10 @@ class DashboardPage(QWidget):
 
     def update_tick(self, d: dict):
         if "lat_gw" in d:
-            self._set_lat(self.card_gw, d["lat_gw"], d.get("gateway", ""))
+            # gateway 与 lat_gw 同 tick 成组出现（telemetry 保证）：
+            # 无网关时 lat_gw=None 是"没得 ping"，不该显示成"超时/丢包"
+            self._set_lat(self.card_gw, d["lat_gw"],
+                          d.get("gateway", ""), no_gw=not d.get("gateway"))
             self._set_lat(self.card_pub, d["lat_pub"], "223.5.5.5")
             self.chart_lat.push([d["lat_gw"], d["lat_pub"]])
         if "down" in d:
@@ -123,9 +126,13 @@ class DashboardPage(QWidget):
                 f"{human_bytes(d['today_recv'])} / {human_bytes(d['today_sent'])}")
 
     @staticmethod
-    def _set_lat(card, ms, target):
+    def _set_lat(card, ms, target, no_gw=False):
         p = theme.pal()
-        if ms is None:
+        if ms is None and no_gw:
+            card.value_label.setText("无网关")
+            card.value_label.setStyleSheet(
+                f"color:{p['sub']}; border:none; background:transparent;")
+        elif ms is None:
             card.value_label.setText("超时/丢包")
             card.value_label.setStyleSheet(
                 f"color:{p['err']}; border:none; background:transparent;")

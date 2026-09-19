@@ -179,15 +179,20 @@ def test_delete_fallback_per_path_on_batch_failure(monkeypatch):
     assert ok == 2 and errors == []
 
 
-def test_delete_reports_failed_path(monkeypatch):
+def test_delete_reports_failed_path(monkeypatch, tmp_path):
+    good = tmp_path / "good.txt"
+    bad = tmp_path / "bad.txt"
+    good.write_bytes(b"a")
+    bad.write_bytes(b"b")
+
     def fake_sh_delete(pfrom):
         # 整批调用（两个以上 null）一律失败；单路径调用中只有 good 成功
         return pfrom.count("\0") == 1 and "good" in pfrom
 
     monkeypatch.setattr(du, "_sh_delete", fake_sh_delete)
-    ok, errors = du.delete_to_recycle_bin([r"C:\good.txt", r"C:\bad.txt"])
+    ok, errors = du.delete_to_recycle_bin([str(good), str(bad)])
     assert ok == 1
-    assert errors == [r"C:\bad.txt"]
+    assert [os.path.basename(e) for e in errors] == ["bad.txt"]
 
 
 def test_delete_empty_input(monkeypatch):
@@ -195,8 +200,28 @@ def test_delete_empty_input(monkeypatch):
     assert du.delete_to_recycle_bin([]) == (0, [])
 
 
-def test_delete_aborted_counts_as_failure(monkeypatch):
+def test_delete_aborted_counts_as_failure(monkeypatch, tmp_path):
     """SHFileOperation 返回 0 但 fAnyOperationsAborted 置位 → 视为失败。"""
+    f = tmp_path / "x.txt"
+    f.write_bytes(b"x")
     monkeypatch.setattr(du, "_sh_delete", lambda p: False)
-    ok, errors = du.delete_to_recycle_bin([r"C:\x.txt"])
-    assert ok == 0 and errors == [r"C:\x.txt"]
+    ok, errors = du.delete_to_recycle_bin([str(f)])
+    assert ok == 0 and errors == [str(f)]
+
+
+def test_delete_retry_skips_vanished_paths(monkeypatch, tmp_path):
+    """整批部分失败重试时，首轮已删掉（路径已消失）的文件不再重试、不计失败。"""
+    gone = tmp_path / "gone.txt"        # 首轮已删：重试前已不存在
+    stuck = tmp_path / "stuck.txt"      # 首轮未删且删不掉
+    gone.write_bytes(b"g")
+    stuck.write_bytes(b"s")
+
+    def fake_sh_delete(pfrom):
+        # 整批调用失败（模拟中途遇锁定文件中止）；单路径只有 stuck 失败
+        if pfrom.count("\0") > 1:
+            return False
+        return "stuck" not in pfrom
+
+    monkeypatch.setattr(du, "_sh_delete", fake_sh_delete)
+    ok, errors = du.delete_to_recycle_bin([str(gone), str(stuck)])
+    assert ok == 1 and errors == [str(stuck)]   # gone 计成功而非"失败（无权限）"

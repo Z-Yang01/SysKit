@@ -76,6 +76,7 @@ class TrayHost(QSystemTrayIcon):
         m.clear()
         try:
             import os
+            clipboard_mod.flush_pending()    # 先刷盘再读：防抖窗口内的最新复制可见
             path = os.path.join(config.APPDATA_DIR, "clipboard.json")
             mtime = os.path.getmtime(path) if os.path.exists(path) else 0
             cache = getattr(self, "_clip_cache", None)

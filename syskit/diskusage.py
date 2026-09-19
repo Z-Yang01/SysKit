@@ -62,9 +62,14 @@ def delete_to_recycle_bin(paths) -> tuple:
         return 0, list(paths)
     if _sh_delete("\0".join(paths) + "\0"):
         return len(paths), []
-    # 整批部分失败时逐个定位（如个别文件无权限）
+    # 整批部分失败时逐个定位（SHFileOperationW 非原子：遇到锁定/无权限文件
+    # 中止，其前面的文件往往已进回收站）——重试前剔除已消失的路径，
+    # 否则已删文件被误报为"失败（可能无权限）"
     ok, errors = 0, []
     for p in paths:
+        if not os.path.exists(p):
+            ok += 1                      # 首轮已删掉
+            continue
         if _sh_delete(p + "\0"):
             ok += 1
         else:

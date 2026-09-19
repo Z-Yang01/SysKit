@@ -45,6 +45,7 @@ class LineChart(QWidget):
         for s in self._series:
             for i in range(len(s[2])):
                 s[2][i] = None
+        self.update()               # 立即擦除旧折线（曾滞留到下一个采样才消失）
 
     def paintEvent(self, ev):
         pal = theme.pal()
@@ -97,7 +98,10 @@ class LineChart(QWidget):
                     prev = None
                     continue
                 x = ml + plot_w * i / max(1, n - 1)
-                y = mt + plot_h * (1 - (v - lo) / max(1e-9, hi - lo))
+                # y 夹紧到绘图区：y_fixed 窗口（如延迟 0-120ms）被超窗值击穿时，
+                # 折线曾画出标题/图例区、与轴标签脱节
+                frac = (v - lo) / max(1e-9, hi - lo)
+                y = mt + plot_h * (0.0 if frac < 0 else 1.0 if frac > 1 else frac)
                 if prev is not None:
                     p.drawLine(prev, QPointF(x, y))
                 else:

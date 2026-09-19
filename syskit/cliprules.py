@@ -9,12 +9,41 @@ import ipaddress
 import json
 import os
 import re
+import sys
 
-URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
+# CJK/全角字符不可能出现在未编码 URL 里：中文语境「句号紧邻/全角括号包裹」
+# 的 URL 曾把标点一起抓进 arg，二维码/打开链接拿到错误地址
+URL_RE = re.compile(
+    r"https?://[^\s<>\"'\u3000-\u303f\uff00-\uffef\u4e00-\u9fff]+", re.I)
 COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 WIN_PATH_RE = re.compile(r"^[A-Za-z]:\\[^<>:\"|?*\r\n]+$")
 DOMAIN_RE = re.compile(
     r"^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$", re.I)
+
+
+def _trim_url(u: str) -> str:
+    """剥尾部标点：.,; 无条件剥；ASCII ) 仅在无配对开括号时剥
+    （https://..._(括号条目) 型 URL 的右括号是 URL 一部分）。"""
+    u = u.rstrip(".,;")
+    while u.endswith(")") and u.count("(") < u.count(")"):
+        u = u[:-1]
+    return u
+
+
+def _path_probe_safe(p: str) -> bool:
+    """exists() 前置盘型预检：失效网络盘/未知盘符上的 exists 可阻塞 UI
+    数秒~数十秒（剪贴板选中记录即在 UI 线程调用 detect）。"""
+    if sys.platform != "win32":
+        return True
+    drive = os.path.splitdrive(p)[0]
+    if not drive:
+        return True
+    import ctypes
+    GetDriveTypeW = ctypes.windll.kernel32.GetDriveTypeW
+    GetDriveTypeW.restype = ctypes.c_uint
+    GetDriveTypeW.argtypes = [ctypes.c_wchar_p]
+    dtype = GetDriveTypeW(drive + "\\")
+    return dtype in (2, 3, 5, 6)    # 可移动/固定/光驱/RAM 盘；跳过远程(4)与未知(0,1)
 
 
 def detect(text) -> list:
@@ -37,7 +66,7 @@ def detect(text) -> list:
     # URL
     m = URL_RE.search(t)
     if m:
-        url = m.group(0).rstrip(".,;)")
+        url = _trim_url(m.group(0))
         hits.append({"id": "url_qr", "label": "生成二维码", "arg": url, "online": False})
         hits.append({"id": "url_open", "label": "打开链接", "arg": url, "online": False})
 
@@ -46,7 +75,7 @@ def detect(text) -> list:
         hits.append({"id": "color_show", "label": "查看色块", "arg": t.upper(), "online": False})
 
     # Windows 文件路径（路径需真实存在，避免把普通句子误判）
-    if WIN_PATH_RE.match(t) and os.path.exists(t):
+    if WIN_PATH_RE.match(t) and _path_probe_safe(t) and os.path.exists(t):
         hits.append({"id": "file_reveal", "label": "打开所在目录", "arg": t, "online": False})
         hits.append({"id": "file_open", "label": "打开文件", "arg": t, "online": False})
 

@@ -471,3 +471,15 @@ class TestModeSteps:
         monkeypatch.setattr(modes, "pause_windows_update", lambda d: _ok())
         assert len(modes.restore_office_defaults()) == 2
         assert len(modes.restore_game_defaults()) == 3
+
+
+def test_flush_pending_closes_debounce_window(tmp_path, monkeypatch):
+    """托盘/面板读磁盘态前调 flush_pending：10s 防抖窗口内最新复制可见。"""
+    from types import SimpleNamespace as _NS
+    assert "flush-me" not in clip_mod.ClipboardHistory(max_items=5).texts()
+    h1 = clip_mod.ClipboardHistory(max_items=5)
+    assert h1.add("flush-me") is True
+    # 另一实例读磁盘旧态（replica of tray/palette 的读法）
+    assert "flush-me" not in clip_mod.ClipboardHistory(max_items=5).texts()
+    assert clip_mod.flush_pending() >= 1   # 未落盘实例被刷盘
+    assert "flush-me" in clip_mod.ClipboardHistory(max_items=5).texts()

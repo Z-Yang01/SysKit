@@ -117,3 +117,29 @@ class TestEdge:
     def test_hit_shape(self):
         for hit in cliprules.detect("1.2.3.4"):
             assert set(hit) == {"id", "label", "arg", "online"}
+
+
+class TestUrlCjkAndParens:
+    """中文语境 URL 边界：尾部粘连标点/全角字符曾一起被抓进 arg（二维码/打开
+    链接拿到错误地址）；维基式括号 URL 的右括号又曾被无条件误剥。"""
+
+    def test_cjk_punctuation_after_url_stripped(self):
+        hits = cliprules.detect("详情见 https://example.com/x。谢谢")
+        arg = [h for h in hits if h["id"] == "url_open"][0]["arg"]
+        assert arg == "https://example.com/x"
+
+    def test_fullwidth_parens_around_url(self):
+        hits = cliprules.detect("（https://example.com/a）")
+        arg = [h for h in hits if h["id"] == "url_open"][0]["arg"]
+        assert arg == "https://example.com/a"
+
+    def test_balanced_ascii_parens_preserved(self):
+        url = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+        hits = cliprules.detect(f"见 {url} 说明")
+        arg = [h for h in hits if h["id"] == "url_open"][0]["arg"]
+        assert arg == url
+
+    def test_unbalanced_trailing_paren_stripped(self):
+        hits = cliprules.detect("(see https://example.com/a)")
+        arg = [h for h in hits if h["id"] == "url_open"][0]["arg"]
+        assert arg == "https://example.com/a"

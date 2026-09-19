@@ -190,7 +190,9 @@ class DiskTab(QWidget):
         self.btn_scan.setEnabled(idle and bool(drives))
 
     def scan(self, path=None):
-        if self._worker:
+        if self._worker or self._delete_worker:
+            # 删除进行中禁止重扫：否则删除完成后的自动重扫撞上在跑扫描被
+            # 静默跳过，树停留在删除前数据，且 pending_msg 错挂到下次扫描
             return
         path = path or self.combo.currentData()
         if not path:
@@ -336,6 +338,7 @@ class DiskTab(QWidget):
         if QMessageBox.question(self, "确认删除", msg) != QMessageBox.Yes:
             return
         self.btn_delete.setEnabled(False)
+        self.btn_scan.setEnabled(False)      # 删除期间禁止重扫（scan() 另有守卫兜底）
         self.lbl_result.setText("正在移入回收站…")
         self._delete_worker = reap(DeleteWorker([p for p, _s in sel]), self)
         self._delete_worker.done.connect(self._delete_done)
@@ -344,6 +347,7 @@ class DiskTab(QWidget):
     def _delete_done(self, ok, errors):
         self._delete_worker = None
         self.btn_delete.setEnabled(True)
+        self.btn_scan.setEnabled(True)
         msg = f"已删除 {ok} 项"
         if errors:
             msg += f"；{len(errors)} 个失败（可能无权限，见日志）"

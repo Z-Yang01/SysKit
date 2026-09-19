@@ -222,3 +222,15 @@ class TestHostsTab:
         monkeypatch.setattr(h, "write_entries", lambda *a, **k: writes.append(a) or "")
         tab._save()
         assert writes == []
+
+
+def test_write_entries_refuses_mojibake_comments(tmp_path):
+    """ANSI/GBK 中文注释经 errors="replace" 读入产生 U+FFFD：曾原样写回把注释
+    永久写成问号——现在与 UTF-16 护栏同款拒绝写回。"""
+    p = tmp_path / "hosts"
+    p.write_text("# 屏蔽广告\n1.2.3.4 example.com\n", encoding="gbk")
+    entries = [{"raw": "", "kind": "entry", "ip": "5.6.7.8", "host": "a.example",
+                "aliases": [], "comment": "", "enabled": True}]
+    with pytest.raises(OSError, match="编码异常"):
+        hostsed.write_entries(entries, path=str(p), backup=False)
+    assert "5.6.7.8" not in p.read_text(encoding="gbk")   # 原文件未被覆盖
