@@ -478,9 +478,13 @@ class MainWindow(QMainWindow):
 
     def _fill_adapters(self, snap):
         self._release_worker("_snap_worker")
+        self._last_snap = snap      # 主题切换时重填（背景/前景色固化在 item 里，QSS 不覆盖）
         rows = [a for a in snap.adapters if "WAN Miniport" not in a.desc]
         self.tbl_adapters.setRowCount(len(rows))
-        online_bg = QColor(theme.pal()["sel_bg"])
+        # 在线行用柔和绿底：曾挪用选中色 sel_bg——高亮行与真实选中无法区分，
+        # 且填充后颜色固化，切暗色主题后残留刺眼的浅蓝底
+        online_bg = QColor(theme.pal()["ok_soft"])
+        ok_color = QColor(theme.pal()["ok"])
         for i, a in enumerate(rows):
             online = bool(a.gw4) and a.conn_v4 == "Internet"
             dns_txt = ", ".join(a.dns[:3]) + ("…" if len(a.dns) > 3 else "")
@@ -488,7 +492,7 @@ class MainWindow(QMainWindow):
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(("★ " if c == 0 and online else "") + str(v))
                 if a.status.lower() == "up":
-                    item.setForeground(QColor("#2e9e44"))
+                    item.setForeground(ok_color)
                 if online:
                     item.setBackground(online_bg)
                 self.tbl_adapters.setItem(i, c, item)
@@ -982,14 +986,22 @@ class MainWindow(QMainWindow):
         if theme.is_dark() != self.chk_dark.isChecked():
             from PySide6.QtWidgets import QApplication
             theme.apply(QApplication.instance(), dark=self.chk_dark.isChecked())
-            for w in QApplication.allWidgets():
-                w.update()
-            self._refresh_proxy_label()
-            if self._diag_results:
-                base, text = netcheck.verdict(self._diag_results)
-                self._set_status(text, STATUS_TEXT.get(base, ("", theme.pal()["text"]))[1],
-                                 sub=f"{time.strftime('%H:%M')} 诊断")
+            self._on_theme_changed()
         QMessageBox.information(self, config.DISPLAY_NAME, "设置已保存。")
+
+    def _on_theme_changed(self):
+        """主题切换后的刷新：QSS 热替换只管样式表，固化在 item 里的 QColor
+        （网卡表在线底/绿字）必须用缓存快照重填；自绘控件靠 update() 重绘。"""
+        from PySide6.QtWidgets import QApplication
+        for w in QApplication.allWidgets():
+            w.update()
+        self._refresh_proxy_label()
+        if self._diag_results:
+            base, text = netcheck.verdict(self._diag_results)
+            self._set_status(text, STATUS_TEXT.get(base, ("", theme.pal()["text"]))[1],
+                             sub=f"{time.strftime('%H:%M')} 诊断")
+        if getattr(self, "_last_snap", None) is not None:
+            self._fill_adapters(self._last_snap)
 
     # ---------------- 日志页 ----------------
     def _build_log_tab(self) -> QWidget:

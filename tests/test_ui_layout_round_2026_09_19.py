@@ -21,6 +21,53 @@ from syskit.ui.toolbox_page import DnsSubnetTab, PingRouteTab  # noqa: E402
 
 # ---------------- 布局 ----------------
 
+def test_online_adapter_row_uses_semantic_soft_color(make_main_window):
+    """在线网卡行：ok_soft 柔和底 + 调色板 ok 绿字（曾挪用选中色 sel_bg——
+    与真实选中无法区分，且颜色固化后切暗色主题残留刺眼浅蓝）。"""
+    from PySide6.QtGui import QColor
+
+    from syskit.ui import theme
+    from syskit.snapshot import Adapter, Snapshot
+
+    win = make_main_window()
+    snap = Snapshot(adapters=[
+        Adapter(name="WLAN", desc="Intel", status="Up", ipv4=["192.168.1.2"],
+                gw4=["192.168.1.1"], conn_v4="Internet"),
+        Adapter(name="以太网 2", desc="Realtek", status="Down"),
+    ])
+    win._fill_adapters(snap)
+    row_bg = win.tbl_adapters.item(0, 0).background().color()
+    row_fg = win.tbl_adapters.item(0, 0).foreground().color()
+    assert row_bg == QColor(theme.pal()["ok_soft"]) is not QColor(theme.pal()["sel_bg"])
+    assert row_fg == QColor(theme.pal()["ok"])
+    assert win.tbl_adapters.item(1, 0).background().color() != row_bg   # 非在线行无底色
+
+
+def test_theme_change_refills_adapters_colors(make_main_window, monkeypatch):
+    """主题切换后用缓存快照重填网卡表：颜色不再残留上一主题（QSS 不覆盖 item 色）。"""
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QApplication
+
+    from syskit.ui import theme
+    from syskit.snapshot import Adapter, Snapshot
+
+    win = make_main_window()
+    snap = Snapshot(adapters=[
+        Adapter(name="WLAN", desc="Intel", status="Up", ipv4=["192.168.1.2"],
+                gw4=["192.168.1.1"], conn_v4="Internet"),
+    ])
+    win._fill_adapters(snap)
+    was_dark = theme.is_dark()
+    try:
+        theme.apply(QApplication.instance(), dark=not was_dark)
+        win._on_theme_changed()
+        bg_after = win.tbl_adapters.item(0, 0).background().color()
+        assert bg_after == QColor(theme.pal()["ok_soft"])   # 新主题的柔和底
+    finally:
+        theme.apply(QApplication.instance(), dark=was_dark)
+        win._on_theme_changed()
+
+
 def test_overview_adapters_table_stretches(make_main_window):
     win = make_main_window()
     # 表格吃掉页面剩余高度（曾固定高度，下方留大片空白）；末列吃掉横向富余

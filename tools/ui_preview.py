@@ -393,10 +393,9 @@ for idx, label in ((4, "磁盘空间"), (6, "场景模式")):
     _pump(140)
     shoot(f"02_light_system_{label}.png")
 
-# 深色主题
+# 深色主题（与应用 _save_settings 同路径：apply + 固化色重填）
 theme.apply(app, dark=True)
-for w in QApplication.allWidgets():
-    w.update()
+win._on_theme_changed()
 win.switch_page(0)
 _pump(140)
 shoot("03_dark_0_概览.png")
@@ -404,5 +403,6 @@ win.switch_page(1)
 _pump(140)
 shoot("04_dark_1_网络监控.png")
 theme.apply(app, dark=False)
+win._on_theme_changed()
 
 print("OUT=" + OUT)
