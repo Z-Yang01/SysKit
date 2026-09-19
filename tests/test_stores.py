@@ -199,3 +199,23 @@ class TestEventStore:
         assert [e["state"] for e in s.recent(2)] == ["s4", "s3"]
         assert len(s.recent()) == 5                   # 默认 30 > 总数
         assert s.recent(100) == s.items()
+
+
+# ---------------- 公共 JSON 包装（speedtest.json 等新持久化文件） ----------------
+
+def test_load_save_json_roundtrip_and_corrupt_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "APPDATA_DIR", str(tmp_path))
+    assert stores.load_json("speedtest.json", []) == []          # 缺省
+    assert stores.save_json("speedtest.json", [{"mbps": 1.5}]) is True
+    assert stores.load_json("speedtest.json", []) == [{"mbps": 1.5}]
+    (tmp_path / "speedtest.json").write_text("{半截", encoding="utf-8")
+    assert stores.load_json("speedtest.json", ["fallback"]) == ["fallback"]
+
+
+def test_traffic_store_days_returns_copy():
+    s = stores.TrafficStore()
+    s.add(10, 20)
+    days = s.days()
+    assert set(days.keys()) == {stores.time.strftime("%Y-%m-%d")}
+    days[stores.time.strftime("%Y-%m-%d")]["sent"] = 99999       # 改拷贝不影响内部
+    assert s.days()[stores.time.strftime("%Y-%m-%d")]["sent"] == 10

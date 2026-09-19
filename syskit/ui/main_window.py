@@ -84,7 +84,7 @@ class MainWindow(QMainWindow):
         # 侧边栏 + 页面栈
         self.stack = QStackedWidget()
         self.page_status = self._build_status_tab()
-        self.page_dash = DashboardPage(self.eventstore)
+        self.page_dash = DashboardPage(self.eventstore, traffic=self.tele.traffic)
         self.page_diag = self._build_diag_tab()
         self.page_repair = self._build_repair_tab()
         self.page_toolbox = ToolboxPage()
@@ -1052,6 +1052,12 @@ class MainWindow(QMainWindow):
         if cur is self.page_settings and not getattr(self, "_autostart_loaded", True):
             self._autostart_loaded = True
             self.chk_start.setChecked(autostart.enabled())
+        # 隐藏页采样被可见性守卫跳过：断流超过图表窗口就清空旧序列，
+        # 避免「1 小时前」与现在被画成连续时间线
+        if cur is self.page_dash:
+            self.page_dash.reset_if_stale()
+        if cur is self.page_system:
+            self.page_system.reset_if_stale()
         self._reload_log()
 
     def _reload_log(self):

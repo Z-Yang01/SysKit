@@ -53,7 +53,16 @@ class PerfTab(QWidget):
         right.addWidget(self.tbl, 1)
         lay.addLayout(right, 1)
 
+    def reset_if_stale(self, max_gap_sec: float = 600.0):
+        """页面隐藏期间采样被可见性守卫跳过：切回时若断流超过图表窗口，
+        清空旧序列（避免长时间前的点与现在画成连续曲线）。"""
+        last = getattr(self, "_last_tick", None)
+        if last is not None and time.time() - last > max_gap_sec:
+            self.chart_sys.clear_data()
+            self.chart_disk.clear_data()
+
     def update_tick(self, d):
+        self._last_tick = time.time()
         if "cpu" in d:
             self.chart_sys.push([d["cpu"], d["mem"]])
         if "disk_r" in d:
@@ -1089,3 +1098,7 @@ class SystemPage(QWidget):
 
     def update_tick(self, d):
         self.perf.update_tick(d)
+
+    def reset_if_stale(self, max_gap_sec: float = 600.0):
+        """转发给性能 Tab（图表在 PerfTab 上）。"""
+        self.perf.reset_if_stale(max_gap_sec)

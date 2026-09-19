@@ -1268,3 +1268,42 @@ config.VERSION）；DEFAULTS 无缺键风险（全部读取点带兜底）；_fi
 提权退出语义——不执行 ISCC/schtasks）。全量 **1064 例**两段式 2×SEG1 + smoke
 全绿；pyflakes 清零。
 
+### 补充46（2026-09-19 续7）：新功能——网络质量日报 + 测速历史持久化（计划模式立项）
+
+用户选定两个功能（另索取功能推荐清单 → 已在计划中给出 9 项 backlog）。
+
+**第 0 步修在途半成品**：上一轮给 `dashboard_page.update_tick` 加的
+`self._last_tick = time.time()` 缺 `import time`（编辑后被功能推荐打断、未跑
+测试）——任何一次遥测回调即 NameError。本轮补齐并顺势完成配套功能。
+
+**功能一：网络质量日报 / 断网统计**
+- 新 `syskit/netstats.py` 纯逻辑聚合（无 Qt）：相邻「非 ok → ok」状态切换对
+  = 一次断网，时长归属**断网开始日**（跨零点整段计入起始日）；畸形 ts 跳过
+  该对；首条事件无前驱不计时长；流量列 join 自 TrafficStore（无记录日显示
+  「—」不插值，负数钳 0）。
+- `TrafficStore.days()` 公共拷贝访问器；`DashboardPage(eventstore, traffic=)`
+  新可选参数（主窗传入 tele.traffic）。
+- 监控页事件组改双 Tab：「时间线」（原 list_events，属性名不变、既有测试
+  不动）+「日报」——QTableWidget（日期/断网次数/累计断网/下载/上传）+
+  7/30 天切换（primary 高亮跟随）。
+- 完成在途的 `reset_if_stale`（DashboardPage/SystemPage→PerfTab 委托）：
+  `_on_page_changed` 切回时断流超图表窗口即清空旧序列，消除「1 小时前与
+  现在画成连续时间线」的失真。
+
+**功能二：测速历史持久化**
+- `stores.load_json/save_json` 公共包装（原子写、损坏回退+留痕）。
+- SpeedTestTab：`speedtest.json` 持久化（上限 200 条，超出裁最旧），启动载入
+  渲染、`_on_done` 成功与失败都记录（失败条目显示「测速失败」——趋势可见），
+  「清空历史」按钮（确认框）。组标题「本次运行」→「已持久化」。
+
+**测试**：新增 test_netstats.py 8（配对/跨零点归属/畸形 ts/无恢复/首条/流量
+join/钳 0）+ stores 2（包装往返与损坏回退/days 拷贝语义）+ 集成 8（日报聚合
+与切换/无 traffic 占位/reset_if_stale×2/持久化往返/200 上限/清空/损坏回退）；
+适配 1（vault 明文列批量解密后，锁定降级测试改打桩 get_secrets_bulk）。
+顺带加固：`get_secrets_bulk` 单条坏 blob（InvalidTag）只降级该条为 ****，
+不再能炸整列渲染。
+
+**验证**：全量 **1082 例**两段式 2×SEG1 + smoke 全绿；pyflakes 清零；
+ui_preview 重渲染验收（监控页双 Tab、假 telemetry 补 days() 种子数据、
+废弃 config_issues 种子改 offline）。
+

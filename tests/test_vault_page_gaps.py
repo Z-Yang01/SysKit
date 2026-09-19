@@ -734,7 +734,9 @@ class TestSensitiveClipboard:
             raise VaultLockedError("locked")
 
         with monkeypatch.context() as m:
-            m.setattr(vault, "get_secret", boom)
+            # 明文列已改走 get_secrets_bulk 批量解密：锁定/坏 blob 由 bulk 内
+            # 逐条降级（map 缺键 → "****"）；此处打桩批量入口验证整列降级
+            m.setattr(vault, "get_secrets_bulk", boom)
             page._toggle_show_password()                       # 解密被锁 → 单格优雅降级 ****
             assert page._showing_pw is True
             assert page.tbl_accts.item(0, 1).text() == "****"

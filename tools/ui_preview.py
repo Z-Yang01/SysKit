@@ -220,8 +220,22 @@ class _FakeTelemetry(QObject):
 
     def __init__(self, *a, **k):
         super().__init__()
+        # 假流量存储：days() 供网络质量日报聚合（预置近几天含流量、今日为 0）
+        def _add(sent, recv):
+            pass
+
+        def _days():
+            import time as _t
+            out = {}
+            for off in range(6, -1, -1):
+                key = _t.strftime("%Y-%m-%d", _t.localtime(_t.time() - off * 86400))
+                out[key] = {"sent": (7 - off) * 41_000_000,
+                            "recv": (7 - off) * 380_000_000}
+            return out
+
         self.traffic = types.SimpleNamespace(save_if_dirty=lambda: None,
-                                             today=lambda: (0, 0))
+                                             today=lambda: (0, 0),
+                                             add=_add, days=_days)
     def start(self):
         pass
     def stop(self):
@@ -283,7 +297,7 @@ def seed():
                                          {"pid": 9876, "name": "explorer.exe", "cpu": 4.1,
                                           "mem": 214_958_080}]})
     for st, msg in (("no_net", "连通性探测失败 ×2"), ("ok", ""),
-                    ("config_issues", "存在配置隐患")):
+                    ("offline", "无网络连接")):
         win.eventstore.add(st, msg)
     win.page_dash.reload_events()
 

@@ -338,13 +338,24 @@ class VaultPage(QWidget):
 
         密码列按 _showing_pw 显示明文或 ****；每个单元格带悬停提示与
         UserRole（账号 id），单击即复制对应值。
+        明文模式整列一次批量解密（曾每行一次 SQLite 连接 + O(N²) 行查找）。
         """
         t = self.tbl_accts
+        rows_by_id = {r.get("id"): r for r in self.acct_model._rows}
+        pw_map = {}
+        if self._showing_pw:
+            try:
+                pw_map = vault.get_secrets_bulk(
+                    [self.acct_proxy.index(i, 0).data(Qt.UserRole)
+                     for i in range(self.acct_proxy.rowCount())],
+                    self.crypto, "password")
+            except VaultLockedError:
+                pw_map = {}              # 自动锁定等场景：整列回 ****，不中断渲染
         t.blockSignals(True)
         t.setRowCount(0)
         for i in range(self.acct_proxy.rowCount()):
             d = self.acct_proxy.index(i, 0).data(Qt.UserRole)
-            row = next((r for r in self.acct_model._rows if r.get("id") == d), None)
+            row = rows_by_id.get(d)
             if row is None:
                 continue
             r = t.rowCount()
@@ -354,7 +365,7 @@ class VaultPage(QWidget):
             c0.setData(Qt.UserRole, row["id"])
             c0.setToolTip("单击复制用户名")
             t.setItem(r, 0, c0)
-            c1 = QTableWidgetItem(self._pw_display(row["id"]))
+            c1 = QTableWidgetItem(pw_map.get(row["id"]) or "****")
             c1.setData(Qt.UserRole, row["id"])
             c1.setToolTip(self._pw_tooltip())
             t.setItem(r, 1, c1)
@@ -369,7 +380,7 @@ class VaultPage(QWidget):
             t.selectRow(0)
 
     def _pw_display(self, account_id: int) -> str:
-        """密码列文本：明文模式（_showing_pw）显示真实密码，否则 ****。"""
+        """密码列文本（单行场景）：明文模式显示真实密码，否则 ****。"""
         if not self._showing_pw:
             return "****"
         try:

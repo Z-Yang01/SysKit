@@ -43,6 +43,16 @@ def _save(name: str, data) -> bool:
         return False
 
 
+def load_json(name: str, default):
+    """公共 JSON 读接口（traffic/events 之外的新持久化文件，如 speedtest.json）。"""
+    return _load(name, default)
+
+
+def save_json(name: str, data) -> bool:
+    """公共 JSON 原子写接口。成功 True；失败 False（调用方决定是否提示/重试）。"""
+    return _save(name, data)
+
+
 class TrafficStore:
     """按天累计上下行字节：{"2026-09-07": {"sent": n, "recv": n}}"""
 
@@ -78,6 +88,11 @@ class TrafficStore:
             rec = self._data.get(day, {"sent": 0, "recv": 0})
             self._today_cache = (day, rec.get("sent", 0), rec.get("recv", 0))
             return self._today_cache[1], self._today_cache[2]
+
+    def days(self) -> dict:
+        """按天数据拷贝（{"YYYY-MM-DD": {"sent", "recv"}}）——网络日报聚合用。"""
+        with _lock:
+            return {k: dict(v) for k, v in self._data.items()}
 
     def save_if_dirty(self):
         with _lock:

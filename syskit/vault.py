@@ -259,6 +259,32 @@ def get_secret(account_id: int, crypto, field: str = "password",
     return crypto.decrypt(row[col]).decode("utf-8", "replace")
 
 
+def get_secrets_bulk(account_ids, crypto, field: str = "password") -> dict:
+    """批量解密（单连接单查询）：整列明文显示场景逐行 get_secret 会开 N 次
+    连接。返回 {account_id: 明文}；无密文/缺失 id 不在结果中。
+    不更新 last_used_at（显示语义）；锁定态由 crypto.decrypt 抛 VaultLockedError。"""
+    if field not in ("password", "totp", "notes"):
+        raise ValueError(f"未知字段 {field}")
+    ids = [int(a) for a in dict.fromkeys(account_ids) if a is not None]
+    if not ids:
+        return {}
+    col = {"password": "password_enc", "totp": "totp_enc", "notes": "notes_enc"}[field]
+    marks = ",".join("?" * len(ids))
+    with _connect() as conn:
+        rows = conn.execute(f"SELECT id, {col} FROM accounts WHERE id IN ({marks})",
+                            ids).fetchall()
+    out = {}
+    for r in rows:
+        if r[col] is None:
+            continue
+        try:
+            out[r["id"]] = crypto.decrypt(r[col]).decode("utf-8", "replace")
+        except Exception:
+            # 单条损坏（InvalidTag/锁定等）只降级该条：整列渲染不得被一格炸掉
+            continue
+    return out
+
+
 def _account_row(conn, account_id: int):
     r = conn.execute(
         "SELECT a.*, s.name AS site_name, s.domain AS site_domain FROM accounts a"

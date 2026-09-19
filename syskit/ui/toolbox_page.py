@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
 
 from .charts import LineChart, human_bytes
 from .workers import reap
-from .. import admin, hostsed, icmp, dnsquery
+from .. import admin, hostsed, icmp, dnsquery, stores
 from ..logger import LOGGER
 
 TEST_URLS = [
@@ -106,12 +106,53 @@ class SpeedTestTab(QWidget):
         self.lbl_big.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.lbl_big)
 
-        hist_grp = QGroupBox("历史结果（本次运行）")
+        hist_grp = QGroupBox("历史结果（已持久化，最多 200 条）")
         hlay = QVBoxLayout(hist_grp)
         self.list_hist = QListWidget()
+        self.list_hist.setAlternatingRowColors(True)
         hlay.addWidget(self.list_hist)
+        hist_btns = QHBoxLayout()
+        self.btn_hist_clear = QPushButton("清空历史")
+        self.btn_hist_clear.clicked.connect(self._clear_history)
+        hist_btns.addStretch(1)
+        hist_btns.addWidget(self.btn_hist_clear)
+        hlay.addLayout(hist_btns)
         lay.addWidget(hist_grp, 1)
         self._worker = None
+        self._history = stores.load_json("speedtest.json", [])
+        if not isinstance(self._history, list):
+            self._history = []
+        for e in self._history[:200]:
+            self.list_hist.addItem(self._hist_label(e))
+
+    _HIST_FILE = "speedtest.json"
+    _HIST_LIMIT = 200
+
+    @staticmethod
+    def _hist_label(e: dict) -> str:
+        if not e.get("ok"):
+            return f"{e.get('ts', '')}　测速失败"
+        return f"{e.get('ts', '')}　{e.get('mbps', 0):.1f} Mbps"
+
+    def _record_history(self, ok: bool, mbps: float):
+        entry = {"ts": time.strftime("%m-%d %H:%M"), "mbps": round(float(mbps), 1),
+                 "ok": bool(ok)}
+        self._history.insert(0, entry)
+        del self._history[self._HIST_LIMIT:]
+        if not stores.save_json(self._HIST_FILE, self._history):
+            LOGGER.warning("测速历史写盘失败: {}", self._HIST_FILE)
+        self.list_hist.insertItem(0, self._hist_label(entry))
+        while self.list_hist.count() > self._HIST_LIMIT:
+            self.list_hist.takeItem(self.list_hist.count() - 1)
+
+    def _clear_history(self):
+        if self.list_hist.count() and QMessageBox.question(
+                self, "清空历史", "确定清空全部测速历史？",
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._history = []
+        stores.save_json(self._HIST_FILE, self._history)
+        self.list_hist.clear()
 
     def start(self):
         if self._worker:
@@ -136,11 +177,11 @@ class SpeedTestTab(QWidget):
         mbps = avg_bps * 8 / 1_000_000
         if ok:
             self.lbl_big.setText(f"{mbps:.1f} Mbps（{human_bytes(avg_bps)}/s）")
-            self.list_hist.insertItem(0, f"{time.strftime('%H:%M:%S')}　{mbps:.1f} Mbps")
             LOGGER.info("速度测试完成: {} Mbps", f"{mbps:.1f}")
         else:
             self.lbl_big.setText("测速失败")
             self.lbl_status.setText("所有测速源均不可达，请检查网络")
+        self._record_history(ok, mbps if ok else 0.0)   # 失败也记录（趋势可见）
 
 
 # ---------------- 局域网设备发现 ----------------
