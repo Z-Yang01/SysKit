@@ -28,3 +28,18 @@
 - 过程自查：本轮编辑 README 时又用了一次 heredoc 脚本（单行插入，diff --stat
   核实仅 +1 行无损伤）——纪律再次重申：后续一律 Edit/Write。
 - 改动 2 文件 +~100 行（工具）+1 行（README），符合 <200 行/3-5 文件约束。
+
+### Round 3（02:30–02:38）
+
+- **原计划「修复 ONLY-A/ONLY-B 退出码缺陷」经实证不成立**：读 tools/diff_preview.py
+  全文 + 真目录实测（preview_final vs 空目录 → 打印 ONLY-A 并退出 **1**；自比对 →
+  退出 0），当前实现行为正确。PROGRESS:1605 补53 的「退出码仍是 0」为误记
+  （或记录后该未跟踪文件又得到修正）；按仓库惯例以实测为准，不改历史记录，
+  用测试固化现状。
+- **新增 tests/test_diff_preview_contract.py 6 例**：SAME→0（非 png 忽略）、
+  DIFF→1、SIZE-DIFF→1、ONLY-A→1、ONLY-B→1、混合时逐张报告且退出码取最坏。
+  importlib 直载 + monkeypatch sys.argv 调 main()（conftest 哨兵拦 subprocess）。
+- 全量验证：`python tools/run_full_check.py` → SEG1 28.9s（**1169**，0F/0E）+
+  SEG2 4.6s（44，0F/0E/1skip）+ pyflakes 0 → PASS（即本轮回归证明；总数
+  1207→1213，+6 契约用例）。
+- 改动 1 个新测试文件（~95 行），零产品代码改动。
