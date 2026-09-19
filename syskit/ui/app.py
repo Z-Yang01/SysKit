@@ -9,10 +9,21 @@ from .. import config
 
 
 def _enable_crash_log():
-    """windowed 打包后 stdout/stderr 为 None，异常无处可去——落盘到 crash.log。"""
+    """windowed 打包后 stdout/stderr 为 None，异常无处可去——落盘到 crash.log。
+
+    crash.log 追加写且每次启动刷新 mtime、不在清扫目录内——超限滚动为 .old
+    （保留最近一份取证），避免长期驻留场景无界增长。"""
     try:
         os.makedirs(config.LOCALAPPDATA_DIR, exist_ok=True)
         path = os.path.join(config.LOCALAPPDATA_DIR, "crash.log")
+        try:
+            if os.path.getsize(path) > 5 * 1024 * 1024:
+                old = path + ".old"
+                if os.path.exists(old):
+                    os.remove(old)
+                os.replace(path, old)
+        except OSError:
+            pass
         fh = open(path, "a", encoding="utf-8", buffering=1)
         fh.write(f"\n===== launch {__import__('time').strftime('%F %T')} pid={os.getpid()} =====\n")
         faulthandler.enable(fh)
@@ -84,9 +95,15 @@ def _prepare_data_dirs():
 
 
 def run_gui():
+    # 两个调用背靠背（中间只有属性查找、无其他 ctypes/Win32 调用）：
+    # GetLastError 必须紧随 CreateMutexW 读取，否则可能被覆写判丢 183。
+    # 名字被 installer/SysKit.iss 的 AppMutex 引用（覆盖安装友好提示），改名需同步
+    k32 = ctypes.windll.kernel32
+    create_mutex = k32.CreateMutexW
+    get_last_error = k32.GetLastError
     # 命名互斥量把手无需保存：句柄保持打开直到进程退出，内核对象即存活
-    ctypes.windll.kernel32.CreateMutexW(None, False, "SysKit_SingleInstance_Mutex")
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    create_mutex(None, False, "SysKit_SingleInstance_Mutex")
+    if get_last_error() == 183:  # ERROR_ALREADY_EXISTS
         from PySide6.QtWidgets import QMessageBox, QApplication
         app = QApplication(sys.argv)
         QMessageBox.information(None, config.DISPLAY_NAME, f"{config.DISPLAY_NAME} 已在运行（请查看系统托盘）。")

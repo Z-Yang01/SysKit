@@ -318,9 +318,18 @@ class MainWindow(QMainWindow):
         lbl.setStyleSheet("color:#8a5a00;")
         btn = QPushButton("以管理员重启")
         btn.setFlat(True)
-        btn.clicked.connect(lambda: admin.elevate_and_restart(["--minimized"]))
+        btn.clicked.connect(self._elevate_restart)
         self.statusBar().addWidget(btn)
         self.statusBar().addWidget(lbl)
+
+    def _elevate_restart(self):
+        """提权拉起新实例后本实例必须退出：单实例互斥体在旧进程手里，
+        新实例会撞 ERROR_ALREADY_EXISTS 弹「已在运行」后自灭。"""
+        if not admin.elevate_and_restart(["--minimized"]):
+            self.statusBar().showMessage("提权未完成（UAC 被拒绝或失败），仍在以普通权限运行", 6000)
+            return
+        self.tray.hide()            # 气泡与图标随旧实例一起收场
+        self.quit_app()
 
     # ---------------- 状态页 ----------------
     def _set_status(self, text, color, sub=""):

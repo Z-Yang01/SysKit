@@ -100,7 +100,8 @@ DEFAULTS = {
     "fail_threshold": 2,              # 连续失败几次触发修复
     "cooldown_sec": 180,              # 修复梯度最小间隔
     "level3_cooldown_sec": 300,       # L3 之后冷却
-    "start_with_windows": False,
+    # （start_with_windows 死键已删：开机自启由 autostart.py 实时查询计划任务，
+    #   从不走持久化设置）
     "minimize_to_tray": True,
     "tray_rate_enabled": True,
     "sound_alert_enabled": True,

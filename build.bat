@@ -31,6 +31,7 @@ python tools\package_zip.py || goto :err
 
 echo [5/5] build setup wizard (Inno Setup)...
 for /f "delims=" %%v in ('python tools\package_zip.py --print-version') do set "VER=%%v"
+if not defined VER goto :err
 set "ISCC="
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"

@@ -19,7 +19,11 @@ def is_frozen() -> bool:
 
 
 def elevate_and_restart(cli_args: list = None) -> bool:
-    """以管理员重启自身（触发 UAC）。成功则不返回。"""
+    """以管理员拉起新实例（触发 UAC），返回是否成功发起。
+
+    注意：ShellExecuteW 是异步的——返回 True 时新实例可能仍在启动中，
+    调用方必须随后自行退出，否则新实例撞单实例互斥体弹「已在运行」后自灭
+    （「以管理员重启」按钮曾因此整体失效）。"""
     if sys.platform != "win32":
         return False
     params = " ".join(cli_args or sys.argv[1:])

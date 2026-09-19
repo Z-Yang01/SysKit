@@ -9,6 +9,19 @@ import os
 import sys
 
 
+def _rotate_if_huge(path: str, limit: int = 5 * 1024 * 1024) -> None:
+    """stdio.log 是 O_APPEND 追加且每次启动刷新 mtime——按天清扫永远轮不到
+    它，长期驻留场景无界增长；超限时滚动为 .old（留一份最近取证即可）。"""
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > limit:
+            old = path + ".old"
+            if os.path.exists(old):
+                os.remove(old)
+            os.replace(path, old)
+    except OSError:
+        pass
+
+
 def _fix_windows_stdio():
     try:
         for stream in (sys.stdout, sys.stderr):
@@ -20,6 +33,7 @@ def _fix_windows_stdio():
         from . import config
         os.makedirs(config.LOG_DIR, exist_ok=True)
         path = os.path.join(config.LOG_DIR, "stdio.log")
+        _rotate_if_huge(path)
         fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
         os.dup2(fd, 1)
         os.dup2(fd, 2)

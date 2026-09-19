@@ -1229,3 +1229,42 @@ hex/rgb() 颜色识别缺口（语义未定，宁缺）。
 ——按档案惯例改用 Edit 工具修复，教训再次入档。新增回归 6；适配 3。
 全量 **1052 例**两段式 2×SEG1 + smoke 全绿；pyflakes 清零。
 
+### 补充45（2026-09-19 续6）：打包/安装/配置链路专项（最后未覆盖维度，1 代理）
+
+1 P1 + 3 P2 + 9 P3，外部行为佐证（KB823093 schtasks 引号、Inno 6.3 BOM 语义）。
+总控核实后落地：
+
+1. **P1 ISS 自启任务 /TR 无内层引号**：默认 `C:\Program Files\SysKit` 路径下
+   schtasks 取首个空格前 token 当可执行文件 → 开机自启静默失效（启动报
+   0x80070002）且留下 `Program.exe` 劫持面；应用内 autostart.py 的副本是
+   正确的（内层引号），两处分叉即缺陷信号。修：`/TR "\"...\" --minimized"`。
+2. **P2「以管理员重启」整体失效**：`elevate_and_restart` 异步拉起新实例后旧
+   进程不退出 → 新实例撞单实例互斥体弹「已在运行」自灭（docstring「成功则
+   不返回」为假）。修：`_elevate_restart` 成功后走 quit_app，失败状态栏提示。
+3. **P2 便携「卸载即清」假承诺**：Inno 只删空目录，应用写出的 data\*（含
+   密码库/剪贴板）卸载后完整残留。修：任务描述如实改为「卸载保留 data 目录，
+   可手动清理」（承诺安全侧而非加 UninstallDelete 删用户数据）。
+4. P3 ISS：/CURRENTUSER 安装时不创建 /RL HIGHEST 任务（创建/卸载都无权，
+   只会残留无主任务，`IsAdmin()` 门）；加 UTF-8 BOM（ISCC 6.0-6.2 对无 BOM
+   文件按 ANSI 解码 → 向导中文全乱码）；`AppMutex=` 与应用互斥体对接（覆盖
+   安装从生硬文件锁 Retry 变友好关闭提示）。
+5. P3 build.bat 版本捕获无错误检查（曾会产出 `SysKit--setup.exe` 空版本产物）
+   → `if not defined VER goto :err`；install.bat 卸载指引补 schtasks 清理。
+6. P3 stdio.log/crash.log 无界增长（O_APPEND+每次启动刷新 mtime → 按天清扫
+   永远轮不到；crash.log 还不在清扫目录）：超 5MB 滚动 .old。
+7. P3 config 死键 `start_with_windows` 删除（自启走 autostart 实时查询）。
+8. P3 main.py 未知 `-` 选项静默进 GUI（`--minimizd` 行为异常但退出码 0）→
+   已知选项白名单，未知报错退出 2。
+9. P3 互斥体 GetLastError 判定收紧：两调用背靠背绑定（windll 注入点保留——
+   WinDLL(use_last_error) 方案会破坏"绝不创建真实互斥量"的测试红线，评估后
+   采保守改法）。
+
+**核实自洽**（代理专项结论）：版本单一来源无漂移（spec 不含版本，唯一源
+config.VERSION）；DEFAULTS 无缺键风险（全部读取点带兜底）；_fix_windows_stdio
+在 pythonw/onefile 各形态正确；logger 按天清理无本地时间/跨月边界问题、不误删
+用户文件；build.bat 其余五步错误传播完整；bat 引号/CRLF 用法正确。
+
+**新增打包链路回归 12 例**（文本断言 ISS/bat 关键不变式 + main.py 未知选项 +
+提权退出语义——不执行 ISCC/schtasks）。全量 **1064 例**两段式 2×SEG1 + smoke
+全绿；pyflakes 清零。
+

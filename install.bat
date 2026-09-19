@@ -36,6 +36,7 @@ echo SysKit 已安装到:
 echo   %DEST%\SysKit.exe
 echo 升级：重新 build.bat 后再次运行本脚本，覆盖同路径即可。
 echo 卸载：删除 %DEST% 目录及桌面/开始菜单快捷方式。
+echo   若开启过开机自启，还需执行: schtasks /Delete /TN SysKitAutostart /F
 echo.
 choice /C YN /M "是否立即启动 SysKit"
 if !errorlevel!==1 start "" "%DEST%\SysKit.exe"
