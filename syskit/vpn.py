@@ -7,7 +7,7 @@ import re
 
 from . import proxy
 
-# 与 netcheck.TUNNEL_PAT 对齐，并补充常见客户端特征
+# TUNNEL_PAT 的唯一源头：netcheck `from .vpn import TUNNEL_PAT` 复用（补39 收敛）
 TUNNEL_PAT = re.compile(
     r"wintun|tap-windows|tap9|tun|utun|wireguard|openvpn|easyconnect|"
     r"sangfor|clash|v2ray|sing-box|nekoray|hysteria|uu加速|uu |"

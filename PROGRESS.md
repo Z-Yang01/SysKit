@@ -1630,3 +1630,68 @@ bbox `(312,792)-(391,799)`——80×8 的一条文本带，正是预览脚手架
 提示语同步改指 setup.exe；test_packaging_chain 卸载清任务断言从 install.bat 迁到 ISS
 （test_iss_uninstall_removes_autostart_task）；build.bat 打包锁检测从「进程名匹配」改为 dist\SysKit.exe
 可写性探针（独占打开一瞬即关、不改内容）——安装版实例（如 E:\Software\SysKit）常驻时不再误报阻断打包。
+
+### 补充54（2026-09-20 凌晨）：优化第 5 步——性能收尾 + 重复实现收敛 + 风险分级对齐
+
+先 checkpoint 后动手。**第 0 步（3f0a2d0）**：补充47–53 共 7 批在途工作验证全绿后
+入库（入库前顺手修 `test_http_get_bypasses_system_proxy`——其「对照」断言依赖
+「机器配了系统代理」这一环境前提：CPython 3.10 的 ProxyHandler 按 getproxies()
+键动态生成 `<scheme>_open` 方法，没配代理时一个 `_open` 都没有、add_handler
+根本不把它装进 handlers。断言改为跟随本机 getproxies() 两种状态都确定）。
+该 checkpoint 同时卷入了上方「安装路径收敛」批次的在途改动（当时未提交、时间窗
+重叠），提交信息已列明。
+
+**已改（性能，先测后改）**：
+1. **MAC 随机化状态查询缓存**（`repairs._scan_wlan_profiles`）：UI 线程每次配置
+   文件下拉切换/修复动作完成都全量 glob+读 XML。真机实测：33 个 profile 旧实现
+   **3.18ms/次**；这台机器 stat 全表本身就要 ~3ms（~93µs/文件，疑 Defender 放大
+   元数据操作）——**纯 mtime 哨兵几乎不赚**，故做 TTL(2s)+哨兵双级：TTL 内零磁盘
+   实测 **0.0005ms**（~6000×）；到期后哨兵（路径+mtime_ns+size 全集）未变则零
+   文件读取。写入路径 force=True 全量重读 + 落盘后显式失效（本工具自己的改动
+   立即可见）。+3 用例（缓存零重读/TTL 过期变更重扫/写后失效）+ autouse 隔离
+   夹具——模块级缓存的跨用例泄漏教训：not-found 早退路径不经过失效行，下一用例
+   2s 内命中上一用例的假 profile 表（产品语义无碍、纯测试隔离问题）。
+2. **SSID 提取收敛**：repairs 的 RestartWlan 与 `_current_or_first_profile`
+   两处内联正则改调 `snapshot.current_ssid()`（外层保 `.strip('"')` 去引号
+   parity）。既有 LiveSSID/回退 fixture 钉住行为。
+3. **静态 DNS 判定单源**：`netcheck._dns_is_static` → 公开 `dns_is_static`，
+   `repairs._static_dns_adapter` 委托（顺带获得 DHCP 分支语义，行为等价：
+   DHCP/未知均非静态）。repairs→netcheck 无导入环。
+4. **204 探测收敛**：`probe_204(timeout=6.0)` 为唯一实现，`monitor.probe_quick`
+   薄委托（保 4s 短超时）；删 `monitor._PROBE_OPENER` 逐字重复的直连 opener/UA。
+   UA+直连断言迁到 netcheck（`test_direct_opener_and_ua`）；TestProbeQuick
+   打桩点搬 `netcheck._http_get`。monitor 不再直接用 config，死 import 清掉。
+5. vpn.py TUNNEL_PAT 处过时注释修正（收敛方向已反）。
+
+**已评估不改（数字入档，下轮不再重复测）**：
+1. **端口表整表重建**（补充38 遗留「模型/视图化」销账）：离屏实测重建+过滤
+   100/300/500/1000 行 = 1.6/5.0/9.3/**20.3** ms；本机实际 222 条连接 ≈
+   3.5ms/5s（占空比 0.07%）——典型规模远低于 10ms 阈值，keyed 原地更新的复杂度
+   不划算。
+2. **chk_static_dns 逐网卡 netsh**：2 张候选卡 2×90ms vs 单次全量 87ms——
+   手动诊断一次性省 ~90ms（诊断全程数秒的 <2%），却要新增一个随系统语言变的
+   分节解析器（`接口 "X" 的配置` 表头），脆弱性不换。
+3. **NCSI 键双读**（chk_ncsi_registry 与 chk_ipv6 各一次）：单次 0.236ms，
+   共享省 0.24ms/次——纯噪声，还免掉 run_all 通用循环的特判。
+4. **_top_procs**：稳态复用缓存句柄 + memory 0.5% 门控已在位，达 psutil
+   基线机制下限，维持补53 结论。
+
+**风险分级对齐（用户拍板「升级为改配置档」）**：`restart_wlan` / `toggle_adapter`
+RISK_SAFE → **RISK_CONFIG**，消除与 monitor 自动修复把两者列为最高危 L3（300s
+冷却）的直接矛盾。后果：①修复页动作表自动重分组（像素 diff 7968px=预期，重渲染
+目检 5 绿安全行 + 橙色改配置行起于第 6 行）；②fast/full 组合内这两项逐项确认，
+无管理员跳过并注明（原先会尝试执行后失败）；③单击路径同 run_repair 既有确认流；
+④monitor docstring 与 README 分级表/托盘梯度描述同步（「只执行安全类动作」翻级
+后已成假话，改为如实描述白名单梯度+限频+护栏）；⑤3 个钉旧行为的测试按「应然」
+改写（分级断言/monitor 梯度白名单语义/fast 组合含 config 档契约）。
+
+**测试**：新增 4（MAC 缓存×3 + UA 直连×1）；适配 16 处（TestProbeQuick 换桩 5、
+test_netcheck 改名引用 5、test_repairs 分级集合与 3 用例改写等）。
+全量 **1207 例**（1163+44）两段式 0F/0E/1 已知 skip；pyflakes 门 0。
+像素回归：**12/15 SAME**；修复页=预期重排；设置页 420px 与应用联网 196px 两条
+8px 细带为**跨会话种子/脚手架差**（复渲一次 r5b 与 r5 逐像素全同，自证当前代码
+渲染确定性；应用联网带与补53 已记录的「✔ 状态已刷新」标签同位同尺寸 196px）。
+
+**过程记录**：本轮有一次用 heredoc 脚本批量改测试文件（补50 同款危险操作）——
+事后 pyflakes+diff 验证文件完好未损，但补50 教训入档后自己又犯：**改源码只用
+Edit/Write，无例外**。

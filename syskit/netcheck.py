@@ -43,10 +43,14 @@ def _http_get(url: str, timeout: float = 6.0, need_body: bool = False):
         return None, "", str(e)
 
 
-def probe_204() -> tuple:
-    """任一 204 端点可达即算通。返回 (ok, detail)。"""
+def probe_204(timeout: float = 6.0) -> tuple:
+    """任一 204 端点可达即算通。返回 (ok, detail)。
+
+    连通性探测的唯一实现：monitor.probe_quick 以更短超时委托这里
+    （直连 opener/UA/端点遍历单源，补54 收敛——曾两处各一份逐字重复）。
+    """
     for url in config.PROBE_204_URLS:
-        code, _, err = _http_get(url)
+        code, _, err = _http_get(url, timeout=timeout)
         if code == 204:
             return True, url
     return False, err or "all failed"
@@ -138,7 +142,7 @@ def chk_static_dns(snap: Snapshot) -> CheckResult:
         v4 = _v4_dns(a.dns)
         if not v4:
             continue
-        static, _src = _dns_is_static(a.name)
+        static, _src = dns_is_static(a.name)
         foreign = [d for d in a.dns if d in config.FOREIGN_DNS_BLACKLIST]
         tag = "" if a.status.lower() == "up" else "(未连接)"
         if foreign:
@@ -157,8 +161,12 @@ def chk_static_dns(snap: Snapshot) -> CheckResult:
     return r
 
 
-def _dns_is_static(adapter_name: str) -> tuple:
-    """(是否静态, 来源描述)。解析 netsh 输出的中英文标记。"""
+def dns_is_static(adapter_name: str) -> tuple:
+    """(是否静态, 来源描述)。解析 netsh 输出的中英文标记。
+
+    静态 DNS 判定的唯一实现（repairs._static_dns_adapter 委托这里），
+    别再抄正则——两处各改一份曾导致语义分叉。
+    """
     r = proc.run(["netsh", "interface", "ipv4", "show", "dnsservers", adapter_name], timeout=10)
     text = r.stdout
     if re.search(r"静态配置|Statically configured", text, re.I):

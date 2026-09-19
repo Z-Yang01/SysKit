@@ -1,13 +1,18 @@
 """修复动作库：风险分级、改前备份、还原提示。所有动作 execute(param) -> RepairResult。"""
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 
 from . import config, proc, winregread
 from .logger import LOGGER
+from .snapshot import current_ssid
 
 RISK_SAFE, RISK_CONFIG, RISK_AGGRESSIVE = "safe", "config", "aggressive"
+# 分级语义：SAFE = 组合内免确认自动执行。restart_wlan / toggle_adapter 曾定 SAFE，
+# 与 monitor 自动修复把两者列为最高危 L3（300s 冷却）直接矛盾——断网类动作
+# 不该静默执行。补54 统一升为 RISK_CONFIG：组合内逐项确认、无管理员跳过。
 RISK_LABEL = {RISK_SAFE: "安全", RISK_CONFIG: "改配置", RISK_AGGRESSIVE: "强力(需重启)"}
 
 
@@ -106,16 +111,13 @@ class StartNlaSvc(RepairAction):
 
 class RestartWlan(RepairAction):
     def __init__(self):
-        super().__init__("restart_wlan", "重启 WLAN 服务并重连 WiFi", RISK_SAFE,
+        super().__init__("restart_wlan", "重启 WLAN 服务并重连 WiFi", RISK_CONFIG,
                          "重启 WlanSvc（WiFi 自动配置服务），并自动重连之前连接的 WiFi。WiFi 会断开几秒。",
                          "无需还原")
 
     def _run(self, param):
         cur = proc.run(["netsh", "wlan", "show", "interfaces"], timeout=10)
-        ssid = ""
-        m = re.search(r"\bSSID\s*[:：]\s*(\S.*)", cur.stdout)
-        if m and m.group(1).strip().strip('"'):
-            ssid = m.group(1).strip().strip('"')
+        ssid = current_ssid(cur.stdout).strip('"')
         proc.run(["net", "stop", "WlanSvc"], timeout=40)
         time.sleep(1)
         r = proc.run(["net", "start", "WlanSvc"], timeout=40)
@@ -131,7 +133,7 @@ class RestartWlan(RepairAction):
 
 class ToggleAdapter(RepairAction):
     def __init__(self):
-        super().__init__("toggle_adapter", "禁用并重新启用网卡", RISK_SAFE,
+        super().__init__("toggle_adapter", "禁用并重新启用网卡", RISK_CONFIG,
                          "对指定网卡执行 disable→enable，重建链路。WiFi/USB 网卡'假连接'时的经典修复。",
                          "无需还原",
                          params={"adapter": {"desc": "网卡名称，如 WLAN / 以太网 3", "required": False}})
@@ -257,11 +259,12 @@ class DnsAuto(RepairAction):
 
 def _static_dns_adapter() -> str:
     from .snapshot import take
+    from .netcheck import dns_is_static   # 静态 DNS 判定单源（含中英文/ DHCP 标记）
     snap = take()
     for a in snap.adapters:
         if a.dns and not a.virtual and a.status.lower() == "up":
-            r = proc.run(["netsh", "interface", "ipv4", "show", "dnsservers", a.name], timeout=10)
-            if re.search(r"静态配置|Statically configured", r.stdout, re.I):
+            static, _src = dns_is_static(a.name)
+            if static:
                 return a.name
     for a in snap.adapters:  # WLAN 优先兜底（未连接时也有静态配置）
         if a.name.upper() == "WLAN" and a.dns:
@@ -475,23 +478,62 @@ def _prefix_to_mask(prefix: str) -> str:
         return "255.255.255.0"
 
 
+_WLAN_PROFILE_ROOT = r"C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces"
+
+# 配置文件扫描缓存：mac_random_state 在 UI 线程被高频触发（配置文件下拉每次
+# 切换、每个修复动作完成都会调），全量读盘不可接受。两级省法：
+# ① TTL 门（2s）内直接复用，零磁盘——哨兵 stat 全表实测也要 ~3ms/33 文件，
+#    只做 stat 哨兵几乎不赚，TTL 才把连发查询打到 ~0；
+# ② TTL 到期后以 (路径, mtime_ns, size) 集合为哨兵，未变则零文件读取。
+# 写入方 _set_mac_random 落盘后显式失效，本工具自己的改动立即可见。
+_MAC_SCAN = {"stamp": None, "profiles": {}, "checked": 0.0}
+_MAC_SCAN_TTL = 2.0
+_MAC_SCAN_LOCK = threading.Lock()
+
+
+def _scan_wlan_profiles(force: bool = False) -> dict:
+    """返回 {配置文件名小写: [(路径, 内容), ...]}，带 TTL + mtime 哨兵缓存。
+
+    force=True 时无视缓存全量重读（写入路径用：必须看到当前磁盘状态）。
+    """
+    import glob
+    with _MAC_SCAN_LOCK:
+        now = time.monotonic()
+        if not force and now - _MAC_SCAN["checked"] < _MAC_SCAN_TTL:
+            return _MAC_SCAN["profiles"]
+        stamp = []
+        for f in glob.glob(os.path.join(_WLAN_PROFILE_ROOT, "*", "*.xml")):
+            try:
+                st = os.stat(f)
+                stamp.append((f, st.st_mtime_ns, st.st_size))
+            except OSError:
+                stamp.append((f, -1, -1))
+        stamp.sort()
+        stamp = tuple(stamp)
+        if stamp == _MAC_SCAN["stamp"]:
+            _MAC_SCAN["checked"] = now
+            return _MAC_SCAN["profiles"]
+        profiles = {}
+        for f, _, _ in stamp:
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+            m = re.search(r"<name>([^<]+)</name>", content)
+            if m:
+                profiles.setdefault(m.group(1).strip().lower(), []).append((f, content))
+        _MAC_SCAN["stamp"] = stamp
+        _MAC_SCAN["profiles"] = profiles
+        _MAC_SCAN["checked"] = now
+        return profiles
+
+
 def _set_mac_random(profile: str, enable: bool) -> tuple:
     """改指定配置文件的 EnableRandomization。返回 (改动数, 失败信息, 备份目录)。"""
-    import glob
     if not profile:
         return 0, "未指定 WiFi 配置文件", ""
-    root = r"C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces"
-    xml_files = glob.glob(os.path.join(root, "*", "*.xml"))
-    hits = []
-    for f in xml_files:
-        try:
-            with open(f, "r", encoding="utf-8") as fh:
-                content = fh.read()
-        except OSError:
-            continue
-        m = re.search(r"<name>([^<]+)</name>", content)
-        if m and m.group(1).strip().lower() == profile.lower():
-            hits.append((f, content))
+    hits = _scan_wlan_profiles(force=True).get(profile.lower(), [])
     if not hits:
         return 0, f"未找到名为 {profile} 的配置文件", ""
     d = _backup_dir()
@@ -511,6 +553,10 @@ def _set_mac_random(profile: str, enable: bool) -> tuple:
             with open(f, "w", encoding="utf-8") as fh:
                 fh.write(new)
             changed += 1
+    # 刚写了盘：失效哨兵，下一次状态查询按变化后的内容重建
+    with _MAC_SCAN_LOCK:
+        _MAC_SCAN["stamp"] = None
+        _MAC_SCAN["checked"] = 0.0
     return changed, "", d
 
 
@@ -574,17 +620,7 @@ def wlan_profiles() -> list:
 
 def mac_random_state(profile: str):
     """读取指定配置文件 MAC 随机化状态: True/False/None(未知)。"""
-    import glob
-    root = r"C:\ProgramData\Microsoft\Wlansvc\Profiles\Interfaces"
-    for f in glob.glob(os.path.join(root, "*", "*.xml")):
-        try:
-            with open(f, "r", encoding="utf-8") as fh:
-                content = fh.read()
-        except OSError:
-            continue
-        m = re.search(r"<name>([^<]+)</name>", content)
-        if not m or m.group(1).strip().lower() != profile.lower():
-            continue
+    for _, content in _scan_wlan_profiles().get(profile.lower(), ()):
         rm = re.search(r"<MacRandomization[^>]*>\s*<EnableRandomization>\s*(true|false)", content, re.I)
         return rm.group(1).lower() == "true" if rm else None
     return None
@@ -593,9 +629,9 @@ def mac_random_state(profile: str):
 def _current_or_first_profile() -> str:
     """当前连接的 SSID 优先，否则第一个已保存配置。"""
     cur = proc.run(["netsh", "wlan", "show", "interfaces"], timeout=10)
-    m = re.search(r"\bSSID\s*[:：]\s*(\S[^\n]*)", cur.stdout)
-    if m and m.group(1).strip().strip('"'):
-        return m.group(1).strip().strip('"')
+    ssid = current_ssid(cur.stdout).strip('"')
+    if ssid:
+        return ssid
     profiles = wlan_profiles()
     return profiles[0] if profiles else ""
 

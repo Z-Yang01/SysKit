@@ -149,6 +149,19 @@ class TestHttpGet:
         code, body, err = netcheck._http_get("http://example/x")
         assert code is None and body == "" and err == "connection refused"
 
+    def test_direct_opener_and_ua(self, monkeypatch):
+        """探测必须直连且带 SysKit UA（原断言在 monitor 侧，probe 收敛后移到这里）。"""
+        seen = {}
+
+        def fake_open(req, timeout=None):
+            seen["url"] = req.full_url
+            seen["ua"] = req.headers.get("User-agent")   # Request 规范化首字母
+            return _FakeResp()
+        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", fake_open)
+        netcheck._http_get("http://example/x")
+        assert seen["url"] == "http://example/x"
+        assert seen["ua"] == "SysKit/1.0"
+
 
 class TestProbe204:
     def test_first_endpoint_ok(self, monkeypatch):
@@ -372,7 +385,7 @@ class TestChkPersistentRoute:
         assert r.fix_ids == []
 
 
-# ---------------- chk_static_dns / _dns_is_static ----------------
+# ---------------- chk_static_dns / dns_is_static ----------------
 
 class TestDnsIsStatic:
     def _patch(self, monkeypatch, text, fake_cmd_result):
@@ -382,23 +395,23 @@ class TestDnsIsStatic:
 
     def test_chinese_static(self, monkeypatch, fake_cmd_result):
         self._patch(monkeypatch, "静态配置: 是", fake_cmd_result)
-        assert netcheck._dns_is_static("WLAN") == (True, "static")
+        assert netcheck.dns_is_static("WLAN") == (True, "static")
 
     def test_english_static(self, monkeypatch, fake_cmd_result):
         self._patch(monkeypatch, "Statically configured values", fake_cmd_result)
-        assert netcheck._dns_is_static("Ethernet") == (True, "static")
+        assert netcheck.dns_is_static("Ethernet") == (True, "static")
 
     def test_dhcp(self, monkeypatch, fake_cmd_result):
         self._patch(monkeypatch, "通过 DHCP 配置: 是", fake_cmd_result)
-        assert netcheck._dns_is_static("WLAN") == (False, "dhcp")
+        assert netcheck.dns_is_static("WLAN") == (False, "dhcp")
 
     def test_dhcp_english(self, monkeypatch, fake_cmd_result):
         self._patch(monkeypatch, "Initiated by Dhcp", fake_cmd_result)
-        assert netcheck._dns_is_static("WLAN") == (False, "dhcp")
+        assert netcheck.dns_is_static("WLAN") == (False, "dhcp")
 
     def test_unknown(self, monkeypatch, fake_cmd_result):
         self._patch(monkeypatch, "", fake_cmd_result)
-        assert netcheck._dns_is_static("WLAN") == (False, "unknown")
+        assert netcheck.dns_is_static("WLAN") == (False, "unknown")
 
 
 class TestChkStaticDns:

@@ -67,7 +67,8 @@ build.bat        :: 产出 dist\SysKit.exe + 便携 zip + SysKit-<版本>-setup.
 - **日志页**：全部动作留痕
 
 托盘图标颜色 = 网络状态（绿正常 / 黄连上无网 / 灰离线）。后台每 30 秒探测一次，
-连续 2 次失败自动按梯度修复（刷缓存 → 拉起服务/续租 → 重启网卡），改配置类动作
+连续 2 次失败自动按固定梯度修复（刷缓存 → 拉起服务/续租 → 重启 WLAN/网卡），
+末档两项断网类动作受最高档限频（300 秒冷却）与 VPN 护栏约束，其余改配置类动作
 **永不自动执行**、只弹建议。判定先看连通性再看网卡：只有 VPN/TUN 等虚拟网卡能上网
 也算「绿正常」，「灰离线」专指探测不通且没有活动物理网卡。
 
@@ -113,8 +114,8 @@ python -m syskit diagnose        :: 源码运行（免打包调试）
 
 | 级别 | 动作 | 说明 |
 |------|------|------|
-| 安全 | flush_dns / renew_dhcp / start_nlasvc / restart_wlan / toggle_adapter / restart_services / restore_point | 无配置变更，自动修复梯度只使用这些；restore_point 只在两个组合修复里当前置安全网 |
-| 改配置 | fix_nlasvc / dns_auto / dns_preset / ncsi_restore / ncsi_disable / power_off / del_persistent_route / proxy_off / mac_random_off / mac_random_on | 执行前弹窗确认 + 自动备份原值，界面/日志均有还原方法 |
+| 安全 | flush_dns / renew_dhcp / start_nlasvc / restart_services / restore_point | 无配置变更，组合内免确认自动执行；restore_point 只在两个组合修复里当前置安全网 |
+| 改配置 | fix_nlasvc / dns_auto / dns_preset / ncsi_restore / ncsi_disable / power_off / del_persistent_route / proxy_off / mac_random_off / mac_random_on / restart_wlan / toggle_adapter | 执行前弹窗确认 + 自动备份原值，界面/日志均有还原方法。重启 WLAN / 禁用启用网卡会短暂断网，与自动修复梯度的最高危档（L3+冷却）同一定性 |
 | 强力 | winsock_reset / ipstack_reset | 需重启电脑，仅手动触发 |
 
 所有备份写入 `%LOCALAPPDATA%\SysKit\backup\<时间戳>\`（reg 导出、路由表存档、
@@ -145,7 +146,7 @@ build.bat      :: 生成图标 + 安装依赖 + PyInstaller 打包 + 便携 zip 
 
 ```bat
 python -m pip install -r dev-requirements.txt   :: 运行时依赖 + 测试工具（钉版本）
-python -m pytest --timeout=300                  :: 全量测试（tests/，1150 例，coverage 99%）
+python -m pytest --timeout=300                  :: 全量测试（tests/，1207 例，coverage 99%）
 python -m pytest tests/test_vault.py -q         :: 单文件
 python -m pytest --cov=syskit --cov-report=term-missing  :: 带覆盖率
 python -m pyflakes syskit/ tools/               :: 静态扫描（例行；已钉成 tests/test_pyflakes_gate.py）

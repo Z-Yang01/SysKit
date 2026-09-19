@@ -1,7 +1,8 @@
 """syskit/monitor.py 单元测试：探测快探、修复梯度状态机、后台循环（全程无真实网络/命令/线程睡眠）。
 
 Mock 边界（配合 conftest 哨兵双保险）：
-- urllib.request.urlopen 打桩返回假 204 响应（conftest 哨兵兜底漏网连接）；
+- 探测走 netcheck.probe_204：netcheck._http_get 打桩返回假状态码（零真实 HTTP，
+  conftest 哨兵兜底漏网连接）；
 - snapshot.take 打桩返回假 Snapshot（不跑 PowerShell）；
 - repairs.get_action 打桩返回假动作对象（不执行任何修复命令）；
 - probe_quick 在模块级替换；time.sleep 置空；monitor 的 stop/force 事件换成假 Event
@@ -18,7 +19,7 @@ import time
 
 import pytest
 
-from syskit import config, monitor as monitor_mod, settings as settings_mod
+from syskit import config, monitor as monitor_mod, netcheck, settings as settings_mod
 from syskit.monitor import (Monitor, ST_NO_NET, ST_OFFLINE, ST_OK, probe_quick)
 from syskit.repairs import RepairResult
 from syskit.snapshot import Adapter, Snapshot
@@ -121,32 +122,29 @@ class _FakeResp:
 # ---------------- probe_quick ----------------
 
 class TestProbeQuick:
-    def patch_urlopen(self, monkeypatch, behavior):
+    def patch_http(self, monkeypatch, behavior):
+        """probe_quick 已收敛到 netcheck.probe_204（补54）：打桩点在 netcheck._http_get。"""
         seen = []
 
-        def fake_open(req, timeout=None):
-            seen.append((req, timeout))
-            return behavior(req, timeout)
-        # 探测走直连 opener（不经系统代理）：patch 的是 opener.open
-        monkeypatch.setattr(monitor_mod._PROBE_OPENER, "open", fake_open)
+        def fake_get(url, timeout=6.0, need_body=False):
+            seen.append((url, timeout))
+            return behavior(url, timeout)
+        monkeypatch.setattr(netcheck, "_http_get", fake_get)
         return seen
 
     def test_204_ok(self, monkeypatch):
-        seen = self.patch_urlopen(monkeypatch, lambda req, t: _FakeResp(204))
+        seen = self.patch_http(monkeypatch, lambda url, t: (204, "", None))
         assert probe_quick(timeout=2.5) is True
-        req, timeout = seen[0]
-        assert req.full_url == config.PROBE_204_URLS[0]
-        assert req.headers.get("User-agent") == "SysKit/1.0"   # Request 规范化首字母
+        url, timeout = seen[0]
+        assert url == config.PROBE_204_URLS[0]
         assert timeout == 2.5
 
     def test_non_204_false(self, monkeypatch):
-        self.patch_urlopen(monkeypatch, lambda req, t: _FakeResp(200))
+        self.patch_http(monkeypatch, lambda url, t: (200, "", None))
         assert probe_quick() is False
 
     def test_request_error_false(self, monkeypatch):
-        def boom(req, timeout=None):
-            raise OSError("unreachable")
-        self.patch_urlopen(monkeypatch, boom)
+        self.patch_http(monkeypatch, lambda url, t: (None, "", "unreachable"))
         assert probe_quick() is False
 
     def test_fallback_to_second_endpoint(self, monkeypatch):
@@ -155,12 +153,12 @@ class TestProbeQuick:
         monkeypatch.setattr(config, "PROBE_204_URLS", urls)
         asked = []
 
-        def fake(req, timeout=None):
-            asked.append(req.full_url)
-            if req.full_url == urls[0]:
-                raise OSError("a down")
-            return _FakeResp(204)
-        self.patch_urlopen(monkeypatch, fake)
+        def fake(url, t):
+            asked.append(url)
+            if url == urls[0]:
+                return (None, "", "a down")
+            return (204, "", None)
+        self.patch_http(monkeypatch, fake)
         assert probe_quick() is True
         assert asked == [urls[0], urls[1]]
 
@@ -169,10 +167,10 @@ class TestProbeQuick:
         monkeypatch.setattr(config, "PROBE_204_URLS", urls)
         asked = []
 
-        def fake(req, timeout=None):
-            asked.append(req.full_url)
-            raise OSError("down")
-        self.patch_urlopen(monkeypatch, fake)
+        def fake(url, t):
+            asked.append(url)
+            return (None, "", "down")
+        self.patch_http(monkeypatch, fake)
         assert probe_quick() is False
         assert asked == urls
 

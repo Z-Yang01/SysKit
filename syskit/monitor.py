@@ -1,31 +1,26 @@
-"""后台监控线程：周期探测 + 保守自动修复梯度。只执行安全类动作，改配置类仅建议。"""
+"""后台监控线程：周期探测 + 保守自动修复梯度。
+
+自动修复只执行固定白名单梯度（flush_dns → start_nlasvc/renew_dhcp →
+restart_wlan/toggle_adapter），后两项即修复分级里的「改配置」断网类动作——
+此处是唯一自动执行它们的路径，靠 L3 限频 + 冷却 + VPN 护栏约束；其余改配置类
+动作仅通过 on_suggest 弹建议。
+"""
 import threading
 import time
-import urllib.request
 
-from . import config, repairs, settings
+from . import repairs, settings
 from .logger import LOGGER
+from .netcheck import probe_204
 
 # 状态码
 ST_OK, ST_NO_NET, ST_NCSI_FALSE, ST_OFFLINE = "ok", "no_net", "ncsi_false", "offline"
 
 
-# 直连 opener：urlopen 默认经系统代理转发，残留代理会把「代理挂了」误判成
-# 断网并触发对代理无效的 L2/L3 自动修复（续租/重启 WLAN/网卡）
-_PROBE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
 def probe_quick(timeout: float = 4.0) -> bool:
-    """轻量探测：任一 204 端点可达即有网。遍历全部端点，避免单点故障误报断网。"""
-    for url in config.PROBE_204_URLS:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "SysKit/1.0"})
-            with _PROBE_OPENER.open(req, timeout=timeout) as resp:
-                if resp.status == 204:
-                    return True
-        except Exception:
-            continue
-    return False
+    """轻量探测：任一 204 端点可达即有网。委托 netcheck.probe_204 单源
+    （直连 opener/UA/端点遍历曾两处各一份逐字重复，补54 收敛）。"""
+    ok, _detail = probe_204(timeout=timeout)
+    return ok
 
 
 class Monitor(threading.Thread):

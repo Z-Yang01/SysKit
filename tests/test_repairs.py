@@ -7,6 +7,7 @@
 - snapshot.take / proxy.disable_proxy / glob.glob 等重 I/O 依赖一律 monkeypatch；
 - 备份断言只看 config.BACKUP_DIR（conftest 已重定向到 pytest 临时目录）下的文件。
 """
+import os
 import time
 import winreg
 from pathlib import Path
@@ -17,12 +18,21 @@ import pytest
 from syskit import config, repairs
 
 # README 风险分级表（README.md「修复动作与风险级别」一节）声称的三个梯度
-SAFE_IDS = {"flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan",
-            "toggle_adapter", "restart_services", "restore_point"}
+# restart_wlan / toggle_adapter 补54 起 RISK_CONFIG（与 monitor L3 定性对齐）
+SAFE_IDS = {"flush_dns", "renew_dhcp", "start_nlasvc",
+            "restart_services", "restore_point"}
 CONFIG_IDS = {"fix_nlasvc", "dns_auto", "dns_preset", "ncsi_restore", "ncsi_disable",
               "power_off", "del_persistent_route", "proxy_off",
-              "mac_random_off", "mac_random_on"}
+              "mac_random_off", "mac_random_on",
+              "restart_wlan", "toggle_adapter"}
 AGGRESSIVE_IDS = {"winsock_reset", "ipstack_reset"}
+
+
+@pytest.fixture(autouse=True)
+def _reset_mac_scan_cache():
+    """_MAC_SCAN 是模块级缓存：不逐例清零会跨用例泄漏上一个用例的假 profile 表。"""
+    repairs._MAC_SCAN.update(stamp=None, profiles={}, checked=0.0)
+    yield
 
 
 # ---------------- 记录器 fake：记录命令、按规则返回假 CmdResult ----------------
@@ -239,12 +249,17 @@ def test_key_action_risk_levels():
     assert repairs.get_action("winsock_reset").risk == repairs.RISK_AGGRESSIVE
     assert repairs.get_action("ipstack_reset").risk == repairs.RISK_AGGRESSIVE
     for aid in ("flush_dns", "renew_dhcp", "start_nlasvc",
-                "restart_wlan", "toggle_adapter", "restart_services"):
+                "restart_services", "restore_point"):
         assert repairs.get_action(aid).risk == repairs.RISK_SAFE
+    # 补54：两项断网类动作升为改配置档——与 monitor 自动修复把它们列为最高危
+    # L3（300s 冷却）的定性对齐；组合内逐项确认、无管理员跳过
+    for aid in ("restart_wlan", "toggle_adapter"):
+        assert repairs.get_action(aid).risk == repairs.RISK_CONFIG
 
 
 def test_monitor_ladder_only_uses_safe_actions(monkeypatch):
-    """monitor 自动修复梯度（L3 全量）只允许 safe 级动作；改配置类仅作建议。"""
+    """monitor 自动修复梯度（L3 全量）= 安全类 + 两项显式白名单的断网类动作；
+    其余改配置类仅作建议。"""
     from syskit import monitor
     real_get = repairs.get_action
     used = []
@@ -263,8 +278,14 @@ def test_monitor_ladder_only_uses_safe_actions(monkeypatch):
     m._run_ladder(3)
     assert used == ["flush_dns", "start_nlasvc", "renew_dhcp",
                     "restart_wlan", "toggle_adapter"]
-    assert all(real_get(a).risk == repairs.RISK_SAFE for a in used)
-    # 改配置类只出现在建议里，绝不自动执行
+    ladder_config_ids = {"restart_wlan", "toggle_adapter"}   # 唯一自动执行的改配置类
+    for a in used:
+        risk = real_get(a).risk
+        if a in ladder_config_ids:
+            assert risk == repairs.RISK_CONFIG
+        else:
+            assert risk == repairs.RISK_SAFE
+    # 改配置类只出现在建议或上述白名单里，绝不越界自动执行
     assert set(suggests) == {"dns_auto", "ncsi_restore"}
     assert all(real_get(a).risk == repairs.RISK_CONFIG for a in suggests)
 
@@ -291,8 +312,10 @@ def test_combos_reference_existing_ids_with_risk_split():
         assert label
         for aid in ids:
             assert repairs.get_action(aid) is not None
-    assert all(repairs.get_action(a).risk == repairs.RISK_SAFE
-               for a in repairs.COMBOS["fast"][1])
+    # 补54 起 fast 组合含改配置档的 restart_wlan：管理员下逐项确认，无管理员跳过
+    fast_risks = {repairs.get_action(a).risk for a in repairs.COMBOS["fast"][1]}
+    assert fast_risks <= {repairs.RISK_SAFE, repairs.RISK_CONFIG}
+    assert repairs.RISK_CONFIG in fast_risks
     # 深度/重置组合首位是系统还原点安全网（SAFE，无需确认即执行）
     assert repairs.COMBOS["full"][1][0] == "restore_point"
     assert repairs.COMBOS["stack"][1][0] == "restore_point"
@@ -949,6 +972,48 @@ def test_mac_random_state_reader(monkeypatch, tmp_path):
     assert repairs.mac_random_state("B") is False
     assert repairs.mac_random_state("C") is None       # 无该块 → 未知
     assert repairs.mac_random_state("Missing") is None
+
+
+def test_mac_random_state_cache_skips_reread(monkeypatch, tmp_path):
+    """哨兵（路径+mtime+size）未变时第二次查询零文件读取（UI 线程高频调用的前提）。"""
+    f = _write_profile_xml(tmp_path, name="CacheWiFi", randomization="true")
+    _glob_only_tmp(monkeypatch, f)
+    real_open, calls = open, {"n": 0}
+
+    def counting_open(file, *a, **k):
+        if str(file) == str(f):
+            calls["n"] += 1
+        return real_open(file, *a, **k)
+
+    monkeypatch.setattr("builtins.open", counting_open)
+    assert repairs.mac_random_state("CacheWiFi") is True
+    assert calls["n"] == 1
+    assert repairs.mac_random_state("CacheWiFi") is True   # 缓存命中：不再 open
+    assert calls["n"] == 1
+
+
+def test_mac_random_state_cache_rescans_after_change(monkeypatch, tmp_path):
+    """TTL 过期且外部改写 XML（mtime/size 变化）后，下一次查询重读并反映新状态。"""
+    f = _write_profile_xml(tmp_path, name="CacheWiFi", randomization="true")
+    _glob_only_tmp(monkeypatch, f)
+    assert repairs.mac_random_state("CacheWiFi") is True
+    new_content = f.read_text(encoding="utf-8").replace(
+        "<EnableRandomization>true", "<EnableRandomization>false")
+    f.write_text(new_content, encoding="utf-8")
+    stat = f.stat()
+    os.utime(f, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000))  # 确保哨兵必变
+    repairs._MAC_SCAN["checked"] = 0.0                  # 过 TTL，逼下一次走 stat 哨兵
+    assert repairs.mac_random_state("CacheWiFi") is False
+
+
+def test_set_mac_random_invalidates_cache(monkeypatch, recorder, tmp_path):
+    """写入路径自身改盘后必须失效哨兵——随后状态查询看到新值而非旧缓存。"""
+    f = _write_profile_xml(tmp_path, name="CacheWiFi", randomization="true")
+    _glob_only_tmp(monkeypatch, f)
+    assert repairs.mac_random_state("CacheWiFi") is True
+    r = repairs.get_action("mac_random_off").execute({"profile": "CacheWiFi"})
+    assert r.success is True
+    assert repairs.mac_random_state("CacheWiFi") is False
 
 
 def test_wlan_profiles_parses_saved_names(recorder):
