@@ -18,6 +18,7 @@
 | 1 | 01:12 | 基线实测 + 夜间文档建立 | （见 git log nightly round 1） | 1207 全绿确认 |
 | 2 | 01:45 | tools/run_full_check.py 工具化 | （见 git log nightly round 2） | 实跑 PASS 33s；全量 1207 (0F/0E/1skip) |
 | 3 | 02:30 | diff_preview 退出码契约测试 ×6 | （见 git log nightly round 3） | 全量 1213 (0F/0E/1skip)；实证推翻补53 的「ONLY-A 退出码 0」误记 |
+| 4 | 03:15 | 文档一致性：PROGRESS 头部现状化 + README 计数 1213 + 修 R2 引入的 README CR 字节损坏 | （见 git log nightly round 4） | 全量 PASS（纯文档轮） |
 
 ## 待选改进池（后续轮次从中取，做前重估）
 

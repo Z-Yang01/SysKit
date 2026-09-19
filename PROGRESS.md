@@ -1,4 +1,12 @@
-# PROGRESS — pytest 测试体系建设
+# PROGRESS — SysKit 迭代日志
+
+> 头部现状（2026-09-20 刷新；下方原文保留为历史）。原始任务「pytest 测试体系建设」
+> 已于 2026-09-10 达成（逻辑模块 ≥70% + 全绿），此后本文件按时间追加各会话记录。
+> 当前基线：分支 `test/pytest-setup`；全量 **1213 例**（两段式 0F/0E + 1 已知 skip）；
+> 总覆盖率 **99%**；pyflakes 门已钉成 `tests/test_pyflakes_gate.py`；
+> 全绿验证一条命令：`python tools/run_full_check.py`。
+> 环境：Windows 真机，Python 3.10.11，PySide6 6.11.2，pytest 9.1.1，pytest-qt 4.5.0，
+> pytest-cov 7.1.0（覆盖率测量一律 `coverage run -m pytest`，见 2026-09-11 深夜会话）。
 
 任务：为 SysKit 搭建 pytest 测试体系，纯逻辑模块行覆盖率 ≥70%，pytest 全绿。
 分支：`test/pytest-setup`（自 main @ 1b9c9a0 切出）
