@@ -140,7 +140,7 @@ _DIAG = [
                 "以太网(Realtek PCIe GbE Family Co): 允许断电 —— 无线/USB 网卡被允许休眠省电，是 WiFi/USB 共享频繁掉线的常见原因",
                 fix_ids=["power_off"]),
 ]
-netcheck.run_all = lambda progress=None, quick=False: list(_DIAG)
+netcheck.run_all = lambda progress=None, quick=False, should_stop=None: list(_DIAG)
 netcheck.verdict = lambda results: ("config_issues", "存在配置隐患；失败项: 1 个")
 icmp.ping = lambda host, timeout_ms=1500: 12.0
 icmp.default_gateway = lambda: "192.168.1.1"
@@ -239,6 +239,10 @@ class _FakeTelemetry(QObject):
     def start(self):
         pass
     def stop(self):
+        pass
+    def set_need(self, need):
+        # 主窗口按可见性/当前页收窄采样范围；假遥测没有采样线程，收下即可。
+        # 桩必须与 TelemetryWorker 的公开接口同步，否则 showEvent 抛 AttributeError。
         pass
     def wait(self, timeout=None):
         return True
@@ -372,13 +376,33 @@ def seed():
 
     # 工具箱 · Hosts 编辑
     from syskit import hostsed as hostsed_mod
-    hosts_tab = win.page_toolbox.tabs.widget(win.page_toolbox.tabs.count() - 1)
+    from syskit.ui.toolbox_page import HostsTab
+    # 按类型取而非「最后一个 Tab」：DNS 测速 Tab 追加后会顶掉末位假设
+    hosts_tab = next(iter(win.page_toolbox.tabs.findChildren(HostsTab)))
     hosts_tab._entries = hostsed_mod.parse(
         "127.0.0.1 localhost\n"
         "# 10.0.0.5 blocked.example.com\n"
         "10.0.0.6 db.local    # 数据库\n"
         "192.168.1.9 nas.home\n")
     hosts_tab._reload_table()
+
+    # 工具箱 · 应用联网（直接灌台账与查询结果，不碰真实防火墙）
+    from syskit import appnet as appnet_mod
+    from syskit.ui.toolbox_page import AppNetTab
+    an = next(iter(win.page_toolbox.tabs.findChildren(AppNetTab)))
+    blocked = r"C:\Program Files\Reader\阅读.exe"
+    allowed = r"C:\Program Files (x86)\Notes\notes.exe"
+    gone = r"C:\Tools\downloader\dl.exe"
+    an._entries = [{"program": p, "rule": appnet_mod.rule_name(p),
+                    "blocked": b, "added": d}
+                   for p, b, d in ((blocked, True, "2026-09-18 21:04"),
+                                   (allowed, False, "2026-09-19 09:12"),
+                                   (gone, True, "2026-09-19 09:30"))]
+    # 键必须与 appnet.query_states 的返回一致（norm_path），否则第三列全回落成「未校验」
+    an._states = {appnet_mod.norm_path(p): s
+                  for p, s in ((blocked, "on"), (allowed, "off"), (gone, "missing"))}
+    an._render()
+    an.lbl_status.setText("✔ 状态已刷新")          # 与 refresh() 真实产出的文案一致
 
 
 seed()
@@ -406,6 +430,13 @@ for idx, label in ((4, "磁盘空间"), (6, "场景模式")):
     win.switch_page(6)
     _pump(140)
     shoot(f"02_light_system_{label}.png")
+
+# 工具箱子页：应用联网（三态状态文案要单独看：禁止 / 放行 / 规则被外部删除）
+win.page_toolbox.tabs.setCurrentIndex(7)
+win.switch_page(5)
+_pump(140)
+shoot("05_light_toolbox_应用联网.png")
+win.page_toolbox.tabs.setCurrentIndex(0)
 
 # 深色主题（与应用 _save_settings 同路径：apply + 固化色重填）
 theme.apply(app, dark=True)

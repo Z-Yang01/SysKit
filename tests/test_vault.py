@@ -5,7 +5,6 @@
 """
 import base64
 import sys
-import time
 
 import pytest
 

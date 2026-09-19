@@ -1,5 +1,4 @@
 """syskit/cliprules.py 单元测试：纯逻辑检测，无网络/无 Qt。"""
-import os
 
 from syskit import cliprules
 

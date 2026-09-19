@@ -3,8 +3,59 @@
 动作 dict 结构：{"id", "label", "hint", "keywords", "callback"}
 - callback 由 UI 层注入（切换页面、运行修复等），执行后由 UI 负责关闭面板。
 - build_actions(window) 生成内置动作；面板运行时再叠加动态条目
-  （剪贴板最近条目、密码库全局搜索、URL / ping / dns 语法）。
+  （剪贴板最近条目、密码库全局搜索、URL / ping / dns 语法、算式直算）。
 """
+import ast
+import operator
+import re
+
+# 算式直算：仅数字与四则/括号/百分号构成（** 幂由两个 * 组成同样命中）
+_MATH_RE = re.compile(r"^[\d\s\+\-\*/\(\)\.%]+$")
+
+_OPS = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod, ast.Pow: operator.pow,
+    ast.USub: operator.neg, ast.UAdd: operator.pos,
+}
+
+
+def looks_like_math(q: str) -> bool:
+    """输入像算式：仅数字/运算符/括号构成，且至少含一个运算符与一个数字。"""
+    q = (q or "").strip()
+    if not _MATH_RE.match(q):
+        return False
+    return any(op in q for op in "+-*/%") and any(ch.isdigit() for ch in q)
+
+
+def safe_calc(expr: str):
+    """AST 安全求值（绝不用 eval）：仅支持数字四则/幂/取模/括号。
+
+    返回 int（整值）或 float；未知节点/溢出/超界幂抛 ValueError，语法不通抛
+    SyntaxError（ast.parse 的行为，调用方两种都要接）。"""
+    node = ast.parse((expr or "").strip(), mode="eval")
+
+    def _ev(n):
+        if isinstance(n, ast.Expression):
+            return _ev(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return n.value
+        if isinstance(n, ast.BinOp) and type(n.op) in _OPS:
+            left, right = _ev(n.left), _ev(n.right)
+            if isinstance(n.op, ast.Pow) and abs(right) > 1000:
+                raise ValueError("指数过大")
+            try:
+                return _OPS[type(n.op)](left, right)
+            except (OverflowError, ZeroDivisionError) as e:
+                raise ValueError(str(e)) from e
+        if isinstance(n, ast.UnaryOp) and type(n.op) in _OPS:
+            return _OPS[type(n.op)](_ev(n.operand))
+        raise ValueError(f"不支持的表达式元素: {type(n).__name__}")
+
+    val = _ev(node)
+    if isinstance(val, float) and (val != val or val in (float("inf"), float("-inf"))):
+        raise ValueError("结果溢出")
+    return int(val) if isinstance(val, float) and val.is_integer() else val
 
 
 def fuzzy_score(query: str, text: str):

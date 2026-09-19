@@ -13,7 +13,6 @@ import json
 import os
 import types
 
-import pytest
 
 from syskit import config, stores
 

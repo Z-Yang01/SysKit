@@ -163,10 +163,18 @@ def test_http_get_bypasses_system_proxy():
     ph = [h for h in netcheck._OPENER_DIRECT.handlers
           if type(h).__name__ == "ProxyHandler"]
     assert ph == [] or ph[0].proxies == {}
-    # 对照：默认 opener 的 ProxyHandler 读 getproxies()（注册表/环境）
+    # 对照：默认 opener 的 ProxyHandler 读 getproxies()（注册表/环境）。
+    # 注意（3.10 实测）：ProxyHandler 的 <scheme>_open 方法按 proxies 键动态
+    # 生成，系统没配代理时它一个 _open 都没有，add_handler 根本不会把它装进
+    # handlers——所以对照断言必须跟随本机 getproxies() 的两种状态，不能假设
+    # ProxyHandler 一定在场（补54：机器关代理后此断言曾红）。
+    sys_proxies = ur.getproxies()
     default_ph = [h for h in ur.build_opener().handlers
                   if type(h).__name__ == "ProxyHandler"]
-    assert default_ph and default_ph[0].proxies is not None
+    if sys_proxies:
+        assert default_ph and default_ph[0].proxies == sys_proxies
+    else:
+        assert default_ph == []
 
 
 def test_gateway_query_pins_ipv4_family():

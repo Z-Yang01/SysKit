@@ -362,11 +362,16 @@ def test_scan_worker_sizes_all_targets(qtbot, monkeypatch, tmp_path):
 
 
 def test_scan_worker_recycle_valueerror_branch(monkeypatch):
-    """回收站脚本返回非数字 → float() ValueError → 按 0 处理。"""
+    """回收站脚本返回非数字 → float() ValueError → 按 0 处理。
+
+    glob 一并打桩：本用例不碰 TEMP，默认会让 _ScanWorker 递归扫真实用户临时目录
+    （实测 33 秒，全量套件的离群慢例就是它）。
+    """
     from syskit import proc
     from syskit.ui import system_page as sp
     monkeypatch.setattr(proc, "run_ps",
                         lambda s, timeout=30: proc.CmdResult(0, "not-a-number", ""))
+    monkeypatch.setattr(sp.glob, "glob", lambda *a, **k: [])
     w = sp._ScanWorker()
     got = []
     w.done.connect(got.append)
@@ -561,7 +566,6 @@ def test_battery_tab_lazy_loads_on_show(qtbot, monkeypatch):
 def test_clipboard_purge_hint_survives_initial_reload(qtbot, monkeypatch):
     """回归：构造序列 reload 在 purge 之后执行——清理提示不得被 reload 覆盖。"""
     import time
-    from syskit import settings as settings_mod
     from syskit.ui.system_page import ClipboardTab
 
     tab = ClipboardTab()

@@ -15,6 +15,13 @@ from .logger import LOGGER
 _PHYSICAL_EXCLUDE = ("loopback", "vmnet", "vmware", "vethernet", "bluetooth", "wan miniport",
                      "tap", "wintun", "utun", "vgate", "hyper-v")
 
+# 只有「窗口可见且停在对应页」时才需要的昂贵分组：
+#   lat   —— 每 3 秒两轮 ICMP（概览页延迟卡片/曲线）
+#   wifi  —— 每 5 秒一次 netsh wlan 子进程（概览页信号曲线）
+#   procs —— 每 2 秒一遍进程表（系统页 Top 进程）
+# 托盘常驻是绝大多数时间的常态，那时这三组采了没有任何消费者。
+HEAVY_GROUPS = ("lat", "wifi", "procs")
+
 
 def _fmt_nic_rates(last, cur):
     """按物理特征过滤网卡，返回 (down_Bps, up_Bps)。"""
@@ -45,11 +52,21 @@ class TelemetryWorker(QThread):
         self._gateway = ""
         self._wifi_signal = None
         self._procs = {}          # pid -> psutil.Process（跨 tick 复用，保证 cpu_percent 有基线）
+        self._need = set(HEAVY_GROUPS)
+        self._gw_ts = 0           # 上次刷新网关时的 tick（刷新走 PowerShell，见 _sample）
         self.traffic = TrafficStore()
         psutil.cpu_percent(interval=None)   # 预热第一次调用
 
     def stop(self):
         self._stop_evt.set()
+
+    def set_need(self, need):
+        """告诉引擎「界面现在看得懂哪些分组」，缺席的昂贵采样本轮直接跳过。
+
+        默认全开：不接线（CLI / 测试 / 独立使用）时行为与从前一致。
+        None 等价于「全都要」。速率、CPU/内存、今日流量恒采（托盘与流量统计要）。
+        """
+        self._need = set(HEAVY_GROUPS) if need is None else set(need)
 
     def refresh_gateway(self):
         self._gateway = icmp.default_gateway()
@@ -68,8 +85,6 @@ class TelemetryWorker(QThread):
             if save_counter >= 60:
                 self.traffic.save_if_dirty()
                 save_counter = 0
-            if self._tickno % 300 == 0:      # 每 5 分钟刷新一次网关
-                self.refresh_gateway()
             self._stop_evt.wait(1)
 
     def _sample(self):
@@ -97,14 +112,19 @@ class TelemetryWorker(QThread):
             payload["disk_r"] = payload["disk_w"] = 0
         self._last_disk = disk
 
-        if self._tickno % 3 == 0:            # 3 秒一轮延迟
+        if self._tickno % 3 == 0 and "lat" in self._need:     # 3 秒一轮延迟
+            # 刷新网关要起一次 PowerShell（秒级）。旧写法在 run() 里每 300 拍无条件刷，
+            # 但它唯一的服务对象就是这里的网关延迟——托盘常驻时（约 288 次/天）全是空转。
+            if self._tickno - self._gw_ts >= 300:
+                self.refresh_gateway()
+                self._gw_ts = self._tickno
             payload["lat_gw"] = icmp.ping(self._gateway) if self._gateway else None
             payload["lat_pub"] = icmp.ping("223.5.5.5")
             payload["gateway"] = self._gateway
-        if self._tickno % 5 == 0:            # 5 秒一轮 WiFi 信号
+        if self._tickno % 5 == 0 and "wifi" in self._need:    # 5 秒一轮 WiFi 信号
             self._wifi_signal = self._read_wifi_signal()
             payload["wifi_signal"] = self._wifi_signal
-        if self._tickno % 2 == 0:            # 2 秒一轮 Top 进程
+        if self._tickno % 2 == 0 and "procs" in self._need:   # 2 秒一轮 Top 进程
             payload["top_procs"] = self._top_procs()
         sent, recv = self.traffic.today()
         payload["today_sent"] = sent
@@ -150,7 +170,9 @@ class TelemetryWorker(QThread):
                 if cpu < 0.5:
                     continue
                 mem = cached.memory_info().rss
-                name = (p.info or {}).get("name") or str(pid)
+                # 枚举属性里的 name 可能为空（进程受保护/快照拿不到），这时直接写
+                # str(pid) 会让下面「问一次活对象」的兜底永远走不到——真名就再也拿不到了。
+                name = (p.info or {}).get("name") or ""
                 if not name:
                     try:
                         name = cached.name() or str(pid)

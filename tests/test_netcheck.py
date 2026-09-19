@@ -46,7 +46,7 @@ def patch_winreg(monkeypatch, values=None, subkeys=None, pnp=None):
     monkeypatch.setattr(winregread, "subkeys",
                         lambda path: next((v for k, v in smap.items() if k in path), []))
     if pnp is not None:
-        monkeypatch.setattr(winregread, "pnpcapabilities", lambda desc: pnp)
+        monkeypatch.setattr(winregread, "pnpcapabilities", lambda desc, scan=None: pnp)
 
 
 def make_proc_run(fake_cmd_result, *, netsh_dns="通过 DHCP 配置: 是",
@@ -747,6 +747,23 @@ class TestChkPower:
         patch_winreg(monkeypatch, subkeys={"4d36e972": ["0000"]}, pnp="enabled_off")
         r = netcheck.chk_power(make_snap([make_adapter(desc="", name="空描述")]))
         assert r.status == netcheck.PASS and "未发现可断电网卡" in r.detail
+
+    def test_unreadable_class_key_scans_registry_only_once(self, monkeypatch):
+        """类键读不到 → pnp_states 返回 None；逐网卡各自重扫正是本检查要省的 N+1。"""
+        from syskit import winregread
+        monkeypatch.setattr(winregread, "subkeys", lambda path: [])
+        real = winregread.pnp_states
+        scans = []
+
+        def _counting():
+            scans.append(1)
+            return real()
+
+        monkeypatch.setattr(winregread, "pnp_states", _counting)
+        snap = make_snap([make_adapter(name=f"n{i}", desc=f"desc{i}") for i in range(4)])
+        r = netcheck.chk_power(snap)
+        assert (r.status, r.detail) == (netcheck.SKIP, "无法读取网卡注册表")
+        assert len(scans) == 1
 
 
 # ---------------- chk_services ----------------

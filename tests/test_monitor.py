@@ -225,16 +225,39 @@ ST = {"enabled": True, "fail_threshold": 2, "cooldown_sec": 180,
 # ---------------- _once 状态机 ----------------
 
 class TestOnce:
+    def _recording_take(self, monkeypatch, snap):
+        """统计 snapshot.take 调用次数：健康路径应当一次都不付那 6.4s 的 PowerShell。"""
+        calls = []
+
+        def take(use_ps=True):
+            calls.append(1)
+            return snap
+
+        monkeypatch.setattr("syskit.snapshot.take", take)
+        return calls
+
     def test_offline_no_up_adapters(self, monkeypatch):
-        patch_take(monkeypatch, make_snap([make_adapter(status="Down")]))
-        probe_calls = []
-        monkeypatch.setattr(monitor_mod, "probe_quick", lambda: probe_calls.append(1))
+        # 探测先于快照：本例要先让探测失败，才会走到「无活动网卡 → offline」
+        monkeypatch.setattr(monitor_mod, "probe_quick", lambda: False)
+        calls = self._recording_take(monkeypatch, make_snap([make_adapter(status="Down")]))
         m, seen = make_mon()
         m._fail_streak = 3
         m._once(ST)
         assert seen["status"] == [(ST_OFFLINE, "无活动网络连接")]
         assert m._fail_streak == 0                     # 无网卡视为基线，清零
-        assert probe_calls == []
+        assert calls == [1]
+
+    def test_probe_ok_skips_snapshot(self, monkeypatch):
+        """探测通过即报 ok，不再抓快照：省掉每轮 6.4s PowerShell，且纯虚拟网卡（Clash
+        TUN）上网时不会被误报成 offline（netstats 会把它计入断网时长）。"""
+        monkeypatch.setattr(monitor_mod, "probe_quick", lambda: True)
+        calls = self._recording_take(monkeypatch, make_snap([make_adapter(status="Down")]))
+        m, seen = make_mon()
+        m._fail_streak = 5
+        m._once(ST)
+        assert seen["status"] == [(ST_OK, "")]
+        assert m._fail_streak == 0
+        assert calls == []
 
     def test_ok_resets_streak(self, monkeypatch):
         patch_take(monkeypatch, make_snap([make_adapter()]))

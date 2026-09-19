@@ -13,8 +13,8 @@ Python 3.10 + PySide6 + loguru + psutil + cryptography 实现，托盘常驻、�
 - **📈 网络监控**：网关/公网延迟曲线、实时上下行速率、WiFi 信号历史、每日流量累计、断网/恢复事件时间线；托盘悬浮实时速率；断网/恢复声音提醒
 - **📶 WiFi 工具**：周边 AP 扫描、信道占用分析与推荐信道、WiFi 二维码分享、已存密码查看
 - **🔍 诊断**：15 项逐条检查（NlaSvc / 幽灵路由 / 静态 DNS / **系统代理残留** / NCSI / 授权拦截等），双击未通过项直接修复；长时间诊断可随时「停止」
-- **🔧 修复**：一键快速/深度/重置组合（执行中可「中止」，已执行项不自动撤销）+ 17 个单项动作（按风险分级）+ WiFi 专区（MAC 随机化开关/重连）+ 修复记录
-- **⚡ 工具箱**：速度测试、局域网设备发现、**端口占用查看器（找进程/结束进程）**、DNS/子网计算、持续 ping 与路由追踪、**Hosts 编辑器**（增删改/一键启用禁用，保存前自动备份）
+- **🔧 修复**：一键快速/深度/重置组合（执行中可「中止」，已执行项不自动撤销）+ 19 个单项动作（按风险分级）+ WiFi 专区（MAC 随机化开关/重连）+ 修复记录
+- **⚡ 工具箱**：速度测试、局域网设备发现、**端口占用查看器（找进程/结束进程）**、DNS/子网计算、持续 ping 与路由追踪、**Hosts 编辑器**（增删改/一键启用禁用，保存前自动备份）、DNS 测速（各公共 DNS 延迟/成功率对比）、**应用联网控制**（选一个 exe 就能禁止/恢复它联网，实现为 Windows 防火墙出站块，wf.msc 里可见可改）
 - **🧰 系统助手**：性能监控（CPU/内存/磁盘曲线 + Top 进程）、启动项管理、电池健康、白名单垃圾清理、**磁盘空间分析**（目录占用树/文件类型分布/大文件排行，删除仅移入回收站）、**剪贴板历史**（文本/图片/文件/HTML，搜索+分类+置顶，敏感内容与密码管理器前台进程防记录，规则引擎：JSON 格式化 / URL 二维码 / 色块 / 打开目录 / DNS+ping+归属地）、**场景模式**（办公：勿扰+静音+常用软件+备份配置；游戏：关通知+高性能+暂停更新+白名单清后台）
 - **🔐 密码库**：网站/账号两级密码管理（SQLite + AES-256-GCM 密文落盘），主密码可选（未设时 Windows DPAPI 免密保护）；搜索先定位网站再过滤账号，全局搜索 `github alice` 直达账号；TOTP 动态码；复制的密码不进剪贴板历史、不进系统 Win+V 历史、不上云剪贴板，25 秒自动清空；更改主密码需验证当前密码；自动重锁
 - **⌘ 命令面板**（全局热键 `Ctrl+Alt+K` 保存设置后即时生效 / 应用内 `Ctrl+K`）：输入即搜统一入口——页面与工具跳转、快捷诊断修复、剪贴板最近条目回填、密码库全局直达、`ping 主机` / `dns 域名` / 粘贴网址语法、自定义命令（URL / 本地命令）
@@ -50,7 +50,7 @@ build.bat        :: 产出 dist\SysKit.exe + 便携 zip + SysKit-<版本>-setup.
 双击 `dist\SysKit-<版本>-setup.exe`，按向导「下一步」完成安装：**可选安装位置**、
 桌面快捷方式、开机自启，默认勾选**数据保存在安装目录（便携模式）**，
 自动写入卸载信息（控制面板"卸载程序"可见，卸载不删除用户数据）。需要 Inno Setup 6.3+/7（一次性安装：https://jrsoftware.org/isdl.php ）；
-未安装时 build.bat 自动跳过第 5 步，只产出绿色版 exe/zip，此时可用 install.bat 装到用户目录。
+未安装 Inno Setup 时 build.bat 自动跳过第 5 步，只产出绿色版 exe/zip——直接运行 `dist\SysKit.exe` 即绿色版使用（数据回退 %APPDATA%，无便携 data 目录）。
 
 ### 图形界面（推荐）
 
@@ -58,7 +58,7 @@ build.bat        :: 产出 dist\SysKit.exe + 便携 zip + SysKit-<版本>-setup.
 
 - **概览页**：网卡一览 + 大字判定（正常 / NCSI 误报 / DNS 异常 / 断网）
 - **诊断页**：15 项逐条检查，双击未通过项可直接执行建议修复，可随时「停止」
-- **修复页**：一键「快速修复 / 深度修复 / 重置网络栈」（执行中可「中止」）+ 17 个单项动作 +
+- **修复页**：一键「快速修复 / 深度修复 / 重置网络栈」（执行中可「中止」）+ 19 个单项动作 +
   **WiFi 专区（MAC 随机化开关 / 重连）**
 - **工具箱 / 系统助手**：测速、局域网、端口占用、DNS/子网、ping/路由、Hosts 编辑；
   性能、启动项、电池、清理、磁盘分析、剪贴板历史、场景模式
@@ -68,7 +68,8 @@ build.bat        :: 产出 dist\SysKit.exe + 便携 zip + SysKit-<版本>-setup.
 
 托盘图标颜色 = 网络状态（绿正常 / 黄连上无网 / 灰离线）。后台每 30 秒探测一次，
 连续 2 次失败自动按梯度修复（刷缓存 → 拉起服务/续租 → 重启网卡），改配置类动作
-**永不自动执行**、只弹建议。
+**永不自动执行**、只弹建议。判定先看连通性再看网卡：只有 VPN/TUN 等虚拟网卡能上网
+也算「绿正常」，「灰离线」专指探测不通且没有活动物理网卡。
 
 ### 密码库与敏感剪贴板
 
@@ -112,8 +113,8 @@ python -m syskit diagnose        :: 源码运行（免打包调试）
 
 | 级别 | 动作 | 说明 |
 |------|------|------|
-| 安全 | flush_dns / renew_dhcp / start_nlasvc / restart_wlan / toggle_adapter / restart_services | 无配置变更，自动修复梯度只使用这些 |
-| 改配置 | fix_nlasvc / dns_auto / dns_preset / ncsi_restore / ncsi_disable / power_off / del_persistent_route / mac_random_off / mac_random_on | 执行前弹窗确认 + 自动备份原值，界面/日志均有还原方法 |
+| 安全 | flush_dns / renew_dhcp / start_nlasvc / restart_wlan / toggle_adapter / restart_services / restore_point | 无配置变更，自动修复梯度只使用这些；restore_point 只在两个组合修复里当前置安全网 |
+| 改配置 | fix_nlasvc / dns_auto / dns_preset / ncsi_restore / ncsi_disable / power_off / del_persistent_route / proxy_off / mac_random_off / mac_random_on | 执行前弹窗确认 + 自动备份原值，界面/日志均有还原方法 |
 | 强力 | winsock_reset / ipstack_reset | 需重启电脑，仅手动触发 |
 
 所有备份写入 `%LOCALAPPDATA%\SysKit\backup\<时间戳>\`（reg 导出、路由表存档、
@@ -122,14 +123,13 @@ DNS 记录、WiFi 配置文件 XML），日志在 `%LOCALAPPDATA%\SysKit\logs\`�
 ## 构建与安装升级
 
 ```bat
-build.bat      :: 生成图标 + 安装依赖 + PyInstaller 打包 + 便携 zip
-install.bat    :: 安装/升级到 %LOCALAPPDATA%\Programs\SysKit，创建桌面与开始菜单快捷方式
+build.bat      :: 生成图标 + 安装依赖 + PyInstaller 打包 + 便携 zip + setup.exe
 ```
 
-- **首次安装**：`build.bat` → `install.bat`（UAC 由 exe 清单触发，目录在用户区，无需拷贝 Program Files）
-- **升级**：退出正在运行的 SysKit → 重新 `build.bat` → 再跑一次 `install.bat`（覆盖同路径 exe 即完成）；设置与日志保留在 `%APPDATA%\SysKit` / `%LOCALAPPDATA%\SysKit`
+- **首次安装**：双击 `dist\SysKit-<版本>-setup.exe`，默认勾选「数据保存在安装目录」（UAC 由 exe 清单触发，安装位置向导可选）
+- **升级**：退出正在运行的 SysKit → 重新 `build.bat` → 双击新 `setup.exe` 覆盖安装（固定 AppId 自动识别原目录）；设置与日志保留在 `<安装目录>\data\`
 - **便携使用**：直接运行 `dist\SysKit.exe`，或解压 `dist\SysKit-<版本>-portable.zip`
-- **卸载**：删除安装目录与快捷方式即可（可选清空上述数据目录）
+- **卸载**：控制面板「卸载程序」运行卸载器；`<安装目录>\data\` 用户数据保留，确认不要后手动删除
 - 版本号见 `syskit/config.py` 的 `VERSION`（窗口标题与设置页会显示）
 - 技术栈：Python 3.10、PySide6、loguru、标准库（subprocess/winreg/socket/urllib）
 - 打包：PyInstaller onefile + `uac_admin` 清单 + 裁剪 Qt 重型模块
@@ -145,11 +145,12 @@ install.bat    :: 安装/升级到 %LOCALAPPDATA%\Programs\SysKit，创建桌面
 
 ```bat
 python -m pip install -r dev-requirements.txt   :: 运行时依赖 + 测试工具（钉版本）
-python -m pytest --timeout=300                  :: 全量测试（tests/，1034 例，coverage 99%）
+python -m pytest --timeout=300                  :: 全量测试（tests/，1150 例，coverage 99%）
 python -m pytest tests/test_vault.py -q         :: 单文件
 python -m pytest --cov=syskit --cov-report=term-missing  :: 带覆盖率
-python -m pyflakes syskit/ tools/               :: 静态扫描（bug 排查例行）
-python tools\ui_preview.py                      :: 离屏 14 张页面截图验收
+python -m pyflakes syskit/ tools/               :: 静态扫描（例行；已钉成 tests/test_pyflakes_gate.py）
+python tools\ui_preview.py                      :: 离屏 15 张页面截图验收
+python tools\diff_preview.py 改前目录 改后目录   :: 两张截图集逐像素比对（纯重构要求零差异）
 ```
 
 - 测试安全网见 `conftest.py`：持久化路径重定向临时目录；未显式 mock 的
@@ -170,3 +171,11 @@ DHCP 被拒绝（AP 没给地址）。先试「WiFi 专区」的 MAC 随机化�
 
 **Q：AlibabaProtect 是什么？**
 阿里系捆绑的「PC 保护服务」，会静默改 DNS（如写入 2400:3200::1）、动服务配置。本机诊断中 NlaSvc 触发器丢失、静态 DNS 残留都与其行为模式吻合。可在「设置-应用」中卸载（名字 AlibabaProtect），卸载后建议再跑一次全量诊断。
+
+**Q：「应用联网」禁止后软件还是能联网 / 卸载 SysKit 后规则还在？**
+两个都是设计如此。① 规则只拦**该 exe 自己发起**的出站连接；靠系统服务代跑网络的部分
+（svchost、BITS 下载、微软商店更新、走 `sihost`/服务的推送）不受它影响——这类程序要断网
+得连它的服务进程一起加进清单。② 规则是真实的 Windows 防火墙出站块，不归 SysKit 私有：
+卸载或清空 `%APPDATA%\SysKit\appnet.json` 后 SysKit 不再显示它，但规则仍在
+`wf.msc`（按分组 `SysKit` 找，或 `netsh advfirewall firewall delete rule name=SysKit-AppNet-…`）
+里继续生效，需要手工删。

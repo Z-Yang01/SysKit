@@ -48,7 +48,6 @@ class TestFixWindowsStdio:
 
     def test_redirects_when_streams_lack_fileno(self, monkeypatch):
         """GUI/pythonw 场景（stdout 无 fileno）：重定向到 LOG_DIR/stdio.log。"""
-        import syskit
         fn = self._import()
 
         calls = {"open": [], "dup2": [], "fdopen": []}
@@ -91,7 +90,12 @@ class TestFixWindowsStdio:
         assert sys.stdout is not None
 
     def test_swallows_redirect_failure(self, monkeypatch):
-        """重定向过程任何异常静默吞掉（不影响包导入）。"""
+        """重定向过程任何异常静默吞掉（不影响包导入）。
+
+        打桩必须真的 raise：`lambda: OSError(...)` 只是「返回」异常对象，护栏一步都
+        没测到（这类永绿用例正是本轮要清的）。os.open 一并打桩记录，用来证明异常
+        确实发生在 makedirs、后续落盘一步都没走。
+        """
         fn = self._import()
 
         class _NoFileno:
@@ -100,6 +104,13 @@ class TestFixWindowsStdio:
 
         monkeypatch.setattr(sys, "stdout", _NoFileno())
         monkeypatch.setattr(sys, "stderr", _NoFileno())
-        monkeypatch.setattr(os, "makedirs", lambda *a, **k: OSError("disk full"))
+        opened = []
 
-        fn()  # 不抛即通过
+        def _boom(*a, **k):
+            raise OSError(28, "disk full")
+
+        monkeypatch.setattr(os, "makedirs", _boom)
+        monkeypatch.setattr(os, "open", lambda *a, **k: opened.append(a))
+
+        fn()                                     # 磁盘满也不许冒到导入路径
+        assert opened == []                      # makedirs 真的抛了，后面一步都没走

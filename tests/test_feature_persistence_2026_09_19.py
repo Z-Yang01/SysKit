@@ -1,5 +1,4 @@
 """网络质量日报 + 测速历史持久化 两个新功能的 UI 集成回归（2026-09-19）。"""
-import json
 import os
 import time
 
@@ -12,7 +11,7 @@ from test_ui_smoke import make_main_window, ui_offline_mocks  # noqa: E402,F401
 QMessageBox.question = staticmethod(  # noqa: E305 清空历史确认框默认 Yes
     lambda *a, **k: QMessageBox.StandardButton.Yes)
 
-from syskit import netstats, stores  # noqa: E402
+from syskit import stores  # noqa: E402
 from syskit.stores import EventStore, TrafficStore  # noqa: E402
 from syskit.ui.dashboard_page import DashboardPage  # noqa: E402
 from syskit.ui.toolbox_page import SpeedTestTab  # noqa: E402
@@ -57,9 +56,7 @@ def test_dashboard_report_without_traffic_store_shows_placeholder(qtbot):
 
 
 def test_dashboard_reset_if_stale_clears_charts(qtbot, monkeypatch):
-    from PySide6.QtGui import QColor
 
-    from syskit.ui import theme
     page = DashboardPage(EventStore())
     qtbot.addWidget(page)
     page.update_tick({"lat_gw": 5.0, "lat_pub": 9.0, "gateway": "192.168.1.1",

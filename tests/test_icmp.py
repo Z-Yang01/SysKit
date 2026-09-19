@@ -15,7 +15,6 @@ import ctypes
 import socket
 import struct
 
-import pytest
 
 from syskit import icmp, proc
 

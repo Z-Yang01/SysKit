@@ -607,13 +607,15 @@ def test_disk_tab_reveal_missing_path_noop(qtbot, monkeypatch):
 # ---------------- toolbox_page.py ----------------
 
 
-def test_toolbox_page_constructs_six_tabs(qtbot):
+def test_toolbox_page_constructs_eight_tabs(qtbot):
     from syskit.ui.toolbox_page import PortTab, ToolboxPage
     page = ToolboxPage()
     qtbot.addWidget(page)
     tabs = page.findChildren(QTabWidget)[0]
-    assert tabs.count() == 6                        # +Hosts 编辑
-    assert tabs.tabText(5) == "Hosts 编辑"
+    assert tabs.count() == 8                        # +DNS 测速 / 应用联网（均追加在末尾）
+    assert tabs.tabText(5) == "Hosts 编辑"          # 前 6 项索引不得漂移：
+    assert tabs.tabText(6) == "DNS 测速"            # 命令面板 ping/dns 跳 tab 4
+    assert tabs.tabText(7) == "应用联网"
     port = page.findChildren(PortTab)[0]
     assert port._worker is None                     # 懒加载：构造期不扫描
     port.refresh()                                  # 显式触发（首显由 showEvent 自动）
@@ -905,6 +907,41 @@ def test_tray_host_state_rate_notify_and_menu(qtbot):
     assert win.repair_calls == ["flush_dns"]
     actions[-1].trigger()
     assert win.quit_called
+    tray.hide()
+
+
+def test_tray_tooltip_only_rehosts_when_text_changes(qtbot, monkeypatch):
+    """遥测每秒回调一次，空闲时速率文本不变：托盘提示去重，不再每秒向 shell 重挂一次
+    原生 tooltip（挂机一整天就是 86400 次 NIM_MODIFY 空转）。"""
+    from syskit.ui.tray import TrayHost
+
+    class _Win(QWidget):
+        def run_diagnosis(self, quick=False):
+            pass
+
+        def run_repair(self, aid, param=None):
+            pass
+
+        def quit_app(self):
+            pass
+
+    win = _Win()
+    qtbot.addWidget(win)
+    tray = TrayHost(win)
+    calls = []
+    monkeypatch.setattr(tray, "setToolTip", calls.append)
+
+    tray.update_rate(1024.0, 0.0)                   # 文本变化 → 挂一次
+    assert len(calls) == 1 and "↓" in calls[0]
+    tray.update_rate(1024.0, 0.0)                   # 同速率下一跳 → 不重复挂
+    tray.update_rate(1024.0, 0.0)
+    assert len(calls) == 1
+    tray.update_rate(0.0, 0.0)                      # 速率变了 → 再挂一次
+    assert len(calls) == 2 and calls[1] != calls[0]
+    tray.set_state("ok", "")                        # 状态变了 → 再挂一次
+    assert len(calls) == 3 and "网络正常" in calls[2]
+    tray.set_state("ok", "")                        # 同状态重复上报 → 不打扰 shell
+    assert len(calls) == 3
     tray.hide()
 
 

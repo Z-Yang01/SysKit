@@ -29,7 +29,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QBuffer
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import (QApplication, QMenu, QSystemTrayIcon, QTabWidget,
+from PySide6.QtWidgets import (QApplication, QSystemTrayIcon, QTabWidget,
                                QWidget)
 
 import syskit.ui.palette as palette_mod

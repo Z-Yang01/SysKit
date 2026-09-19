@@ -38,6 +38,7 @@ class TrayHost(QSystemTrayIcon):
         self.window = window
         self._base_tip = config.DISPLAY_NAME
         self._rate_text = ""
+        self._tip = config.DISPLAY_NAME
         self.setToolTip(config.DISPLAY_NAME)
         self._menu = menu = QMenu()   # 显式保引用：setContextMenu 不取得所有权
         act_open = QAction("打开主界面", menu)
@@ -154,6 +155,11 @@ class TrayHost(QSystemTrayIcon):
         tip = self._base_tip
         if self._rate_text:
             tip = f"{self._base_tip}\n{self._rate_text}"
+        # 遥测每 1s 回调一次，空闲时速率文本压根没变：去重后托盘不再每秒重挂一次
+        # 原生提示（NIM_MODIFY 是跨进程 shell 调用，挂机一整天就是 86400 次空转）。
+        if tip == self._tip:
+            return
+        self._tip = tip
         self.setToolTip(tip)
 
     def notify(self, title: str, body: str, state: str = None):

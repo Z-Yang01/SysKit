@@ -1,6 +1,5 @@
 """syskit/diskusage.py 单元测试：目录树扫描 / 回收站删除（全程无真实删除）。"""
 import os
-import shutil
 import threading
 
 import pytest

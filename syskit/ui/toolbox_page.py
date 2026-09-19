@@ -1,25 +1,28 @@
-"""工具箱：速度测试 / 局域网设备发现 / DNS查询与子网计算 / 持续ping与路由追踪 / 端口占用 / Hosts 编辑。"""
+"""工具箱：速度测试 / 局域网设备发现 / DNS查询与子网计算 / 持续ping与路由追踪 / 端口占用 / Hosts 编辑 / DNS 测速 / 应用联网控制。"""
 import ipaddress
+import os
 import re
 import socket
 import subprocess
 import threading
 import time
+import traceback
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import psutil
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QModelIndex, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QListWidget, QMessageBox, QProgressBar, QPushButton,
-                               QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QSpinBox, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
+from .theme import make_table
 from .workers import reap
-from .. import admin, hostsed, icmp, dnsquery, stores
+from .. import admin, appnet, hostsed, icmp, dnsquery, stores
 from ..logger import LOGGER
 
 TEST_URLS = [
@@ -269,12 +272,8 @@ class LanTab(QWidget):
         row.addWidget(self.lbl_status, 1)
         lay.addLayout(row)
 
-        self.tbl = QTableWidget(0, 3)
-        self.tbl.setHorizontalHeaderLabels(["IP 地址", "MAC 地址", "延迟 ms"])
+        self.tbl = make_table(["IP 地址", "MAC 地址", "延迟 ms"])
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl.setAlternatingRowColors(True)
-        self.tbl.verticalHeader().setVisible(False)
         lay.addWidget(self.tbl)
         self._worker = None
 
@@ -453,6 +452,141 @@ class _TracertWorker(QThread):
             LOGGER.warning("tracert 线程异常", exc_info=True)
 
 
+# ---------------- DNS 速度对比 ----------------
+
+_DNS_SPEED_SERVERS = [
+    ("223.5.5.5", "阿里"), ("119.29.29.29", "腾讯"), ("114.114.114.114", "114"),
+    ("180.76.76.76", "百度"), ("1.1.1.1", "Cloudflare"), ("8.8.8.8", "Google"),
+]
+
+
+class _DnsSpeedWorker(QThread):
+    """并发测各 DNS 服务器的解析延迟/成功率（每服务器串行 N 次）。
+    结果逐个经 server_done 回 UI（单条超时也不拖总时长）。"""
+    server_done = Signal(str, object)   # (server_ip, dict|None)  None=全部失败
+
+    def __init__(self, domain, times, parent=None):
+        super().__init__(parent)
+        self._domain = domain
+        self._times = max(1, min(5, int(times)))
+
+    def run(self):
+        def probe(server):
+            lat = []
+            for _ in range(self._times):
+                t0 = time.perf_counter()
+                try:
+                    dnsquery.query(self._domain, server, timeout=1.5, attempts=1)
+                    lat.append((time.perf_counter() - t0) * 1000)
+                except Exception:
+                    continue
+            if lat:
+                self.server_done.emit(server, {
+                    "avg": sum(lat) / len(lat), "ok": len(lat),
+                    "total": self._times})
+            else:
+                self.server_done.emit(server, None)
+
+        with ThreadPoolExecutor(max_workers=len(_DNS_SPEED_SERVERS)) as ex:
+            list(ex.map(probe, [s for s, _n in _DNS_SPEED_SERVERS]))
+
+
+class DnsSpeedTab(QWidget):
+    """DNS 测速：并发测各公共 DNS 的解析延迟/成功率，推荐最优（配合修复页
+    dns_preset 使用）。查询在后台线程——单服务器超时不得冻 UI。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("测试域名:"))
+        self.ed_domain = QLineEdit("www.baidu.com")
+        row.addWidget(self.ed_domain, 1)
+        row.addWidget(QLabel("次数:"))
+        self.spin_times = QSpinBox()
+        self.spin_times.setRange(1, 5)
+        self.spin_times.setValue(3)
+        self.spin_times.setSuffix(" 次")
+        row.addWidget(self.spin_times)
+        self.btn_start = QPushButton("开始测速")
+        self.btn_start.setProperty("primary", True)
+        self.btn_start.clicked.connect(self.start)
+        row.addWidget(self.btn_start)
+        lay.addLayout(row)
+
+        self.tbl = make_table(["DNS 服务器", "平均延迟", "成功率", "说明"], select_rows=True)
+        header = self.tbl.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setStretchLastSection(True)
+        lay.addWidget(self.tbl, 1)
+
+        self.lbl_recommend = QLabel("点击「开始测速」，对常用公共 DNS 并发解析对比。")
+        self.lbl_recommend.setProperty("hint", True)
+        self.lbl_recommend.setWordWrap(True)
+        lay.addWidget(self.lbl_recommend)
+        self._worker = None
+        self._results = {}
+        self._times = self.spin_times.value()
+
+    def start(self):
+        if self._worker:
+            return
+        domain = self.ed_domain.text().strip()
+        if not domain:
+            QMessageBox.information(self, "SysKit", "请输入要解析的测试域名。")
+            return
+        self.btn_start.setEnabled(False)
+        # 次数在开跑时定死并锁住控件：跑完前改档位会让表格分母与实际探测次数不符
+        self._times = self.spin_times.value()
+        self.spin_times.setEnabled(False)
+        self.lbl_recommend.setText("测速中…")
+        self.tbl.setRowCount(0)
+        self._results = {}
+        self._worker = reap(_DnsSpeedWorker(domain, self._times), self)
+        self._worker.server_done.connect(self._server_done)
+        self._worker.finished.connect(self._finished)
+        self._worker.start()
+
+    def _server_done(self, server, info):
+        name = next((n for s, n in _DNS_SPEED_SERVERS if s == server), server)
+        self._results[server] = (name, info)
+        self._render()
+
+    def _finished(self):
+        self._worker = None
+        self.btn_start.setEnabled(True)
+        self.spin_times.setEnabled(True)
+        self._recommend()
+
+    def _render(self):
+        order = sorted(self._results.items(),
+                       key=lambda kv: (kv[1][1] is None,
+                                       kv[1][1]["avg"] if kv[1][1] else 0))
+        self.tbl.setRowCount(len(order))
+        for i, (server, (name, info)) in enumerate(order):
+            if info is None:
+                vals = [f"{name} ({server})", "—", f"0/{self._times}",
+                        "全部超时/失败"]
+            else:
+                vals = [f"{name} ({server})", f"{info['avg']:.0f} ms",
+                        f"{info['ok']}/{info['total']}",
+                        "可用" if info["ok"] == info["total"] else "部分丢包"]
+            for c, v in enumerate(vals):
+                self.tbl.setItem(i, c, QTableWidgetItem(v))
+
+    def _recommend(self):
+        ok_rows = [(s, n, info) for s, (n, info) in self._results.items() if info]
+        if not ok_rows:
+            self.lbl_recommend.setText("全部 DNS 均解析失败——当前网络可能断网，"
+                                       "或测试域名不可解析。可先在「诊断」页体检。")
+            return
+        best = min(ok_rows, key=lambda kv: kv[2]["avg"])
+        self.lbl_recommend.setText(
+            f"推荐：{best[1]}（{best[0]}）　平均 {best[2]['avg']:.0f} ms、"
+            f"成功率 {best[2]['ok']}/{best[2]['total']}。"
+            "可在「修复」页用 dns_preset 动作设置静态 DNS。")
+
+
 class _PingWorker(QThread):
     """单发 ICMP：icmp.ping 同步等待最长 1.5s，放后台线程跑——
     持续 ping 一个不通的目标时，UI 线程不能每秒被冻 1.5s。"""
@@ -488,12 +622,8 @@ class PingRouteTab(QWidget):
                                seconds=180, fmt=lambda v: f"{v:.0f}ms")
         lay.addWidget(self.chart)
 
-        self.tbl_route = QTableWidget(0, 3)
-        self.tbl_route.setHorizontalHeaderLabels(["跳数", "延迟 ms", "IP"])
+        self.tbl_route = make_table(["跳数", "延迟 ms", "IP"])
         self.tbl_route.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.tbl_route.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl_route.setAlternatingRowColors(True)
-        self.tbl_route.verticalHeader().setVisible(False)
         self.tbl_route.setMaximumHeight(220)
         lay.addWidget(self.tbl_route)
 
@@ -641,13 +771,9 @@ class PortTab(QWidget):
         row.addWidget(self.btn_kill)
         lay.addLayout(row)
 
-        self.tbl = QTableWidget(0, 6)
-        self.tbl.setHorizontalHeaderLabels(["协议", "本地地址", "远程地址", "状态", "PID", "进程"])
+        self.tbl = make_table(["协议", "本地地址", "远程地址", "状态", "PID", "进程"],
+                              select_rows=True)
         self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl.setAlternatingRowColors(True)
-        self.tbl.verticalHeader().setVisible(False)
         lay.addWidget(self.tbl)
 
         self.lbl_status = QLabel(" ")
@@ -798,14 +924,9 @@ class HostsTab(QWidget):
         row.addWidget(self.btn_add)
         lay.addLayout(row)
 
-        self.tbl = QTableWidget(0, 4)
-        self.tbl.setHorizontalHeaderLabels(["状态", "IP", "主机名", "备注"])
+        self.tbl = make_table(["状态", "IP", "主机名", "备注"], select_rows=True)
         self.tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl.setAlternatingRowColors(True)
-        self.tbl.verticalHeader().setVisible(False)
         self.tbl.itemSelectionChanged.connect(self._refresh_buttons)
         lay.addWidget(self.tbl, 1)
 
@@ -941,6 +1062,237 @@ class HostsTab(QWidget):
                                 "已保存" + (f"（备份：{backup}）" if backup else ""))
 
 
+class _AppNetWorker(QThread):
+    """应用联网控制的一次性后台任务。
+
+    netsh 与 PowerShell 都是百毫秒到秒级的阻塞命令（一次刷新要查全部规则），
+    放 UI 线程会明显卡顿。异常也必须发 done，否则 self._worker 永不复位、
+    按钮永久禁用。
+    """
+    done = Signal(object)          # (ok: bool, 消息: str, payload: None | (entries, states))
+
+    def __init__(self, job, parent=None):
+        super().__init__(parent)
+        self._job = job
+
+    def run(self):
+        try:
+            self.done.emit(self._job())
+        except Exception as e:
+            LOGGER.error("应用联网任务异常:\n{}", traceback.format_exc())
+            self.done.emit((False, f"操作失败：{e}", None))
+
+
+def _appnet_state_text(entry, states):
+    """台账意图 × 防火墙实际 → 一行用户看得懂的状态。
+
+    两者都要显示：只看台账会把「用户手动在 wf.msc 里删了规则」画成仍在拦截；
+    只看防火墙则分不清「已放行」和「规则停用」。
+    查不到的一律回落成「未校验」（没查过、PS 不可用、或这条刚被本次操作改过而快照作废，
+    三者对用户都是同一件事：这一格现在不代表防火墙事实）。
+    """
+    actual = None if states is None else states.get(appnet.norm_path(entry.get("program", "")))
+    if actual is None:
+        return "未校验（点「刷新状态」查询防火墙）"
+    if actual == "missing":
+        return "规则已被外部删除（点「禁止联网」可重建）"
+    if actual == "drift":
+        return "规则动作已被改成非「阻止」，实际不拦（在 wf.msc 里核对）"
+    want_block = bool(entry.get("blocked", True))
+    if actual == "on":
+        return "已禁止联网" if want_block else "不一致：规则在拦，台账却记为放行"
+    return "已放行" if not want_block else "不一致：规则已停用，台账却记为禁止"
+
+
+class AppNetTab(QWidget):
+    """应用联网控制：给指定程序加 / 去 Windows 防火墙出站块，实现「这个软件不许联网」。
+
+    构造期只读本地台账、**零系统命令**——MainWindow 测试会整树构造本页，
+    任何隐式 netsh 调用都会被 conftest 红线 1 的哨兵击杀；真实拦截状态要用户
+    点「刷新状态」才去防火墙查（也是为了避免每次切页都拉一次 PowerShell）。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+
+        self.lbl_info = QLabel()
+        self.lbl_info.setProperty("hint", True)
+        self.lbl_info.setWordWrap(True)
+        lay.addWidget(self.lbl_info)
+
+        row = QHBoxLayout()
+        self.btn_add = QPushButton("添加程序…")
+        self.btn_add.setProperty("primary", True)
+        self.btn_add.clicked.connect(self._pick_and_add)
+        self.btn_block = QPushButton("禁止联网")
+        self.btn_block.clicked.connect(lambda: self._apply(True))
+        self.btn_allow = QPushButton("允许联网")
+        self.btn_allow.clicked.connect(lambda: self._apply(False))
+        self.btn_del = QPushButton("移除")
+        self.btn_del.setProperty("danger", True)
+        self.btn_del.clicked.connect(self._remove)
+        self.btn_refresh = QPushButton("刷新状态")
+        self.btn_refresh.clicked.connect(self.refresh)
+        for b in (self.btn_add, self.btn_block, self.btn_allow, self.btn_del,
+                  self.btn_refresh):
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        self.tbl = make_table(["程序", "完整路径", "联网状态", "加入时间"], select_rows=True)
+        self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl.setColumnWidth(0, 170)
+        self.tbl.setColumnWidth(2, 250)
+        self.tbl.itemSelectionChanged.connect(self._refresh_buttons)
+        lay.addWidget(self.tbl, 1)
+
+        self.lbl_status = QLabel("")
+        self.lbl_status.setProperty("hint", True)
+        self.lbl_status.setWordWrap(True)
+        lay.addWidget(self.lbl_status)
+
+        self._entries = []
+        self._states = None            # None = 尚未向防火墙查过
+        self._touched = ""             # 本次写操作影响的程序，成功后作废其快照格
+        self._worker = None
+        self._load_ledger()
+
+    # ---------------- 数据与渲染 ----------------
+
+    def _load_ledger(self):
+        """只读本地台账（零命令）。用于构造期与每次操作后的回显。"""
+        self._entries = appnet.load_entries()
+        self._render()
+
+    def _render(self):
+        # 先记住选中的是**哪个程序**而不是第几行：setRowCount 只裁末行，中间被 pop 后
+        # currentRow 会原地落到隔壁程序身上，三个操作按钮随之指向另一个 exe
+        picked = self._selected_program()
+        self.tbl.setRowCount(len(self._entries))
+        for r, e in enumerate(self._entries):
+            program = e.get("program", "")
+            item0 = QTableWidgetItem(os.path.basename(program))
+            item0.setData(Qt.UserRole, program)
+            self.tbl.setItem(r, 0, item0)
+            self.tbl.setItem(r, 1, QTableWidgetItem(program))
+            self.tbl.setItem(r, 2, QTableWidgetItem(_appnet_state_text(e, self._states)))
+            self.tbl.setItem(r, 3, QTableWidgetItem(e.get("added", "")))
+        target = -1
+        if picked:
+            for r, e in enumerate(self._entries):
+                if appnet.norm_path(e.get("program", "")) == appnet.norm_path(picked):
+                    target = r
+                    break
+        if target >= 0:
+            self.tbl.setCurrentCell(target, 0)
+        else:
+            self.tbl.setCurrentIndex(QModelIndex())   # 原选中程序已被移除：不许按钮指向隔壁
+        self._update_info()
+        self._refresh_buttons()
+
+    def _update_info(self):
+        admin_ok = admin.is_admin()
+        self.lbl_info.setText(
+            f"共 {len(self._entries)} 个受控程序　·　" +
+            ("管理员：可增删规则" if admin_ok else "非管理员：只能查看，改动需管理员权限") +
+            "　·　规则即 Windows 防火墙出站块（dir=out action=block），"
+            "在 wf.msc 可见可改；只拦该 exe 自身发起的连接，借系统服务（svchost / BITS）"
+            "联网的部分不受影响。")
+
+    def _selected_program(self) -> str:
+        row = self.tbl.currentRow()
+        item = self.tbl.item(row, 0) if row >= 0 else None
+        data = item.data(Qt.UserRole) if item else None
+        return data or ""
+
+    def _refresh_buttons(self):
+        has = bool(self._selected_program())
+        admin_ok = admin.is_admin()
+        busy = self._worker is not None
+        for b in (self.btn_block, self.btn_allow, self.btn_del):
+            b.setEnabled(has and admin_ok and not busy)
+        self.btn_add.setEnabled(admin_ok and not busy)
+        self.btn_refresh.setEnabled(not busy)
+
+    # ---------------- 后台执行 ----------------
+
+    def _start(self, job, touched: str = ""):
+        """touched：本次写操作影响的程序路径，成功后作废它在防火墙快照里的那一格。
+
+        快照不作废就会拿**改动前**的实际状态去比**改动后**的台账：点完「允许联网」
+        状态栏写着 ✔ 已允许联网，同一行的第三列却显示「已禁止联网」甚至
+        「不一致：规则在拦，台账却记为放行」，两句话同屏互相打脸。
+        """
+        if self._worker:
+            return
+        self._touched = touched
+        self._worker = reap(_AppNetWorker(job), self)
+        self._worker.done.connect(self._on_done)
+        self._worker.finished.connect(self._on_finished)
+        self._refresh_buttons()
+        self._worker.start()
+
+    def _on_done(self, result):
+        ok, msg, payload = result
+        if payload is not None:
+            self._entries, self._states = payload
+            self._render()
+        else:
+            touched, self._touched = self._touched, ""
+            if ok and touched and isinstance(self._states, dict):
+                self._states.pop(appnet.norm_path(touched), None)
+            self._load_ledger()          # 台账可能已被这次操作改写
+        self.lbl_status.setText(("✔ " if ok else "✘ ") + msg)
+
+    def _on_finished(self):
+        self._worker = None
+        self._refresh_buttons()
+
+    def refresh(self):
+        """向防火墙查一次真实规则状态（PowerShell 不可用时降级为「未校验」）。"""
+        def job():
+            entries = appnet.load_entries()
+            states = appnet.query_states([e["program"] for e in entries])
+            msg = "状态已刷新" if states is not None else \
+                "已读取清单，但防火墙状态查询失败（PowerShell / NetSecurity 不可用）"
+            return True, msg, (entries, states)
+        self._start(job)
+
+    # ---------------- 操作 ----------------
+
+    def _pick_and_add(self):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择要控制联网的程序", "", "程序 (*.exe);;所有文件 (*.*)")
+        if not path:
+            return
+        def job():
+            ok, msg, _idx = appnet.add_program(path, blocked=True)
+            return ok, msg, None
+        self._start(job, touched=path)
+
+    def _apply(self, blocked: bool):
+        program = self._selected_program()
+        if not program:
+            return
+        def job():
+            ok, msg = appnet.set_program_blocked(program, blocked)
+            return ok, msg, None
+        self._start(job, touched=program)
+
+    def _remove(self):
+        program = self._selected_program()
+        if not program:
+            return
+        def job():
+            ok, msg = appnet.drop_program(program)
+            return ok, msg, None
+        self._start(job, touched=program)
+
+
 class ToolboxPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -954,4 +1306,7 @@ class ToolboxPage(QWidget):
         tabs.addTab(DnsSubnetTab(), "DNS / 子网")
         tabs.addTab(PingRouteTab(), "ping / 路由")
         tabs.addTab(HostsTab(), "Hosts 编辑")
+        # 追加在末尾：palette 的 ping/dns 跳转与既有测试依赖上面各 Tab 的索引
+        tabs.addTab(DnsSpeedTab(), "DNS 测速")
+        tabs.addTab(AppNetTab(), "应用联网")
         lay.addWidget(tabs)

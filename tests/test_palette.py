@@ -5,10 +5,11 @@
 import ctypes
 import json
 import sys
+import types
 from ctypes import wintypes
 
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox, QStackedWidget, QTabWidget, QWidget
+from PySide6.QtWidgets import QMessageBox, QStackedWidget, QTabWidget, QWidget
 
 from syskit import hotkey, palette_actions, settings
 from syskit.ui.palette import HotkeyFilter, WM_HOTKEY
@@ -116,10 +117,19 @@ class _FakeTabs(QWidget):
             self.tabs.addTab(QWidget(), n)
 
 
+class _FakeTray:
+    def __init__(self, calls):
+        self._calls = calls
+
+    def notify(self, title, body, state=None):
+        self._calls.append(("notify", title, body))
+
+
 class _FakeWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.calls = []
+        self.tray = _FakeTray(self.calls)
         self.page_toolbox = _FakeTabs()
         self.page_system = None
         self.page_vault = None
@@ -241,6 +251,38 @@ class TestCommandPalette:
         assert ("page", 5) in win.calls
         assert win.page_toolbox.tabs.currentIndex() == 4
 
+    def test_calc_dynamic_action(self, qtbot, monkeypatch):
+        """算式直算：即时求值置顶，回车复制结果；非法算式走正常搜索。"""
+        pal, win = self._palette(qtbot)
+        pal.edt.setText("12*3+5")
+        ids = [a["id"] for a in pal._rows]
+        assert ids[0] == "dyn:calc"
+        assert pal._rows[0]["label"] == "= 41"
+
+        copied = []
+        from PySide6.QtWidgets import QApplication
+        monkeypatch.setattr(QApplication, "clipboard",
+                            lambda *a: types.SimpleNamespace(setText=copied.append))
+        pal._exec_row(0)
+        assert copied == ["41"]
+        assert ("notify", "命令面板", "计算结果已复制: 41") in win.calls
+
+        pal.edt.setText("1.2.3")                        # 非合法算式 → 无计算条目
+        assert "dyn:calc" not in [a["id"] for a in pal._rows]
+
+    def test_calc_helpers(self):
+        from syskit import palette_actions as pa
+        assert pa.looks_like_math("12*(3+4)") is True
+        assert pa.looks_like_math("ping 1.2.3.4") is False
+        assert pa.looks_like_math("1.2.3") is False     # 无运算符
+        assert pa.safe_calc("2**10") == 1024
+        assert pa.safe_calc("(1+2)*3") == 9
+        assert pa.safe_calc("10/4") == 2.5
+        with pytest.raises(ValueError):
+            pa.safe_calc("9**9**9")                     # 超界幂
+        with pytest.raises((ValueError, SyntaxError)):
+            pa.safe_calc("__import__('os')")            # 非数字元素拒绝
+
     def test_url_dynamic_action(self, qtbot, monkeypatch):
         pal, win = self._palette(qtbot)
         opened = []
@@ -274,7 +316,6 @@ class TestCommandPalette:
         qtbot.addWidget(pal)
         pal._actions = palette_actions.build_actions(win)
         pal.edt.setText("github alice")
-        ids = [a["id"] for a in pal._rows]
         vault_rows = [i for i, a in enumerate(pal._rows) if a["id"].startswith("vault:")]
         assert vault_rows, "应出现密码库动态条目"
         label = pal.lst.item(vault_rows[0]).text()

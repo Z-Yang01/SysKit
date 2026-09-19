@@ -45,7 +45,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import Qt, QThread, Signal, qInstallMessageHandler
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QApplication, QDialog, QListWidgetItem, QMessageBox,
+from PySide6.QtWidgets import (QDialog, QListWidgetItem, QMessageBox,
                                QSystemTrayIcon, QTableWidgetItem)
 
 
@@ -286,7 +286,6 @@ def test_mw_combo_confirm_continue_and_cancelled_done(make_main_window, monkeypa
     """run_combo 单项确认拒绝 → continue；_combo_done 中止分支文案。"""
     from syskit import admin, repairs
     from syskit.repairs import RepairResult
-    from syskit.ui import main_window as mw
     from syskit.ui.confirm_dialog import ConfirmDialog
 
     win = make_main_window()
@@ -372,7 +371,6 @@ def test_mw_reload_log_txt_log_guard():
 def test_mw_quit_app_full_sweep(make_main_window, monkeypatch, qtbot):
     """quit_app 三道扫尾：mon.join RuntimeError 吞并 / 可 stop 线程先停再等 /
     四 worker 显式 wait 复位。本文件最后一个窗口用例（退出后不再建窗）。"""
-    from syskit.ui.main_window import MainWindow
 
     win = make_main_window()
 
@@ -600,7 +598,6 @@ def test_vault_current_secrets_blank_when_locked(qtbot, seeded_master):
 def test_vault_show_totp_guards_and_qrcode_missing(qtbot, seeded_master, monkeypatch,
                                                    msgbox_recorder):
     """TOTP 弹窗：无选中 / 锁定异常 / 无密钥三守卫 + qrcode 缺失降级。"""
-    import syskit.ui.vault_page as vp_mod
     from syskit import vault
     from syskit.vault_crypto import VaultLockedError
 

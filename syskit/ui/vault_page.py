@@ -15,13 +15,14 @@ from PySide6.QtCore import (QAbstractListModel, QModelIndex, QSortFilterProxyMod
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QFormLayout, QGroupBox,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMessageBox, QPushButton, QTableWidget,
+                               QListWidgetItem, QMessageBox, QPushButton,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import clipboard as clipboard_mod
 from .. import settings, vault
 from ..vault_crypto import VaultCrypto, VaultLockedError
 from ..logger import LOGGER
+from .theme import make_table
 
 FAV = "★ "
 
@@ -142,17 +143,12 @@ class VaultPage(QWidget):
         self.edt_acct.setPlaceholderText("搜索账号：用户名 / 标签（如 work、个人）")
         self.edt_acct.setClearButtonEnabled(True)
         rlay.addWidget(self.edt_acct)
-        self.tbl_accts = QTableWidget(0, 3)
-        self.tbl_accts.setHorizontalHeaderLabels(["账号", "密码", "标签"])
+        self.tbl_accts = make_table(["账号", "密码", "标签"], select_rows=True)
         self.tbl_accts.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         # 密码/标签列固定合理宽度：曾随内容收缩到极窄，掩码 **** 和按钮提示被挤压
         self.tbl_accts.setColumnWidth(1, 150)
         self.tbl_accts.setColumnWidth(2, 170)
-        self.tbl_accts.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_accts.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tbl_accts.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl_accts.setAlternatingRowColors(True)
-        self.tbl_accts.verticalHeader().setVisible(False)
         # 单击单元格即复制：账号列→用户名，密码列→密码（需主密码门），标签列→标签
         self.tbl_accts.cellClicked.connect(self._on_acct_cell_clicked)
         rlay.addWidget(self.tbl_accts, 1)

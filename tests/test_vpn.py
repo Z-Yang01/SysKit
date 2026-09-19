@@ -1,7 +1,5 @@
 """syskit/vpn.py 与 monitor VPN 护栏测试。"""
-from types import SimpleNamespace
 
-import pytest
 
 from syskit import monitor as mon_mod
 from syskit import vpn

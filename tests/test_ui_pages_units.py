@@ -500,6 +500,21 @@ def test_mw_monitor_settings_logs_then_quit(main_win, monkeypatch, qtbot):
     assert not win.tray.isVisible()
 
 
+def test_telemetry_scope_follows_visibility_and_page(main_win, qtbot):
+    """窗口看不到的分组不该继续采：netsh wlan 子进程、ICMP、进程表都在里面。"""
+    win = main_win
+    win.show()
+    qtbot.waitExposed(win)
+    win.switch_page(4)                                # 修复页：三项都没人看
+    assert win.tele._need == set()
+    win.switch_page(1)                                # 网络监控：延迟 + WiFi 曲线
+    assert win.tele._need == {"lat", "wifi"}
+    win.switch_page(6)                                # 系统助手：Top 进程
+    assert win.tele._need == {"procs"}
+    win.hide()                                        # 收起托盘：只留速率
+    assert win.tele._need == set()
+
+
 # ============================================================
 # syskit/ui/toolbox_page.py
 # ============================================================

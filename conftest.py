@@ -66,32 +66,59 @@ def block_system_calls(monkeypatch):
     monkeypatch.setattr(proc, "run", _sentinel("proc.run"))
     monkeypatch.setattr(proc, "run_ps", _sentinel("proc.run_ps"))
 
-    # 进程级兜底：直接拦 subprocess 与 os.system
+    # 进程级兜底：直接拦 subprocess 与 os.system / os.startfile
     import subprocess
     for fn in ("run", "Popen", "check_call", "check_output", "call"):
         if hasattr(subprocess, fn):
             monkeypatch.setattr(subprocess, fn, _sentinel(f"subprocess.{fn}"))
     monkeypatch.setattr(os, "system", _sentinel("os.system"))
+    if hasattr(os, "startfile"):
+        # 启动外部程序 / 交给 ShellExecute 打开链接，都是真实副作用（还会拉起浏览器）
+        monkeypatch.setattr(os, "startfile", _sentinel("os.startfile"))
+    try:
+        import webbrowser
+        monkeypatch.setattr(webbrowser, "open", _sentinel("webbrowser.open"))
+    except ImportError:
+        pass
 
     # 注册表写操作哨兵（读操作放行，确定性由各组测试自行 mock）
+    # 名单里的名字若 winreg 没有，test_conftest_guards 会失败（hasattr 静默跳过 = 漏装）
     try:
         import winreg
     except ImportError:
         winreg = None
     if winreg:
-        for fn in ("SetValueEx", "CreateKey", "CreateKeyEx", "DeleteKey",
-                   "DeleteValue", "SaveKey"):
+        for fn in ("SetValue", "SetValueEx", "CreateKey", "CreateKeyEx",
+                   "DeleteKey", "DeleteKeyEx", "DeleteValue", "SaveKey", "LoadKey"):
             if hasattr(winreg, fn):
                 monkeypatch.setattr(winreg, fn, _sentinel(f"winreg.{fn}"))
 
-    # 网络连接哨兵：任何真实出网连接都视为测试缺陷
+    # 网络连接哨兵：任何真实出网连接/解析都视为测试缺陷
     import socket
-    monkeypatch.setattr(socket.socket, "connect",
-                        _sentinel("socket.socket.connect"))
+    for fn in ("connect", "connect_ex", "sendto"):
+        monkeypatch.setattr(socket.socket, fn, _sentinel(f"socket.socket.{fn}"))
+    for fn in ("getaddrinfo", "gethostbyname"):
+        # 名字解析不经 socket 实例，只拦 connect 会漏掉直接查 DNS 的分支
+        monkeypatch.setattr(socket, fn, _sentinel(f"socket.{fn}"))
     try:
         import urllib.request
+        # urlopen 只是 OpenerDirector.open 的薄封装：build_opener().open() 与
+        # urlretrieve() 都不经过它，只拦 urlopen 等于没拦
         monkeypatch.setattr(urllib.request, "urlopen",
                             _sentinel("urllib.request.urlopen"))
+        monkeypatch.setattr(urllib.request, "urlretrieve",
+                            _sentinel("urllib.request.urlretrieve"))
+        monkeypatch.setattr(urllib.request.OpenerDirector, "open",
+                            _sentinel("urllib.request.OpenerDirector.open"))
+    except ImportError:
+        pass
+
+    # 声音哨兵：断网/恢复提示音在 CI 与批量跑测时会真的响（还能测出漏网的调用点）
+    try:
+        import winsound
+        for fn in ("PlaySound", "Beep"):
+            if hasattr(winsound, fn):
+                monkeypatch.setattr(winsound, fn, _sentinel(f"winsound.{fn}"))
     except ImportError:
         pass
     yield

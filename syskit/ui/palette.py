@@ -177,6 +177,24 @@ class CommandPalette(QDialog):
         low = q.lower()
         window = self._window
 
+        # 算式直算：纯数字运算符输入即时求值，回车复制结果
+        if palette_actions.looks_like_math(q):
+            try:
+                val = palette_actions.safe_calc(q)
+                text = str(val)
+
+                def _copy_calc(v=text):
+                    from PySide6.QtWidgets import QApplication
+                    clip = QApplication.clipboard()
+                    if clip:
+                        clip.setText(v)
+                    window.tray.notify("命令面板", f"计算结果已复制: {v}")
+
+                out.append({"id": "dyn:calc", "label": f"= {text}",
+                            "hint": "计算 · 回车复制", "callback": _copy_calc})
+            except (ValueError, SyntaxError, MemoryError, RecursionError):
+                pass                    # 非法算式不显示条目（正常搜索路径照走）
+
         # ping / dns 语法 → 跳转到工具箱对应 Tab
         if low.startswith("ping ") and q[5:].strip():
             host = q[5:].strip()

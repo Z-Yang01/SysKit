@@ -5,12 +5,13 @@ import time
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout,
                                QHBoxLayout, QHeaderView, QLabel,
-                               QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+                               QMessageBox, QPushButton, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
 from .charts import BarChart
+from .theme import make_table
 from .workers import reap
 from .. import admin, proc
 
@@ -201,13 +202,9 @@ class WifiPage(QWidget):
         row.addWidget(self.lbl_scan)
         lay.addLayout(row)
 
-        self.tbl_aps = QTableWidget(0, 6)
-        self.tbl_aps.setHorizontalHeaderLabels(["SSID", "BSSID", "信号", "信道", "频段", "认证"])
+        self.tbl_aps = make_table(["SSID", "BSSID", "信号", "信道", "频段", "认证"],
+                                  select_rows=True)
         self.tbl_aps.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tbl_aps.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl_aps.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tbl_aps.setAlternatingRowColors(True)
-        self.tbl_aps.verticalHeader().setVisible(False)
         lay.addWidget(self.tbl_aps)
 
         self.lbl_loc = QLabel("提示：Win11 扫描周边 WiFi 需要系统「位置」服务开启。")
@@ -404,13 +401,9 @@ class WifiPage(QWidget):
         row.addWidget(self.lbl_pw)
         lay.addLayout(row)
 
-        self.tbl_pw = QTableWidget(0, 3)
-        self.tbl_pw.setHorizontalHeaderLabels(["名称", "认证", "密码"])
+        self.tbl_pw = make_table(["名称", "认证", "密码"])
         self._pw_rows = []               # 明文缓存（掩码/显示切换用）
         self.tbl_pw.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tbl_pw.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl_pw.setAlternatingRowColors(True)
-        self.tbl_pw.verticalHeader().setVisible(False)
         lay.addWidget(self.tbl_pw)
         return w
 

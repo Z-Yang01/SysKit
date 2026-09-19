@@ -1307,3 +1307,326 @@ join/钳 0）+ stores 2（包装往返与损坏回退/days 拷贝语义）+ 集�
 ui_preview 重渲染验收（监控页双 Tab、假 telemetry 补 days() 种子数据、
 废弃 config_issues 种子改 offline）。
 
+### 补充47（2026-09-19 续8）：优化第 1 步——在途四项改动收尾（先恢复绿灯基线）
+
+工作树在途未提交的四项功能：命令面板算式直算、`restore_point` 修复动作、
+诊断报告导出、工具箱 DNS 测速 Tab。收尾时发现的**真实失败**：
+
+1. `test_palette.py::test_calc_dynamic_action` 红——打桩 lambda 引用未导入的
+   `types`，dyn:calc 回调内 NameError 被 `_exec_row` 兜底吞成日志。补 import。
+2. 该用例的断言写成 `("notify", ...) in win.calls[:1] or win.calls`——**恒真**。
+   根因是 `_FakeWindow` 没有 `tray`：palette.py:191/289/295 三条「复制 + 托盘
+   通知」路径在测试里从来没走通过（异常同样被 `_exec_row` 吞掉，无声无息）。
+   补 `_FakeTray` 记录 notify，断言改成 `("notify", "命令面板",
+   "计算结果已复制: 41") in win.calls`——现在真跑通并锁住文案。
+3. DNS 测速与导出报告两项**零测试**。新增
+   `tests/test_inflight_dns_speed_export_2026_09_19.py` **14 例**：
+   - 线程聚合：6 台全覆盖 / 全失败发 None / 部分失败 `ok<total` 不被均值掩盖 /
+     次数钳进 1..5；并断言 `run()` 返回时结果**仍在事件队列**（泵循环才到），
+     把「探针线程池 → 主线程槽」的 Auto 排队投递锁成回归——池线程直调槽会
+     在非 GUI 线程碰 QTableWidget。
+   - Tab 渲染：最快在前、全失败垫底、无延迟显「—」不编数；推荐/全失败文案；
+     空域名不启动、测速中重复点击不起第二线程；新 Tab 只能追加末尾。
+   - 导出报告：UTF-8 中文落盘、与「复制」共用同一份 `_report_lines`、中止残片
+     不得被 verdict 误判成「外网不可达」、无结果不弹保存框 / 取消不落盘 /
+     写失败只告警不崩。
+4. 适配 1 例：`test_ui_smoke` 工具箱 Tab 数 6→7（改名 seven_tabs，同时锁住
+   tab5=Hosts、tab4=ping/路由——命令面板 `ping x`/`dns x` 跳转依赖该索引）。
+
+**只记录不擅改的设计取舍**：`restore_point` 被放到「深度修复」「重置网络栈」
+组合的**首位**，而 `Checkpoint-Computer` 常态 30~90s——用户点深度修复会先空等
+一分多钟才动第一项。ComboWorker 逐项执行、失败不中断后续，故非管理员环境首步
+报「需要管理员权限」不影响其余动作（已在动作 hint 里写明可能静默跳过）。是否
+改为「二次确认后才做快照」或挪到组合末尾，留给功能决策。
+
+**验证**：全量 **1103 例**全绿（1 skip 为既有 run_gui 禁跑项）；
+`pyflakes syskit tools conftest.py` 清零。
+
+### 补充48（2026-09-19 续9）：优化第 2 步——性能专项（先测后改，多数「瓶颈」被实测否决）
+
+原则：**不测不改**。审计阶段列出的热点逐条上机量化，只有量级够大的才动代码，
+其余把数字写在这里作为「已评估、不做」的结论，避免下一轮重复劳动。
+
+**实测数据**（本机，offscreen 基准脚本跑完即删）：
+
+| 项 | 实测 | 结论 |
+| --- | --- | --- |
+| 主窗口 import 链 | 641 ms（loguru 196 / PySide6 130 / urllib.request 41 / main_window 自身 49） | 见下「两条需产品决策」 |
+| MainWindow 构造（首帧） | 35 ms | 审计所称「启动冻结」不成立 |
+| 切页系统调用 | schtasks 31 ms、netsh wlan 94 ms、profile XML 0 ms | 不值得异步化 + 测试大改 |
+| 1Hz 稳态重绘 | 图表重绘 1.13 ms、表格重填 0.46 ms | 常驻体验无瓶颈 |
+| 密码库 `global_search` | 2.5 ms/次（建连 0.47 + 查询 2.03），逐字敲「github alice」累计 23.6 ms | 命令面板每字符一次也完全够用 |
+| `theme.app_icon()` | 3.0 ms，全项目仅启动期 2 次调用 | 加缓存无收益 |
+| **`chk_power` 注册表** | **pnpcapabilities 每次调用重扫类键 7.1 ms；19 个描述 = 141 ms** | **唯一真 N+1，已改** |
+
+**已改：`chk_power` 的 O(网卡数 × 类键数) 重复枚举**
+- `winregread.pnp_states()`：类键**扫一遍**出 `{DriverDesc: 状态}`，同描述任一键
+  已禁止即记 `disabled`（与原逐描述扫描等价，真实注册表 19/19 描述结果一致）。
+  保留一个易被忽略的语义差别：**类键无子键 → `None`（读不到）**，
+  **有子键但无 DriverDesc → `{}`**——原实现靠末尾再 `subkeys()` 一次来判
+  「无法读取网卡注册表」，若把两者都塌成假值，`SKIP`/`PASS` 会串味。
+- `pnpcapabilities(desc, scan=None)`：可选传入已扫结果，签名向后兼容。
+- `netcheck.chk_power`：开头扫一次、逐网卡查表，省掉末尾那次 `subkeys()`。
+- 效果：19 描述场景 141.1 ms → 7.4 ms；实际按物理网卡数线性省（约 7 ms/张，
+  Hyper-V/WSL/VPN 卡多的机器收益最大）。测试侧只改一行打桩签名
+  （`lambda desc, scan=None`），另补 2 例锁住「只扫一次」与 `None`/`{}` 之别。
+
+**两条需产品决策、本轮不动的发现**
+1. **PyInstaller 单文件（onefile）**：现 `SysKit.spec` 打的是 onefile，每次启动
+   要把 PySide6 全套解包到 `%TEMP%\_MEIxxxx`，这段冷启动成本**不在**上面的
+   641 ms import 画像里，而是打包形态带来的、量级更大的一项。改 onedir
+   （或便携目录发行）能直接把首窗时间降下来，代价是发行物从单 exe 变成目录，
+   需同步改 Inno Setup 与「便携版即解压即用」的对外说法——属产品口径，留待确认。
+2. **loguru 的 import 成本（196 ms，其中 asyncio 72 + multiprocessing 26）**：
+   这两个模块 SysKit 自己不用，但 `logger.setup()` 的两个文件 sink 都开了
+   `enqueue=True`（监控线程 + 多个 QThread 并发写日志，这是**正确且必要**的），
+   loguru 正是为 enqueue 在模块顶层导入它们。故这不是「顺手删得掉的死重」：
+   换成标准库 logging 能省 ~100 ms 启动，代价是重写 `{}` 风格日志层、
+   轮转/保留/backtrace 全部自己实现，并牵动所有断言日志文件内容的用例——
+   性价比不成立，记录为已知成本。
+
+**验证**：全量 **1105 例**全绿（1103 + 本轮新增 2，1 skip 为既有 run_gui 禁跑项）；
+`pyflakes syskit tools conftest.py` 清零。
+
+### 补充49（2026-09-19 续10）：优化第 3 步——结构专项（收敛表格构造，并给「大拆分」算清账）
+
+**已做：`theme.make_table()` 收编全站 16 张页面表格**
+16 个构造点各自重复同样四行约定：`QTableWidget(0, n)` + 表头 +
+`setEditTriggers(NoEditTriggers)` + `verticalHeader().setVisible(False)`，
+再按页面加 `setAlternatingRowColors` / `setSelectionBehavior(SelectRows)`。
+现在这些收进 `syskit/ui/theme.py`（那里已有 `add_shadow`、`app_logo_pixmap`
+两个同类 UI 约定辅助），调用点只留**真正因页面而异**的部分：列拉伸策略、
+固定列宽、排序、`SingleSelection`/`NoSelection`、信号连接。
+
+- 净效果：16 处 × 约 4 行 → 1 处约定；`QTableWidget` / `QAbstractItemView`
+  在 6 个页面文件里随之成为死 import，一并清掉（pyflakes 门重新归零）。
+- 保真的两个易错点：
+  1. **列数由表头长度推导**，逐个核过原 `(0, n)` 与表头个数一致（含 wifi AP 表
+     6 列、日报表 5 列等）；
+  2. **不是所有表都有隔行底色**——修复动作表 `tbl_actions` 与磁盘大文件表
+     `disk.table` 原本就没开，故 helper 的 `alternating` 默认 True 而这两处显式
+     传 `alternating=False`（磁盘表原本连 `setAlternatingRowColors` 都没调）。
+     默认值选 True 是因为 16 处里 14 处开着，但这 2 处一旦漏传就是肉眼可见的观感改动。
+- `verticalHeader().hide()` 与 `setVisible(False)` 等价，统一走后者；
+  修复页的 `setDefaultSectionSize(40)` 行高约定留在原处未动。
+
+**算过但不做：把 MainWindow 的 5 个内联页拆成独立模块**
+`syskit/ui/main_window.py` 1344 行、一个类里塞 5 个 `_build_*_tab`（状态 345-424、
+诊断 511-711、修复 712-846、设置 847-1036、日志 1053-1141），单看是明显的拆分点。
+但拆分的真实代价不在产品代码，而在**测试对 `win.*` 的耦合**：现有用例直接读
+`win.stack`(18 处)、`win.tbl_actions`(8)、`win.chk_start`/`win.cmb_hotkey`(9)、
+`win._diag_worker`/`_repair_worker`/`_combo_worker`/`_snap_worker`(各 5~13)、
+`win._busy`(14)、`win.txt_log`(8) 等 **约 130 处按属性名取的内部件**，另有
+「页序 ↔ 命令面板硬编码 0-9 ↔ `currentChanged` 连接顺序」这条隐式契约。
+把页面变成独立 Widget 类后，这些属性要么跟着搬（≈ 全量 UI 测试重写），要么在
+MainWindow 上逐个回填（`self.tbl_actions = page.tbl_actions` 这类胶水，反而比
+内联更难读）。**收益=行数好看，代价=130 处测试耦合 + 一条隐式契约的风险**，
+性价比不成立；且本轮性能实测已说明首帧 35 ms、稳态重绘 1 ms 级——拆分不会
+换来任何可测的用户可见收益。留作「若将来要按页懒加载/按页复用」时的决策。
+
+**验证（重跑，见下方事故记录）**：`--collect-only` 1105 例；全量 offscreen 跑到
+`[100%]`、0 F / 0 E、1 skip（既有 run_gui 禁跑项）、exit 0（原生 teardown 崩溃族
+仍会吞掉最后一行汇总，故以这三条为准）；`pyflakes syskit tools conftest.py` 清零。
+视觉验收改用**像素比对**而非肉眼看图：`tools/ui_preview.py` 分别渲染改前基线
+（`.workbuddy/preview_opt`）与改后（`preview_after`），14 张页面截图逐张
+`QImage` 比像素——**全部 `bad=0/1101600`、尺寸一致、无缺页**，即 16 处收敛对
+渲染结果零影响（含明暗两套主题、系统助手两个子页）。
+
+### 补充50（2026-09-19 续11）：本轮事故记录 + 预览脚手架的一处假 mock
+
+**事故（自查，非产品缺陷）**：用一段 bash 里内嵌的 python 脚本批量删 QtWidgets 的
+死 import 时，脚本重建了 import 块却没把其余正文写回，`syskit/ui/toolbox_page.py`
+（957 行）与 `syskit/ui/vault_page.py`（938 行）当场被截成 15/17 行。
+恢复路径：`git checkout HEAD --` 取回两文件 → 从本次会话的 transcript JSONL 里
+取出会话开始时 toolbox_page 的 `git diff`（含未提交的 `DnsSpeedTab`），规范化
+CRLF/行尾后 `git apply` 复原 → 再用 Edit 工具逐处重贴本轮的 make_table 收敛。
+**结论：改源码只用 Edit/Write，不用 shell 里的临时脚本批量重写文件**；未提交的
+在途工作没有备份，transcript 是唯一救命证据，不能指望它次次都在。
+
+**顺带修掉**：`tools/ui_preview.py` 里 `netcheck.run_all` 的假 mock 签名停留在
+`should_stop` 参数加入之前，预览时诊断线程每次都抛 `TypeError` 并被
+`workers.py` 的兜底 except 吞成空结果——诊断页底部的「推荐修复」条因此一直空着，
+截图看不出真实排版。补齐形参后该条正常填充（窗口宽度 1350→1880 即由此而来，
+不是 make_table 的回归）。注意：诊断**表格**本身仍空，它靠 QThread 回填而预览
+不等线程结束，这是脚手架的已知局限，未在本轮处理。
+
+### 补充51（2026-09-19 续12）：优化第 4 步——工程化（把两条「靠人记得跑」的例行检查钉成工具）
+
+**1) pyflakes 门固化成用例**：`tests/test_pyflakes_gate.py`。此前每轮修复都要手敲
+`python -m pyflakes syskit tools conftest.py`，忘了跑就静默漏过死 import / 未定义名
+（本仓库历史上 `DWORD.sizeof`、`exclude_os_history` 这类 P1 都是这条路子发现的）。
+- 走 pyflakes **API 而非 subprocess**：conftest 红线 1 的哨兵会拦 `subprocess.*`。
+- **扫描范围刻意不含 `tests/`**：用例里为触发 fixture 而做的「imported but unused」
+  是有意为之，实测有几十条，纳入只会把真问题埋掉；范围仍与手敲命令一致。
+- 反向验证过它能失败：临时塞一个含未用 import / 重复形参 / 未定义名的
+  `syskit/_gate_probe.py`，用例报出 5 条并红；删掉后归绿（探针文件已删）。
+
+**2) 像素比对工具**：`tools/diff_preview.py 改前目录 改后目录`，全一致退出 0。
+补上 ui_preview.py 说明里承诺却从未存在的「改动前后对比」能力——肉眼看图会漏
+列宽/隔行底色这类细微回归，纯重构应要求零像素差。文档里同时写清前置条件：
+两棵目录必须同一版 ui_preview.py 渲染，否则脚手架 mock 一变就会「假回归」。
+
+**3) README 数字纠偏**：「全量测试 1034 例」早已过期，现为 **1106 例**
+（1105 + 本轮新增的门用例），并补上两条新命令。
+
+**验证**：全量 1106 例 `[100%]` / 0 F / 0 E / 1 skip / exit 0；
+`pyflakes syskit tools conftest.py` 清零（含新工具与门用例自身）。
+
+### 补充52（2026-09-19 续13）：新功能——工具箱「应用联网」：给指定程序加/去防火墙出站块
+
+**需求**：选一个软件（如阅读器）就能禁止它联网，也能恢复。落点：工具箱第 8 个 Tab
+（追加在末尾，前 7 个 Tab 索引契约不破）+ 新业务模块 `syskit/appnet.py`（无 Qt，可单测）。
+
+**三个真正花时间的决策**
+1. **写走 netsh、读走 PowerShell，故意不对称**。写命令（add/set/delete rule）以 list
+   逐元素传 `proc.run`，不经 shell——用户选的 exe 路径永远没机会变成命令行语法；
+   读命令若也用 netsh，就得解析「规则名称: / 没有与指定条件匹配的规则。」这类**随系统
+   语言变**的字段，中文机上必炸；改问 `Get-NetFirewallRule` 拿 `$_.Enabled` 的
+   `True/False`，恒为 ASCII。PowerShell 不可用时读侧降级为「未校验」，
+   **绝不降级成「规则已被删除」**——那会诱导用户重复建规则。
+2. **规则名 = `SysKit-AppNet-<规范化路径 sha1 前 10 位>`，纯 ASCII**。规则名是所有
+   增删改查的唯一键，掺中文或空格就把引号问题带进 netsh；人类可读信息只写进
+   `displayName` / `description`，写完不回读。台账（`%APPDATA%\SysKit\appnet.json`）
+   存意图，防火墙存事实，两边分开。
+3. **身份键与下发路径必须分两个函数**。第一版把 `os.path.normcase()` 的结果直接写进
+   `program=`，用例当场抓出来：Windows 防火墙虽对大小写不敏感，但 wf.msc 里的程序名
+   被改成全小写，看着像伪造的。现 `norm_path()` 只做比对与哈希、`real_path()` 保留
+   原始大小写用于下发与展示。
+
+**状态显示 = 台账意图 × 防火墙实际**（`_appnet_state_text`）：已禁止 / 已放行 /
+规则已被外部删除 / 不一致（用户在 wf.msc 里动过）/ 未校验。只看台账会把「手动删了规则」
+画成仍在拦；只看防火墙分不清「已放行」和「规则停用」。
+
+**失败一律不留假状态**：规则没下成功就不写台账（否则清单上挂着一条其实没生效的
+「已禁止」）；删规则失败就不删台账（否则规则成了看不见的孤儿）；`save_entries` 返回
+False 时把「清单保存失败」说给人听，不静默吞。
+
+**已知边界（写进 README 常见问题，不做代码兜底）**：只拦该 exe **自身**发起的出站，
+借系统服务（svchost / BITS / 商店更新）联网的部分不受影响；规则是真实防火墙规则，
+卸载 SysKit 或清掉 appnet.json 后仍在 `wf.msc` 里生效，需手工删。
+**算过但不做**：全局白名单模式（默认禁止、仅放行勾选）与「孤儿规则自动接管」
+（可按 group 反查 description 里的路径）——前者一旦写坏会把系统网络掐断，
+后者要再引入一轮 PS 解析，都不在本轮范围。
+
+**契约同步**：`test_ui_smoke` 工具箱 Tab 7→8（函数随之改名 `eight_tabs`）；
+在途用例 `labels[-1] == "DNS 测速"` 改为 `labels[6] == "DNS 测速"`——追加新 Tab 后
+「末位」假设本身就失效了，这条恰好说明它早该按索引断言。命令面板 `tab:5:*` 是
+按 `.tabs` 动态枚举的，**无需改动**即可跳到新 Tab。
+
+**验证**：新增 `tests/test_appnet.py` 29 例 + `tests/test_ui_appnet.py` 13 例，
+全量 **1148 例** `[100%]` / 0 F / 0 E / 1 skip / exit 0；`pyflakes` 门清零。
+离屏像素回归（`tools/diff_preview.py`，基线 = 补50 修好 mock 之后那套）：
+**13/14 张旧页面逐像素 SAME**，只有工具箱变 128/1534080 像素（Tab 标签条多一项），
+另存新页 `05_light_toolbox_应用联网.png`——新 Tab 没扰到任何其他页。
+UI 里 `AppNetTab` 构造期**只读本地台账、零系统命令**，所以 MainWindow 全家桶测试
+不会碰到 netsh；真实状态要点「刷新状态」才查（也避免每次切页拉一次 PowerShell）。
+
+**真机只读复核抓到一个设计级缺陷（读侧判据）**：单测全绿不等于读侧能用，于是拿
+两条不写任何东西的命令问了真机一次。
+1. `netsh advfirewall firewall show rule name=<不存在的规则>` 在中文机上回显
+   「没有与指定标准相匹配的规则。」且**退出码 0** —— 印证了存在性只能靠「stdout 里
+   有没有我们的 ASCII 规则名」判定，看退出码或文案都会错。
+2. `Get-NetFirewallRule -Name '真实名','不存在名'` **即使 stdout 完全正常也返回退出码
+   1**（`-Name` 只要有一个名字查不到就非零）。第一版 `query_states` 用
+   `if r.code != 0: return None`，后果恰好打在要害上：一次「查 3 条、1 条被用户在
+   wf.msc 里删了」会被判成「未校验」，最需要如实报告的状态被吞掉了。
+
+**修法**：读侧判据从退出码改成**输出哨兵**——脚本先 `[bool](Get-Command
+Get-NetFirewallRule)` 探测，可用才输出 `SysKit-AppNet-PS-Available` 这行哨兵，末尾
+强制 `exit 0`；`query_states` 判「超时 或 stdout 里没有哨兵」才返回 `None`，有哨兵
+则按行解析、缺席的规则名照常记 `missing`。哨兵不含 `=`，`parse_status_output` 天然
+忽略它。新增 2 例锁死这条契约（`test_ps_status_script_emits_probe_and_forces_exit_zero`
+断言脚本含哨兵且以 `exit 0` 收尾；`test_query_states_trusts_probe_over_exit_code`
+用 code=1 + 带哨兵的输出断言结果是 `{a: on, b: missing}` 而不是 `None`）。
+真机复跑同一脚本形态确认：`code=0`、stdout =
+`SysKit-AppNet-PS-Available / FPS-ICMP6-ERQ-In-V2=False`，混合存在与不存在的名字
+不再触发误判。全量 **1150 例** `[100%]` / 0 F / 0 E / exit 0，`pyflakes` 门 0，
+像素回归 **15/15 张 SAME**（读侧改动不该动界面，也确实没动）。
+
+### 补充53（2026-09-19 续14）：全面测试优化——假成功清算、护栏自纠、托盘常驻性能专项
+
+**范围与基线**：补52 之后做一轮全面体检。开局 1150 例 / 99% / 最大单例 42.56s；
+收尾 **1203 例**（+53）/ 99%（8859 stmts，miss 118）/ 0 F 0 E 1 skip / `pyflakes` 0 /
+最大单例 **2.8s**（不带覆盖率时全量墙钟 49.9s，带覆盖率 72.8s）。计数与 0 F 0 E 用
+`--junitxml` 复核，不信被原生 teardown 截断的末尾摘要。
+
+**一、假成功（说「办成了」但其实没校验）逐条钉死**
+1. `appnet` 业务层补到 **100% 语句覆盖**（52 例）。补漏时撞到一条实测事实：
+   Windows 上 `os.path.abspath()` 对含 NUL 的路径**并不抛** `ValueError`，所以
+   `real_path()` 的兜底分支只能打桩逼出来——**没有**据此推测性放宽 `except`。
+   另外三条口径进用例：PS 不可用时删除动作如实说「无法校验」而不是「规则已删除」；
+   `actual_state` 返回未知状态时原样转述不翻译；台账保存失败/状态回填失败都不留假条目。
+2. 静默重诊期间导出/复制报告 = **假结论**。`run_diagnosis()` 先清空 `_diag_results`
+   再逐项回填，而托盘「立即检测」这类静默路径不置灰按钮，用户此刻导出的是一份缺项
+   报告还被文末写成结论。修法：`_report_lines()` 双门（在跑 or 结果为空一律不出报告），
+   `_no_report_hint()` 分两种口径告诉用户等一等还是先诊断。
+3. DNS 测速的**分母是编出来的**：跑起来后把次数 spinbox 改掉，成功列照样按新值显示
+   「0/1」。启动时 `self._times = spin.value()` 冻结、控件禁用、结束再放开。
+4. `chk_power` 的 N+1 **复活**：网卡类键不可读时 `pnp_states()` 返回 `None`，直接往
+   下传就让 `pnpcapabilities()` 走「自己重扫」的兜底，把本函数省掉的注册表 N+1 又按
+   网卡数复原一遍 → `states = scan or {}`，并加计数用例锁死「四张网卡只扫一次」。
+
+**二、护栏本身也要有测试**
+conftest 三条红线靠哨兵拦截，但漏了一批出口：`os.startfile`、`webbrowser.open`、
+winreg 全部写函数、`socket`（含 `getaddrinfo`/`sendto`——不走 connect 也能出去）、
+`urllib`（`urlopen` 只是 `OpenerDirector.open` 的薄封装，只拦前者能被绕过）、`winsound`。
+更根本的问题是**漏了什么没人知道**：winreg 那批用 `hasattr` 跳过不存在的名字 = 静默
+缺口（写错名字时它就是不响）。新增 `tests/test_conftest_guards.py` **9 例**专门断言
+「护栏会响」，并顺手补上真实漏掉的 `SetValue`/`DeleteKeyEx`。同批清算：一条永绿用例
+真扫 `%TEMP%` 33s（全量 42.56s 的元凶）→ 打桩 + docstring 写明必须桩的理由；
+`pytest.ini` 统一 `timeout = 120`。
+
+**三、托盘常驻性能专项（先测后改，每条都有数）**
+1. **遥测按可见性收窄**：只有「窗口可见且停在对应页」才采 `lat`/`wifi`/`procs`。
+   实测隐藏期每分钟省 **67.53s** 采样工作（12 次子进程 + 40 次 ICMP + 30 次进程表
+   遍历）≈ **112.6% 单核**。最大单项是 `_top_procs` 稳态 **2137.7ms**/次（每 2s 一跳
+   = 107% 占空比），它慢在为每个进程开句柄取 `cpu_percent`/`memory_info`，不是算法。
+2. **监控循环探测先行**：旧顺序每 30s 先抓全量快照（4.2~6.8s PowerShell，占空比约
+   14%、2880 次/天），而快照在本函数里只回答「有没有活动物理网卡」——只有探测失败
+   时才需要。改成先 `probe_quick()`，通过即报 ok，健康期 **0 次**采集。顺带纠一个
+   口径：只有 Clash TUN 等虚拟网卡能上网时，旧顺序先判「无活动网卡」直接报 offline，
+   `netstats` 会把它记进断网时长；现在探测通过就是 ok。断网路径仍然两步都付，不变。
+3. **`snapshot` 换掉 `Get-NetIPConfiguration`**：同机同会话 6.78s → **4.16s（-39%）**，
+   逐网卡 `ipv4/gw4/dns` 与默认路由 **0 处差异**。两个坑写进脚本注释并各锁用例：
+   DNS 查询不能带 `-AddressFamily IPv4`（否则未显式配 DNS 的网卡丢掉 `fec0:` 链路项，
+   静态 IP 判定对象漂移）；0/0 路由现在只查一遍，`ipcfg.gw4` 与 `routes4` 共用一份。
+   解析器与所有 fixture 未动（输出 JSON 形状保持一致）。
+4. **网关刷新跟着消费者走**：`refresh_gateway()` 也是一次 PowerShell，旧写法 `run()`
+   里每 300 拍无条件刷（288 次/天）。现在只有 `lat` 在范围内且距上次满 300 拍才刷，
+   挂机两小时后回仪表盘第一拍补刷一次、之后节奏不变（用例锁 `[501, 801]`）。
+5. **托盘 tooltip 去重**：遥测每秒回调一次，空闲时速率文本压根没变也照样 `setToolTip`
+   （每次都是一回 `NIM_MODIFY` 跨进程调用，挂机一天 86400 次空转）。文本不变直接返回。
+6. 顺手修掉一处**永不可达的兜底**：`_top_procs` 里 `name = info.get("name") or str(pid)`
+   恒真，导致下面「问一次活对象」的分支进不去（真名再也拿不到）→ 先取快照名、为空才
+   问 `cached.name()`、再为空才退回 pid。telemetry 覆盖 96% → **100%**。
+
+**本轮事故（自己抓到的回归，值得记）**：给 `TelemetryWorker` 加 `set_need` 之后，
+`tools/ui_preview.py` 的 `_FakeTelemetry` 桩没这个方法，`showEvent` 抛
+`AttributeError` → 截图 15 张全废、`diff_preview` 整桌 ONLY-A（而退出码仍是 0，因为它
+只报差异不报「一边为空」）。教训：**桩必须与公开接口同步**。已补 `set_need`，理由写进
+桩的注释；顺带确认单测全家桶没抓到它，是因为测试用的是真 `TelemetryWorker`。
+
+**验证**：全量 **1203 例** `[100%]` / 0 F / 0 E / 1 skip / exit 0，
+`TOTAL 8859 stmts / miss 118 = 99%`，`pyflakes` 门 0。离屏像素回归
+`tools/diff_preview.py`：**14/15 张逐像素 SAME**，唯一差异 196/1534080 px、
+bbox `(312,792)-(391,799)`——80×8 的一条文本带，正是预览脚手架自己新加的
+「✔ 状态已刷新」文案，与产品代码无关（本轮改动全在后台线程与采集脚本里，界面像素本就
+不该动；预览脚手架那行文案是唯一的例外，也正是它造成了这 196 个像素）。
+预览/README 口径同步：README 托盘段补「只有虚拟网卡联网时」的灰→绿说明。
+
+**算过但没做**：常驻一个 PowerShell stdio 服务把 4.2s 的采集压到百毫秒级——收益主要
+落在诊断页首次刷新，但要引入进程生命周期、崩溃重启与超时语义，比本轮「先测后改、
+最小改动」的口径大一个量级；`Get-NetAdapter`（1.33s）与 `Get-NetConnectionProfile`
+（0.78s）是剩下的两头，同样只能靠常驻进程或换 API 解决，留待后续。
+
+**仍等授权**：真实防火墙一轮「加 → 校验 → 删」（要 UAC，且会在 `wf.msc` 留痕）；
+`dist\SysKit.exe` 真机跑；把本轮性能改动装进真机做 24h 挂机对比。
+
+
+
+
+**2026-09-19 安装路径收敛**：移除 install.bat 与 tools/make_shortcuts.ps1——setup.exe 成为唯一安装路径
+（固定 AppId 覆盖升级、便携数据在 <安装目录>\data、卸载器清自启任务）；README 安装/升级/卸载口径与设置页
+提示语同步改指 setup.exe；test_packaging_chain 卸载清任务断言从 install.bat 迁到 ISS
+（test_iss_uninstall_removes_autostart_task）；build.bat 打包锁检测从「进程名匹配」改为 dist\SysKit.exe
+可写性探针（独占打开一瞬即关、不改内容）——安装版实例（如 E:\Software\SysKit）常驻时不再误报阻断打包。

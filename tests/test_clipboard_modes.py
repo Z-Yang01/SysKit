@@ -1,9 +1,7 @@
 """syskit/clipboard.py 与 syskit/modes.py 单元测试（无真实注册表/进程/剪贴板）。"""
 import json
 import os
-from types import SimpleNamespace
 
-import pytest
 
 from syskit import clipboard as clip_mod
 from syskit import config, modes
@@ -475,7 +473,6 @@ class TestModeSteps:
 
 def test_flush_pending_closes_debounce_window(tmp_path, monkeypatch):
     """托盘/面板读磁盘态前调 flush_pending：10s 防抖窗口内最新复制可见。"""
-    from types import SimpleNamespace as _NS
     assert "flush-me" not in clip_mod.ClipboardHistory(max_items=5).texts()
     h1 = clip_mod.ClipboardHistory(max_items=5)
     assert h1.add("flush-me") is True

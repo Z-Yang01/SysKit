@@ -8,11 +8,12 @@ from PySide6.QtGui import QColor, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                                QMessageBox, QProgressBar,
-                               QPushButton, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QPushButton, QTableWidgetItem, QTabWidget,
                                QLineEdit, QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
 from .disk_page import DiskTab
+from .theme import make_table
 from .workers import reap
 from .. import admin, clipboard as clipboard_mod, cliprules, modes, settings, winregread
 from ..logger import LOGGER
@@ -41,14 +42,10 @@ class PerfTab(QWidget):
         lay.addLayout(left, 1)
 
         right = QVBoxLayout()
-        self.tbl = QTableWidget(0, 4)
-        self.tbl.setHorizontalHeaderLabels(["PID", "进程", "CPU %", "内存"])
+        self.tbl = make_table(["PID", "进程", "CPU %", "内存"])
         self.tbl.horizontalHeader().setDefaultSectionSize(90)
         self.tbl.horizontalHeader().setStretchLastSection(True)
-        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl.setAlternatingRowColors(True)
         self.tbl.setSortingEnabled(True)
-        self.tbl.verticalHeader().setVisible(False)
         right.addWidget(QLabel("资源占用最高的进程（2 秒刷新）"))
         right.addWidget(self.tbl, 1)
         lay.addLayout(right, 1)
@@ -114,13 +111,8 @@ class StartupTab(QWidget):
         row.addWidget(btn_refresh)
         lay.addLayout(row)
 
-        self.tbl = QTableWidget(0, 4)
-        self.tbl.setHorizontalHeaderLabels(["名称", "位置", "命令", "状态"])
+        self.tbl = make_table(["名称", "位置", "命令", "状态"], select_rows=True)
         self.tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl.setAlternatingRowColors(True)
-        self.tbl.verticalHeader().setVisible(False)
         lay.addWidget(self.tbl)
         self.reload()
 
@@ -567,14 +559,9 @@ class ClipboardTab(QWidget):
         row.addWidget(self.btn_clear)
         lay.addLayout(row)
 
-        self.tbl = QTableWidget(0, 3)
-        self.tbl.setHorizontalHeaderLabels(["时间", "类型", "内容"])
+        self.tbl = make_table(["时间", "类型", "内容"], select_rows=True)
         self.tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl.setAlternatingRowColors(True)
-        self.tbl.verticalHeader().setVisible(False)
         self.tbl.itemDoubleClicked.connect(lambda *_: self._copy_selected())
         self.tbl.itemSelectionChanged.connect(self._show_detail)
         lay.addWidget(self.tbl)
@@ -980,12 +967,8 @@ class ModesTab(QWidget):
         lg.addWidget(tip)
         lay.addWidget(grp_g)
 
-        self.txt = QTableWidget(0, 3)
-        self.txt.setHorizontalHeaderLabels(["步骤", "结果", "说明"])
+        self.txt = make_table(["步骤", "结果", "说明"])
         self.txt.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.txt.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.txt.setAlternatingRowColors(True)
-        self.txt.verticalHeader().setVisible(False)
         self.txt.setSelectionMode(QAbstractItemView.NoSelection)
         lay.addWidget(self.txt, 1)
         self.lbl = QLabel("尚未执行模式。点击上方按钮查看逐步结果。")

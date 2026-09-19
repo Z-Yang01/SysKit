@@ -1,7 +1,6 @@
 """syskit/main.py 与 __main__ 分流测试：CLI 子命令 / help / GUI 路径（不启动真实 GUI）。"""
 import builtins
 import sys
-import types
 
 import pytest
 
@@ -150,9 +149,6 @@ def test_unknown_subcommand_errors_instead_of_gui(monkeypatch, capsys):
     from syskit import main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["syskit", "dianose"])   # 拼写错误
-    gui_called = []
-    import importlib
-    real = main_mod.run
     # 不真跑 run_gui：patch 掉 GUI 导入路径的行为不可行（函数内 import），
     # 直接断言 run() 的 sys.exit(2) 且未进入 GUI
     monkeypatch.setattr(sys, "exit", lambda code=0: (_ for _ in ()).throw(

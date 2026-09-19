@@ -300,6 +300,43 @@ class TestWinregReadGaps:
         assert winregread.pnpcapabilities("Intel(R) Wi-Fi") == "enabled_off"
         assert winregread.pnpcapabilities("别的驱动") is None
 
+    def test_pnp_states_single_scan_for_all_descs(self, monkeypatch):
+        """批量扫描一次即可覆盖全部描述：chk_power 靠它把 N 次全量枚举压成 1 次。"""
+        scans = []
+        vals_by_sub = {
+            "0000": {"DriverDesc": "Intel(R) Wi-Fi", "PnPCapabilities": "24"},
+            "0001": {"DriverDesc": "Realtek PCIe GBE"},
+            "Config": {"DriverDesc": "不该出现"},                  # 非 0 前缀跳过
+        }
+
+        def fake_subkeys(p):
+            scans.append(p)
+            return ["0000", "0001", "Config"]
+
+        monkeypatch.setattr(winregread, "subkeys", fake_subkeys)
+        monkeypatch.setattr(winregread, "values",
+                            lambda p: vals_by_sub.get(p.rsplit("\\", 1)[-1], {}))
+        scan = winregread.pnp_states()
+        assert scans and len(scans) == 1                           # 建表只枚举一次
+        assert scan == {"Intel(R) Wi-Fi": "disabled",               # 同描述任一键禁止
+                        "Realtek PCIe GBE": "enabled_off"}
+        # 传入 scan 后不再触碰注册表
+        assert len(scans) == 1
+        assert winregread.pnpcapabilities("Intel(R) Wi-Fi", scan) == "disabled"
+        assert winregread.pnpcapabilities("Realtek PCIe GBE", scan) == "enabled_off"
+        assert winregread.pnpcapabilities("不存在的驱动", scan) is None
+        assert len(scans) == 1
+
+    def test_pnp_states_none_vs_empty_distinction(self, monkeypatch):
+        """类键不可读 → None；可读但没有驱动描述 → {}（chk_power 据此分 SKIP/PASS）。"""
+        monkeypatch.setattr(winregread, "subkeys", lambda p: [])
+        assert winregread.pnp_states() is None
+
+        monkeypatch.setattr(winregread, "subkeys", lambda p: ["0000", "Config"])
+        monkeypatch.setattr(winregread, "values", lambda p: {})
+        assert winregread.pnp_states() == {}
+        assert winregread.pnpcapabilities("Intel(R) Wi-Fi", {}) is None
+
 
 # ============================================================
 # dnsquery.py
@@ -363,7 +400,6 @@ class TestDnsQueryGaps:
 
     def test_resolve_system_future_error_returns_empty(self, monkeypatch):
         """getaddrinfo 抛错（daemon 线程内捕获）→ 返回 []，不向调用方穿透。"""
-        import socket as socket_mod
 
         def boom(*a, **k):
             raise RuntimeError("getaddrinfo down")

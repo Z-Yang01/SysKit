@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from syskit import proc
+from syskit import proc, snapshot
 from syskit.snapshot import Adapter, Snapshot, _as_list, _clean, _parse_json_loose, current_ssid, take
 
 
@@ -109,6 +109,39 @@ class TestParseJsonLoose:
         """截取到花括号但内容损坏 → 抛 JSONDecodeError（由 take 兜底）。"""
         with pytest.raises(json.JSONDecodeError):
             _parse_json_loose("{bad json}")
+
+
+# ---------------- 采集脚本口径（文本契约，不跑 PowerShell） ----------------
+
+class TestPsScriptShape:
+    """锁住采集脚本的性能与口径：这三条都是实测出来的结论，改回去就会退回 6.8s 或让
+    网关/DNS 判定对象漂移。
+
+    - Get-NetIPConfiguration 单跑使整脚本 4.2s -> 6.8s（它内部还会再解析一遍连通性），
+      已换成 Get-NetIPAddress + Get-DnsClientServerAddress + 复用默认路由；
+    - DNS 查询不能带 -AddressFamily IPv4：旧口径里未显式配 DNS 的网卡会带 IPv6 链路项
+      （fec0:0:0:ffff::x），只查 IPv4 会让这些网卡 dns 变空，静态 IP 判定对象漂移。
+    """
+
+    def _code(self):
+        """脚本去掉 # 注释行（注释里要写为什么换掉旧命令，不能反过来把断言绑死）。"""
+        return "\n".join(l for l in snapshot._PS_SCRIPT.splitlines() if not l.lstrip().startswith("#"))
+
+    def test_slow_ipconfiguration_cmdlet_is_gone(self):
+        code = self._code()
+        assert "Get-NetIPConfiguration" not in code
+        assert "Get-NetIPAddress" in code
+
+    def test_default_route_scanned_once(self):
+        """0/0 路由只查一遍，ipcfg 的 gw4 与 routes4 共用同一结果。"""
+        code = self._code()
+        assert code.count("DestinationPrefix -eq '0.0.0.0/0'") == 1
+        ipcfg_block = code.split("$out.ipcfg =")[1].split("$out.routes4")[0]
+        assert "$defRoutes4" in ipcfg_block
+
+    def test_dns_query_not_filtered_to_ipv4(self):
+        line = next(l for l in self._code().splitlines() if "Get-DnsClientServerAddress" in l)
+        assert "AddressFamily" not in line
 
 
 # ---------------- take ----------------

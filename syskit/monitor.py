@@ -87,18 +87,22 @@ class Monitor(threading.Thread):
         }
 
     def _once(self, st):
+        # 先探连通、后抓快照：snapshot.take() 实测 4~6s（全量 PowerShell 采集），而它在
+        # 本函数里只服务一件事——判断有没有活动物理网卡，那只有探测失败时才有意义。
+        # 健康路径因此每 poll_interval 省掉一次采集，托盘常驻时不再空转；纯虚拟网卡
+        # （Clash TUN）能上网时也不再被误报成「无网络连接」——该状态会被 netstats 计入断网。
+        net_ok = probe_quick()
+        if net_ok:
+            self._fail_streak = 0
+            self.on_status(ST_OK, "")
+            return
+
         from .snapshot import take
         snap = take()
         ups = snap.physical_up_adapters()
         if not ups:
             self.on_status(ST_OFFLINE, "无活动网络连接")
             self._fail_streak = 0
-            return
-
-        net_ok = probe_quick()
-        if net_ok:
-            self._fail_streak = 0
-            self.on_status(ST_OK, "")
             return
 
         self._fail_streak += 1

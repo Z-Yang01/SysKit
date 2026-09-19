@@ -11,7 +11,7 @@ import types
 import pytest
 
 from syskit import admin, cli, netcheck, repairs
-from syskit.netcheck import CheckResult, FAIL, PASS, WARN
+from syskit.netcheck import CheckResult, FAIL, PASS
 from syskit.repairs import RepairResult
 
 

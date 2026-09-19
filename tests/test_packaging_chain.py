@@ -23,8 +23,6 @@ ISS = open(os.path.join(os.path.dirname(__file__), "..", "installer", "SysKit.is
            "rb").read().decode("utf-8-sig")
 BUILD_BAT = open(os.path.join(os.path.dirname(__file__), "..", "build.bat"),
                  "rb").read().decode("utf-8")
-INSTALL_BAT = open(os.path.join(os.path.dirname(__file__), "..", "install.bat"),
-                   "rb").read().decode("utf-8")
 
 
 def test_iss_autostart_tr_has_inner_quotes():
@@ -60,8 +58,9 @@ def test_build_bat_aborts_on_empty_version():
     assert "if not defined VER goto :err" in BUILD_BAT
 
 
-def test_install_bat_uninstall_hint_covers_scheduled_task():
-    assert "schtasks /Delete /TN SysKitAutostart" in INSTALL_BAT
+def test_iss_uninstall_removes_autostart_task():
+    """install.bat 已移除（setup.exe 唯一安装路径）；卸载器必须清自启任务。"""
+    assert "/Delete /TN SysKitAutostart" in ISS
 
 
 # ---------------- main.py 未知选项 ----------------

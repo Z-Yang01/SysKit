@@ -24,7 +24,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt, QModelIndex
-from PySide6.QtWidgets import QApplication, QInputDialog
+from PySide6.QtWidgets import QInputDialog
 
 from syskit import clipboard as clip_mod
 from syskit import settings as settings_mod
@@ -600,7 +600,7 @@ class TestAccountFlows:
         page.tbl_accts.setCurrentCell(-1, -1)
         page._toggle_fav()                                     # 无选中 → no-op
 
-        row = _select(page, page.tbl_accts, "bob")
+        _select(page, page.tbl_accts, "bob")
         with monkeypatch.context() as m:
             m.setattr(vault, "toggle_favorite", lambda aid: False)
             refreshed = []

@@ -201,7 +201,6 @@ def test_scan_tree_child_scandir_oserror(tmp_path, monkeypatch):
     plain = tmp_path / "a.txt"
     plain.write_bytes(b"x" * 10)
 
-    real_scandir = os.scandir
     real_stat = os.stat
 
     class _Ent:
@@ -426,7 +425,6 @@ def test_disk_tab_fill_children_guard_and_lazy(qtbot):
 
 def test_disk_tab_collect_table_selection_and_ancestor_dedup(qtbot):
     """_collect：大文件表选中行入集；父子同时勾选只保留祖先。"""
-    from PySide6.QtWidgets import QTreeWidgetItem
 
     from syskit.ui import disk_page as dp
 
@@ -648,7 +646,6 @@ class TestClipActionWorker:
 class TestOnClipChangeMime:
     def test_file_image_html_and_exception_fallback(self, qtbot, monkeypatch):
         from syskit import clipboard as clip_mod
-        from syskit.ui import system_page as sp
 
         monkeypatch.setattr(clip_mod, "should_record_now", lambda *a, **k: True)
         tab = _make_clip_tab(qtbot)
@@ -846,7 +843,6 @@ class TestRunActionDispatch:
 class TestQrSave:
     def test_save_qr_writes_file_and_cancel_path(self, qtbot, monkeypatch, tmp_path):
         from PySide6.QtWidgets import QFileDialog
-        from syskit.ui.system_page import ClipboardTab
 
         tab = _make_clip_tab(qtbot)
         target = tmp_path / "out.png"

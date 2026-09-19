@@ -12,7 +12,6 @@
 安全（叠加 conftest 哨兵）：全程无真实系统调用——netcheck.run_all 打桩、
 os.replace/unlink 打桩（持久化目录已被 conftest 重定向到 tmp）、特效类打桩。
 """
-import pytest
 from types import SimpleNamespace
 
 

@@ -62,7 +62,6 @@ def _yesterday(h, mi, s):
 
 
 def test_malformed_ts_skipped_but_others_counted():
-    today = time.strftime("%Y-%m-%d")
     events = [
         {"ts": "not-a-date", "state": "ok", "detail": ""},               # 畸形 → 跳过
         {"ts": _ts(*_today(9, 0, 0)), "state": "no_net", "detail": ""},
@@ -77,14 +76,12 @@ def test_malformed_ts_skipped_but_others_counted():
 
 
 def test_outage_without_recovery_no_duration():
-    today = time.strftime("%Y-%m-%d")
     events = [{"ts": _ts(*_today(8, 0, 0)), "state": "no_net", "detail": ""}]
     rows = netstats.daily_report(events, days=1)
     assert rows[0]["outages"] == 1 and rows[0]["outage_sec"] == 0
 
 
 def test_first_event_no_predecessor_duration():
-    today = time.strftime("%Y-%m-%d")
     events = [{"ts": _ts(*_today(8, 0, 0)), "state": "ok", "detail": ""}]
     rows = netstats.daily_report(events, days=1)
     assert rows[0]["outages"] == 0 and rows[0]["outage_sec"] == 0

@@ -11,13 +11,14 @@ import time
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel,
                                QMessageBox, QProgressBar, QPushButton,
-                               QSplitter, QTableWidget, QTableWidgetItem,
+                               QSplitter, QTableWidgetItem,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
 from .. import diskusage
 from ..logger import LOGGER
 from .charts import BarChart, human_bytes
+from .theme import make_table
 from .workers import reap
 
 _BAR_COLORS = ["#3576e0", "#8e5ce6", "#2e9e44", "#ef6c00",
@@ -141,11 +142,8 @@ class DiskTab(QWidget):
         self.lbl_files = QLabel("大文件 Top 200（双击定位所在文件夹，选中行可删除）")
         self.lbl_files.setProperty("hint", True)
         rlay.addWidget(self.lbl_files)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["文件", "大小", "修改时间"])
-        self.table.verticalHeader().hide()
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table = make_table(["文件", "大小", "修改时间"], select_rows=True,
+                                alternating=False)
         self.table.itemDoubleClicked.connect(self._reveal)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setColumnWidth(1, 90)

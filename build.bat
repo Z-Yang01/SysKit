@@ -13,11 +13,15 @@ echo [2/5] install deps...
 python -m pip install -r requirements.txt -q || goto :err
 
 echo [3/5] pyinstaller...
-tasklist /FI "IMAGENAME eq SysKit.exe" 2>nul | findstr /I "SysKit.exe" >nul
-if not errorlevel 1 (
-  echo 检测到正在运行的 SysKit，它锁定了 dist\SysKit.exe，无法覆盖。
-  echo 请先退出（托盘右键 - 退出）后重试。
-  goto :err
+REM 只实测 dist\SysKit.exe 自身可写性：Windows 仅锁定「被运行的那个文件」，
+REM 安装版实例（exe/数据在其它目录）不锁 dist，不应阻断打包；独占打开一瞬即关，不改内容
+if exist dist\SysKit.exe (
+  powershell -NoProfile -Command "try{$s=[IO.File]::Open('dist\SysKit.exe','Open','ReadWrite','None');$s.Close()}catch{exit 1}"
+  if errorlevel 1 (
+    echo dist\SysKit.exe 被占用——应是从本目录 dist 启动的 SysKit 尚未退出。
+    echo 请退出后重试；若运行的是安装版实例，无需退出可直接打包。
+    goto :err
+  )
 )
 REM 用 python -m 调用：pip --user 安装时 Scripts 目录不在 PATH，裸 pyinstaller 会找不到命令
 python -m PyInstaller SysKit.spec --noconfirm --clean || goto :err

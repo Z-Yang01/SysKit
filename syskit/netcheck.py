@@ -296,19 +296,24 @@ def chk_ncsi_registry(snap: Snapshot) -> CheckResult:
 
 def chk_power(snap: Snapshot) -> CheckResult:
     r = CheckResult("power_mgmt", "网卡节电（允许系统关闭设备以节约电源）", INFO)
+    # 类键只扫一遍：曾每个物理网卡各调一次 pnpcapabilities → 重复全量枚举
+    #（实测 7ms × 网卡数），网卡多的机器（Hyper-V/WSL/VPN 虚拟卡）线性放大
+    scan = winregread.pnp_states()
+    # 类键不可读时 scan 是 None：直接传下去会让 pnpcapabilities 走「自己重扫」的
+    # 兜底分支，等于把本函数要省的 N+1 又按网卡数复原一遍，所以塌成空表。
+    states = scan or {}
     items = []
     for a in snap.adapters:
         if a.virtual or a.desc == "":
             continue
-        state = winregread.pnpcapabilities(a.desc)
+        state = winregread.pnpcapabilities(a.desc, states)
         if state == "enabled_off":
             items.append(f"{a.name}({a.desc[:24]}): 允许断电")
         elif state is None:
             continue
         else:
             items.append(f"{a.name}({a.desc[:24]}): 已禁止断电")
-    caps = winregread.subkeys(rf"HKLM\{config.NIC_CLASS_KEY}")
-    if not caps and not items:
+    if scan is None and not items:
         r.status, r.detail = SKIP, "无法读取网卡注册表"
         return r
     risky = [i for i in items if "允许断电" in i]

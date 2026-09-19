@@ -7,7 +7,6 @@
 - snapshot.take / proxy.disable_proxy / glob.glob 等重 I/O 依赖一律 monkeypatch；
 - 备份断言只看 config.BACKUP_DIR（conftest 已重定向到 pytest 临时目录）下的文件。
 """
-import os
 import time
 import winreg
 from pathlib import Path
@@ -19,7 +18,7 @@ from syskit import config, repairs
 
 # README 风险分级表（README.md「修复动作与风险级别」一节）声称的三个梯度
 SAFE_IDS = {"flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan",
-            "toggle_adapter", "restart_services"}
+            "toggle_adapter", "restart_services", "restore_point"}
 CONFIG_IDS = {"fix_nlasvc", "dns_auto", "dns_preset", "ncsi_restore", "ncsi_disable",
               "power_off", "del_persistent_route", "proxy_off",
               "mac_random_off", "mac_random_on"}
@@ -146,7 +145,7 @@ def reg_spy(monkeypatch, events):
 # ---------------- 公共小工具 ----------------
 
 def _snap(persistent=(), defaults=(), adapters=()):
-    from syskit.snapshot import Adapter, Snapshot
+    from syskit.snapshot import Snapshot
     return Snapshot(persistent_routes=list(persistent),
                     default_routes=list(defaults),
                     adapters=list(adapters))
@@ -294,9 +293,12 @@ def test_combos_reference_existing_ids_with_risk_split():
             assert repairs.get_action(aid) is not None
     assert all(repairs.get_action(a).risk == repairs.RISK_SAFE
                for a in repairs.COMBOS["fast"][1])
-    assert repairs.COMBOS["stack"][1] == ["winsock_reset", "ipstack_reset"]
+    # 深度/重置组合首位是系统还原点安全网（SAFE，无需确认即执行）
+    assert repairs.COMBOS["full"][1][0] == "restore_point"
+    assert repairs.COMBOS["stack"][1][0] == "restore_point"
+    assert repairs.COMBOS["stack"][1][1:] == ["winsock_reset", "ipstack_reset"]
     assert all(repairs.get_action(a).risk == repairs.RISK_AGGRESSIVE
-               for a in repairs.COMBOS["stack"][1])
+               for a in repairs.COMBOS["stack"][1][1:])   # 首位是 SAFE 的还原点
     # 一键组合（手动按钮）里深度修复也不含强力级动作
     assert not (set(repairs.COMBOS["full"][1]) & AGGRESSIVE_IDS)
 
@@ -993,3 +995,33 @@ def test_ipstack_reset_partial_failure(recorder):
     r = repairs.get_action("ipstack_reset").execute({})
     assert r.success is False
     assert r.need_reboot is True
+
+
+# ---------------- 系统还原点（深度/重置组合的安全网） ----------------
+
+def test_restore_point_success(recorder, monkeypatch):
+    from syskit import admin
+    monkeypatch.setattr(admin, "is_admin", lambda: True)
+    recorder.respond_sub("Checkpoint-Computer", code=0)
+    r = repairs.get_action("restore_point").execute({})
+    assert r.success is True and "还原点" in r.message
+    ps = [c for c in recorder.calls if c[0] == "ps"]
+    assert ps and "Checkpoint-Computer" in ps[0][1]
+
+
+def test_restore_point_requires_admin(monkeypatch):
+    from syskit import admin
+    monkeypatch.setattr(admin, "is_admin", lambda: False)
+    r = repairs.get_action("restore_point").execute({})
+    assert r.success is False and "管理员" in r.message
+
+
+def test_restore_point_failure_reports_honestly(recorder, monkeypatch):
+    """系统还原未开启时 Checkpoint-Computer 失败：如实报失败并提示不影响继续修复。"""
+    from syskit import admin
+    monkeypatch.setattr(admin, "is_admin", lambda: True)
+    recorder.respond_sub("Checkpoint-Computer", code=1,
+                         stdout="", stderr="服务无法启动")
+    r = repairs.get_action("restore_point").execute({})
+    assert r.success is False
+    assert "系统还原" in r.message and "不影响继续修复" in r.message

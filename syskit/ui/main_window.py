@@ -2,13 +2,13 @@
 import os
 import time
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QFont, QDesktopServices, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout,
                                QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
-                               QStackedWidget, QSystemTrayIcon, QTableWidget,
+                               QStackedWidget, QSystemTrayIcon,
                                QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -286,6 +286,38 @@ class MainWindow(QMainWindow):
                 settings.save({"last_page": idx})
 
     # ---------------- 遥测 ----------------
+    def _refresh_telemetry_scope(self):
+        """告诉遥测引擎「此刻的界面看得懂哪些分组」，没人看的昂贵采样就不做。
+
+        省掉的是 netsh wlan 子进程（每 5 秒）、两轮 ICMP（每 3 秒）、进程表遍历
+        （每 2 秒）：托盘驻留是进程生命期的绝大多数时间，那时只要速率一项。
+        页面回前台由 showEvent / 切页重新打开，图表另有 reset_if_stale() 清断流。
+        """
+        if getattr(self, "tele", None) is None or getattr(self, "stack", None) is None:
+            return                                  # __init__ 早期：tele/stack 尚未就位
+        need = set()
+        if self.isVisible() and not self.isMinimized():
+            cur = self.stack.currentWidget()
+            if cur is self.page_dash:
+                need |= {"lat", "wifi"}
+            elif cur is self.page_system:
+                need |= {"procs"}
+        self.tele.set_need(need)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_telemetry_scope()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._refresh_telemetry_scope()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        # 从任务栏「最小化」不触发 hideEvent，光靠显隐两个钩子会把范围永久留在空集
+        if event.type() == QEvent.WindowStateChange:
+            self._refresh_telemetry_scope()
+
     def _on_telemetry(self, d: dict):
         # 隐藏页不做 UI 工作（PerfTab 每 2s 重建 32 个 item / 图表 push）：
         # 挂机时托盘速率照常，页面回到前台后下一跳自然续上
@@ -301,7 +333,8 @@ class MainWindow(QMainWindow):
     def _set_busy(self, busy, text=""):
         self._busy = busy
         for w in (self.btn_quick, self.btn_full, self.btn_refresh_adapters,
-                  self.btn_diag, self.btn_copy_report, self.btn_combo_fast,
+                  self.btn_diag, self.btn_copy_report, self.btn_export_report,
+                  self.btn_combo_fast,
                   self.btn_combo_full, self.btn_combo_stack, self.btn_mac_on,
                   self.btn_mac_off, self.btn_reconnect, self.btn_profiles):
             if w:
@@ -408,14 +441,10 @@ class MainWindow(QMainWindow):
         btns.addStretch(1)
         lay.addLayout(btns)
 
-        self.tbl_adapters = QTableWidget(0, 6)
-        self.tbl_adapters.setHorizontalHeaderLabels(["名称", "状态", "IPv4", "网关", "DNS", "NLM判定"])
+        self.tbl_adapters = theme.make_table(["名称", "状态", "IPv4", "网关", "DNS", "NLM判定"])
         self.tbl_adapters.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         # 最后一列吃掉剩余宽度：避免横向滚动条（NLM 判定文案最长）
         self.tbl_adapters.horizontalHeader().setStretchLastSection(True)
-        self.tbl_adapters.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl_adapters.setAlternatingRowColors(True)
-        self.tbl_adapters.verticalHeader().setVisible(False)
         lay.addWidget(self.tbl_adapters, 1)     # 拉伸填满页面剩余高度（否则下方留大片空白）
         self.refresh_adapters()
         return w
@@ -524,6 +553,10 @@ class MainWindow(QMainWindow):
         self.btn_copy_report = QPushButton("复制报告")
         self.btn_copy_report.clicked.connect(self._copy_report)
         btns.addWidget(self.btn_copy_report)
+        self.btn_export_report = QPushButton("导出报告")
+        self.btn_export_report.setToolTip("把诊断结果与结论保存为文本文件（可存档或发给他人求助）")
+        self.btn_export_report.clicked.connect(self._export_report)
+        btns.addWidget(self.btn_export_report)
         btns.addStretch(1)
         lay.addLayout(btns)
 
@@ -650,11 +683,15 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"诊断完成：{text}", 8000)
         self._set_busy(False)
 
-    def _copy_report(self):
-        from PySide6.QtWidgets import QApplication
-        if not self._diag_results:
-            self.statusBar().showMessage("暂无诊断结果可复制（请先完成一次诊断）", 4000)
-            return
+    def _report_lines(self):
+        """诊断报告文本行（复制/导出共用）；无结果或诊断进行中返回 None。
+
+        静默重诊（遥测/托盘触发）不走 _set_busy，按钮仍亮着，而 run_diagnosis 会
+        先清空 _diag_results 再逐项回填：中途取到的是缺项集合，verdict 会据它给出
+        与界面不符的「结论」（缺 real_conn 即误判外网不可达），所以必须拒绝出报告。
+        """
+        if self._diag_worker is not None or not self._diag_results:
+            return None
         lines = [f"SysKit 诊断报告  {time.strftime('%Y-%m-%d %H:%M')}", "-" * 50]
         aborted = any(r.id == "diag_aborted" for r in self._diag_results)
         for r in self._diag_results:
@@ -663,13 +700,46 @@ class MainWindow(QMainWindow):
         lines.append("-" * 50)
         if aborted:
             # 中止的不完整结果缺 real_conn，verdict 会误判成「外网不可达」——
-            # 复制出去的报告必须与界面判定一致（界面保持此前状态）
+            # 报告必须与界面判定一致（界面保持此前状态）
             lines.append("结论：诊断已中止，本次结果不完整（不构成网络状态判定）")
         else:
             base, text = netcheck.verdict(self._diag_results)
             lines.append(f"结论：{text}")
+        return lines
+
+    def _no_report_hint(self, verb: str) -> str:
+        if self._diag_worker is not None:
+            return f"诊断进行中，此刻结果不完整，请等本次诊断结束后再{verb}报告"
+        return f"暂无诊断结果可{verb}（请先完成一次诊断）"
+
+    def _copy_report(self):
+        from PySide6.QtWidgets import QApplication  # 局部导入：clipboard 依赖 app 实例
+        lines = self._report_lines()
+        if lines is None:
+            self.statusBar().showMessage(self._no_report_hint("复制"), 4000)
+            return
         QApplication.clipboard().setText("\n".join(lines))
         self.statusBar().showMessage("报告已复制到剪贴板", 4000)
+
+    def _export_report(self):
+        from PySide6.QtWidgets import QFileDialog
+        lines = self._report_lines()
+        if lines is None:
+            self.statusBar().showMessage(self._no_report_hint("导出"), 4000)
+            return
+        default = os.path.join(os.path.expanduser("~"),
+                               f"SysKit诊断报告_{time.strftime('%Y%m%d_%H%M')}.txt")
+        path, _sel = QFileDialog.getSaveFileName(self, "导出诊断报告",
+                                                 default, "文本文件 (*.txt)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except OSError as e:
+            QMessageBox.warning(self, config.DISPLAY_NAME, f"导出失败: {e}")
+            return
+        self.statusBar().showMessage(f"报告已导出: {path}", 6000)
 
     def _diag_item_fix(self, item, col):
         r = item.data(0, Qt.UserRole)
@@ -736,11 +806,9 @@ class MainWindow(QMainWindow):
         filter_row.addWidget(self.ed_filter, 1)
         lay.addLayout(filter_row)
 
-        self.tbl_actions = QTableWidget(0, 4)
-        self.tbl_actions.setHorizontalHeaderLabels(["分类", "修复动作", "风险", "操作"])
+        self.tbl_actions = theme.make_table(["分类", "修复动作", "风险", "操作"],
+                                            alternating=False)
         self.tbl_actions.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.tbl_actions.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl_actions.verticalHeader().setVisible(False)
         lay.addWidget(self.tbl_actions, 3)
 
         grp_log = QGroupBox("修复记录（本次运行）")
@@ -926,7 +994,7 @@ class MainWindow(QMainWindow):
             f"{config.DISPLAY_NAME} v{config.VERSION}　|　"
             f"日志：syskit.log（正常）与 error.log（错误）分开记录，超过 "
             f"{_logging.LOG_RETENTION_DAYS} 天自动删除。　|　"
-            "构建/升级：build.bat → install.bat"
+            "构建/升级：build.bat 打包，双击 dist 下 setup.exe 安装/升级"
         )
         note.setObjectName("hint")
         note.setWordWrap(True)
@@ -1058,6 +1126,7 @@ class MainWindow(QMainWindow):
             self.page_dash.reset_if_stale()
         if cur is self.page_system:
             self.page_system.reset_if_stale()
+        self._refresh_telemetry_scope()
         self._reload_log()
 
     def _reload_log(self):

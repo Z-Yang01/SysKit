@@ -2,9 +2,9 @@
 import time
 
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QAbstractItemView, QFrame, QGroupBox,
+from PySide6.QtWidgets import (QFrame, QGroupBox,
                                QHBoxLayout, QHeaderView, QLabel, QListWidget,
-                               QListWidgetItem, QPushButton, QTableWidget,
+                               QListWidgetItem, QPushButton,
                                QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from . import theme
@@ -114,14 +114,9 @@ class DashboardPage(QWidget):
         days_row.addWidget(self.btn_report_30)
         days_row.addStretch(1)
         rlay.addLayout(days_row)
-        self.tbl_report = QTableWidget(0, 5)
-        self.tbl_report.setHorizontalHeaderLabels(
-            ["日期", "断网次数", "累计断网", "下载", "上传"])
+        self.tbl_report = theme.make_table(
+            ["日期", "断网次数", "累计断网", "下载", "上传"], select_rows=True)
         self.tbl_report.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tbl_report.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl_report.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tbl_report.setAlternatingRowColors(True)
-        self.tbl_report.verticalHeader().setVisible(False)
         rlay.addWidget(self.tbl_report, 1)
         self._hist_tabs.addTab(report_w, "日报")
         glay.addWidget(self._hist_tabs)

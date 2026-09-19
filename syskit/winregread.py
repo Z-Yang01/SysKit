@@ -71,24 +71,41 @@ def subkeys(path: str) -> list:
     return out
 
 
-def pnpcapabilities(driver_desc: str):
-    """按 DriverDesc 找网卡驱动键 → 'enabled_off'(允许断电/默认) | 'disabled'(已禁止) | None(未找到)。
-    PnPCapabilities: 缺省=允许断电; 0x18(24)=禁止。同描述可能对应多个键，任一键已禁止即视为禁止。
-    （WMI 电源接口损坏时以此为准。）"""
+def pnp_states():
+    """一次扫描网卡类键 → {DriverDesc: 'disabled' | 'enabled_off'}。
+
+    类键下无任何子键（读取失败/权限不足）→ None，调用方据此判「注册表不可读」；
+    读到子键但没有匹配的驱动描述 → {}（两者语义不同，不能合并成假值）。
+    同描述对应多个驱动实例键时，任一键已禁止即视为已禁止。
+    """
     base = r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"
-    states = []
-    for sub in subkeys(base):
+    subs = subkeys(base)
+    if not subs:
+        return None
+    out = {}
+    for sub in subs:
         if not re_key(sub):
             continue
         vals = values(f"{base}\\{sub}")
-        if not vals or str(vals.get("DriverDesc", "")) != driver_desc:
+        desc = str(vals.get("DriverDesc", ""))
+        if not desc:
             continue
-        states.append("disabled" if str(vals.get("PnPCapabilities")) == "24" else "enabled_off")
-    if "disabled" in states:
-        return "disabled"
-    if states:
-        return "enabled_off"
-    return None
+        state = "disabled" if str(vals.get("PnPCapabilities")) == "24" else "enabled_off"
+        if out.get(desc) != "disabled":
+            out[desc] = state
+    return out
+
+
+def pnpcapabilities(driver_desc: str, scan: dict | None = None):
+    """按 DriverDesc 取节电态：'enabled_off'(允许断电/默认) | 'disabled'(已禁止) | None(未找到)。
+    （WMI 电源接口损坏时以此为准。）
+
+    scan 可传入 pnp_states() 的批量结果：逐个网卡各自全量扫描是 O(网卡数 × 类键数)
+    的重复枚举（实测 7ms/次 × 十几个网卡 ≈ 100ms），一次扫描查表即可。
+    """
+    if scan is None:
+        scan = pnp_states() or {}
+    return scan.get(driver_desc)
 
 
 def re_key(s: str):

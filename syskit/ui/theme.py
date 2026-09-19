@@ -1,7 +1,8 @@
 """双主题（浅色/深色）QSS + 调色板。图表等自绘控件运行时取 pal() 适配。
 
-除调色板与 QSS 外，这里还提供两个 UI 辅助：
+除调色板与 QSS 外，这里还提供三个 UI 辅助：
 - ``add_shadow`` —— 给卡片类控件加柔和投影，拉开层次；
+- ``make_table`` —— 页面表格的公共构造约定（只读、无行号头、隔行底色）；
 - ``app_logo_pixmap`` —— 代码绘制的 SysKit 标识（不依赖打包资源，onefile 也安全）。
 """
 
@@ -64,6 +65,26 @@ def add_shadow(widget, blur: int = 22, dy: int = 4, alpha: int = 38):
         return eff
     except Exception:
         return None
+
+
+def make_table(headers, select_rows: bool = False, alternating: bool = True):
+    """页面表格统一构造：0 行、只读、隐藏行号头。
+
+    全站 16 张表都重复这四行（QTableWidget(0, n) + 表头 + NoEditTriggers +
+    verticalHeader 隐藏），改一处约定比改 16 处更可靠。列宽/拉伸策略各表差异
+    是真实的（NLM 判定列吃剩余宽度、DNS 说明列、进程表按列排序…），故留在调用侧。
+    """
+    from PySide6.QtWidgets import QAbstractItemView, QTableWidget
+
+    t = QTableWidget(0, len(headers))
+    t.setHorizontalHeaderLabels(list(headers))
+    t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    t.verticalHeader().setVisible(False)
+    if alternating:
+        t.setAlternatingRowColors(True)
+    if select_rows:
+        t.setSelectionBehavior(QAbstractItemView.SelectRows)
+    return t
 
 
 def app_logo_pixmap(size: int = 34):

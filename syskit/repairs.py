@@ -163,6 +163,29 @@ def _pick_adapter() -> str:
     return ""
 
 
+class RestorePoint(RepairAction):
+    def __init__(self):
+        super().__init__("restore_point", "创建系统还原点", RISK_SAFE,
+                         "为当前系统状态创建还原点（深度修复/重置前的安全网）。\n"
+                         "系统还原未开启、或 24 小时内已创建过还原点时，Windows 可能"
+                         "静默跳过——以返回信息为准。",
+                         "无需还原")
+
+    def _run(self, param):
+        from .admin import is_admin
+        if not is_admin():
+            return RepairResult(False, "需要管理员权限")
+        # Checkpoint-Computer 可能耗时 30~90s；在 worker 线程执行不冻 UI
+        r = proc.run_ps("Checkpoint-Computer -Description 'SysKit 修复前快照' "
+                        "-RestorePointType 'MODIFY_SETTINGS'", timeout=180)
+        if r.ok:
+            return RepairResult(True, "已创建系统还原点（若 24 小时内已创建过，"
+                                      "Windows 可能静默跳过，不影响继续修复）")
+        err = (r.stdout + r.stderr).strip()
+        return RepairResult(False, "创建系统还原点失败（系统还原可能未开启，"
+                                   "不影响继续修复）: " + err[-150:])
+
+
 class RestartServices(RepairAction):
     def __init__(self):
         super().__init__("restart_services", "重启 DHCP 服务并刷新 DNS 缓存", RISK_SAFE,
@@ -606,15 +629,16 @@ class IpStackReset(RepairAction):
 # 组合修复（一键按钮）
 COMBOS = {
     "fast": ("快速修复", ["flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan"]),
-    "full": ("深度修复", ["flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan",
-                          "power_off", "dns_auto", "ncsi_restore"]),
-    "stack": ("重置网络栈（需重启）", ["winsock_reset", "ipstack_reset"]),
+    "full": ("深度修复", ["restore_point", "flush_dns", "renew_dhcp", "start_nlasvc",
+                          "restart_wlan", "power_off", "dns_auto", "ncsi_restore"]),
+    "stack": ("重置网络栈（需重启）", ["restore_point", "winsock_reset", "ipstack_reset"]),
 }
 
 # ---------------- 注册表 ----------------
 
 ACTIONS = [
     FlushDns(), RenewDhcp(), StartNlaSvc(), FixNlaSvc(), RestartWlan(), ToggleAdapter(), RestartServices(),
+    RestorePoint(),
     DnsAuto(), DnsPreset(), NcsiRestore(), NcsiDisable(), PowerOff(), DelPersistentRoute(),
     ProxyOff(), MacRandomOff(), MacRandomOn(), WinsockReset(), IpStackReset(),
 ]
