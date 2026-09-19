@@ -1159,3 +1159,33 @@ EXIT=0；pyflakes 清零。
 - 回归 +2（语义底色断言 / 主题切换重填）。全量 **1042 例**两段式
   2×SEG1 + smoke 全绿。
 
+### 补充43（2026-09-19 续4）：当前代码查 bug（总控亲审——子代理被限流）
+
+计划四代理审计因平台并发限流全部未启动，改由总控按风险清单顺序亲审本轮
+5 个提交的全部新机制。核实**自洽**的：日志增量读（截断/换源/半行/文件消失
+恢复四类边界）、懒加载标志与 _save_settings 可达性不变式、_pick_adapter 对
+monitor 梯度语义（修后倾向在线网卡=正确方向）、五个新 QThread 的
+reap/信号/析构次序、vault 三处兼容（_meta_iter 旧库缺 iter/_escape_like
+转义与 lower 顺序/totp_code padding 清洗）、chk_wlan 正则对禁用文案不误报、
+dnsquery 重发同 txid 语义、_on_theme_changed 与 _snap_worker 竞态。
+
+**揪出 1 个真 bug + 2 处缺陷 + 1 处加固**：
+
+1. **P1 exclude_os_history 从未生效**：`wintypes.DWORD.sizeof` 不是 ctypes
+   API（正确为 `ctypes.sizeof(...)`）——AttributeError 被函数 `except: pass`
+   静默吞掉，**Win+V/云剪贴板排除格式从 7b04d7b 加上起就从未写入**。由新加的
+   单测（断言三个格式必须真的被 SetClipboardData）直接暴露——「尽力而为」型
+   静默兜底必须有"至少验证它真的发生了"的测试。
+2. P2 64 位 ctypes 签名缺失：GlobalLock/SetClipboardData 等默认 restype=c_int
+   会截断指针/句柄 → 全部显式 argtypes/restype。
+3. P3 SetClipboardData 失败时 GlobalAlloc 句柄泄漏 → 失败路径 GlobalFree。
+4. 加固：_save_settings 顶部防御性回填自启态——"保存按钮只在设置页可达"
+   的不变式是隐式的，未来新增保存入口时未回填的勾选态会误禁用户自启。
+5. 适配：test_mw_monitor_settings_logs_then_quit 改真实流程（先进设置页
+   再勾选——人工直设勾选框是真实 UI 不存在的路径；回填不会覆盖已访问后的
+   用户勾选，语义不变）。
+
+新增回归 3（保存前回填 / exclude_os_history 假 DLL 桩验证签名与失败清理 /
+——桩用裸函数命名空间，绑定方法设属性会 AttributeError 的特性顺带验证了
+异常兜底路径）。全量 **1044 例**两段式 2×SEG1 + smoke 全绿。
+

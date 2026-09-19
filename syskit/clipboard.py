@@ -81,6 +81,25 @@ def exclude_os_history() -> None:
 
         u32 = ctypes.windll.user32
         k32 = ctypes.windll.kernel32
+        # 64 位下必须显式签名：ctypes 默认 restype=c_int 会把 GlobalLock 的
+        # 指针/SetClipboardData 的句柄截断成 32 位 → 错误地址/误判失败
+        u32.OpenClipboard.restype = wintypes.BOOL
+        u32.OpenClipboard.argtypes = [wintypes.HWND]
+        u32.CloseClipboard.restype = wintypes.BOOL
+        u32.CloseClipboard.argtypes = []
+        u32.RegisterClipboardFormatW.restype = wintypes.UINT
+        u32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+        u32.SetClipboardData.restype = wintypes.HANDLE
+        u32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        k32.GlobalAlloc.restype = wintypes.HGLOBAL
+        k32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        k32.GlobalLock.restype = wintypes.LPVOID
+        k32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        k32.GlobalUnlock.restype = wintypes.BOOL
+        k32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        k32.GlobalFree.restype = wintypes.HGLOBAL
+        k32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+
         if not u32.OpenClipboard(None):
             return
         try:
@@ -90,18 +109,21 @@ def exclude_os_history() -> None:
                 fid = u32.RegisterClipboardFormatW(fmt_name)
                 if not fid:
                     return
-                h = k32.GlobalAlloc(GMEM_MOVEABLE, wintypes.DWORD.sizeof)
+                # 注意是 ctypes.sizeof(...)：DWORD.sizeof 属性不存在，曾致整个
+                # 函数 AttributeError 被吞、排除格式从未真正写入
+                size = ctypes.sizeof(wintypes.DWORD)
+                h = k32.GlobalAlloc(GMEM_MOVEABLE, size)
                 if not h:
                     return
                 p = k32.GlobalLock(h)
                 if not p:
                     k32.GlobalFree(h)
                     return
-                ctypes.memmove(p, ctypes.byref(wintypes.DWORD(0)),
-                               wintypes.DWORD.sizeof)
+                ctypes.memmove(p, ctypes.byref(wintypes.DWORD(0)), size)
                 k32.GlobalUnlock(h)
-                # 成功后句柄归系统所有；失败则系统不接管，无需手动释放
-                u32.SetClipboardData(fid, h)
+                # 成功后句柄归系统所有，不得释放；失败系统未接管 → 归还避免泄漏
+                if not u32.SetClipboardData(fid, h):
+                    k32.GlobalFree(h)
 
             _set_zero("ExcludeClipboardContentFromMonitorProcessing")
             _set_zero("CanIncludeInClipboardHistory")

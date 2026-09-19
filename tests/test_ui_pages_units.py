@@ -451,6 +451,9 @@ def test_mw_monitor_settings_logs_then_quit(main_win, monkeypatch, qtbot):
     monkeypatch.setattr(autostart, "enable", _enable)
     monkeypatch.setattr(autostart, "disable", _disable)
 
+    # 真实流程：勾选框只能先进设置页再操作（进入即回填自启态——保存前防御性
+    # 回填只兜"从未访问"的异常路径，不会覆盖用户已作出的勾选）
+    win.stack.setCurrentWidget(win.page_settings)
     win.chk_start.setChecked(True)
     win._save_settings()                              # 勾选且未启用 → enable
     assert calls == ["enable"]

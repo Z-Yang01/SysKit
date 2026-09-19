@@ -19,6 +19,86 @@ from syskit.ui.vault_page import VaultPage  # noqa: E402
 from syskit.ui.toolbox_page import DnsSubnetTab, PingRouteTab  # noqa: E402
 
 
+# ---------------- 自审回归：隐式不变式加固 ----------------
+
+def test_save_settings_backfills_autostart_before_use(make_main_window, monkeypatch):
+    """不进设置页直接保存时，先回填自启态再决策——否则未回填的未勾选态
+    会把用户已启用的开机自启误禁（不变式原本是隐式的）。"""
+    from syskit import admin, autostart
+    from syskit import settings as settings_mod
+
+    calls = []
+    monkeypatch.setattr(admin, "is_admin", lambda: True)
+    monkeypatch.setattr(autostart, "enabled", lambda: calls.append("query") or True)
+    monkeypatch.setattr(autostart, "enable", lambda: calls.append("enable"))
+    monkeypatch.setattr(autostart, "disable", lambda: calls.append("disable"))
+    monkeypatch.setattr(settings_mod, "save", lambda patch: None)
+
+    win = make_main_window()             # 从不切到设置页
+    win._save_settings()
+    # 只查询（回填一次 + 决策一次）；回填后勾选与实际态一致 → 不误禁/误启
+    assert calls.count("query") == 2
+    assert "enable" not in calls and "disable" not in calls
+
+
+def test_exclude_os_history_prototypes_and_failure_cleanup(monkeypatch):
+    """Win32 原型显式签名（64 位下默认 c_int 截断指针）+ SetClipboardData
+    失败时归还句柄。假 DLL 桩全程不触真实剪贴板。"""
+    import ctypes as ct
+    import types as ts
+
+    from syskit import clipboard as cb
+
+    calls = []
+    buf = ct.create_string_buffer(4)
+
+    # 用裸函数命名空间（生产代码会给函数对象设 restype/argtypes——绑定方法
+    # 不允许设属性，恰好会验证异常兜底路径）
+    def _open_clipboard(hwnd):
+        return 1
+
+    def _close_clipboard():
+        calls.append(("close",))
+        return 1
+
+    def _register(fmt_name):
+        return 4900 + len(calls)
+
+    def _set_data(fmt, h):
+        calls.append(("set", fmt, h))
+        return 0                         # 恒失败 → 必须看到 GlobalFree
+
+    def _alloc(flags, size):
+        calls.append(("alloc", flags, size))
+        return 0x1234
+
+    def _lock(h):
+        calls.append(("lock", h))
+        return ct.addressof(buf)         # 真实可写地址，memmove 安全
+
+    def _unlock(h):
+        calls.append(("unlock", h))
+        return 1
+
+    def _free(h):
+        calls.append(("free", h))
+        return None
+
+    monkeypatch.setattr(ct, "windll", ts.SimpleNamespace(
+        user32=ts.SimpleNamespace(OpenClipboard=_open_clipboard,
+                                  CloseClipboard=_close_clipboard,
+                                  RegisterClipboardFormatW=_register,
+                                  SetClipboardData=_set_data),
+        kernel32=ts.SimpleNamespace(GlobalAlloc=_alloc, GlobalLock=_lock,
+                                    GlobalUnlock=_unlock, GlobalFree=_free)))
+    cb.exclude_os_history()              # 不得抛异常
+    sets = [c for c in calls if c[0] == "set"]
+    frees = [c for c in calls if c[0] == "free"]
+    closes = [c for c in calls if c[0] == "close"]
+    assert len(sets) == 3 and len(frees) == 3 and closes == [("close",)]
+    assert all(f[1] == s[2] for f, s in zip(frees, sets))   # 归还的正是分配的句柄
+
+
 # ---------------- 布局 ----------------
 
 def test_online_adapter_row_uses_semantic_soft_color(make_main_window):

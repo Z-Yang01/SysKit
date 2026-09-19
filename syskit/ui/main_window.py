@@ -926,6 +926,11 @@ class MainWindow(QMainWindow):
         return w
 
     def _save_settings(self):
+        # 防御性回填：保存按钮物理上只在设置页可达（进入即回填），但该不变式
+        # 是隐式的——未来新增保存入口时，未回填的勾选态会把用户的自启误禁
+        if not getattr(self, "_autostart_loaded", True):
+            self._autostart_loaded = True
+            self.chk_start.setChecked(autostart.enabled())
         # 热键保存前验证：非法输入不得破坏当前已注册的全局热键
         hotkey_text = self.cmb_hotkey.currentText().strip() or "Ctrl+Alt+K"
         if hotkey.parse_hotkey(hotkey_text) is None:
