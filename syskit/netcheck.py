@@ -473,7 +473,11 @@ def run_all(progress=None, quick=False, should_stop=None) -> list:
 
 
 def verdict(results: list) -> tuple:
-    """综合判定 → (状态码, 一句话)。状态码: normal/ncsi_false_alarm/dns_broken/no_internet/config_issues"""
+    """综合判定 → (状态码, 一句话)。状态码: normal/ncsi_false_alarm/dns_broken/no_internet。
+
+    （config_issues 曾是声明的第五状态，但其分支不可达——前四个分支已穷尽
+    real_ok 的真假组合；假承诺已于 2026-09-19 清理。）
+    """
     by = {r.id: r for r in results}
     real = by.get("real_conn")
     ncsi = by.get("ncsi_probe")
@@ -487,10 +491,8 @@ def verdict(results: list) -> tuple:
         base, text = "ncsi_false_alarm", "实际有网，但 Windows 判定'无网络'（NCSI 误报）"
     elif real_ok and dns_bad:
         base, text = "dns_broken", "能连上但 DNS 解析异常/缓慢（系统 DNS 排序被幽灵路由或残废 DNS 带偏）"
-    elif not real_ok:
-        base, text = "no_internet", "外网不可达"
     else:
-        base, text = "config_issues", "存在配置隐患"
+        base, text = "no_internet", "外网不可达"
     fails = [r.name for r in results if r.status == FAIL]
     if fails:
         text += f"；失败项: {len(fails)} 个"

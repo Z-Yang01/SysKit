@@ -27,13 +27,8 @@ def make_adapter(**kw):
 
 
 class TestSnapshotHelpers:
-    def test_adapter_found_and_missing(self):
-        snap = Snapshot()
-        a = make_adapter()
-        snap.adapters = [a]
-        assert snap.adapter("WLAN") is a
-        assert snap.adapter("以太网") is None
-        assert snap.adapter("") is None
+    # （test_adapter_found_and_missing 已删除：Snapshot.adapter() 是仅测试存活的
+    #   重复查找助手——生产一律 next(a for a in snap.adapters if ...)，已删源码。）
 
     def test_physical_up_adapters_filter(self):
         """只保留 status==Up 且有 ipv4 的网卡（见文件头疑似 bug 1 的 doc 不一致）。"""

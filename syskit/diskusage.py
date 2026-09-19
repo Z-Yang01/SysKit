@@ -122,14 +122,6 @@ class ScanResult:
     cancelled: bool = False
 
 
-def human_bytes(v: float) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(v) < 1024 or unit == "TB":
-            return f"{v:.0f}{unit}" if unit == "B" else f"{v:.1f}{unit}"
-        v /= 1024
-    return f"{v:.1f}TB"
-
-
 def scan_tree(root: str, stop=None, progress=None) -> ScanResult:
     """扫描目录树。stop 为含 is_set() 的事件（如 threading.Event），置位后尽快
     返回已完成部分（cancelled=True）；progress(file_count, bytes, current_dir)

@@ -270,6 +270,7 @@ class ClipboardHistory:
             return [dict(it) for it in self._items]
 
     def texts(self) -> list:
+        """测试辅助：全部条目的 text 列表（生产 UI 走 items()/search()）。"""
         return [it["text"] for it in self.items()]
 
     def search(self, keyword: str = None, kind: str = None) -> list:

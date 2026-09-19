@@ -34,12 +34,11 @@ STATUS_TEXT = {
     "ncsi_false_alarm": ("实际有网，Windows 误报'无网络'", "#ef6c00"),
     "dns_broken": ("能连上但 DNS 异常/缓慢", "#ef6c00"),
     "no_internet": ("外网不可达", "#d94040"),
-    "config_issues": ("存在配置隐患", "#ef6c00"),
 }
 STATUS_COLOR = {"pass": "#2e9e44", "fail": "#d94040", "warn": "#ef6c00",
                 "skip": "#999999", "info": "#3576e0"}
 TRAY_STATE = {"normal": "ok", "ncsi_false_alarm": "ncsi_false",
-              "dns_broken": "no_net", "no_internet": "no_internet", "config_issues": "no_net"}
+              "dns_broken": "no_net", "no_internet": "no_internet"}
 
 
 class MainWindow(QMainWindow):

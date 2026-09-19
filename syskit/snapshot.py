@@ -73,12 +73,6 @@ class Snapshot:
     ok: bool = False
     error: str = ""
 
-    def adapter(self, name: str):
-        for a in self.adapters:
-            if a.name == name:
-                return a
-        return None
-
     def physical_up_adapters(self) -> list:
         """状态 Up 且持有 IPv4 的非虚拟网卡（网关/DNS 对比检查的判定对象）。
 

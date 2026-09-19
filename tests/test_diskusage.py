@@ -131,12 +131,14 @@ def test_scan_tree_deep_nesting_no_recursion_error(tmp_path):
 
 
 def test_human_bytes():
-    assert du.human_bytes(0) == "0B"
-    assert du.human_bytes(999) == "999B"
-    assert du.human_bytes(1024) == "1.0KB"
-    assert du.human_bytes(1024 * 1024) == "1.0MB"
-    assert du.human_bytes(1024 ** 3) == "1.0GB"
-    assert du.human_bytes(1536) == "1.5KB"
+    """human_bytes 的唯一实现在 ui/charts.py（diskusage 的重复份已删）。"""
+    from syskit.ui.charts import human_bytes
+    assert human_bytes(0) == "0B"
+    assert human_bytes(999) == "999B"
+    assert human_bytes(1024) == "1.0KB"
+    assert human_bytes(1024 * 1024) == "1.0MB"
+    assert human_bytes(1024 ** 3) == "1.0GB"
+    assert human_bytes(1536) == "1.5KB"
 
 
 def test_list_drives_returns_driveinfo():

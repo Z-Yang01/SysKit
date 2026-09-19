@@ -1102,3 +1102,19 @@ pyflakes syskit/+tools 清零。哨兵未绕过未削弱。
 的教训与 chk_nlasvc 确认各一）；③测试质量维度（专门审"测试是否在掩盖 bug"）
 收益极高，建议每季度做一轮。
 
+### 补充40（2026-09-19 续）：遗留清单小项清扫
+
+- **verdict 死分支清理**：`config_issues` 是声明的第五状态但分支不可达（前四
+  分支穷尽 real_ok 组合）——删除 else、docstring 记录清算缘由，main_window 的
+  STATUS_TEXT/TRAY_STATE 死条目与 test_cli 的假 verdict 同步适配。
+- **死代码删除**（审计 3 项）：`workers.action_summary`（原样透传的假摘要，测试
+  断言一并删）、`diskusage.human_bytes`（与 charts 逐字节重复，生产全用 charts
+  版；test_diskusage 改测唯一实现）、`snapshot.adapter()`（仅测试存活的查找
+  助手）。`clipboard.texts()` / `hotkey.hotkey_display` 按「测试辅助/预留 API」
+  docstring 显式标注保留。
+- **SpeedTest 单位口径**：Mbps 改按十进制 10^6（运营商/测速网站口径）——曾按
+  2^20 计与用户对比的宽带数值差 ~4.9%。
+- 全量 **1033 例两轮 EXIT=0**；pyflakes syskit/+tools 清零。
+- **dist 打包持续挂起**：运行中实例（托盘常驻）未退出；本日三批改动
+  （62c604e / 7b04d7b / 本轮）均未进产物，退出后跑 build.bat 即可。
+

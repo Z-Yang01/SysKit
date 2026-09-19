@@ -228,7 +228,7 @@ def test_worker_diagnosis_signal_chain(monkeypatch):
 def test_worker_repair_and_combo_signal_chain(monkeypatch):
     from syskit import repairs
     from syskit.repairs import RepairResult
-    from syskit.ui.workers import ComboWorker, RepairWorker, action_summary
+    from syskit.ui.workers import ComboWorker, RepairWorker
     fake_act = types.SimpleNamespace(execute=lambda param: RepairResult(True, "假动作完成"))
     monkeypatch.setattr(repairs, "get_action",
                         lambda aid: fake_act if aid == "flush_dns" else None)
@@ -253,7 +253,6 @@ def test_worker_repair_and_combo_signal_chain(monkeypatch):
     cw.all_done.connect(lambda: finished.append(1))   # all_done 为无参信号
     cw.run()
     assert len(items) == 2 and len(finished) == 1
-    assert action_summary("flush_dns") is repairs.get_action("flush_dns")
 
 
 def test_worker_snapshot_signal_chain(monkeypatch):

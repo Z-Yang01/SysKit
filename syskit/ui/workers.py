@@ -136,7 +136,3 @@ class PlainCmdWorker(QThread):
             ok, out = False, str(e)
         self.done.emit(ok, out)
 
-
-def action_summary(aid: str):
-    act = repairs.get_action(aid)
-    return act

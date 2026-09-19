@@ -131,7 +131,9 @@ class SpeedTestTab(QWidget):
         self._worker = None
         self.btn_start.setEnabled(True)
         self.pb.hide()
-        mbps = avg_bps * 8 / 2**20
+        # Mbps 按十进制（10^6）计——运营商/测速网站口径；曾按 2^20 计，
+        # 与用户拿去对比的宽带数值差 ~4.9%（显示偏高被误认为"虚标"的反向）
+        mbps = avg_bps * 8 / 1_000_000
         if ok:
             self.lbl_big.setText(f"{mbps:.1f} Mbps（{human_bytes(avg_bps)}/s）")
             self.list_hist.insertItem(0, f"{time.strftime('%H:%M:%S')}　{mbps:.1f} Mbps")

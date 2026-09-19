@@ -77,7 +77,7 @@ class TestDiagnose:
         monkeypatch.setattr(netcheck, "run_all",
                             lambda progress=None, quick=False: results)
         monkeypatch.setattr(netcheck, "verdict",
-                            lambda rs: ("config_issues", "存在配置隐患；失败项: 1 个"))
+                            lambda rs: ("dns_broken", "能连上但 DNS 异常/缓慢；失败项: 1 个"))
         act = FakeAct("fix_nlasvc", title="修复 NlaSvc", brief="恢复服务")
         monkeypatch.setattr(repairs, "get_action",
                             lambda fid: act if fid == "fix_nlasvc" else None)
@@ -86,7 +86,7 @@ class TestDiagnose:
         assert rc == 0
         text = "\n".join(fake_logger)
         assert "诊断报告" in text
-        assert "存在配置隐患" in text
+        assert "DNS 异常/缓慢" in text
         assert "[fix_nlasvc]" in text and "修复 NlaSvc" in text
 
     def test_warns_when_not_admin(self, monkeypatch, fake_logger, admin_off):
