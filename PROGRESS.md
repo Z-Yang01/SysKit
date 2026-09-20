@@ -1703,3 +1703,80 @@ test_netcheck 改名引用 5、test_repairs 分级集合与 3 用例改写等）
 **过程记录**：本轮有一次用 heredoc 脚本批量改测试文件（补50 同款危险操作）——
 事后 pyflakes+diff 验证文件完好未损，但补50 教训入档后自己又犯：**改源码只用
 Edit/Write，无例外**。
+
+### 补充55（2026-09-20）：多代理审计第 9 批——f80e2a6 之后未审面 +4719 行 + 真机防火墙授权验证
+
+用户拍板两个方向：①审计第 9 批（f80e2a6=第八批之后新增的 8 个提交、73 文件
++4719/-408 行**从未经过任何独立审计**）；②真机授权升级到「防火墙加删一轮」
+（兑现补52/53 两次挂账）。4 个只读审计代理并行（A 防火墙写路径 / B 并发与
+生命周期 / C 持久化与数据 / D 解析器与测试质量），总控逐条实测复核后分三笔提交。
+
+**P0（真机验证直接抓出，比所有代理都深一层）——appnet 写路径在任何机器上
+从未生效过**：`cmd_add` 带的 `group=`/`displayName=` 根本不是 netsh advfirewall
+`add rule` 的参数（那是 PowerShell New-NetFirewallRule 的概念），netsh 报
+「'group' 不是这个指令的有效参数」整条拒绝。51+20 个桩测试全绿因为假防火墙
+来者不拒——mock 掩盖真 bug 的最大实锤。修：参数表收敛到 netsh 文档集
+（name/program/dir/action/enable/description），RULE_GROUP/display_name 死代码
+删除。真机五轮提权矩阵（UAC 一次/轮）复现→定位→修复→全链路复验
+（block→on→unblock→off→delete→missing 全绿，无残留规则）。
+
+**P0 衍生发现——netsh 与 CIM 存储分歧（本机）**：netsh 建的规则在
+Get-NetFirewallRule 视图**持续不可见**（实测 178s+，非延迟），netsh 自己立即可见；
+`Get-NetFirewallRule` 枚举本身健康（631 条与 netsh 一致）。→ `actual_state` 加
+`netsh_state()` 兜底读侧（中英双语解析「已启用/操作」字段），PS 的确定结论优先、
+netsh 读不出时回 PS；`_confirm` 据此能真验证。配套：delete_rule 不再认退出码
+（no-match 已从 0 漂移为 1，代理 A 独立实测同结论），失败后按读侧终态判定
+「规则已不存在」=达成；_confirm 的 drift 分支补全（期望 off 而实 drift = 净效果
+已达成，如实说明而非报失败）；假防火墙 no-match 建模 0→1 对齐真机。
+
+**其余修复（代理 B/C/D 发现，全部实测复核后落地）**：
+1. **P1 minimized 自启遥测永不收窄**（B-1）：自启唯一形态 + 停在首页时
+   currentChanged/hideEvent 均不触发，托盘常驻期 netsh 每 5s + 进程表每 2s +
+   ICMP 每 3s 空转一整天——恰是补53 优化要省的场景。构造末尾兜底一次
+   `_refresh_telemetry_scope()`。
+2. **P2 safe_calc 幂左积链绕过**（D1，代理实测）：`((10**1000)**1000)**1000`
+   右操作数全是 1000 可绕旧守卫，0.15s/3.3M bit、再嵌一层 GUI 线程小时级
+   冻结。修：乘方**计算前**按 bit_length×|右| 估规模，超 200k bit 即拒；
+   `looks_like_math` 数字收窄 [0-9]（D3）。
+3. **P2 netstats 连续断网口径**（C-1，总控复现 outages=3 实为 1）：no_net/
+   offline 互切各计一次且时长只计最后一段。改「事故」模型：计 1 次、时长
+   从首段起算；2 个新回归 + 全部旧锁保持。
+4. **P2 speedtest.json schema 漂移启动崩**（C-2，总控复现 AttributeError）：
+   元素级清洗 + `_hist_label` 字段防护；清空历史 save 失败补 warning（C-3）。
+5. **P2 RestorePoint 退出码假成功**（A-F1，代理实测 PS 非终止错误退出码恒 0）：
+   脚本补 `-ErrorAction Stop`，「系统保护未开启」不再被当成已创建。
+6. **P2 quit_app 扫尾只认 stop**（B-2/A-F3）：卡在 restore_point 的组合最坏
+   180s > 10s 等待上限；补调 cancel() 让诊断/组合跳过剩余项；monitor 梯度
+   步间 sleep(3) 改可中断 wait(3)（B-6）。
+7. **P3 批**：_on_telemetry 窗口不可见/最小化只喂托盘（B-3：update_tick 刷
+   _last_tick 击穿 reset_if_stale）；遥测分组口径单源 telemetry.GROUPS_*（B-4）；
+   full/stack 组合确认弹窗如实列出首位还原点 30~90s 空等（F4——补47 挂账
+   决策项按「文案级预案」落地）；导出报告 tooltip 补局域网敏感面提示（C-6）；
+   vault.get_secrets_bulk 契约勘误（C-5：VaultLockedError 不外溢，UI 侧 except
+   是死分支——文档对齐事实）。
+
+**核实自洽**（四代理交叉确认无问题的重点）：argv 注入面（list 逐元素+引号
+往返+`=` 处理）、PS 哨兵三态语义、身份键 norm/real 分离、台账-防火墙交错
+一致性、reap 全覆盖与 parent 链、set_need 撕裂读（GIL 下安全）、网关门控
+节奏、tooltip 去重、DnsSpeed 线程池退出、报告双门全边界、save_json 原子性、
+200 条裁剪、snapshot PS 单元素折叠/EN 机/缺段、pnp_states None/{} 语义、
+safe_calc 其余攻击面（属性逃逸/浮点溢出/递归深度均被接住）。**测试质量维度
+（补39 的最高收益维度）本批零新实锤**——appnet_fake 建模与生产语义逐一对齐，
+效应断言姿势正确。
+
+**记录不修**：第三语言 netsh 标记（D2，产品只承诺中英）、DST 时区窗口推导
+（C-4，UTC+8 无影响）、8.3 短路径身份键（A-F5，UI 恒长路径）、proc 裸命令名
+搜索序（A-F6，安装版已由目录权限缓解，便携+管理员从可写目录启动属极端前提）、
+导出 UTF-8 无 BOM（C-7，agent 判定不算缺陷）、events.json 元素防护（C-8，
+非本批引入）、get_secrets_bulk 的 UI 侧死 except（文档已勘误，防御保留）。
+
+**验证**：全量 **1222 例**（1178+44）两段式 0F/0E/1 已知 skip；pyflakes 门 0；
+像素回归 **15/15 张逐像素 SAME**（本轮全为行为/文案层修复）；真机
+`SysKit-AppNet-*` 规则残留 0。三笔提交：1ae091d（防火墙写路径）/ ce35d73
+（解析器与数据）/ de7dd43（生命周期与文案）。
+
+**方法论沉淀**：①「桩测试全绿 + 真机从未跑通」的 feature 级假成功只有真机
+授权验证能抓到——本轮 P0 的教训：新系统交互功能落地时的真机写读验证应视为
+完成标准的一部分，而非挂账项；②审计代理的「复核方法」字段极有价值（A 的
+netsh no-match 退出码探针直接省去总控重查）；③单源化收敛（probe/SSID/
+静态 DNS）后调用方契约要跟一轮审计（D 维度确认本轮收敛无 parity 漂移）。

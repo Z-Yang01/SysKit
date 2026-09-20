@@ -146,7 +146,7 @@ build.bat      :: 生成图标 + 安装依赖 + PyInstaller 打包 + 便携 zip 
 
 ```bat
 python -m pip install -r dev-requirements.txt   :: 运行时依赖 + 测试工具（钉版本）
-python -m pytest --timeout=300                  :: 全量测试（tests/，1213 例，coverage 99%）
+python -m pytest --timeout=300                  :: 全量测试（tests/，1222 例，coverage 99%）
 python tools\run_full_check.py            :: 两段式全量验证（SEG1+SEG2+pyflakes，junitxml 计数，一条命令出结论/退出码）
 python -m pytest tests/test_vault.py -q         :: 单文件
 python -m pytest --cov=syskit --cov-report=term-missing  :: 带覆盖率
