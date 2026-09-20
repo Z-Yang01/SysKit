@@ -2,7 +2,7 @@
 
 > 头部现状（2026-09-20 刷新；下方原文保留为历史）。原始任务「pytest 测试体系建设」
 > 已于 2026-09-10 达成（逻辑模块 ≥70% + 全绿），此后本文件按时间追加各会话记录。
-> 当前基线：分支 `test/pytest-setup`；全量 **1213 例**（两段式 0F/0E + 1 已知 skip）；
+> 当前基线：分支 `test/pytest-setup`；全量 **1234 例**（两段式 0F/0E + 1 已知 skip）；
 > 总覆盖率 **99%**；pyflakes 门已钉成 `tests/test_pyflakes_gate.py`；
 > 全绿验证一条命令：`python tools/run_full_check.py`。
 > 环境：Windows 真机，Python 3.10.11，PySide6 6.11.2，pytest 9.1.1，pytest-qt 4.5.0，
@@ -1830,3 +1830,29 @@ netsh no-match 退出码探针直接省去总控重查）；③单源化收敛�
   bench 脚本自身一次 GBK 解码崩溃（tasklist 输出编码，非产品代码）已修。
 - **不迁移清单**与理由已如上；后续若迁移 modes，前置改造是
   `if (-not ('SysKitAudio.Wv' -as [type]))` 类型守卫。
+
+### 补充57（2026-09-21 夜间无人值守）：基线失败核实为已绿 + 还原点耗时提示单源化
+
+- **第一优先级核实**：任务提示的唯一失败
+  `tests/test_repairs.py::test_combos_reference_existing_ids_with_risk_split`
+  **单跑、整文件、全量三种口径均未复现**（该文件 116 例全过；全量基线实测
+  1232 passed / 1 skipped / 0 failed，junitxml 复核）。与上一夜间会话结论一致：
+  任务简报里的「1 失败」基线已过期（早前那次失败是环境依赖断言，12df081 已修）。
+  未做任何「修复」，避免为不存在的故障改代码。
+- **小改进（文案如实化收尾）**：补55 F4 的「首位还原点常态 30~90 秒不可中止」
+  提示只落在 UI 组合确认弹窗；CLI `repair full/stack` 的逐项确认、单项
+  ConfirmDialog、修复页 tooltip 共用的 `description` 却没有该披露——CLI 用户
+  确认后同样被静默空等一分钟。修：把该事实并入 `RestorePoint.description`
+  单源（三个入口自动同享，UI 组合弹窗的组合级提示保留）；+1 契约测试钉住
+  description 必须含「30~90 / 无法中止」。
+- **文档计数同步**：README（1222→1234，补充56 后未跟）与 PROGRESS 头部
+  （1213→1234）对齐实测值。
+- **改进池重估（结论入档，下轮不再重复测）**：「端口筛选框每击键全表遍历→
+  防抖」不做的实证依据——补充54 实测 222 条连接全表重建 ~3.5ms，筛选比重建
+  更轻（每击键 ~1-2ms），低于该轮确立的 10ms 阈值；且 setText 后立即断言的
+  既有测试（test_ui_smoke）会因防抖全数破坏——收益不抵风险，从池中销账。
+- 过程记录：一处用内联 python 脚本改 README/PROGRESS 计数（有 count==1 断言 +
+  git diff 恰 1 行 + 行尾核验兜底，未损坏），随后即改回 Edit 工具——补50 纪律
+  无例外条款，下不为例。
+- 验证：全量 **1234 例** 0F/0E/1 已知 skip（junitxml 复核）；pyflakes 门 0；
+  test_repairs+test_cli 分区 127 例先行全绿。哨兵未绕过未削弱，零真实系统调用。

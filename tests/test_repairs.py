@@ -1093,3 +1093,12 @@ def test_restore_point_failure_reports_honestly(recorder, monkeypatch):
     r = repairs.get_action("restore_point").execute({})
     assert r.success is False
     assert "系统还原" in r.message and "不影响继续修复" in r.message
+
+
+def test_restore_point_description_discloses_long_wait():
+    """description 是 CLI 逐项确认（cli.cmd_repair）、单项 ConfirmDialog 与修复页
+    tooltip 的唯一文案源——30~90s 空等必须在此如实披露（补55 F4 此前只给 UI
+    组合确认弹窗加了该提示，CLI/单项路径仍会被静默卡住一分钟）。"""
+    desc = repairs.get_action("restore_point").description
+    assert "30~90" in desc
+    assert "无法中止" in desc

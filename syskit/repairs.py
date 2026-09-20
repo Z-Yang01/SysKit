@@ -169,8 +169,8 @@ class RestorePoint(RepairAction):
     def __init__(self):
         super().__init__("restore_point", "创建系统还原点", RISK_SAFE,
                          "为当前系统状态创建还原点（深度修复/重置前的安全网）。\n"
-                         "系统还原未开启、或 24 小时内已创建过还原点时，Windows 可能"
-                         "静默跳过——以返回信息为准。",
+                         "常态耗时 30~90 秒，期间无法中止；系统还原未开启、或 24 小时"
+                         "内已创建过还原点时，Windows 可能静默跳过——以返回信息为准。",
                          "无需还原")
 
     def _run(self, param):
