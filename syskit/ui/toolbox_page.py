@@ -82,6 +82,18 @@ class SpeedTestWorker(QThread):
         self.done.emit(False, 0.0)
 
 
+def _clean_history(hist):
+    """speedtest.json 的元素级防护（审计第 9 批 C-2）。
+
+    load_json 只兜底「解析失败」；合法 JSON 但元素不是 dict / 字段类型漂移
+    （如 ["x"] 或 {"mbps": "快"}）曾让 SpeedTestTab 构造期抛异常 → 整个应用
+    无法启动。这里对齐 appnet.load_entries 的容忍口径：脏条目剔除，不炸。
+    """
+    if not isinstance(hist, list):
+        return []
+    return [e for e in hist if isinstance(e, dict)]
+
+
 class SpeedTestTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -123,8 +135,7 @@ class SpeedTestTab(QWidget):
         lay.addWidget(hist_grp, 1)
         self._worker = None
         self._history = stores.load_json("speedtest.json", [])
-        if not isinstance(self._history, list):
-            self._history = []
+        self._history = _clean_history(self._history)
         for e in self._history[:200]:
             self.list_hist.addItem(self._hist_label(e))
 
@@ -133,9 +144,14 @@ class SpeedTestTab(QWidget):
 
     @staticmethod
     def _hist_label(e: dict) -> str:
-        if not e.get("ok"):
-            return f"{e.get('ts', '')}　测速失败"
-        return f"{e.get('ts', '')}　{e.get('mbps', 0):.1f} Mbps"
+        if not isinstance(e, dict) or not e.get("ok"):
+            ts = e.get("ts", "") if isinstance(e, dict) else ""
+            return f"{ts}　测速失败"
+        try:
+            mbps = f"{float(e.get('mbps', 0)):.1f}"
+        except (TypeError, ValueError):
+            mbps = "?"
+        return f"{e.get('ts', '')}　{mbps} Mbps"
 
     def _record_history(self, ok: bool, mbps: float):
         entry = {"ts": time.strftime("%m-%d %H:%M"), "mbps": round(float(mbps), 1),
@@ -154,7 +170,9 @@ class SpeedTestTab(QWidget):
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
         self._history = []
-        stores.save_json(self._HIST_FILE, self._history)
+        if not stores.save_json(self._HIST_FILE, self._history):
+            # 界面已清但盘上还是旧数据：失败必须留痕，否则重启后历史「复活」像见鬼
+            LOGGER.warning("测速历史清空写盘失败: {}", self._HIST_FILE)
         self.list_hist.clear()
 
     def start(self):

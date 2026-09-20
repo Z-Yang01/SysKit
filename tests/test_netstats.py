@@ -81,6 +81,30 @@ def test_outage_without_recovery_no_duration():
     assert rows[0]["outages"] == 1 and rows[0]["outage_sec"] == 0
 
 
+def test_flapping_down_states_count_one_outage_full_duration():
+    """no_net/offline 互切是同一次故障（自动修复拍打网卡会让两态交替）：
+    计 1 次断网、时长从首段起算（补55 C-1：原实现计 3 次、时长只剩最后一段）。"""
+    events = [  # 最新在前
+        {"ts": _ts(*_today(10, 0, 9)), "state": "ok", "detail": ""},
+        {"ts": _ts(*_today(10, 0, 7)), "state": "offline", "detail": ""},
+        {"ts": _ts(*_today(10, 0, 5)), "state": "no_net", "detail": ""},
+        {"ts": _ts(*_today(10, 0, 0)), "state": "no_net", "detail": ""},
+    ]
+    rows = netstats.daily_report(events, days=3)
+    last = rows[-1]
+    assert last["outages"] == 1
+    assert last["outage_sec"] == 9
+
+
+def test_flapping_without_recovery_counts_once_no_duration():
+    events = [  # 最新在前：两次断网态、从未恢复
+        {"ts": _ts(*_today(10, 0, 5)), "state": "no_net", "detail": ""},
+        {"ts": _ts(*_today(10, 0, 0)), "state": "offline", "detail": ""},
+    ]
+    rows = netstats.daily_report(events, days=1)
+    assert rows[0]["outages"] == 1 and rows[0]["outage_sec"] == 0
+
+
 def test_first_event_no_predecessor_duration():
     events = [{"ts": _ts(*_today(8, 0, 0)), "state": "ok", "detail": ""}]
     rows = netstats.daily_report(events, days=1)

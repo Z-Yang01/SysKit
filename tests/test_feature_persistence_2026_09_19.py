@@ -115,6 +115,18 @@ def test_speed_history_cap_200(qtbot, tmp_path, monkeypatch):
     assert tab.list_hist.item(0).text().startswith(time.strftime("%m-%d %H:%M"))
 
 
+def test_speed_history_schema_drift_survives(qtbot, tmp_path, monkeypatch):
+    """合法 JSON 但元素漂移（["x"] / mbps 非数值）不得在构造期炸掉整个应用
+    （补55 C-2：原实现 AttributeError/ValueError 从 SpeedTestTab 一路炸到启动）。"""
+    monkeypatch.setattr(stores.config, "APPDATA_DIR", str(tmp_path))
+    (tmp_path / "speedtest.json").write_text(
+        '["x", {"ok": 1, "mbps": "快"}]', encoding="utf-8")
+    tab = SpeedTestTab()
+    qtbot.addWidget(tab)
+    assert tab.list_hist.count() == 1                   # 非 dict 条目剔除
+    assert "? Mbps" in tab.list_hist.item(0).text()     # 脏 mbps 显示 ?（不抛）
+
+
 def test_speed_history_clear_button(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(stores.config, "APPDATA_DIR", str(tmp_path))
     tab = SpeedTestTab()

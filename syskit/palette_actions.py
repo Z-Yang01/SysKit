@@ -9,8 +9,10 @@ import ast
 import operator
 import re
 
-# 算式直算：仅数字与四则/括号/百分号构成（** 幂由两个 * 组成同样命中）
-_MATH_RE = re.compile(r"^[\d\s\+\-\*/\(\)\.%]+$")
+# 算式直算：仅 ASCII 数字与四则/括号/百分号构成（** 幂由两个 * 组成同样命中）。
+# 用 [0-9] 而非 \d：ast.parse 只接受 ASCII 数字字面量，\d 放行阿拉伯-印度数字等
+# 只会让 looks_like_math 与求值器口径不一致（审计第 9 批 D3）。
+_MATH_RE = re.compile(r"^[0-9\s\+\-\*/\(\)\.%]+$")
 
 _OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -25,7 +27,7 @@ def looks_like_math(q: str) -> bool:
     q = (q or "").strip()
     if not _MATH_RE.match(q):
         return False
-    return any(op in q for op in "+-*/%") and any(ch.isdigit() for ch in q)
+    return any(op in q for op in "+-*/%") and any(ch in "0123456789" for ch in q)
 
 
 def safe_calc(expr: str):
@@ -44,6 +46,14 @@ def safe_calc(expr: str):
             left, right = _ev(n.left), _ev(n.right)
             if isinstance(n.op, ast.Pow) and abs(right) > 1000:
                 raise ValueError("指数过大")
+            if (isinstance(n.op, ast.Pow) and isinstance(left, int)
+                    and isinstance(right, int)
+                    and left.bit_length() * abs(right) > 200_000):
+                # 右操作数 ≤1000 只挡字面量指数；括号左积链 ((10**1000)**1000)**1000
+                # 的右操作数全是 1000，结果却是 3.3M/3.3G bit——逐层在乘方**计算前**
+                # 按 bit_length 估结果规模，超界即拒（面板在 GUI 线程同步求值，
+                # 一条小时级大幂就是整个界面冻结，审计第 9 批 D1 实测）
+                raise ValueError("结果过大")
             try:
                 return _OPS[type(n.op)](left, right)
             except (OverflowError, ZeroDivisionError) as e:

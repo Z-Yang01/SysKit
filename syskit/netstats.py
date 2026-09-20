@@ -51,32 +51,38 @@ def daily_report(events: list, days: int = 7, traffic: dict = None) -> list:
             day["recv"] = max(0, int(t.get("recv", 0)))
             day["has_traffic"] = True
 
-    # 断网配对：事件最新在前 → 先反转成时间正序，维护上一状态
+    # 断网配对：事件最新在前 → 先反转成时间正序，以「事故」为单位维护断网段。
+    # （审计第 9 批 C-1：no_net/offline 互切是同一次故障——自动修复拍打网卡会让
+    # 两态交替——原实现各自 +1 且时长只计最后一段，一次断网被计成多次/短计。）
     chrono = []
     for ev in reversed(events or []):
         st = _parse_ts(ev.get("ts"))
         if st is None:
             continue
         chrono.append((st, str(ev.get("state", ""))))
-    prev_ts = None
     prev_down = False
+    down_start = None
     for st, state in chrono:
         key = time.strftime("%Y-%m-%d", st)
-        day = by_date.get(key)
-        if day is None:
-            # 超出统计窗口的事件仍参与配对（作为前驱），但本身不计数
-            prev_ts, prev_down = st, state != "ok"
-            continue
-        day["has_events"] = True
+        day = by_date.get(key)                 # None = 超出统计窗口：参与配对、不计数
         now_down = state != "ok"
         if now_down:
-            day["outages"] += 1
-        elif prev_down and prev_ts is not None:
-            # 断网恢复：时长归属断网开始日（prev 所在日）
-            start_key = time.strftime("%Y-%m-%d", prev_ts)
-            start_day = by_date.get(start_key)
-            sec = max(0, int(time.mktime(st) - time.mktime(prev_ts)))
-            if start_day is not None:
-                start_day["outage_sec"] += sec
-        prev_ts, prev_down = st, now_down
+            if not prev_down:
+                down_start = st                # 本次事故的开始时刻（含超窗前驱）
+                if day is not None:
+                    day["outages"] += 1
+            if day is not None:
+                day["has_events"] = True
+        else:
+            if day is not None:
+                day["has_events"] = True
+            if prev_down and down_start is not None:
+                # 断网恢复：整段时长归属断网开始日
+                start_key = time.strftime("%Y-%m-%d", down_start)
+                start_day = by_date.get(start_key)
+                sec = max(0, int(time.mktime(st) - time.mktime(down_start)))
+                if start_day is not None:
+                    start_day["outage_sec"] += sec
+            down_start = None
+        prev_down = now_down
     return out

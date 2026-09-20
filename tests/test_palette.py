@@ -275,11 +275,16 @@ class TestCommandPalette:
         assert pa.looks_like_math("12*(3+4)") is True
         assert pa.looks_like_math("ping 1.2.3.4") is False
         assert pa.looks_like_math("1.2.3") is False     # 无运算符
+        assert pa.looks_like_math("٤+٥") is False       # 非 ASCII 数字与求值器口径一致（D3）
         assert pa.safe_calc("2**10") == 1024
         assert pa.safe_calc("(1+2)*3") == 9
         assert pa.safe_calc("10/4") == 2.5
+        assert pa.safe_calc("(2**10)**2") == 1048576    # 合法嵌套幂不受影响
         with pytest.raises(ValueError):
             pa.safe_calc("9**9**9")                     # 超界幂
+        with pytest.raises(ValueError):
+            pa.safe_calc("(10**1000)**1000")            # 左积链：右操作数全是 1000，
+            # 结果却 3.3M bit（0.15s）——再嵌一层就是 GUI 线程小时级冻结（补55 D1 实测）
         with pytest.raises((ValueError, SyntaxError)):
             pa.safe_calc("__import__('os')")            # 非数字元素拒绝
 
