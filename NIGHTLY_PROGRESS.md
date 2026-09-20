@@ -20,6 +20,14 @@
 | 3 | 02:30 | diff_preview 退出码契约测试 ×6 | （见 git log nightly round 3） | 全量 1213 (0F/0E/1skip)；实证推翻补53 的「ONLY-A 退出码 0」误记 |
 | 4 | 03:15 | 文档一致性：PROGRESS 头部现状化 + README 计数 1213 + 修 R2 引入的 README CR 字节损坏 | （见 git log nightly round 4） | 全量 PASS（纯文档轮） |
 
+## 终止（2026-09-20 11:49）
+
+R4→R5 休眠期会话中断，恢复时 11:49 已过硬停止线（08:55）→ 按规则写最终日志停止。
+**实际 4 轮**：R1 `6c72578`（基线验证）/ R2 `69e47a9`（run_full_check 工具化）/
+R3 `3d395af`（diff_preview 契约测试）/ R4 `fda4267`（文档一致性+CR 修复）。
+最终 pytest：**1213 passed / 0 failed / 1 skipped**（run_full_check 复核），pyflakes 0。
+基线失败：已在主体会话 12df081 修复，本轮 R1 实测确认全绿。详见 NIGHTLY_LOG.md。
+
 ## 待选改进池（后续轮次从中取，做前重估）
 
 1. `tools/run_full_check.py`：把「SEG1+SEG2+junitxml 计数+pyflakes」两段式全绿口径钉成一个工具（夜间任务自用 + 消灭手敲序列）。
