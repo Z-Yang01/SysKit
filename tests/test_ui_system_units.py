@@ -321,7 +321,8 @@ def test_battery_parse_error_falls_back_to_no_battery(qtbot, monkeypatch):
     from syskit import proc
     from syskit.ui.system_page import BatteryTab
     monkeypatch.setattr(proc, "run_ps",
-                        lambda script, timeout=30: proc.CmdResult(0, "40000,32000,³", ""))
+                        lambda script, timeout=30, resident=False:
+                        proc.CmdResult(0, "40000,32000,³", ""))
     monkeypatch.setattr("syskit.ui.system_page._BatteryWorker.start",
                         lambda self: self.run())            # worker 同步执行（项目惯例）
     tab = BatteryTab()                           # 懒加载：构造期不查询
@@ -549,7 +550,7 @@ def test_battery_tab_lazy_loads_on_show(qtbot, monkeypatch):
     from syskit.ui.system_page import BatteryTab
     calls = []
     monkeypatch.setattr(proc, "run_ps",
-                        lambda script, timeout=30:
+                        lambda script, timeout=30, resident=False:
                         calls.append(script) or proc.CmdResult(0, "40000,32000,80", ""))
     monkeypatch.setattr("syskit.ui.system_page._BatteryWorker.start",
                         lambda self: self.run())            # worker 同步执行（项目惯例）

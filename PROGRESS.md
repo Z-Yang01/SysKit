@@ -1788,3 +1788,45 @@ netsh no-match 退出码探针直接省去总控重查）；③单源化收敛�
 「结果过大」守卫 / _stop_evt.wait / 30~90 秒提示 / GROUPS_DASH / drift-off
 文案）。运行中的安装版实例不锁 dist（打包全程无阻）；启动冒烟因单实例
 互斥跳过（启动链此前已验证）。exe 入库（a102b05），zip/setup 为本地产物。
+
+### 补充56（2026-09-20 深夜）：优化第 7 步——常驻 PowerShell stdio 会话（proc.run_ps 透明 opt-in 层）
+
+补53 挂账的最后一个大项。新设计把它从「架构口径大一个量级」收窄为一个
+`resident=True` 参数：
+
+- **形态**：懒 spawn `powershell -NoProfile -NonInteractive -ExecutionPolicy
+  Bypass -Command <bootstrap>`，bootstrap while 循环每次从 stdin 读一行
+  **base64**（规避换行/注入），解码后 `try{Invoke-Expression}catch{}`——异常
+  杀不死会话。脚本 stdout 原样直通（调用方解析器零风险）；每条脚本以 stdout
+  `OUT-END` 行 + stderr `DONE:{0|1}` 行为响应边界（边界放 stderr，不污染
+  stdout）。父进程退出 → stdin EOF → 子进程自然退出；quit_app 另加显式
+  `proc.close_resident()` 双保险。
+- **语义逐条对齐一次性路径**：CmdResult 四字段/超时带回部分输出/`_decode`/
+  永不抛。超时 = kill + 废弃会话 + timeout=True；会话中途死亡 → 废弃换新
+  会话重试一次，仍死回退一次性；spawn 失败永久回退；`SYSKIT_NO_RESIDENT_PS=1`
+  逃生开关；脚本含行首 `exit` 自动拒绝常驻（appnet status 脚本有 exit 0，
+  会杀死整个会话进程）。模块级锁串行化。
+- **迁移调用点仅 3 处只读脚本**（各 1 行）：snapshot.take（4.16s，最大收益）、
+  icmp.default_gateway（每 5 分钟 + 启动）、system_page 电池 CIM（Tab 首显）。
+  不迁移并记录理由：appnet（含 exit 0）、modes 静音（设备写 + 需 Add-Type
+  类型守卫）、回收站 COM 扫描（长命进程内 COM 生命周期顾虑）、全部写类/长类
+  （隔离性红线）。
+- **真机实测**（只读）：一次性快照 3421ms → 常驻暖 call **316/322/329ms
+  （10.7×）**，首 call 3619ms（≈一次性，spawn 摊销在首次）；网关查询 30ms
+  （原 PS 冷启动秒级）；连续两次快照网卡列表稳定（会话无串味）；close 后
+  子进程 2s 内退出（EOF 生命周期正确）。
+- **测试**：新增 tests/test_proc_resident.py 10 例，全部注入假 transport
+  （monkeypatch `proc._spawn_resident`，subprocess/哨兵零接触）：happy/PS 报错
+  code1/超时 kill+部分输出/死亡重试一次/双重死亡回退/spawn 失败永久回退/
+  逃生开关/exit 拒常驻/非 resident 不 spawn/双线程锁串行。收集期抓真实
+  `proc.run_ps` 的模式沿用 test_proc（conftest 哨兵会替换模块属性）。
+- **既有桩适配 8 处**（`resident` 形参——补53「桩必须与公开接口同步」的现实
+  版）：test_repairs Recorder、test_snapshot patch_ps+超时用例、test_icmp×2、
+  test_ui_smoke×2、test_ui_system_units×2、test_disk_system_page_gaps×2；
+  两处顺带断言 `resident is True` 锁定新契约。**实现 bug 由测试抓出 1 个**：
+  EOF 处理曾把「OUT-END 之后的健康收尾 EOF」误判为会话死亡——正常脚本输出
+  完即关流，EOF 必须结合边界标记是否已见来判定。
+- **验证**：全量 **1233 例**（1189+44）两段式 0F/0E/1 已知 skip；pyflakes 0。
+  bench 脚本自身一次 GBK 解码崩溃（tasklist 输出编码，非产品代码）已修。
+- **不迁移清单**与理由已如上；后续若迁移 modes，前置改造是
+  `if (-not ('SysKitAudio.Wv' -as [type]))` 类型守卫。

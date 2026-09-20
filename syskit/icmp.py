@@ -72,6 +72,7 @@ def default_gateway() -> str:
     r = proc.run_ps("Get-NetRoute -DestinationPrefix 0.0.0.0/0 -AddressFamily IPv4 "
                     "-ErrorAction SilentlyContinue "
                     "| Sort-Object {$_.RouteMetric+$_.InterfaceMetric} "
-                    "| Select-Object -First 1 -ExpandProperty NextHop", timeout=25)
+                    "| Select-Object -First 1 -ExpandProperty NextHop",
+                    timeout=25, resident=True)
     gw = r.stdout.strip()
     return gw if gw.count(".") == 3 else ""

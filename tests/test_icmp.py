@@ -153,7 +153,8 @@ class TestPing:
 class TestDefaultGateway:
     def _patch_ps(self, monkeypatch, fake_cmd_result, stdout, code=0):
         monkeypatch.setattr(proc, "run_ps",
-                            lambda script, timeout=40: fake_cmd_result(code, stdout))
+                            lambda script, timeout=40, resident=False:
+                            fake_cmd_result(code, stdout))
 
     def test_valid_gateway(self, monkeypatch, fake_cmd_result):
         self._patch_ps(monkeypatch, fake_cmd_result, "192.168.1.1\r\n")
@@ -180,11 +181,13 @@ class TestDefaultGateway:
         """发出的 PowerShell 应查询 0.0.0.0/0 路由并按双跃点排序。"""
         seen = {}
 
-        def fake_ps(script, timeout=40):
+        def fake_ps(script, timeout=40, resident=False):
             seen["script"] = script
             seen["timeout"] = timeout
+            seen["resident"] = resident
             return fake_cmd_result(0, "192.168.1.1")
         monkeypatch.setattr(proc, "run_ps", fake_ps)
         icmp.default_gateway()
         assert "Get-NetRoute" in seen["script"] and "0.0.0.0/0" in seen["script"]
         assert "NextHop" in seen["script"] and seen["timeout"] == 25
+        assert seen["resident"] is True            # 网关查询走常驻会话（补56）

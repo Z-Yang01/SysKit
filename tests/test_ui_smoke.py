@@ -93,7 +93,7 @@ def ui_offline_mocks(monkeypatch):
     subprocess/socket/urlopen/winreg 写 哨兵保持原样 —— 漏 mock 依旧立刻失败）。"""
     from syskit import icmp, proc
 
-    def _fake_run(cmd, timeout=20):
+    def _fake_run(cmd, timeout=20, **kwargs):
         return proc.CmdResult(code=0, stdout="", stderr="")
 
     monkeypatch.setattr(proc, "run", _fake_run)
@@ -806,7 +806,8 @@ def test_battery_tab_both_branches(qtbot, monkeypatch):
     assert "未检测到电池" in tab.lbl_design.text()
 
     monkeypatch.setattr(proc, "run_ps",
-                        lambda script, timeout=40: proc.CmdResult(0, "40000,32000,80", ""))
+                        lambda script, timeout=40, resident=False:
+                        proc.CmdResult(0, "40000,32000,80", ""))
     tab.refresh()
     assert tab.lbl_design.text() == "40000 mWh"
     assert tab.lbl_full.text() == "32000 mWh"

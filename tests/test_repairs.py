@@ -74,7 +74,7 @@ class Recorder:
     def run(self, cmd, timeout=20):
         return self._dispatch("run", cmd, timeout)
 
-    def run_ps(self, script, timeout=40):
+    def run_ps(self, script, timeout=40, resident=False):
         return self._dispatch("ps", script, timeout)
 
     @property

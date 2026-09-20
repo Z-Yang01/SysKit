@@ -110,7 +110,9 @@ def _parse_json_loose(text: str):
 
 def take(use_ps: bool = True) -> Snapshot:
     snap = Snapshot()
-    r = proc.run_ps(_PS_SCRIPT)
+    # resident=True：常驻会话免 PS 冷启动与 cmdlet 暖机，4.16s→百毫秒级（补56）。
+    # 脚本纯只读、无 exit、单行 JSON——常驻三前提全满足
+    r = proc.run_ps(_PS_SCRIPT, resident=True)
     if not r.stdout.strip():
         snap.error = r.stderr.strip() or "PowerShell 无输出"
         return snap

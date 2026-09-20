@@ -1399,6 +1399,8 @@ class MainWindow(QMainWindow):
             if w is not None and w.isRunning():
                 w.wait(10_000)
             setattr(self, attr, None)
+        from .. import proc as _proc_mod
+        _proc_mod.close_resident()        # 常驻 PS 会话收尾（EOF 后子进程自然退出）
         self.tele.traffic.save_if_dirty()
         self.tray.hide()
         from PySide6.QtWidgets import QApplication

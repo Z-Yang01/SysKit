@@ -259,7 +259,7 @@ class _BatteryWorker(QThread):
             "| Select-Object -First 1).EstimatedChargeRemaining; "
             "@($d,$f,$r) -join ','")
         try:
-            r = proc.run_ps(script, timeout=30)
+            r = proc.run_ps(script, timeout=30, resident=True)
             self.got.emit(r.stdout or "")
         except Exception:
             self.got.emit("")

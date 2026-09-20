@@ -186,7 +186,8 @@ def full_ps_data():
 
 def patch_ps(monkeypatch, fake_cmd_result, stdout="", stderr="", code=0):
     monkeypatch.setattr(proc, "run_ps",
-                        lambda script, timeout=40: fake_cmd_result(code, stdout, stderr))
+                        lambda script, timeout=40, resident=False:
+                        fake_cmd_result(code, stdout, stderr))
 
 
 class TestTakeFailures:
@@ -288,12 +289,14 @@ class TestTakeSuccess:
     def test_run_ps_called_with_default_timeout(self, monkeypatch, fake_cmd_result):
         seen = {}
 
-        def fake_ps(script, timeout=40):
+        def fake_ps(script, timeout=40, resident=False):
             seen["timeout"] = timeout
+            seen["resident"] = resident
             return fake_cmd_result(0, json.dumps({"adapters": []}))
         monkeypatch.setattr(proc, "run_ps", fake_ps)
         take()
         assert seen["timeout"] == 40
+        assert seen["resident"] is True            # 快照走常驻会话（补56）
 
 
 # ---------------- current_ssid ----------------
