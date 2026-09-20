@@ -1096,6 +1096,10 @@ def test_main_window_minimized_starts_hidden(make_main_window):
     win = make_main_window(minimized=True)
     assert not win.isVisible()
     assert win.stack.count() == 10
+    # 补55 B-1：minimized 自启（自启唯一形态）+ 停在首页时，currentChanged 与
+    # hideEvent 都不会触发——构造末尾必须兜底算一次采样范围，否则托盘常驻期
+    # 一直做全套昂贵采样（netsh 每 5s / 进程表每 2s / ICMP 每 3s）
+    assert win.tele._need == set()
 
 
 def test_quit_app_waits_page_workers(make_main_window, qtbot, monkeypatch):
@@ -1151,14 +1155,21 @@ def test_main_window_monitor_status_and_telemetry(main_win):
     d = {"lat_gw": 5.0, "lat_pub": 9.0, "gateway": "192.168.1.1",
          "down": 2048.0, "up": 1024.0, "cpu": 3.0, "mem": 30.0,
          "top_procs": []}
-    # 遥测只喂当前可见页（挂机省 CPU）：不在前台的页不更新
+    # 遥测只喂「可见窗口的当前页」：页面不可见时不做 UI 工作，
+    # 也不能刷新页面的 _last_tick（会击穿 reset_if_stale 断流判定，补55 B-3）
     win.stack.setCurrentWidget(win.page_dash)
+    win._on_telemetry(d)                          # 窗口未 show：页面与 _last_tick 都不动
+    assert "5" not in win.page_dash.card_gw.value_label.text()
+    win.show()                                    # 离屏 show：进入「可见」态
     win._on_telemetry(d)
     assert "5" in win.page_dash.card_gw.value_label.text()
     assert "↓" in win.tray.toolTip()              # 托盘实时速率（不受页面可见性影响）
     win.stack.setCurrentWidget(win.page_system)
     win._on_telemetry(d)
     assert win.page_system.perf.tbl.rowCount() == 0       # 空 top_procs 不崩
+    win.hide()
+    win._on_telemetry(d)
+    assert win.tray.toolTip()                     # 隐藏期托盘照常（有值即可，不抛）
 
 
 def test_main_window_fill_adapters_and_diag_progress(main_win):

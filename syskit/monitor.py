@@ -156,7 +156,9 @@ class Monitor(threading.Thread):
                 # 必须用 monotonic：_repair_level 拿它和 time.monotonic() 相减，
                 # 写入 epoch 秒会让差值为巨负、L3 冷却永久命中（自动修复静默降级到 L2）
                 self._last_l3_ts = time.monotonic()
-            time.sleep(3)
+            # 步间等待可被 stop 打断：join(3) 的退出路径不必干等 3s（补55 B-6）
+            if self._stop_evt.wait(3):
+                return
             if probe_quick():
                 self.on_status(ST_OK, f"自动修复成功（{act.title}）")
                 return

@@ -1072,6 +1072,9 @@ def test_restore_point_success(recorder, monkeypatch):
     assert r.success is True and "还原点" in r.message
     ps = [c for c in recorder.calls if c[0] == "ps"]
     assert ps and "Checkpoint-Computer" in ps[0][1]
+    # -ErrorAction Stop 必须在：PS 非终止错误的 -Command 退出码恒 0（补55 A-F1
+    # 实测），缺了它「系统保护未开启」会被当成已创建——安全网假成功
+    assert "-ErrorAction Stop" in ps[0][1]
 
 
 def test_restore_point_requires_admin(monkeypatch):

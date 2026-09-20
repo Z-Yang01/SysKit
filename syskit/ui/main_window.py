@@ -16,7 +16,7 @@ from .. import admin, autostart, config, hotkey, monitor, netcheck, repairs, set
 from .. import logger as _logging
 from ..logger import LOGGER
 from ..stores import EventStore
-from ..telemetry import TelemetryWorker
+from ..telemetry import GROUPS_DASH, GROUPS_SYSTEM, TelemetryWorker
 from . import theme
 from .confirm_dialog import ConfirmDialog
 from .dashboard_page import DashboardPage
@@ -165,6 +165,10 @@ class MainWindow(QMainWindow):
         self.run_diagnosis(quick=True, silent=True)
         if minimized:
             self.hide()
+        # 无论哪条启动路径都先算一次采样范围：minimized 自启（自启唯一形态）+
+        # 停在首页时不发 currentChanged、从未 show 的窗口 hide() 也不发 hideEvent，
+        # 不兜这一底 _need 会保持全量——托盘常驻期一直做全套昂贵采样（补55 B-1）
+        self._refresh_telemetry_scope()
 
     # ---------------- 命令面板 ----------------
     def _setup_palette(self):
@@ -299,9 +303,9 @@ class MainWindow(QMainWindow):
         if self.isVisible() and not self.isMinimized():
             cur = self.stack.currentWidget()
             if cur is self.page_dash:
-                need |= {"lat", "wifi"}
+                need |= GROUPS_DASH
             elif cur is self.page_system:
-                need |= {"procs"}
+                need |= GROUPS_SYSTEM
         self.tele.set_need(need)
 
     def showEvent(self, event):
@@ -319,8 +323,13 @@ class MainWindow(QMainWindow):
             self._refresh_telemetry_scope()
 
     def _on_telemetry(self, d: dict):
-        # 隐藏页不做 UI 工作（PerfTab 每 2s 重建 32 个 item / 图表 push）：
-        # 挂机时托盘速率照常，页面回到前台后下一跳自然续上
+        # 窗口不可见/最小化时页面一概不喂：update_tick 会刷新页面的 _last_tick，
+        # 击穿 reset_if_stale 的断流判定（补55 B-3），PerfTab 的重建也是白做；
+        # 托盘速率不依赖页面，照常
+        if not self.isVisible() or self.isMinimized():
+            if self._tray_rate and "down" in d:
+                self.tray.update_rate(d["down"], d["up"])
+            return
         cur = self.stack.currentWidget()
         if cur is self.page_dash:
             self.page_dash.update_tick(d)
@@ -554,7 +563,9 @@ class MainWindow(QMainWindow):
         self.btn_copy_report.clicked.connect(self._copy_report)
         btns.addWidget(self.btn_copy_report)
         self.btn_export_report = QPushButton("导出报告")
-        self.btn_export_report.setToolTip("把诊断结果与结论保存为文本文件（可存档或发给他人求助）")
+        self.btn_export_report.setToolTip(
+            "把诊断结果与结论保存为文本文件（可存档或发给他人求助）。\n"
+            "注意：内容含 WiFi 名 / 内网 DNS / 代理地址等局域网信息，外发前请自行斟酌。")
         self.btn_export_report.clicked.connect(self._export_report)
         btns.addWidget(self.btn_export_report)
         btns.addStretch(1)
@@ -1250,6 +1261,10 @@ class MainWindow(QMainWindow):
                     f"受限项：{'、'.join(skipped_no_admin)}")
             return
         desc = "\n".join(f"· {repairs.get_action(a).title}" for a in confirmed)
+        if "restore_point" in confirmed:
+            # 补47 挂账、审计第 9 批 F4 复核的决策项（文案级预案）：首位还原点
+            # 常态 30~90s 且不可中止，确认弹窗必须把这段空等说在前面
+            desc += "\n\n（第一步创建系统还原点：常态耗时 30~90 秒，期间无法中止，请耐心等待）"
         extra = f"\n\n已跳过 {len(ids) - len(confirmed)} 项（取消或无权限）。" if len(confirmed) < len(ids) else ""
         dlg = QMessageBox(self)
         dlg.setWindowTitle("确认组合修复")
@@ -1367,9 +1382,16 @@ class MainWindow(QMainWindow):
             for widget in app_inst.allWidgets():
                 for th in widget.findChildren(_QThread):
                     if th.isRunning():
-                        stop = getattr(th, "stop", None)
-                        if callable(stop):
-                            stop()               # tracert 等：先请求停止再等
+                        # stop() 请求停止（tracert 等）；cancel() 让诊断/组合
+                        # 跳过剩余项（补55 B-2：只认 stop 时，卡在 restore_point
+                        # 的组合最坏 180s > 10s 上限，退出期仍有 qFatal 窗口）
+                        for stop_name in ("stop", "cancel"):
+                            fn = getattr(th, stop_name, None)
+                            if callable(fn):
+                                try:
+                                    fn()
+                                except Exception:
+                                    LOGGER.debug("退出扫尾调用 {} 失败", stop_name)
                         th.wait(10_000)
         # 主窗口 4 worker 显式等待（reap 已挂 self；findChildren 之外的双保险）
         for attr in ("_snap_worker", "_diag_worker", "_repair_worker", "_combo_worker"):

@@ -21,6 +21,9 @@ _PHYSICAL_EXCLUDE = ("loopback", "vmnet", "vmware", "vethernet", "bluetooth", "w
 #   procs —— 每 2 秒一遍进程表（系统页 Top 进程）
 # 托盘常驻是绝大多数时间的常态，那时这三组采了没有任何消费者。
 HEAVY_GROUPS = ("lat", "wifi", "procs")
+# 各页面看得懂的分组口径（main_window._refresh_telemetry_scope 共用，避免双源字面量）
+GROUPS_DASH = frozenset({"lat", "wifi"})
+GROUPS_SYSTEM = frozenset({"procs"})
 
 
 def _fmt_nic_rates(last, cur):

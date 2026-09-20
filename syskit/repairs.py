@@ -177,9 +177,13 @@ class RestorePoint(RepairAction):
         from .admin import is_admin
         if not is_admin():
             return RepairResult(False, "需要管理员权限")
-        # Checkpoint-Computer 可能耗时 30~90s；在 worker 线程执行不冻 UI
+        # Checkpoint-Computer 可能耗时 30~90s；在 worker 线程执行不冻 UI。
+        # -ErrorAction Stop 必须带：PS 非终止错误的 -Command 退出码恒 0
+        # （补55 A-F1 本机实测），不转终止的话「系统保护未开启」这类失败会被
+        # 当成已创建——还原点是组合首位安全网，假成功不可接受
         r = proc.run_ps("Checkpoint-Computer -Description 'SysKit 修复前快照' "
-                        "-RestorePointType 'MODIFY_SETTINGS'", timeout=180)
+                        "-RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop",
+                        timeout=180)
         if r.ok:
             return RepairResult(True, "已创建系统还原点（若 24 小时内已创建过，"
                                       "Windows 可能静默跳过，不影响继续修复）")

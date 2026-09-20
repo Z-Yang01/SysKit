@@ -400,6 +400,27 @@ def test_mw_repair_and_combo_full_flows(main_win, monkeypatch, qtbot):
     assert win.list_repair_log.count() >= 4         # 2 条修复 + 2 条组合记录
 
 
+def test_run_combo_restore_point_duration_hint(main_win, monkeypatch):
+    """full/stack 组合首位是系统还原点（常态 30~90s 且不可中止，补47 挂账、
+    第 9 批 F4 复核）：最终确认弹窗必须把这段空等如实说在前面。"""
+    from syskit import admin
+    from syskit.ui.confirm_dialog import ConfirmDialog
+    win = main_win
+    monkeypatch.setattr(admin, "is_admin", lambda: True)
+    monkeypatch.setattr(ConfirmDialog, "exec",
+                        lambda self, *a, **k: QDialog.DialogCode.Accepted)
+    captured = {}
+
+    def _cap_exec(self, *a, **k):
+        captured["text"] = self.text()
+        return QMessageBox.StandardButton.Cancel     # 确认取消 → 不执行
+    monkeypatch.setattr(QMessageBox, "exec", _cap_exec)
+    win.run_combo("full")
+    assert win._combo_worker is None and win._busy is False
+    assert "还原点" in captured["text"]
+    assert "30~90 秒" in captured["text"]
+
+
 def test_mw_monitor_settings_logs_then_quit(main_win, monkeypatch, qtbot):
     """分组四（单窗口，quit 收尾）：监控回调 / 提示音异常 / 设置保存 / 日志读取 / 退出路径。"""
     win = main_win

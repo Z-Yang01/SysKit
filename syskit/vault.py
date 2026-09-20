@@ -262,7 +262,10 @@ def get_secret(account_id: int, crypto, field: str = "password",
 def get_secrets_bulk(account_ids, crypto, field: str = "password") -> dict:
     """批量解密（单连接单查询）：整列明文显示场景逐行 get_secret 会开 N 次
     连接。返回 {account_id: 明文}；无密文/缺失 id 不在结果中。
-    不更新 last_used_at（显示语义）；锁定态由 crypto.decrypt 抛 VaultLockedError。"""
+    不更新 last_used_at（显示语义）。
+    契约（补55 C-5 勘误）：任何单条解密失败——含锁定态的 VaultLockedError——都在
+    本函数内降级为「该条缺席」，**不会外溢**；调用方按缺席显示 **** 即可，
+    不要针对锁定态写 except 分支（那是不可达的死分支）。"""
     if field not in ("password", "totp", "notes"):
         raise ValueError(f"未知字段 {field}")
     ids = [int(a) for a in dict.fromkeys(account_ids) if a is not None]
