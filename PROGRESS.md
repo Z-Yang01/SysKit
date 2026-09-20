@@ -1780,3 +1780,11 @@ safe_calc 其余攻击面（属性逃逸/浮点溢出/递归深度均被接住�
 完成标准的一部分，而非挂账项；②审计代理的「复核方法」字段极有价值（A 的
 netsh no-match 退出码探针直接省去总控重查）；③单源化收敛（probe/SSID/
 静态 DNS）后调用方契约要跟一轮审计（D 维度确认本轮收敛无 parity 漂移）。
+
+**dist 同步（同日附记）**：重建三产物（exe/zip/setup，20:22），销掉「打包
+持续挂起」账——此前 00:04 的产物只含补充47-53，缺补充54 与本轮全部修复。
+归档级验证：从 exe 内嵌 PYZ 提取 appnet/palette_actions/monitor/main_window
+的 code object，逐项断言修复标记在场（displayName 移除 / netsh_state /
+「结果过大」守卫 / _stop_evt.wait / 30~90 秒提示 / GROUPS_DASH / drift-off
+文案）。运行中的安装版实例不锁 dist（打包全程无阻）；启动冒烟因单实例
+互斥跳过（启动链此前已验证）。exe 入库（a102b05），zip/setup 为本地产物。
