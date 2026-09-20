@@ -95,7 +95,7 @@ class FakeFirewall:
             if (boom := self._failed("set")) is not None:
                 return boom
             if not hit:
-                return 0, NO_MATCH, ""          # 退出码 0 却什么都没改
+                return 1, NO_MATCH, ""          # 补55 真机对齐：no-match 退出码为 1
             for r in hit:
                 en = _kv(cmd, "enable")
                 if en == "yes":
@@ -110,13 +110,13 @@ class FakeFirewall:
                 return boom
             before = len(self.rules)
             self.rules = [r for r in self.rules if r["name"] != name]
-            return (0, "确定。", "") if len(self.rules) < before else (0, NO_MATCH, "")
+            return (0, "确定。", "") if len(self.rules) < before else (1, NO_MATCH, "")
         if kind == "show":
             if self.show_timeout:
                 return "timeout"
             hit = [r for r in self.rules if r["name"] == name]
             if not hit:
-                return 0, NO_MATCH, ""
+                return 1, NO_MATCH, ""
             body = "\n".join(f"规则名称:       {r['name']}\n"
                              f"操作:            {'阻止' if r['action'] == 'Block' else '允许'}\n"
                              f"已启用:          {'是' if r['enabled'] else '否'}\n"

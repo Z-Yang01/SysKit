@@ -52,11 +52,6 @@ def test_rule_name_is_ascii_and_stable():
     assert name != appnet.rule_name(r"C:\Program Files\Reader\阅读2.exe")
 
 
-def test_display_name_uses_file_name():
-    assert appnet.display_name(r"C:\a\b\reader.exe").endswith("reader.exe")
-    assert appnet.display_name("").startswith("SysKit")      # 空路径也要有可读文案
-
-
 def test_ps_status_script_uses_quoted_name_literals():
     name = appnet.rule_name(r"C:\a.exe")
     script = appnet._ps_status_script([r"C:\a.exe"])
@@ -94,6 +89,45 @@ def test_cmd_add_shape_and_quoting():
 def test_cmd_add_enable_flag_follows_target_state():
     assert "enable=no" in appnet.cmd_add(r"C:\a.exe", enable=False)
     assert "enable=yes" in appnet.cmd_add(r"C:\a.exe", enable=True)
+
+
+def test_cmd_add_uses_only_netsh_documented_params():
+    """补55 真机 P0：netsh `add rule` **不支持** group/displayName（那是 PowerShell
+    New-NetFirewallRule 的参数），带上即报「不是这个指令的有效参数」——初版写路径
+    在任何机器上都从未成功过，被桩测试掩盖。此用例钉死参数表。"""
+    cmd = appnet.cmd_add(r"C:\Program Files\Reader\Rd.exe")
+    assert not any(x.startswith(("group=", "displayName=")) for x in cmd)
+    assert any(x.startswith("description=") for x in cmd)      # 人类可读信息全在 description
+
+
+def test_netsh_state_bilingual_parsing(monkeypatch):
+    """netsh show 的状态字段中英双语解析（netsh/PS 存储分歧机器上的兜底读侧）。"""
+    from types import SimpleNamespace
+
+    name = appnet.rule_name(r"C:\a.exe")
+
+    def fake_show(stdout):
+        monkeypatch.setattr(appnet.proc, "run",
+                            lambda cmd, timeout=20: SimpleNamespace(
+                                code=0, ok=True, stdout=stdout, stderr="", timeout=False))
+
+    fake_show(f"规则名称:   {name}\n已启用:    是\n操作:   阻止")
+    assert appnet.netsh_state(r"C:\a.exe") == "on"
+    fake_show(f"Rule Name:   {name}\nEnabled:   No\nAction:   Block")
+    assert appnet.netsh_state(r"C:\a.exe") == "off"
+    fake_show(f"规则名称:   {name}\n已启用:    是\n操作:   允许")
+    assert appnet.netsh_state(r"C:\a.exe") == "drift"          # 动作被外部改允许：无论启停都不拦
+    fake_show("没有与指定标准相匹配的规则。")
+    assert appnet.netsh_state(r"C:\a.exe") == "missing"
+    fake_show(f"规则名称:   {name}\n（字段缺失的意外输出）")
+    assert appnet.netsh_state(r"C:\a.exe") is None             # 解析不出 = 不知道，不猜
+
+
+def test_delete_rule_tolerates_already_gone(rec):
+    """补55 真机：netsh no-match 退出码已从 0 漂移为 1——规则被外部删掉后点
+    「移除」必须按终态达成处理，而不是报失败把台账行变成永远删不掉的死条目。"""
+    ok, msg = appnet.delete_rule(r"C:\a.exe")                  # 假防火墙里本来就没有
+    assert ok is True and "已不存在" in msg
 
 
 def test_cmd_set_delete_show_target_the_same_rule():
@@ -180,10 +214,23 @@ def test_query_states_trusts_probe_over_exit_code(rec):
 
 
 def test_actual_state_none_means_unverified_not_missing(rec):
+    """双侧读不出来才是「未校验」；单侧 missing 都能给出确定事实。"""
     p = r"C:\a.exe"
     assert appnet.actual_state(p) == "missing"                 # PS 可用、确实没规则
     rec.fw.ps_available = False
-    assert appnet.actual_state(p) is None                      # PS 挂了 = 无法判定
+    rec.fw.show_timeout = True
+    assert appnet.actual_state(p) is None                      # PS + netsh 双挂 = 无法判定
+
+
+def test_actual_state_ps_unavailable_falls_back_to_netsh(rec):
+    """补55 真机：netsh 建的规则在 CIM 视图里长期不可见（存储分歧）——PS 报
+    missing 或整体不可用时必须用 netsh 兜底，而不是误判「被外部删除」或「未校验」。"""
+    p = r"C:\a.exe"
+    rec.fw.ps_available = False
+    rec.fw.seed(appnet.rule_name(p), program=p)                # 只有 netsh 侧看得到
+    assert appnet.actual_state(p) == "on"
+    rec.fw.rules.clear()
+    assert appnet.actual_state(p) == "missing"                 # 两边都没有 = 真的不在
 
 
 def test_parse_status_output_ignores_foreign_rule_names():
@@ -288,11 +335,34 @@ def test_apply_state_reports_drifted_rule_instead_of_overwriting(rec):
     assert ok is False and "不是「阻止」" in msg
 
 
-def test_apply_state_says_so_when_post_write_check_is_impossible(rec):
+def test_apply_state_drift_off_reports_achieved(rec):
+    """动作已被外部改成「允许」时点「允许联网」：净效果已达成，如实说明而非报失败
+    （旧文案要求「改回」，对用户是反的——代理 A 第 9 批 F7）。"""
     p = r"C:\a.exe"
+    rec.fw.seed(appnet.rule_name(p), program=p, enabled=True, action="Allow")
+    ok, msg = appnet.apply_state(p, False)                     # set enable=no，不覆盖 action
+    assert ok is True and "外部改为「允许」" in msg
+
+
+def test_apply_state_verifies_via_netsh_when_ps_down(rec):
+    """补55 真机：netsh 是完整的读侧后端（netsh/PS 存储分歧的机器上尤其关键）——
+    PS 挂了也能真验证，不再落入「未能回查」。"""
+    p = r"C:\a.exe"
+    rec.fw.seed(appnet.rule_name(p), program=p)
     rec.fw.ps_available = False
     ok, msg = appnet.apply_state(p, True)
-    assert ok is True and "未能回查" in msg                     # 不假装验证过
+    assert ok is True and "已禁止联网" in msg and "未能回查" not in msg
+
+
+def test_apply_state_says_so_when_post_write_check_is_impossible(rec):
+    """PS 与 netsh 兜底都读不出状态时：如实说「未能回查」，不假装验证过。"""
+    p = r"C:\a.exe"
+    name = appnet.rule_name(p)
+    rec.fw.seed(appnet.rule_name(p), program=p)
+    rec.respond_sub("show rule", stdout=f"规则名称:       {name}")   # 名字在、字段解析不出
+    rec.fw.ps_available = False
+    ok, msg = appnet.apply_state(p, True)
+    assert ok is True and "未能回查" in msg
 
 
 def test_delete_rule_requires_admin_and_sends_nothing(rec, monkeypatch):
@@ -314,11 +384,15 @@ def test_delete_rule_reports_failure_when_rule_survives(rec):
 
 
 def test_delete_rule_says_so_when_post_write_check_is_impossible(rec):
+    """PS 与 netsh 兜底都读不出状态时：如实说「未能回查」，不假装验证过删除。"""
     p = r"C:\a.exe"
-    appnet.apply_state(p, True)
+    name = appnet.rule_name(p)
+    rec.fw.seed(appnet.rule_name(p), program=p)
+    rec.respond_sub("delete rule", code=0, stdout="确定。")          # 命令层成功（规则其实没删）
+    rec.respond_sub("show rule", stdout=f"规则名称:       {name}")   # 读侧字段解析不出
     rec.fw.ps_available = False
     ok, msg = appnet.delete_rule(p)
-    assert ok is True and "未能回查" in msg                      # 不假装验证过删除
+    assert ok is True and "未能回查" in msg
 
 
 def test_confirm_reports_unexpected_state_verbatim(monkeypatch):

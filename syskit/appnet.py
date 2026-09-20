@@ -19,13 +19,13 @@
 """
 import hashlib
 import os
+import re
 import time
 
 from . import admin, proc, stores
 from .logger import LOGGER
 
 RULE_PREFIX = "SysKit-AppNet"
-RULE_GROUP = "SysKit"
 STORE_NAME = "appnet.json"
 ADMIN_MSG = "修改防火墙规则需要管理员权限。\n请以管理员身份运行 SysKit 后重试。"
 # PS 输出里的可用性哨兵：只有它出现才说明 Get-NetFirewallRule 跑得动。
@@ -64,23 +64,21 @@ def rule_name(program: str) -> str:
     return f"{RULE_PREFIX}-{hashlib.sha1(norm_path(program).encode('utf-8')).hexdigest()[:10]}"
 
 
-def display_name(program: str) -> str:
-    base = os.path.basename(real_path(program)) or "program"
-    return f"SysKit 禁止联网 - {base}"
-
-
 def _description(program: str) -> str:
     return f"SysKit 应用联网控制 · {real_path(program)}"
 
 
 def cmd_add(program: str, enable: bool = True) -> list:
+    # 只用 netsh 文档参数（name/program/dir/action/enable/description）。
+    # 补55 真机实锤：netsh advfirewall `add rule` **没有** group/displayName 参数
+    #（那是 PowerShell New-NetFirewallRule 的概念），带上即报「不是这个指令的有效
+    # 参数」——初版写路径因此在任何机器上都从未成功过，被桩测试掩盖。人类可读
+    # 信息（路径）只写进 description。
     return ["netsh", "advfirewall", "firewall", "add", "rule",
             f"name={rule_name(program)}",
             f"program={real_path(program)}",
             "dir=out", "action=block",
             f"enable={'yes' if enable else 'no'}",
-            f"group={RULE_GROUP}",
-            f"displayName={display_name(program)}",
             f"description={_description(program)}"]
 
 
@@ -196,14 +194,49 @@ def find_entry(entries, program: str) -> int:
 def rule_exists(program: str):
     """netsh 回显里有没有我们的 ASCII 规则名——与系统语言无关的存在性判定。
 
-    返回 True / False / **None（命令超时 = 不知道）**。真机上 netsh 查不到规则时
-    回显本地化文案且**退出码 0**，所以既不能看退出码，也不能把超时折成 False：
-    调用方一旦把"不知道"当成"不在"，就会 add 出第二条同名规则（netsh 不查重）。
+    返回 True / False / **None（命令超时 = 不知道）**。netsh 查不到规则时的退出码
+    随版本漂移（补52 记录为 0，补55 真机已实测为 1），所以既不能看退出码，也不能
+    把超时折成 False：调用方一旦把"不知道"当成"不在"，就会 add 出第二条同名规则
+    （netsh 不查重）。
     """
     r = proc.run(cmd_show(program), timeout=20)
     if r.timeout:
         return None
     return rule_name(program) in (r.stdout or "")
+
+
+# netsh show 输出的状态字段（中英双语；字段值随系统语言变，但只在这两种内取值）
+_NETSH_ENABLED_RE = re.compile(r"已启用\s*[:：]\s*(是|否)|Enabled\s*[:：]\s*(Yes|No)", re.I)
+_NETSH_ACTION_RE = re.compile(r"操作\s*[:：]\s*(阻止|允许)|Action\s*[:：]\s*(Block|Allow)", re.I)
+
+
+def netsh_state(program: str):
+    """从 netsh show 输出解析规则态——PS 读侧的兜底。
+
+    背景（补55 真机实测）：netsh 建的规则在这台机器的 Get-NetFirewallRule（CIM）
+    视图里 **持续不可见**（实测 178s+ 不出现），而 netsh 自己立即可见——netsh 与
+    CIM 存储存在分歧，PS 报 missing 不等于规则不存在。字段中英双语解析（本机中文
+    输出「已启用: 是 / 操作: 阻止」，EN 机为 Enabled: Yes / Action: Block），
+    只解析我们自己的 ASCII 规则名。
+    返回 'on' / 'off' / 'drift' / 'missing' / None（读不到或字段解析不出）。
+    """
+    r = proc.run(cmd_show(program), timeout=20)
+    if r.timeout:
+        return None
+    text = r.stdout or ""
+    if rule_name(program) not in text:
+        return "missing"
+    en = _NETSH_ENABLED_RE.search(text)
+    ac = _NETSH_ACTION_RE.search(text)
+    if not en or not ac:
+        LOGGER.warning("netsh 规则状态解析失败（字段不齐）：{}",
+                       text.strip()[:160])
+        return None
+    enabled = (en.group(1) or en.group(2)) in ("是", "Yes")
+    block = (ac.group(1) or ac.group(2)) in ("阻止", "Block")
+    if not block:
+        return "drift"          # 动作被外部改成允许：无论启停都不拦
+    return "on" if enabled else "off"
 
 
 def query_states(programs) -> dict:
@@ -235,9 +268,21 @@ def query_states(programs) -> dict:
 
 
 def actual_state(program: str) -> str | None:
-    """回查单条规则的实际状态；PowerShell 不可用返回 None（=无法判定，不是「不在」）。"""
+    """回查单条规则的实际状态；两个读侧都给不出结论返回 None（=无法判定，不是「不在」）。
+
+    PS（Get-NetFirewallRule）优先；它报 missing 或整体不可用时用 netsh 兜底——
+    补55 真机实测 netsh 与 CIM 存储会分歧（netsh 建的规则 CIM 长期看不见），
+    只信 PS 会把刚刚建好的规则误判成「被外部删了」。netsh 自己也读不出（None）
+    时回到 PS 的结论：确定的事实优先于「不知道」。
+    """
     states = query_states([program])
-    return None if states is None else states.get(norm_path(program))
+    ps_state = None if states is None else states.get(norm_path(program))
+    if states is not None and ps_state != "missing":
+        return ps_state
+    net = netsh_state(program)
+    if net is not None:
+        return net
+    return ps_state
 
 
 def apply_state(program: str, blocked: bool) -> tuple:
@@ -276,6 +321,10 @@ def _confirm(program: str, expect: str, ok_msg: str) -> tuple:
         return False, ("命令返回成功，但防火墙里查不到这条规则"
                        "（可能被安全软件 / 组策略接管），请用 wf.msc 检查")
     if actual == "drift":
+        if expect == "off":
+            # 动作已被外部改成「允许」= 本来就不拦，用户要的「放行」净效果已达成；
+            # 保守起见不宣称这条规则归我们管，如实说明现状。
+            return True, "已允许联网（该规则的动作此前已被外部改为「允许」）"
         return False, ("规则已存在但动作不是「阻止」（在 wf.msc 里被改成了允许），"
                        "SysKit 未覆盖该改动，请先删除或改回")
     return False, f"回查结果与目标不一致（期望 {expect}，实际 {actual}），请刷新状态后重试"
@@ -286,9 +335,13 @@ def delete_rule(program: str) -> tuple:
         return False, ADMIN_MSG
     r = proc.run(cmd_delete(program), timeout=20)
     if not r.ok:
+        # 补55：netsh 无匹配时退出码已从 0 漂移为 1，且 CIM 分歧机器上「规则其实
+        # 已被外部删掉」是常态——删除失败与否以读侧终态为准，不认退出码。
+        if actual_state(program) == "missing":
+            return True, "规则已不存在"
         err = (r.stderr or r.stdout or "").strip()
         return False, f"删除规则失败：{err[:200] or f'退出码 {r.code}'}"
-    # 「本来就没有」与「删掉了」终态相同，都算达成，所以这里只关心回查是否真的没了
+    # 「本来就没有」与「删掉了」终态相同，所以这里只关心回查是否真的没了
     actual = actual_state(program)
     if actual is None:
         return True, "已删除规则（未能回查防火墙实际状态，可点「刷新状态」确认）"
