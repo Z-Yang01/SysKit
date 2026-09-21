@@ -43,6 +43,19 @@ def test_os_launch_helpers_are_blocked():
     _blocked(os.startfile, "os.startfile", "notepad.exe")
 
 
+def test_spawn_exec_popen_family_is_blocked():
+    """os 层 spawn/exec/popen 不经 subprocess（nt 模块直通 CRT），是进程级兜底的
+    最后一条旁路；execv 一类还会整体替换 pytest 进程。"""
+    for fn in ("spawnv", "spawnve",
+               "spawnl", "spawnle",
+               "execv", "execve", "execvp", "execvpe",
+               "execl", "execle", "execlp", "execlpe",
+               "popen"):
+        # conftest 用 hasattr 逐个装，名字写错就等于漏装且无人察觉
+        assert hasattr(os, fn), f"os 没有 {fn}()：名单写错了"
+        _blocked(getattr(os, fn), f"os.{fn}", "cmd.exe", ["cmd.exe"])
+
+
 def test_winreg_writes_are_blocked():
     winreg = pytest.importorskip("winreg")
     for fn in ("SetValue", "SetValueEx", "CreateKey", "CreateKeyEx",

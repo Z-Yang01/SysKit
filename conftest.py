@@ -75,6 +75,18 @@ def block_system_calls(monkeypatch):
     if hasattr(os, "startfile"):
         # 启动外部程序 / 交给 ShellExecute 打开链接，都是真实副作用（还会拉起浏览器）
         monkeypatch.setattr(os, "startfile", _sentinel("os.startfile"))
+
+    # spawn/exec/popen 兜底：os 层直启进程不经 subprocess（nt 模块直通 CRT），
+    # 只拦 subprocess 留着这条旁路；execv 一类还会整体替换 pytest 进程。
+    # l 系在 os.py 里转发 v 系，但报错要能点名到实际入口，故逐个名字都装。
+    # （win32 没有 spawn 的 p 系变体；hasattr 逐个装，POSIX 上多出的名字自动兼容）
+    for fn in ("spawnv", "spawnve",
+               "spawnl", "spawnle",
+               "execv", "execve", "execvp", "execvpe",
+               "execl", "execle", "execlp", "execlpe",
+               "popen"):
+        if hasattr(os, fn):
+            monkeypatch.setattr(os, fn, _sentinel(f"os.{fn}"))
     try:
         import webbrowser
         monkeypatch.setattr(webbrowser, "open", _sentinel("webbrowser.open"))
