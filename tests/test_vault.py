@@ -642,3 +642,66 @@ class TestVaultPage:
         page._copy_password()                       # 弹解锁 → 取消 → 不复制
         assert asked == ["解锁密码库"]
         assert page.crypto.is_unlocked is False
+
+
+# ---------------- 批量解密与容错分支（2026-09-22 补强） ----------------
+
+class TestVaultBulkAndDegradation:
+    """get_secrets_bulk 的「单条损坏只降级该条」契约与各容错分支。"""
+
+    def test_get_secret_unknown_field_rejected(self, seeded):
+        with pytest.raises(ValueError):
+            vault.get_secret(1, seeded, field="otp")
+
+    def test_get_secrets_bulk_empty_ids_and_unknown_field(self, seeded):
+        assert vault.get_secrets_bulk([], seeded) == {}
+        with pytest.raises(ValueError):
+            vault.get_secrets_bulk([1], seeded, field="otp")
+
+    def test_get_secrets_bulk_missing_id_and_none_ciphertext_skipped(self, seeded):
+        gh = vault.search_sites("GitHub")[0]["id"]
+        accounts = vault.list_accounts(gh)
+        alice = next(a for a in accounts if a["username"] == "alice")
+        bob = next(a for a in accounts if a["username"] == "bob")
+        out = vault.get_secrets_bulk(
+            [a["id"] for a in accounts] + [99999], seeded, field="totp")
+        assert 99999 not in out, "缺失 id 不在结果中"
+        assert bob["id"] not in out, "无 totp 密文（NULL）不在结果中"
+        assert out[alice["id"]]          # alice 配了 totp_secret
+
+    def test_get_secrets_bulk_corrupt_entry_degrades_alone(self, seeded, monkeypatch):
+        gh = vault.search_sites("GitHub")[0]["id"]
+        ids = [a["id"] for a in vault.list_accounts(gh)]
+        calls = {"n": 0}
+        real_decrypt = seeded.decrypt
+
+        def flaky(data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError("InvalidTag")
+            return real_decrypt(data)
+
+        monkeypatch.setattr(seeded, "decrypt", flaky)
+        out = vault.get_secrets_bulk(ids, seeded, field="password")
+        assert calls["n"] == len(ids)
+        assert len(out) == len(ids) - 1, "恰好一条损坏被降级，其余照常解出"
+
+    def test_totp_code_invalid_base32_returns_empty(self):
+        assert vault.totp_code("not-base32!!") == ""
+        assert vault.totp_code("abc@@@") == ""
+
+    def test_update_account_all_none_is_noop(self, seeded):
+        gh = vault.search_sites("GitHub")[0]["id"]
+        alice = next(a for a in vault.list_accounts(gh)
+                     if a["username"] == "alice")
+        before = (alice["username"], alice["label"])
+        vault.update_account(alice["id"], seeded)          # 全 None → 空 patch
+        after = next(a for a in vault.list_accounts(gh)
+                     if a["id"] == alice["id"])
+        assert (after["username"], after["label"]) == before
+
+    def test_update_site_empty_fields_is_noop(self, seeded):
+        gh = vault.search_sites("GitHub")[0]["id"]
+        before = vault.get_site(gh)
+        vault.update_site(gh)
+        assert vault.get_site(gh) == before
