@@ -547,7 +547,7 @@ class TestTrayGaps:
         clip_menu.aboutToShow.emit()                          # 惰性重建
         acts = clip_menu.actions()
         assert len(acts) == 2
-        assert acts[0].text() == "🖼 图片条目"                # 最新在前，图片占位标签
+        assert acts[0].text() == "🖼 [图片 4×4]"             # 最新在前，图片占位含尺寸（补57）
         assert "alpha clip entry" in acts[1].text()
         acts[0].trigger()                                     # 点击图片条目 → 放回剪贴板
         assert len(fake.images) == 1

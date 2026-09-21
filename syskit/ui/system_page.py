@@ -529,14 +529,19 @@ class ClipboardTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        max_items = int(settings.load().get("clipboard_max", 50))
+        s0 = settings.load()
+        max_items = int(s0.get("clipboard_max", 50))
+        watch = bool(s0.get("clipboard_watch", False))
         self.hist = clipboard_mod.ClipboardHistory(max_items=max_items)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         row = QHBoxLayout()
         self.chk_watch = QCheckBox("监听剪贴板")
-        self.chk_watch.setChecked(True)
-        self.chk_watch.setToolTip("自动记录复制的文本/图片/文件路径")
+        self.chk_watch.setChecked(watch)
+        self.chk_watch.setToolTip(
+            "自动记录复制的文本/图片/文件路径；开启需确认，关闭后停止记录（历史保留）")
+        # 仅用户点击触发（隐私暂停的程序化 setChecked 不经过这里）
+        self.chk_watch.clicked.connect(self._on_watch_clicked)
         self.cmb_kind = QComboBox()
         self.cmb_kind.addItems([name for name, _ in KIND_FILTERS])
         self.cmb_kind.currentIndexChanged.connect(lambda *_: self.reload())
@@ -546,6 +551,7 @@ class ClipboardTab(QWidget):
         self.edt_search.textChanged.connect(lambda *_: self.reload())
         self.btn_pause = QPushButton("隐私暂停")
         self.btn_pause.setToolTip("暂停记录；恢复后也不会补录暂停期间的内容")
+        self.btn_pause.setEnabled(watch)            # 监听关着时无「暂停」可言
         self.btn_pause.clicked.connect(self._toggle_pause)
         self.btn_copy = QPushButton("复制选中")
         self.btn_copy.clicked.connect(self._copy_selected)
@@ -591,7 +597,9 @@ class ClipboardTab(QWidget):
         bottom.addLayout(col, 1)
         lay.addLayout(bottom)
 
-        self.lbl = QLabel("监听剪贴板后，复制的内容会出现在此列表；双击一行可复制回剪贴板。")
+        self.lbl = QLabel(
+            "监听已开启：复制的内容会出现在此列表；双击一行可复制回剪贴板。" if watch else
+            "剪贴板监听默认关闭（不记录任何内容）：勾选「监听剪贴板」并确认后开始记录；已记录的历史保留可查。")
         self.lbl.setObjectName("hint")
         lay.addWidget(self.lbl)
 
@@ -600,8 +608,10 @@ class ClipboardTab(QWidget):
         self._last = (self._clip.text() or "") if self._clip else ""
         self._bg = None
         self._thumb_cache = {}          # 图片条目列表缩略图缓存：{png 文件名: QPixmap}
-        if self._clip:
+        self._watch_connected = False
+        if self._clip and watch:
             self._clip.dataChanged.connect(self._on_clip_change)
+            self._watch_connected = True
         # 防抖刷盘：add 只标脏，10s 周期落盘（连发复制不在 UI 线程反复 DPAPI 写）
         self._flush_timer = QTimer(self)
         self._flush_timer.timeout.connect(self._flush_disk)
@@ -781,6 +791,55 @@ class ClipboardTab(QWidget):
             self.chk_watch.setChecked(True)
             self.btn_pause.setText("隐私暂停")
             self.lbl_detail.setText("已恢复监听")
+
+    # ---------------- 监听开关（默认关 + 确认开启，仿自启 opt-in） ----------------
+
+    def _on_watch_clicked(self, on: bool):
+        """用户点击「监听剪贴板」：开启需确认；关闭停止记录但历史保留。
+
+        隐私暂停的程序化 setChecked 不经过这里（clicked 仅用户点击触发）。
+        """
+        if on and not self._confirm_watch_enable():
+            self.chk_watch.setChecked(False)        # 回滚勾选（不触发 clicked）
+            return
+        self._set_watch(on)
+        if not on:
+            try:
+                self._last = (self._clip.text() or "") if self._clip else ""
+            except Exception:
+                self._last = ""                     # 吞掉当前内容：重开后不补录
+            self.lbl_detail.setText("已关闭监听：不记录新内容（历史保留可查）")
+        self.btn_pause.setEnabled(on)
+        if on:
+            self.btn_pause.setText("隐私暂停")
+        try:
+            settings.save({"clipboard_watch": on})
+        except Exception:
+            LOGGER.warning("剪贴板监听开关持久化失败", exc_info=True)
+
+    def _confirm_watch_enable(self) -> bool:
+        ret = QMessageBox.question(
+            self, "开启剪贴板历史记录",
+            "开启后将自动记录复制的文本 / 图片 / 文件路径 / 网页内容（本地加密存储）。\n\n"
+            "· 密码管理器等黑名单程序前台时复制的内容不会记录\n"
+            "· 密码库 / WiFi 页面的敏感复制不会记录，也不会进 Win+V 系统历史\n"
+            "· 关闭监听只停止新记录，已记录的历史保留，可随时手动清空\n\n"
+            "确认开启？",
+            QMessageBox.Yes | QMessageBox.No)
+        return ret == QMessageBox.Yes
+
+    def _set_watch(self, on: bool):
+        if self._clip is None:
+            return
+        if on and not self._watch_connected:
+            self._clip.dataChanged.connect(self._on_clip_change)
+            self._watch_connected = True
+        elif not on and self._watch_connected:
+            try:
+                self._clip.dataChanged.disconnect(self._on_clip_change)
+            except (RuntimeError, TypeError):
+                pass
+            self._watch_connected = False
 
     def _delete_selected(self):
         idx = self._selected_index()

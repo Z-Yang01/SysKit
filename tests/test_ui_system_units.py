@@ -766,6 +766,7 @@ def test_clipboard_pause_toggles_and_blacklist(qtbot, monkeypatch):
     tab = _make_clip_tab(qtbot)
     fake = _FakeClip(tab)
     tab._clip = fake
+    tab.chk_watch.setChecked(True)               # 补56 后默认关：先开启（程序化，不弹确认）
 
     tab._toggle_pause()
     assert not tab.chk_watch.isChecked()
@@ -1383,3 +1384,32 @@ def test_clipboard_text_full_preview_dialog(qtbot, monkeypatch):
     monkeypatch.setattr(QDialog, "exec", lambda self: 0)
     tab._preview_selected()
     assert shown["text"] == long_text
+
+
+def test_clipboard_watch_default_off_and_optin_flow(qtbot, monkeypatch, msgbox_recorder):
+    """监控默认关（不连接、不记录）；勾选→确认→连接+持久化；取消确认→回滚；
+    关闭→断开+吞当前内容，已记录历史保留（补57 用户决策）。"""
+    from PySide6.QtWidgets import QMessageBox
+    tab = _make_clip_tab(qtbot)
+    fake = _FakeClip(tab)
+    tab._clip = fake
+    assert tab.chk_watch.isChecked() is False          # 默认关
+    assert tab._watch_connected is False
+
+    tab.chk_watch.click()                              # 用户点击 → 确认框（默认 Yes）→ 开启
+    assert tab.chk_watch.isChecked() is True
+    assert tab._watch_connected is True
+    from syskit import settings as settings_mod
+    assert bool(settings_mod.load().get("clipboard_watch")) is True
+
+    tab.chk_watch.click()                              # 关闭 → 断开；吞当前内容；历史保留
+    assert tab._watch_connected is False
+    assert bool(settings_mod.load().get("clipboard_watch")) is False
+
+    tab.hist.add("keep-me")
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.StandardButton.No)   # 确认框点「否」
+    tab.chk_watch.click()                              # 尝试开启 → 取消 → 回滚勾选
+    assert tab.chk_watch.isChecked() is False
+    assert tab._watch_connected is False
+    assert tab.hist.texts() == ["keep-me"]             # 历史原样保留

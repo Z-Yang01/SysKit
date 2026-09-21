@@ -614,6 +614,7 @@ def _make_clip_tab(qtbot):
     tab = ClipboardTab()
     qtbot.addWidget(tab)
     tab.hist.clear()
+    tab.chk_watch.setChecked(True)      # 补56 后默认关：本文件用例都直接驱动 _on_clip_change
     return tab
 
 
