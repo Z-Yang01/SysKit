@@ -70,3 +70,26 @@
   `git status` + 实跑全量核实前提，再决定动不动代码（本轮遵循了该顺序）。
 - 改进池现存两项均已有结论：端口防抖（不做，见上）、其余大项见 PROGRESS 补充38/53
   遗留清单（需产品决策或真机授权，不适合无人值守自主实施）。
+
+## 轮次1（2026-09-22 00:28–00:46，方向A 纯逻辑模块冗余）
+
+- 前提核实：git status 含用户补充59 未提交 15 文件——全程未触碰、未提交；
+  开工基线 1272 例全绿与本轮实测一致。
+- 任务：全仓死代码扫描（ast 顶层符号，引用语料递归含 syskit/ui/ + tests/ +
+  tools/），删除唯一确认死代码 `syskit/vault.py::_account_row`（零引用 6 行）。
+- 误报教训入档：`close_resident`/`GROUPS_DASH`/`GROUPS_SYSTEM` 首扫（语料未
+  递归 ui/）误报为死代码，实际被 main_window 使用——后续扫描必须含 ui/。
+- §4-A 线索销账：「secure_store 与 vault_crypto 重复 DPAPI 封装」不成立，
+  secure_store 已复用 vault_crypto 的 _dpapi_protect/_dpapi_unprotect（单源）。
+- 验证：`tools/run_full_check.py` PASS（seg1 1227 + seg2 45，0F/0E，1 已知
+  skip；pyflakes 0）；定向 tests/test_vault.py 全过。
+- 覆盖率：删除符号零测试引用（全仓 grep 证据）→ 6 行全为未覆盖行 → 总覆盖
+  率不降；套件数不变（1272）。
+- 真/焦点/注册表/子进程：未触及 → 无真机冒烟复核项。
+- 收尾自检：本轮进程（pytest×2、run_full_check、扫描脚本×3）全部前台退出、
+  无残留；临时目录 %TEMP%/sk_overnight/（备份 vault.py.bak + 脚本）已删；
+  仓库 status = 用户 15 文件 + 本轮 vault.py + OVERNIGHT_LOG.md（PROGRESS.md
+  追加的审计与轮次日志随用户文件留待其自行入库——该文件载有用户未提交
+  改动，本轮按 §7 不提交它）。
+- 下轮建议：方向B（UI 层冗余）；扫描脚本口径沿用本轮（递归 ui/，用户文件
+  只入引用侧不作删除对象）。

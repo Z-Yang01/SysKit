@@ -288,13 +288,6 @@ def get_secrets_bulk(account_ids, crypto, field: str = "password") -> dict:
     return out
 
 
-def _account_row(conn, account_id: int):
-    r = conn.execute(
-        "SELECT a.*, s.name AS site_name, s.domain AS site_domain FROM accounts a"
-        " JOIN sites s ON s.id=a.site_id WHERE a.id=?", (account_id,)).fetchone()
-    return dict(r) if r else None
-
-
 def global_search(q: str) -> list:
     """全局搜索：空格分词 AND，同时匹配网站名/域名/别名/标签与用户名/label，
     直接命中账号级（如 "github alice"）。只返回元数据，不解密。"""
