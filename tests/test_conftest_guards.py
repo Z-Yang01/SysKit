@@ -108,3 +108,26 @@ def test_settings_cache_is_reset_per_test(tmp_path):
     from syskit import settings as settings_mod
 
     assert settings_mod._cache is None or settings_mod._cache == {}
+
+
+def test_every_appdata_path_constant_is_redirected(tmp_path):
+    """红线 2 的看门哨兵：config 里凡是落在应用数据目录下的绝对路径常量，
+    必须已被 isolated_appdata 重定向进测试临时目录。将来新增 *_DIR/*_FILE
+    常量而忘了同步 conftest 夹具时，这里立即报警，而不是让测试悄悄写进
+    真实 %APPDATA%\\SysKit。"""
+    import os
+
+    from syskit import config
+
+    offenders = []
+    for name in dir(config):
+        if name.startswith("_"):
+            continue
+        value = getattr(config, name)
+        if not isinstance(value, str) or not os.path.isabs(value):
+            continue
+        if config.APP_NAME not in value:
+            continue
+        if not value.startswith(str(tmp_path)):
+            offenders.append(f"{name}={value}")
+    assert offenders == [], f"config 路径常量未被 isolated_appdata 重定向：{offenders}"
