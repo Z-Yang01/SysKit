@@ -99,7 +99,9 @@ class TrayHost(QSystemTrayIcon):
         for it in items:
             text = it.get("text", "")
             kind = it.get("kind", "text")
-            label = ("🖼 图片条目" if kind == "image" else clipboard_mod.ClipboardHistory.preview(text, 40))
+            # 图片条目用自带占位（含宽高），不再是纯「图片条目」
+            label = (f"🖼 {text}" if kind == "image"
+                     else clipboard_mod.ClipboardHistory.preview(text, 40))
             payload = it.get("data", "") if kind == "image" else text
             act = QAction(label, m)
             act.triggered.connect(lambda checked=False, t=payload, k=kind: self._copy_back(t, k))

@@ -6,10 +6,9 @@ import time
 from PySide6.QtCore import Qt, QBuffer, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
-                               QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-                               QMessageBox, QProgressBar,
-                               QPushButton, QTableWidgetItem, QTabWidget,
-                               QLineEdit, QVBoxLayout, QWidget)
+                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton,
+                               QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
 from . import theme
@@ -598,6 +597,7 @@ class ClipboardTab(QWidget):
         self._clip = app.clipboard() if app else None
         self._last = (self._clip.text() or "") if self._clip else ""
         self._bg = None
+        self._thumb_cache = {}          # 图片条目列表缩略图缓存：{png 文件名: QPixmap}
         if self._clip:
             self._clip.dataChanged.connect(self._on_clip_change)
         # 防抖刷盘：add 只标脏，10s 周期落盘（连发复制不在 UI 线程反复 DPAPI 写）
@@ -653,8 +653,28 @@ class ClipboardTab(QWidget):
                 KIND_LABELS.get(it.get("kind", "text"), it.get("kind", "text"))))
             item = QTableWidgetItem(clipboard_mod.ClipboardHistory.preview(it.get("text", "")))
             item.setToolTip(it.get("text", "")[:500])
+            if it.get("kind") == "image":
+                # 图片条目行内缩略图（补57：不再是纯文字占位）
+                thumb = self._thumb_for(it.get("data", ""))
+                if thumb is not None:
+                    item.setIcon(thumb)
             self.tbl.setItem(r, 2, item)
         self.lbl.setText(f"共 {len(items)} 条　双击行可复制")
+
+    def _thumb_for(self, name: str):
+        """图片条目的行内缩略图（带缓存）；文件丢失返回 None。"""
+        if not name:
+            return None
+        if name in self._thumb_cache:
+            return self._thumb_cache[name]
+        path = clipboard_mod.image_path(name)
+        pix = QPixmap(path) if path and os.path.exists(path) else QPixmap()
+        if pix.isNull():
+            return None
+        from PySide6.QtGui import QIcon
+        icon = QIcon(pix.scaledToHeight(28, Qt.SmoothTransformation))
+        self._thumb_cache[name] = icon
+        return icon
 
     def _on_clip_change(self):
         if not self.chk_watch.isChecked():
@@ -792,12 +812,22 @@ class ClipboardTab(QWidget):
             return
         if it.get("kind") == "image":
             path = clipboard_mod.image_path(it.get("data", ""))
-            if path and os.path.exists(path):
-                pix = QPixmap(path)
-                if not pix.isNull():
-                    self.lbl_thumb.setPixmap(pix.scaledToHeight(96, Qt.SmoothTransformation))
-                    self.lbl_thumb.show()
-            self.lbl_detail.setText("图片条目：双击可放回剪贴板")
+            pix = QPixmap(path) if path and os.path.exists(path) else QPixmap()
+            if not pix.isNull():
+                self.lbl_thumb.setPixmap(pix.scaledToHeight(200, Qt.SmoothTransformation))
+                self.lbl_thumb.show()
+                btn_preview = QPushButton("放大预览")
+                btn_preview.clicked.connect(
+                    lambda checked=False, p=path: self._show_image_preview(p))
+                self.rules_row.addWidget(btn_preview)
+                btn_save = QPushButton("另存为…")
+                btn_save.clicked.connect(
+                    lambda checked=False, p=path: self._save_image_as(p))
+                self.rules_row.addWidget(btn_save)
+                self.lbl_detail.setText("图片条目：双击可放回剪贴板"
+                                        + ("" if pix.isNull() else "；可放大预览或另存为"))
+            else:
+                self.lbl_detail.setText("图片条目：图片文件已不存在（可能已按保留策略清理）")
             return
         hits = cliprules.detect(it.get("text", ""))
         self.lbl_detail.setText("可执行操作（↗ 需联网）：" if hits else "此内容无可识别操作")
@@ -805,6 +835,61 @@ class ClipboardTab(QWidget):
             btn = QPushButton(hit["label"] + (" ↗" if hit.get("online") else ""))
             btn.clicked.connect(lambda checked=False, h=dict(hit): self._run_action(h))
             self.rules_row.addWidget(btn)
+
+    def _show_image_preview(self, path: str):
+        """图片大图预览对话框：等比适配屏幕，支持复制/另存为（补57）。"""
+        pix = QPixmap(path)
+        if pix.isNull():
+            QMessageBox.information(self, "预览", "图片文件已不存在。")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("剪贴板图片预览")
+        v = QVBoxLayout(dlg)
+        lbl = QLabel()
+        screen = QApplication.instance().primaryScreen().availableGeometry()
+        max_w, max_h = int(screen.width() * 0.7), int(screen.height() * 0.7)
+        scaled = pix.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        lbl.setPixmap(scaled)
+        v.addWidget(lbl)
+        row = QHBoxLayout()
+        btn_copy = QPushButton("复制图片")
+        btn_copy.clicked.connect(
+            lambda: self._copy_image_file(path, note_source=dlg))
+        btn_save = QPushButton("另存为…")
+        btn_save.clicked.connect(lambda: self._save_image_as(path))
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(dlg.accept)
+        row.addStretch(1)
+        row.addWidget(btn_copy)
+        row.addWidget(btn_save)
+        row.addWidget(btn_close)
+        v.addLayout(row)
+        dlg.exec()
+
+    def _copy_image_file(self, path: str, note_source=None):
+        from PySide6.QtGui import QImage
+        img = QImage(path)
+        if img.isNull() or not self._clip:
+            return
+        self._clip.setImage(img)
+        self._last = self._clip.text() or ""
+        if note_source is not None:
+            self.lbl.setText("已把图片放回剪贴板")
+
+    def _save_image_as(self, path: str):
+        default = os.path.join(os.environ.get("USERPROFILE", os.getcwd()),
+                               time.strftime("clipboard_%Y%m%d_%H%M%S.png"))
+        target, _filt = QFileDialog.getSaveFileName(
+            self, "图片另存为", default, "PNG 图片 (*.png)")
+        if not target:
+            return
+        if not target.lower().endswith(".png"):
+            target += ".png"
+        pix = QPixmap(path)
+        if pix.isNull() or not pix.save(target, "PNG"):
+            QMessageBox.warning(self, "另存为", "保存失败（路径不可写？）")
+        else:
+            self.lbl.setText(f"图片已保存到 {target}")
 
     def _run_action(self, hit):
         aid, arg = hit["id"], hit.get("arg", "")

@@ -241,7 +241,8 @@ class CommandPalette(QDialog):
                 for i, it in enumerate(items):
                     text = it.get("text", "")
                     kind = it.get("kind", "text")
-                    label = ("放回图片条目" if kind == "image"
+                    # 图片条目用自带占位（含宽高），不再是纯「放回图片条目」
+                    label = (f"放回: {text}" if kind == "image"
                              else f"复制: {clipboard_mod.ClipboardHistory.preview(text, 36)}")
                     payload = it.get("data", "") if kind == "image" else text
                     out.append({"id": f"clip:{i}", "label": label, "hint": "剪贴板",

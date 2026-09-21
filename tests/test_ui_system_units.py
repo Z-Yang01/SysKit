@@ -1278,3 +1278,53 @@ def test_run_gui_qt_fatal_branch_writes_crash_log(patched_gui, monkeypatch):
     # 句柄失效（文件已关）→ 写失败被吞，不影响后续 LOGGER.debug 兜底
     handler._fatal_fh.close()
     handler(3, None, "[test] fatal after close")
+
+
+def _png_bytes_4x4():
+    from PySide6.QtCore import QBuffer
+    from PySide6.QtGui import QImage
+    img = QImage(4, 4, QImage.Format_ARGB32)
+    img.fill(0xFF00FF00)
+    buf = QBuffer()
+    buf.open(QBuffer.WriteOnly)
+    img.save(buf, "PNG")
+    return bytes(buf.data())
+
+
+def _rules_row_texts(tab):
+    out = []
+    for i in range(tab.rules_row.count()):
+        w = tab.rules_row.itemAt(i).widget()
+        if w is not None:
+            out.append(w.text())
+    return out
+
+
+def test_clipboard_image_row_thumbnail_and_detail_actions(qtbot):
+    """图片条目行内缩略图 + 详情区「放大预览/另存为…」按钮
+    （补57：此前列表是纯文字占位、详情区对图片直接 return 无任何动作）。"""
+    from syskit import clipboard as clip_mod
+    tab = _make_clip_tab(qtbot)
+    name = clip_mod.save_image_bytes(_png_bytes_4x4())
+    tab.hist.add("[图片 4×4]", kind="image", data=name)
+    tab.reload()
+    assert tab.tbl.rowCount() == 1
+    assert not tab.tbl.item(0, 2).icon().isNull()       # 行内缩略图已挂
+    tab.tbl.selectRow(0)
+    texts = _rules_row_texts(tab)
+    assert "放大预览" in texts and "另存为…" in texts
+
+
+def test_clipboard_image_preview_dialog_and_save_as(qtbot, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QDialog, QFileDialog
+    from syskit import clipboard as clip_mod
+    tab = _make_clip_tab(qtbot)
+    name = clip_mod.save_image_bytes(_png_bytes_4x4())
+    path = clip_mod.image_path(name)
+    monkeypatch.setattr(QDialog, "exec", lambda self: 0)
+    tab._show_image_preview(path)                        # 不抛即通过
+    target = tmp_path / "out.png"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        lambda *a, **k: (str(target), "PNG 图片 (*.png)"))
+    tab._save_image_as(path)
+    assert target.exists()                               # 真实落盘
