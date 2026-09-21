@@ -1116,3 +1116,51 @@ class TestVerdict:
     def test_empty_results(self):
         base, text = netcheck.verdict([])
         assert base == "no_internet" and "失败项" not in text
+
+
+# ---------------- 中止与 VPN 代理降级分支（2026-09-22 补强） ----------------
+
+class TestRunAllAbort:
+    def test_should_stop_aborts_remaining_and_appends_skip(self, monkeypatch, fake_cmd_result):
+        patch_all_boundaries(monkeypatch, fake_cmd_result)
+        seen = []
+        state = {"n": 0}
+
+        def stop_after_first():
+            state["n"] += 1
+            return state["n"] > 1
+
+        results = netcheck.run_all(progress=seen.append, should_stop=stop_after_first)
+        assert len(results) == 2
+        assert results[0].id == ALL_IDS[0]          # 首个检查照常完成
+        aborted = results[1]
+        assert aborted.id == "diag_aborted"
+        assert aborted.status == netcheck.SKIP
+        assert "中止" in aborted.name
+        assert seen == results                       # skip 记录也经 progress 回报
+
+
+class TestChkProxyTunnelAware:
+    def _patch(self, monkeypatch, status):
+        from syskit import proxy
+        monkeypatch.setattr(proxy, "get_proxy_status", lambda: status)
+
+    def test_proxy_with_tunnel_up_degrades_to_info(self, monkeypatch):
+        """VPN/Clash 在线时代理多为预期：INFO + 不建议 proxy_off。"""
+        self._patch(monkeypatch, {"enabled": True, "server": "127.0.0.1:7890",
+                                  "autoconfig": False, "pac_url": ""})
+        tun = make_adapter(name="Clash", desc="WireGuard Tunnel", status="Up")
+        r = netcheck.chk_proxy(make_snap([tun]))
+        assert r.status == netcheck.INFO
+        assert r.fix_ids == []
+        assert "Clash" in r.detail
+        assert "勿盲目关闭" in r.detail
+
+    def test_proxy_without_tunnel_still_warns(self, monkeypatch):
+        """同状态但无隧道网卡 → 维持 WARN + proxy_off（护栏不误伤普通场景）。"""
+        self._patch(monkeypatch, {"enabled": True, "server": "127.0.0.1:7890",
+                                  "autoconfig": False, "pac_url": ""})
+        plain = make_adapter(name="WLAN", desc="Intel(R) Wi-Fi 6 AX201", status="Up")
+        r = netcheck.chk_proxy(make_snap([plain]))
+        assert r.status == netcheck.WARN
+        assert r.fix_ids == ["proxy_off"]
