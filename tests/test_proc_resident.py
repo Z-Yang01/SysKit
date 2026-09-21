@@ -33,23 +33,28 @@ class FakePipe:
 
 
 class FakeStdin:
-    def __init__(self):
+    def __init__(self, fail_on_use=False):
         self.data = b""
         self.closed = False
+        self._fail = fail_on_use
 
     def write(self, b):
+        if self._fail:
+            raise OSError("broken pipe")
         self.data += b
 
     def flush(self):
         pass
 
     def close(self):
+        if self._fail:
+            raise OSError("broken pipe")
         self.closed = True
 
 
 class FakePopen:
-    def __init__(self, out=(), err=(), never=False):
-        self.stdin = FakeStdin()
+    def __init__(self, out=(), err=(), never=False, stdin_fail=False):
+        self.stdin = FakeStdin(fail_on_use=stdin_fail)
         self.stdout = FakePipe(out, never=never)
         self.stderr = FakePipe(err, never=never)
         self.killed = False
@@ -220,3 +225,41 @@ def test_concurrent_calls_serialized_by_lock(monkeypatch):
     for t in ts:
         t.join()
     assert timeline == ["in", "out", "in", "out"]   # 锁内串行：无交错
+
+
+# ---------------- 会话原语分支补齐（2026-09-22，覆盖率缺口） ----------------
+
+def test_exec_dead_when_stdin_write_fails():
+    """stdin 写失败（管道断）= 会话已死 → DEAD（不炸穿调用方）。"""
+    s = proc._ResidentSession(FakePopen(stdin_fail=True))
+    assert s.exec_script("aGk=", 5) == ("DEAD", b"", b"", None)
+
+
+def test_exec_timeout_deadline_branch_returns_partial_before_queue_wait():
+    """deadline 已到（remain<=0）→ 立即 TIMEOUT，不进队列等待。"""
+    s = proc._ResidentSession(FakePopen(out=[b"p\n"], err=[]))
+    kind, out, err, _ = s.exec_script("aGk=", 0)
+    assert (kind, out, err) == ("TIMEOUT", b"", b"")
+
+
+def test_close_graceful_closes_stdin_so_child_exits_on_eof():
+    fake = FakePopen()
+    s = proc._ResidentSession(fake)
+    s.close()
+    assert s.dead and fake.stdin.closed and not fake.killed
+
+
+def test_close_graceful_stdin_failure_falls_back_to_kill():
+    fake = FakePopen(stdin_fail=True)
+    s = proc._ResidentSession(fake)
+    s.close()
+    assert fake.killed
+
+
+def test_close_resident_closes_and_clears_live_session():
+    fake = FakePopen(out=[OUT_END], err=[DONE0])
+    s = proc._ResidentSession(fake)
+    proc._res_session = s
+    proc.close_resident()
+    assert proc._res_session is None
+    assert fake.stdin.closed and s.dead
