@@ -133,6 +133,18 @@ def block_system_calls(monkeypatch):
                 monkeypatch.setattr(winsound, fn, _sentinel(f"winsound.{fn}"))
     except ImportError:
         pass
+
+    # 注键哨兵（保守版）：拦遗留注入 API keybd_event / mouse_event——测试里误触
+    # 等于把键鼠事件注入真实前台窗口。SendInput 不在列：test_clip_paste 的签名
+    # 用例要读取真实 argtypes（评估记录见 PROGRESS 2026-09-22 02:07 条）。
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        for fn in ("keybd_event", "mouse_event"):
+            if getattr(user32, fn, None) is not None:   # 先物化缓存属性再打桩
+                monkeypatch.setattr(user32, fn, _sentinel(f"user32.{fn}"))
+    except (AttributeError, OSError):
+        pass  # 非 Windows 平台
     yield
 
 

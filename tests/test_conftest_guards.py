@@ -92,6 +92,17 @@ def test_sound_playback_is_blocked():
     _blocked(winsound.Beep, "winsound.Beep", 440, 1)
 
 
+def test_legacy_input_injection_is_blocked():
+    """遗留注键 API 一旦在测试里被真实调用，就是把键鼠事件注入当前前台窗口。"""
+    ctypes = pytest.importorskip("ctypes")
+    if not hasattr(ctypes, "windll"):
+        pytest.skip("仅 Windows")
+    user32 = ctypes.windll.user32
+    for fn in ("keybd_event", "mouse_event"):
+        assert getattr(user32, fn, None) is not None, f"user32 没有 {fn}()：名单写错了"
+        _blocked(getattr(user32, fn), f"user32.{fn}", 0, 0, 0, 0)
+
+
 def test_persistence_paths_point_into_the_test_tmp_dir(tmp_path):
     """红线 2：%APPDATA%\\SysKit 与 %LOCALAPPDATA%\\SysKit 必须已重定向到临时目录。"""
     from syskit import config
