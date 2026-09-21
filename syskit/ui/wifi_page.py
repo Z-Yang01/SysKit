@@ -11,18 +11,20 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout,
                                QTabWidget, QVBoxLayout, QWidget)
 
 from .charts import BarChart
+from . import theme
 from .theme import make_table
 from .workers import reap
 from .. import admin, proc
 
-SIGNAL_COLORS = [(60, "#2e9e44"), (40, "#ef6c00"), (0, "#c62828")]
-
 
 def _signal_color(pct: int) -> str:
-    for floor, color in SIGNAL_COLORS:
-        if pct >= floor:
-            return color
-    return "#c62828"
+    """信号强度语义色（现取 pal——深浅主题各自可读，补57）。"""
+    pal = theme.pal()
+    if pct >= 60:
+        return pal["ok"]
+    if pct >= 40:
+        return pal["warn"]
+    return pal["err"]
 
 
 def scan_networks() -> list:
@@ -254,7 +256,7 @@ class WifiPage(QWidget):
         lay.addWidget(self.chart_24)
         lay.addWidget(self.chart_5g)
         self.lbl_advice = QLabel("扫描后显示推荐信道。")
-        self.lbl_advice.setStyleSheet("color:#3576e0; font-weight:bold;")
+        self.lbl_advice.setStyleSheet(f"color:{theme.pal()['accent']}; font-weight:bold;")
         lay.addWidget(self.lbl_advice)
         return w
 
@@ -266,8 +268,9 @@ class WifiPage(QWidget):
             bucket = c24 if ap["band"] == "2.4G" else c5
             bucket.setdefault(ap["channel"], []).append(ap["signal"])
         def bars(counter, channels):
-            return [(ch, len(counter[ch]), "#3576e0" if len(counter[ch]) <= 2
-                     else "#ef6c00" if len(counter[ch]) <= 4 else "#c62828")
+            # @role 语义色：BarChart 绘制时现取 pal，切主题自动跟随（补57）
+            return [(ch, len(counter[ch]), "@accent" if len(counter[ch]) <= 2
+                     else "@warn" if len(counter[ch]) <= 4 else "@err")
                     for ch in channels if ch in counter]
         self.chart_24.set_bars(bars(c24, list(range(1, 14))))
         self.chart_5g.set_bars(bars(c5, sorted(c5)))
@@ -305,7 +308,9 @@ class WifiPage(QWidget):
         self.lbl_qr = QLabel("生成后显示在此")
         self.lbl_qr.setAlignment(Qt.AlignCenter)
         self.lbl_qr.setMinimumSize(240, 240)
-        self.lbl_qr.setStyleSheet("background:#fff; border:1px solid #e3e8ef; border-radius:8px;")
+        # 白底保留（二维码可扫性），边框走主题 token：深色下不再是亮白硬边框
+        self.lbl_qr.setStyleSheet(f"background:#fff; border:1px solid {theme.pal()['border']};"
+                                  "border-radius:8px;")
         lay.addWidget(self.lbl_qr)
         # 配置文件枚举（netsh）不在构造期执行：由 showEvent 首访触发
         return w

@@ -29,16 +29,32 @@ from .wifi_page import WifiPage
 from .workers import (ComboWorker, DiagnosisWorker, PlainCmdWorker, RepairWorker,
                       SnapshotWorker, reap)
 
-STATUS_TEXT = {
-    "normal": ("网络正常", "#2e9e44"),
-    "ncsi_false_alarm": ("实际有网，Windows 误报'无网络'", "#ef6c00"),
-    "dns_broken": ("能连上但 DNS 异常/缓慢", "#ef6c00"),
-    "no_internet": ("外网不可达", "#d94040"),
+# 状态 → 语义角色：用色一律经 theme.pal() 现取（补57 深色修复——
+# 旧字面 #2e9e44 系在暗卡上对比度 2~3:1，且切主题不刷新）
+STATUS_ROLE = {
+    "normal": "ok", "ncsi_false_alarm": "warn", "dns_broken": "warn",
+    "no_internet": "err",
+    # monitor 实时状态（_on_monitor_status / 托盘）
+    "ok": "ok", "no_net": "warn", "ncsi_false": "warn", "offline": "sub",
 }
-STATUS_COLOR = {"pass": "#2e9e44", "fail": "#d94040", "warn": "#ef6c00",
-                "skip": "#999999", "info": "#3576e0"}
+STATUS_TEXT = {
+    "normal": "网络正常",
+    "ncsi_false_alarm": "实际有网，Windows 误报'无网络'",
+    "dns_broken": "能连上但 DNS 异常/缓慢",
+    "no_internet": "外网不可达",
+}
+CHECK_ROLE = {"pass": "ok", "fail": "err", "warn": "warn",
+              "skip": "sub", "info": "info"}
 TRAY_STATE = {"normal": "ok", "ncsi_false_alarm": "ncsi_false",
               "dns_broken": "no_net", "no_internet": "no_internet"}
+
+
+def status_color(state: str) -> str:
+    return theme.pal().get(STATUS_ROLE.get(state, "sub"), "")
+
+
+def check_color(status: str) -> str:
+    return theme.pal().get(CHECK_ROLE.get(status, "sub"), "")
 
 
 class MainWindow(QMainWindow):
@@ -357,12 +373,18 @@ class MainWindow(QMainWindow):
         if admin.is_admin():
             return
         lbl = QLabel("未以管理员身份运行：诊断可用，修复动作将被拒绝。")
-        lbl.setStyleSheet("color:#8a5a00;")
+        self._admin_banner_lbl = lbl
+        self._style_admin_banner()
         btn = QPushButton("以管理员重启")
         btn.setFlat(True)
         btn.clicked.connect(self._elevate_restart)
         self.statusBar().addWidget(btn)
         self.statusBar().addWidget(lbl)
+
+    def _style_admin_banner(self):
+        lbl = getattr(self, "_admin_banner_lbl", None)
+        if lbl is not None:
+            lbl.setStyleSheet(f"color:{theme.pal()['warn']};")
 
     def _elevate_restart(self):
         """提权拉起新实例后本实例必须退出：单实例互斥体在旧进程手里，
@@ -487,7 +509,7 @@ class MainWindow(QMainWindow):
         st = proxy.get_proxy_status()
         if st["enabled"]:
             self.lbl_proxy.setText(f"系统代理：{st['server'] or 'PAC 脚本'}")
-            self.lbl_proxy.setStyleSheet("color:#ef6c00; font-weight:bold;")
+            self.lbl_proxy.setStyleSheet(f"color:{theme.pal()['warn']}; font-weight:bold;")
             self.btn_proxy.setText("关闭代理")
             self.btn_proxy.setProperty("danger", True)
         else:
@@ -645,7 +667,7 @@ class MainWindow(QMainWindow):
         self._diag_results.append(r)
         mark = netcheck.STATUS_MARK.get(r.status, "?")
         item = QTreeWidgetItem([mark, r.name, r.detail])
-        item.setForeground(0, QColor(STATUS_COLOR.get(r.status, "#000000")))
+        item.setForeground(0, QColor(check_color(r.status)))
         item.setData(0, Qt.UserRole, r)
         self.tree_diag.addTopLevelItem(item)
         self.tree_diag.scrollToBottom()
@@ -663,7 +685,7 @@ class MainWindow(QMainWindow):
             self._set_busy(False)   # 早退也必须复位：否则诊断/修复/组合全被 _busy 闸死
             return
         base, text = netcheck.verdict(results)
-        color = STATUS_TEXT.get(base, ("", "#000000"))[1]
+        color = status_color(base)
         self._set_status(text, color, sub=f"{time.strftime('%H:%M')} 诊断完成")
         self.lbl_verdict.setText(text)
         self.lbl_verdict.setStyleSheet(f"color:{color};")
@@ -840,7 +862,9 @@ class MainWindow(QMainWindow):
         actions = sorted(repairs.ACTIONS, key=lambda a: order[a.risk])
         cat_name = {repairs.RISK_SAFE: "安全类", repairs.RISK_CONFIG: "改配置类",
                     repairs.RISK_AGGRESSIVE: "强力类"}
-        risk_color = {"safe": "#2e7d32", "config": "#ef6c00", "aggressive": "#c62828"}
+        # 语义角色现取 pal：深绿 #2e7d32 曾是暗卡上对比度最差的一处（补57）
+        risk_color = {"safe": theme.pal()["ok"], "config": theme.pal()["warn"],
+                      "aggressive": theme.pal()["danger"]}
         self.tbl_actions.setRowCount(len(actions))
         for i, a in enumerate(actions):
             c0 = QTableWidgetItem(cat_name[a.risk])
@@ -941,8 +965,9 @@ class MainWindow(QMainWindow):
         self.chk_sound.setChecked(bool(s.get("sound_alert_enabled", True)))
         form2.addRow(self.chk_sound)
 
-        self.chk_dark = QCheckBox("深色模式")
+        self.chk_dark = QCheckBox("深色模式（勾选立即生效）")
         self.chk_dark.setChecked(theme.is_dark())
+        self.chk_dark.toggled.connect(self._on_dark_toggled)
         form2.addRow(self.chk_dark)
 
         self.cmb_dns = QComboBox()
@@ -1075,24 +1100,49 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, config.DISPLAY_NAME,
                                     f"热键「{hotkey_text}」注册失败（可能刚被其他程序占用），"
                                     "全局热键暂不可用；托盘菜单与 Ctrl+K 不受影响。")
-        # 主题即时切换
+        # 主题即时切换（保存入口的兜底路径；勾选本身在 _on_dark_toggled 已即时生效）
         if theme.is_dark() != self.chk_dark.isChecked():
-            from PySide6.QtWidgets import QApplication
-            theme.apply(QApplication.instance(), dark=self.chk_dark.isChecked())
-            self._on_theme_changed()
+            self._apply_theme(self.chk_dark.isChecked())
         QMessageBox.information(self, config.DISPLAY_NAME, "设置已保存。")
 
+    def _apply_theme(self, dark: bool):
+        from PySide6.QtWidgets import QApplication
+        theme.apply(QApplication.instance(), dark=dark)
+        self._on_theme_changed()
+
+    def _on_dark_toggled(self, dark: bool):
+        """深色勾选即时生效并立即持久化（补57：旧路径要点「保存设置」才切换，
+        体感即「不生效/不行」）。"""
+        if theme.is_dark() == dark:
+            return
+        self._apply_theme(dark)
+        try:
+            settings.save({"dark_mode": dark})
+        except Exception:
+            LOGGER.warning("深色模式持久化失败", exc_info=True)
+
     def _on_theme_changed(self):
-        """主题切换后的刷新：QSS 热替换只管样式表，固化在 item 里的 QColor
-        （网卡表在线底/绿字）必须用缓存快照重填；自绘控件靠 update() 重绘。"""
+        """主题切换后的刷新：QSS 热替换只管样式表，固化在 item/QColor/样式表
+        字面量里的颜色必须逐处重取 pal（补57 清单：诊断树/修复动作表/事件
+        时间线/电池健康色/管理员横幅/代理标签/网卡表；自绘控件靠 update()）。"""
         from PySide6.QtWidgets import QApplication
         for w in QApplication.allWidgets():
             w.update()
+        self._style_admin_banner()
         self._refresh_proxy_label()
+        self._fill_actions()                      # 修复表风险三色重填
+        self.page_dash.reload_events()            # 事件时间线重取 pal
+        self.page_system.refresh_theme_colors()   # 电池健康色重填
         if self._diag_results:
             base, text = netcheck.verdict(self._diag_results)
-            self._set_status(text, STATUS_TEXT.get(base, ("", theme.pal()["text"]))[1],
+            self._set_status(text, status_color(base),
                              sub=f"{time.strftime('%H:%M')} 诊断")
+            self.lbl_verdict.setStyleSheet(f"color:{status_color(base)};")
+            for i in range(self.tree_diag.topLevelItemCount()):
+                it = self.tree_diag.topLevelItem(i)
+                r = it.data(0, Qt.UserRole)
+                if r is not None:
+                    it.setForeground(0, QColor(check_color(r.status)))
         if getattr(self, "_last_snap", None) is not None:
             self._fill_adapters(self._last_snap)
 
@@ -1308,10 +1358,11 @@ class MainWindow(QMainWindow):
 
     # ---------------- 监控回调（UI 线程） ----------------
     def _on_monitor_status(self, state, message):
-        tips = {"ok": ("网络正常", "#2e9e44"), "no_net": ("已连接但无法上网", "#ef6c00"),
-                "ncsi_false": ("NCSI 误报", "#ef6c00"), "offline": ("无网络连接", "#9e9e9e"),
-                "no_internet": ("外网不可达", "#d94040")}
-        text, color = tips.get(state, (state, "#000000"))
+        tips = {"ok": "网络正常", "no_net": "已连接但无法上网",
+                "ncsi_false": "NCSI 误报", "offline": "无网络连接",
+                "no_internet": "外网不可达"}
+        text = tips.get(state, state)
+        color = status_color(state)
         self._set_status(text, color, sub=message)
         self.tray.set_state(state, message)
         if state != self._last_state:            # 仅状态切换记入时间线

@@ -4,8 +4,13 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout, QF
 from ..repairs import RISK_LABEL
 from . import theme
 
-RISK_COLOR = {"safe": "#2e9e44", "config": "#ef6c00", "aggressive": "#c62828"}
 RISK_ICON = {"safe": "●", "config": "▲", "aggressive": "■"}
+# 风险角色 → 调色板键：构造时现取 pal（补57——旧字面 #2e9e44 系在暗底发暗）
+_RISK_PAL = {"safe": "ok", "config": "warn", "aggressive": "danger"}
+
+
+def _risk_color(risk: str) -> str:
+    return theme.pal().get(_RISK_PAL.get(risk, "warn"), theme.pal()["warn"])
 
 
 class ConfirmDialog(QDialog):
@@ -22,7 +27,7 @@ class ConfirmDialog(QDialog):
 
         risk = QLabel(f"{RISK_ICON.get(action.risk, '●')} 风险级别：{RISK_LABEL[action.risk]}")
         risk.setStyleSheet(
-            f"color: {RISK_COLOR[action.risk]}; font-weight:bold; "
+            f"color: {_risk_color(action.risk)}; font-weight:bold; "
             f"background: transparent; border: none; padding: 0;")
         lay.addWidget(risk)
 
@@ -52,7 +57,7 @@ class ConfirmDialog(QDialog):
         if action.need_reboot:
             rb = QLabel("⚠ 该操作需要重启电脑后生效")
             rb.setStyleSheet(
-                f"color:{RISK_COLOR['aggressive']}; font-weight:bold; border:none;")
+                f"color:{_risk_color('aggressive')}; font-weight:bold; border:none;")
             lay.addWidget(rb)
 
         note = QLabel("改配置类动作执行前会自动备份原值（备份目录见日志页）。")

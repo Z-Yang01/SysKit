@@ -16,6 +16,14 @@ def human_bytes(v: float) -> str:
     return f"{v:.1f}TB"
 
 
+def _resolve_color(spec):
+    """序列/柱色支持 "@role" 语义 token（绘制时现取 pal——切主题自动跟随，
+    补57），也兼容字面色值。"""
+    if isinstance(spec, str) and spec.startswith("@"):
+        return QColor(theme.pal().get(spec[1:], "#3576e0"))
+    return QColor(spec)
+
+
 class LineChart(QWidget):
     """每秒一个采样点。push(values) 追加；None 表示断线（丢包/无数据）。"""
 
@@ -33,7 +41,7 @@ class LineChart(QWidget):
             self.add_series(name, color)
 
     def add_series(self, name: str, color: str):
-        self._series.append((name, QColor(color), deque([None] * self.seconds, maxlen=self.seconds)))
+        self._series.append((name, color, deque([None] * self.seconds, maxlen=self.seconds)))
 
     def push(self, values: list):
         """values 与序列一一对应；None 跳过成断线。"""
@@ -89,8 +97,8 @@ class LineChart(QWidget):
         p.drawLine(QPointF(ml, mt + plot_h), QPointF(ml + plot_w, mt + plot_h))
 
         n = self.seconds
-        for name, color, dq in self._series:
-            pen = QPen(color, 1.6)
+        for name, color_spec, dq in self._series:
+            pen = QPen(_resolve_color(color_spec), 1.6)
             p.setPen(pen)
             prev = None
             for i, v in enumerate(dq):
@@ -111,11 +119,11 @@ class LineChart(QWidget):
         # 图例
         p.setFont(QFont("Microsoft YaHei UI", 8))
         x = w - mr
-        for name, color, _dq in reversed(self._series):
+        for name, color_spec, _dq in reversed(self._series):
             text_width = p.fontMetrics().horizontalAdvance(name) + 16
             x -= text_width
             p.setPen(Qt.NoPen)
-            p.setBrush(color)
+            p.setBrush(_resolve_color(color_spec))
             p.drawRect(QRectF(x, 7, 9, 9))
             p.setPen(QColor(pal["header_text"]))
             p.drawText(QRectF(x + 12, 2, text_width, 18), Qt.AlignLeft | Qt.AlignVCenter, name)
@@ -164,12 +172,12 @@ class BarChart(QWidget):
         slot = plot_w / n
         bar_w = max(6, slot * 0.6)
         p.setFont(QFont("Microsoft YaHei UI", 7))
-        for i, (label, value, color) in enumerate(self._bars):
+        for i, (label, value, color_spec) in enumerate(self._bars):
             bh = plot_h * value / hi
             x = ml + slot * i + (slot - bar_w) / 2
             y = mt + plot_h - bh
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(color))
+            p.setBrush(_resolve_color(color_spec))
             p.drawRoundedRect(QRectF(x, y, bar_w, bh), 2, 2)
             p.setPen(QColor(pal["sub"]))
             p.drawText(QRectF(x - slot * 0.2, max(mt + 2, y - 14), bar_w + slot * 0.4, 12),

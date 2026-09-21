@@ -75,11 +75,11 @@ class DashboardPage(QWidget):
         charts = QHBoxLayout()
         self.chart_lat = LineChart(
             "延迟（网关 vs 公网，3 秒/点）",
-            series=[("网关", "#3576e0"), ("公网", "#8e5ce6")],
+            series=[("网关", "@accent"), ("公网", "#8e5ce6")],
             unit="ms", y_fixed=(0, 120), fmt=lambda v: f"{v:.0f}ms")
         self.chart_speed = LineChart(
             "实时速率（1 秒/点）",
-            series=[("下载", "#2e9e44"), ("上传", "#ef6c00")],
+            series=[("下载", "@ok"), ("上传", "@warn")],
             fmt=human_bytes)
         charts.addWidget(self.chart_lat, 1)
         charts.addWidget(self.chart_speed, 1)

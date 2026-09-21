@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
                                QSpinBox, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
+from . import theme
 from .charts import LineChart, human_bytes
 from .theme import make_table
 from .workers import reap
@@ -852,7 +853,8 @@ class PortTab(QWidget):
 
     def _render(self, rows):
         self.tbl.setRowCount(len(rows))
-        listen_color = QColor("#3576e0")
+        # LISTEN 行语义蓝：现取 pal（每次刷新重填，切主题自动跟随，补57）
+        listen_color = QColor(theme.pal()["accent"])
         for i, r in enumerate(rows):
             vals = [r["proto"], r["laddr"], r["raddr"], r["status"],
                     str(r["pid"]) if r["pid"] else "-", r["name"]]

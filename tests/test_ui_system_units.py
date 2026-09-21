@@ -33,7 +33,6 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
 from PySide6 import QtWidgets
 
-
 def _qt_message_sink(msg_type, context, message):
     """接管 Qt 消息：默认处理器在 pytest 捕获环境下会 fail-fast（README 已知坑）。"""
     try:

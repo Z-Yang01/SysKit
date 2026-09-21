@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel,
 
 from .. import diskusage
 from ..logger import LOGGER
+from . import theme
 from .charts import BarChart, human_bytes
 from .theme import make_table
 from .workers import reap
@@ -236,7 +237,7 @@ class DiskTab(QWidget):
             msg = f"{self._pending_msg}；{msg}"
             self._pending_msg = ""
         self.lbl_result.setText(msg)
-        self.lbl_result.setStyleSheet("color:#2e9e44;")
+        self.lbl_result.setStyleSheet(f"color:{theme.pal()['ok']};")
         self._render()
 
     # ---- 渲染 ----
@@ -357,7 +358,7 @@ class DiskTab(QWidget):
             self.scan(self._scanned_path)   # 重扫刷新所有视图（与垃圾清理 Tab 一致）
         else:
             self.lbl_result.setText(msg)
-            self.lbl_result.setStyleSheet("color:#ef6c00;")
+            self.lbl_result.setStyleSheet(f"color:{theme.pal()['warn']};")
 
     # ---- 其它 ----
 

@@ -1103,6 +1103,22 @@ def test_main_window_minimized_starts_hidden(make_main_window):
     assert win.tele._need == set()
 
 
+def test_dark_mode_toggles_instantly_and_persists(main_win):
+    """深色勾选即时生效并立即持久化（补57：旧路径要等「保存设置」才切换，
+    体感即「不生效/不行」）。"""
+    from syskit import settings as settings_mod
+    from syskit.ui import theme
+    win = main_win
+    was_dark = theme.is_dark()
+    win.chk_dark.setChecked(not was_dark)
+    try:
+        assert theme.is_dark() == (not was_dark)               # 立即切换
+        assert bool(settings_mod.load().get("dark_mode")) == (not was_dark)
+    finally:
+        win.chk_dark.setChecked(was_dark)                       # 还原：不污染后续用例
+    assert theme.is_dark() == was_dark
+
+
 def test_quit_app_waits_page_workers(make_main_window, qtbot, monkeypatch):
     """回归：quit_app 必须等待页面级 QThread（诊断/修复/组合/快照），
     否则运行中的线程随窗口析构 → qFatal 0xC0000409（生产 BEX64 崩溃同源）。"""

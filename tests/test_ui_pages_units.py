@@ -927,9 +927,10 @@ def test_wifi_signal_color_and_scan_networks_parsing(monkeypatch):
     from syskit import proc
 
     import syskit.ui.wifi_page as wp
+    from syskit.ui import theme
 
-    assert wp._signal_color(-5) == "#c62828"          # 兜底分支
-    assert wp._signal_color(60) == "#2e9e44"
+    assert wp._signal_color(-5) == theme.pal()["err"]     # 语义 token 现取 pal（补57）
+    assert wp._signal_color(60) == theme.pal()["ok"]
 
     monkeypatch.setattr(proc, "run",
                         lambda cmd, timeout=20: proc.CmdResult(code=0, stdout=NETSH_TEXT, stderr=""))

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QLineEdit, QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
+from . import theme
 from .disk_page import DiskTab
 from .theme import make_table
 from .workers import reap
@@ -33,9 +34,9 @@ class PerfTab(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         left = QVBoxLayout()
-        self.chart_sys = LineChart("CPU / 内存（%）", series=[("CPU", "#3576e0"), ("内存", "#8e5ce6")],
+        self.chart_sys = LineChart("CPU / 内存（%）", series=[("CPU", "@accent"), ("内存", "#8e5ce6")],
                                    y_fixed=(0, 100), fmt=lambda v: f"{v:.0f}%")
-        self.chart_disk = LineChart("磁盘读写（1 秒/点）", series=[("读", "#2e9e44"), ("写", "#ef6c00")],
+        self.chart_disk = LineChart("磁盘读写（1 秒/点）", series=[("读", "@ok"), ("写", "@warn")],
                                     fmt=human_bytes)
         left.addWidget(self.chart_sys, 1)
         left.addWidget(self.chart_disk, 1)
@@ -323,12 +324,20 @@ class BatteryTab(QWidget):
             return
         self.lbl_design.setText(f"{design} mWh")
         self.lbl_full.setText(f"{full} mWh")
-        health = full / design * 100
-        color = "#2e9e44" if health > 80 else "#ef6c00" if health > 60 else "#c62828"
-        self.lbl_health.setText(f"{health:.1f}%")
-        self.lbl_health.setStyleSheet(f"color:{color}; font-weight:bold;")
+        self._last_health = full / design * 100     # 主题切换重填色（补57）
+        self._apply_health_color()
         self.lbl_remain.setText(f"{remain}%" if remain is not None else "—")
         self.lbl_note.setText("数据来自 Windows 电池报告（设计容量由厂商提供，仅供参考）。")
+
+    def _apply_health_color(self):
+        """电池健康三档色（现取 pal——深浅主题各自可读，补57）。"""
+        health = getattr(self, "_last_health", None)
+        if health is None:
+            return
+        pal = theme.pal()
+        color = pal["ok"] if health > 80 else pal["warn"] if health > 60 else pal["err"]
+        self.lbl_health.setText(f"{health:.1f}%")
+        self.lbl_health.setStyleSheet(f"color:{color}; font-weight:bold;")
 
 
 # ---------------- 清理 ----------------
@@ -446,7 +455,7 @@ class CleanupTab(QWidget):
         self.pb.hide()
         lay.addWidget(self.pb)
         self.lbl_result = QLabel(" ")
-        self.lbl_result.setStyleSheet("color:#2e9e44;")
+        self.lbl_result.setStyleSheet(f"color:{theme.pal()['ok']};")
         lay.addWidget(self.lbl_result)
         lay.addStretch(1)
         self._scan_worker = None
@@ -1072,12 +1081,17 @@ class SystemPage(QWidget):
         self.perf = PerfTab()
         tabs.addTab(self.perf, "性能监控")
         tabs.addTab(StartupTab(), "启动项管理")
-        tabs.addTab(BatteryTab(), "电池健康")
+        self.battery = BatteryTab()
+        tabs.addTab(self.battery, "电池健康")
         tabs.addTab(CleanupTab(), "垃圾清理")
         tabs.addTab(DiskTab(), "磁盘空间")
         tabs.addTab(ClipboardTab(), "剪贴板历史")
         tabs.addTab(ModesTab(), "场景模式")
         lay.addWidget(tabs)
+
+    def refresh_theme_colors(self):
+        """主题切换后重填固化色（补57：电池健康三档色）。"""
+        self.battery._apply_health_color()
 
     def update_tick(self, d):
         self.perf.update_tick(d)

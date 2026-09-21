@@ -903,7 +903,8 @@ def test_battery_tab_full_data_green_health(qtbot, monkeypatch):
     assert tab.lbl_design.text() == "45000 mWh"
     assert tab.lbl_full.text() == "40000 mWh"
     assert tab.lbl_health.text() == "88.9%"
-    assert tab.lbl_health.styleSheet().startswith("color:#2e9e44")
+    from syskit.ui import theme as _theme
+    assert tab.lbl_health.styleSheet().startswith(f"color:{_theme.pal()['ok']}")
     assert tab.lbl_remain.text() == "77%"
     assert "电池报告" in tab.lbl_note.text()
 
@@ -922,7 +923,8 @@ def test_battery_tab_no_remain_shows_dash(qtbot, monkeypatch):
     qtbot.addWidget(tab)
     tab.refresh()                                       # 懒加载：显式触发
     assert tab.lbl_health.text() == "60.0%"             # 边界：不 >80、不 >60 → 红
-    assert tab.lbl_health.styleSheet().startswith("color:#c62828")
+    from syskit.ui import theme as _theme
+    assert tab.lbl_health.styleSheet().startswith(f"color:{_theme.pal()['err']}")
     assert tab.lbl_remain.text() == "—"
 
 
