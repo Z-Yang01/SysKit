@@ -1328,3 +1328,58 @@ def test_clipboard_image_preview_dialog_and_save_as(qtbot, monkeypatch, tmp_path
                         lambda *a, **k: (str(target), "PNG 图片 (*.png)"))
     tab._save_image_as(path)
     assert target.exists()                               # 真实落盘
+
+
+def test_clipboard_context_menu_lists_and_wires_actions(qtbot, monkeypatch):
+    """右键菜单列出该条目的可用操作并真实接线（触发「删除」→ 行消失）；
+    文本条目不出现「另存为…」（图专属）。"""
+    import syskit.ui.system_page as sp_mod
+    from PySide6.QtCore import QPoint
+    tab = _make_clip_tab(qtbot)
+    tab.hist.add("hello")
+    tab.reload()
+    tab.tbl.selectRow(0)
+    captured = {}
+
+    class _FakeMenu:
+        def __init__(self, parent=None):
+            self.items = []
+
+        def addAction(self, text, cb=None):
+            self.items.append((text, cb))
+
+        def addSeparator(self):
+            self.items.append(("", None))
+
+        def exec(self, pos=None):
+            captured["texts"] = [t for t, _cb in self.items]
+            for t, cb in self.items:
+                if t == "删除" and cb:
+                    cb()                                # 触发删除：验证回调接线
+            return 0
+    monkeypatch.setattr(sp_mod, "QMenu", _FakeMenu)
+    tab._show_context_menu(QPoint(5, 5))
+    for need in ("复制", "置顶", "预览", "删除"):
+        assert need in captured["texts"]
+    assert "另存为…" not in captured["texts"]
+    assert tab.tbl.rowCount() == 0                      # 删除回调真的删了
+
+
+def test_clipboard_text_full_preview_dialog(qtbot, monkeypatch):
+    """长文本条目全文预览：对话框拿到完整内容（列表只显示 80 字折叠）。"""
+    from PySide6.QtWidgets import QDialog, QTextEdit
+    tab = _make_clip_tab(qtbot)
+    long_text = "abcdef" * 100
+    tab.hist.add(long_text)
+    tab.reload()
+    tab.tbl.selectRow(0)
+    shown = {}
+    orig_set = QTextEdit.setPlainText
+
+    def spy_set(self, t):
+        shown["text"] = t
+        orig_set(self, t)
+    monkeypatch.setattr(QTextEdit, "setPlainText", spy_set)
+    monkeypatch.setattr(QDialog, "exec", lambda self: 0)
+    tab._preview_selected()
+    assert shown["text"] == long_text

@@ -7,8 +7,8 @@ from PySide6.QtCore import Qt, QBuffer, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
                                QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton,
-                               QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QMenu, QMessageBox, QProgressBar, QPushButton,
+                               QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from .charts import LineChart, human_bytes
 from . import theme
@@ -572,6 +572,8 @@ class ClipboardTab(QWidget):
         self.tbl.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl.itemDoubleClicked.connect(lambda *_: self._copy_selected())
         self.tbl.itemSelectionChanged.connect(self._show_detail)
+        self.tbl.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tbl.customContextMenuRequested.connect(self._show_context_menu)
         lay.addWidget(self.tbl)
 
         # 详情区：左侧图片缩略图（仅图片条目），右侧提示与规则动作按钮
@@ -785,6 +787,62 @@ class ClipboardTab(QWidget):
         if idx >= 0 and self.hist.remove(idx):
             self.reload()
             self._show_detail()
+
+    # ---------------- 右键菜单 / 预览 ----------------
+
+    def _show_context_menu(self, pos):
+        if self._selected_index() < 0:
+            return
+        it = self._selected_item()
+        if it is None:
+            return
+        is_image = it.get("kind") == "image"
+        menu = QMenu(self)
+        menu.addAction("复制", self._copy_selected)
+        menu.addAction("取消置顶" if it.get("pinned") else "置顶", self._toggle_pin)
+        menu.addAction("预览", self._preview_selected)
+        if is_image:
+            path = clipboard_mod.image_path(it.get("data", ""))
+            if path and os.path.exists(path):
+                menu.addAction("另存为…", lambda: self._save_image_as(path))
+        menu.addSeparator()
+        menu.addAction("删除", self._delete_selected)
+        menu.exec(self.tbl.viewport().mapToGlobal(pos))
+
+    def _preview_selected(self):
+        it = self._selected_item()
+        if it is None:
+            return
+        if it.get("kind") == "image":
+            path = clipboard_mod.image_path(it.get("data", ""))
+            if path and os.path.exists(path):
+                self._show_image_preview(path)
+            else:
+                QMessageBox.information(self, "预览", "图片文件已不存在。")
+            return
+        self._show_text_preview(it.get("text", ""))
+
+    def _show_text_preview(self, text: str):
+        """全文预览对话框（列表内容列只显示 80 字折叠——长条目从这里看全）。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("剪贴板内容预览")
+        dlg.resize(560, 420)
+        v = QVBoxLayout(dlg)
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText(text or "")
+        v.addWidget(txt)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn_copy = QPushButton("复制全文")
+        btn_copy.clicked.connect(
+            lambda: self._set_clipboard_text(text, "已复制到剪贴板"))
+        row.addWidget(btn_copy)
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(dlg.accept)
+        row.addWidget(btn_close)
+        v.addLayout(row)
+        dlg.exec()
 
     def _clear_all(self):
         ret = QMessageBox.question(self, "清空剪贴板历史", "确定清空全部历史记录？（置顶条目也会删除）",
