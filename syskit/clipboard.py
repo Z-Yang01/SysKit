@@ -87,10 +87,6 @@ def mark_sensitive(text, ttl: int = 25) -> None:
     _mark_text(_sensitive, text, time.time() + max(1, int(ttl)))
 
 
-def _is_sensitive(text) -> bool:
-    return _text_in(_sensitive, _digest(text))
-
-
 def suppress_next(text, ttl: float = 2.0) -> None:
     """短期抑制某文本被记录（快捷粘贴自动回填时用，见 _suppressed 注释）。"""
     _mark_text(_suppressed, text, time.time() + max(0.5, float(ttl)))
