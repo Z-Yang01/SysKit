@@ -214,7 +214,7 @@ class TestHotkeyFilterGaps:
                 raise TypeError("cannot convert")
 
         fired = []
-        filt = HotkeyFilter(lambda: fired.append(1))
+        filt = HotkeyFilter(lambda: fired.append(1), expected_ids=(1,))
         handled, ret = filt.nativeEventFilter(_NoBytes(), None)
         assert handled is False and ret == 0 and fired == []
 
@@ -229,7 +229,7 @@ class TestHotkeyFilterGaps:
 
         monkeypatch.setattr(palette_mod, "wintypes",
                             SimpleNamespace(MSG=_BrokenMSG))
-        filt = HotkeyFilter(lambda: fired.append(1))
+        filt = HotkeyFilter(lambda: fired.append(1), expected_ids=(1,))
         msg = wintypes.MSG()
         msg.message = WM_HOTKEY
         addr = ctypes.c_void_p(ctypes.addressof(msg))

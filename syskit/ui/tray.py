@@ -53,6 +53,15 @@ class TrayHost(QSystemTrayIcon):
             menu.addAction(a)
         clip_menu = menu.addMenu("📋 最近剪贴板")
         clip_menu.aboutToShow.connect(lambda: self._fill_clip_menu(clip_menu))
+        if getattr(window, "toggle_clip_paste", None):
+            self._act_paste = QAction("📋 快捷粘贴面板…", menu)
+            self._act_paste.triggered.connect(window.toggle_clip_paste)
+            menu.addAction(self._act_paste)
+        else:
+            self._act_paste = None
+        # 提示跟随设置里的快捷粘贴热键（菜单每次弹出刷新，改键后即时同步）
+        menu.aboutToShow.connect(self._refresh_paste_tip)
+        self._refresh_paste_tip()
         if getattr(window, "toggle_palette", None):
             act_palette = QAction("⌘ 命令面板", menu)
             act_palette.setToolTip("全局热键呼出，输入即搜")
@@ -63,6 +72,16 @@ class TrayHost(QSystemTrayIcon):
         self.setContextMenu(menu)
         self.activated.connect(self._activated)
         self._state = "offline"
+
+    def _refresh_paste_tip(self):
+        """快捷粘贴菜单提示按设置热键动态显示（空=禁用 → 提示可在此呼出）。"""
+        if self._act_paste is None:
+            return
+        from .clip_paste import hotkey_hint
+        h = hotkey_hint()
+        self._act_paste.setToolTip(
+            "搜索历史，回车直接粘贴到呼出前聚焦的窗口（"
+            + (f"热键 {h}）" if h else "未设热键，可在此呼出）"))
 
     def _activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:

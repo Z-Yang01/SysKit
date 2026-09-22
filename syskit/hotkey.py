@@ -79,8 +79,8 @@ def parse_hotkey(text: str):
 def hotkey_display(text: str) -> str:
     """规范化显示（Ctrl+Alt+K → Ctrl+Alt+K；k → K）。非法返回 ''。
 
-    当前无生产调用点（UI 为静态文案），作为 hotkey 包的显示配套 API 保留，
-    由 test_palette / test_palette_tray_gaps 锁定行为。
+    生产调用点：ui/clip_paste.py::hotkey_hint —— 托盘提示与系统助手页
+    文案按设置里的热键动态显示。
     """
     parsed = parse_hotkey(text)
     if parsed is None:

@@ -597,8 +597,13 @@ class ClipboardTab(QWidget):
         bottom.addLayout(col, 1)
         lay.addLayout(bottom)
 
+        from .clip_paste import hotkey_hint     # 文案跟随设置热键，改键后不再失真
+        hk = hotkey_hint()
+        paste_tip = (f"全局热键「{hk}」呼出快捷粘贴，回车直接粘进原窗口。" if hk else
+                     "快捷粘贴未设热键（可在设置页配置），可经托盘菜单呼出。")
         self.lbl = QLabel(
-            "监听已开启：复制的内容会出现在此列表；双击一行可复制回剪贴板。" if watch else
+            ("监听已开启：复制的内容会出现在此列表；双击一行可复制回剪贴板；"
+             + paste_tip) if watch else
             "剪贴板监听默认关闭（不记录任何内容）：勾选「监听剪贴板」并确认后开始记录；已记录的历史保留可查。")
         self.lbl.setObjectName("hint")
         lay.addWidget(self.lbl)
@@ -651,26 +656,32 @@ class ClipboardTab(QWidget):
         return self.hist.search(self.edt_search.text(), kind)
 
     def reload(self):
-        items = self._filtered_items()
-        self.tbl.setRowCount(len(items))
-        for r, it in enumerate(items):
-            try:
-                t = time.strftime("%m-%d %H:%M:%S", time.localtime(int(it.get("ts", 0))))
-            except Exception:
-                t = str(it.get("ts", ""))
-            col0 = QTableWidgetItem(("📌 " if it.get("pinned") else "") + t)
-            col0.setData(Qt.UserRole, int(it.get("idx", -1)))
-            self.tbl.setItem(r, 0, col0)
-            self.tbl.setItem(r, 1, QTableWidgetItem(
-                KIND_LABELS.get(it.get("kind", "text"), it.get("kind", "text"))))
-            item = QTableWidgetItem(clipboard_mod.ClipboardHistory.preview(it.get("text", "")))
-            item.setToolTip(it.get("text", "")[:500])
-            if it.get("kind") == "image":
-                # 图片条目行内缩略图（补57：不再是纯文字占位）
-                thumb = self._thumb_for(it.get("data", ""))
-                if thumb is not None:
-                    item.setIcon(thumb)
-            self.tbl.setItem(r, 2, item)
+        # 批量重填：监听开着时每次复制、搜索时每键都会走这里，
+        # 逐行 setItem 的中间态不刷屏（挂起更新统一在尾部一次性重绘）
+        self.tbl.setUpdatesEnabled(False)
+        try:
+            items = self._filtered_items()
+            self.tbl.setRowCount(len(items))
+            for r, it in enumerate(items):
+                try:
+                    t = time.strftime("%m-%d %H:%M:%S", time.localtime(int(it.get("ts", 0))))
+                except Exception:
+                    t = str(it.get("ts", ""))
+                col0 = QTableWidgetItem(("📌 " if it.get("pinned") else "") + t)
+                col0.setData(Qt.UserRole, int(it.get("idx", -1)))
+                self.tbl.setItem(r, 0, col0)
+                self.tbl.setItem(r, 1, QTableWidgetItem(
+                    KIND_LABELS.get(it.get("kind", "text"), it.get("kind", "text"))))
+                item = QTableWidgetItem(clipboard_mod.ClipboardHistory.preview(it.get("text", "")))
+                item.setToolTip(it.get("text", "")[:500])
+                if it.get("kind") == "image":
+                    # 图片条目行内缩略图（补57：不再是纯文字占位）
+                    thumb = self._thumb_for(it.get("data", ""))
+                    if thumb is not None:
+                        item.setIcon(thumb)
+                self.tbl.setItem(r, 2, item)
+        finally:
+            self.tbl.setUpdatesEnabled(True)
         self.lbl.setText(f"共 {len(items)} 条　双击行可复制")
 
     def _thumb_for(self, name: str):

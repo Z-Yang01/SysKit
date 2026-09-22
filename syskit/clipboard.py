@@ -26,6 +26,11 @@ _instances = weakref.WeakSet()
 # 敏感内容摘要：[(digest, until_ts)]，过期自动清理。密码库等来源标记后监听跳过。
 _sensitive = []
 
+# 回填抑制摘要：快捷粘贴自动写回剪贴板时，监听器会把「自己写入」的内容
+# 当成一次新复制——历史顺序失真（被粘贴的旧条目顶到最新）。短 TTL 窗口内
+# 按内容摘要跳过记录；只用于文本类回填（图片回填语义不同，不抑制）。
+_suppressed = []
+
 DEFAULT_BLACKLIST = "keepass,bitwarden,1password,enpass"
 
 
@@ -53,21 +58,46 @@ def save_image_bytes(png: bytes) -> str:
     return name
 
 
-def mark_sensitive(text, ttl: int = 25) -> None:
-    """标记文本为敏感：ttl 秒内监听到相同内容不记录（密码库复制用）。"""
+def _digest(text) -> str:
+    return hashlib.sha256(str(text).encode("utf-8", "ignore")).hexdigest()
+
+
+def _prune(window: list) -> None:
+    """丢弃已过期摘要（调用方须持有 _lock）。"""
+    window[:] = [s for s in window if s["until"] > time.time()]
+
+
+def _mark_text(window: list, text, until: float) -> None:
     if text is None:
         return
-    digest = hashlib.sha256(str(text).encode("utf-8", "ignore")).hexdigest()
     with _lock:
-        _sensitive.append({"digest": digest, "until": time.time() + max(1, int(ttl))})
-        _sensitive[:] = [s for s in _sensitive if s["until"] > time.time()]
+        window.append({"digest": _digest(text), "until": until})
+        _prune(window)
+
+
+def _text_in(window: list, digest: str) -> bool:
+    """按摘要查窗口（调用方已算好 digest：add 热路径两道闸共享一次哈希）。"""
+    with _lock:
+        _prune(window)
+        return any(s["digest"] == digest for s in window)
+
+
+def mark_sensitive(text, ttl: int = 25) -> None:
+    """标记文本为敏感：ttl 秒内监听到相同内容不记录（密码库复制用）。"""
+    _mark_text(_sensitive, text, time.time() + max(1, int(ttl)))
 
 
 def _is_sensitive(text) -> bool:
-    digest = hashlib.sha256(str(text).encode("utf-8", "ignore")).hexdigest()
-    with _lock:
-        _sensitive[:] = [s for s in _sensitive if s["until"] > time.time()]
-        return any(s["digest"] == digest for s in _sensitive)
+    return _text_in(_sensitive, _digest(text))
+
+
+def suppress_next(text, ttl: float = 2.0) -> None:
+    """短期抑制某文本被记录（快捷粘贴自动回填时用，见 _suppressed 注释）。"""
+    _mark_text(_suppressed, text, time.time() + max(0.5, float(ttl)))
+
+
+def _is_suppressed(text) -> bool:
+    return _text_in(_suppressed, _digest(text))
 
 
 def exclude_os_history() -> None:
@@ -236,8 +266,12 @@ class ClipboardHistory:
         if not text or not str(text).strip():
             return False
         text = str(text)
-        if _is_sensitive(text):
+        # 摘要只算一次：敏感/抑制两道闸共享（add 是复制热路径，旧版各算一遍）
+        digest = _digest(text)
+        if _text_in(_sensitive, digest):
             return False
+        if _text_in(_suppressed, digest):
+            return False    # 快捷粘贴回填的内容不算一次「用户复制」
         if kind == "text" and len(text) > self.max_len:
             text = text[: self.max_len]
         with _lock:
@@ -288,8 +322,9 @@ class ClipboardHistory:
         unpinned = [i for i, it in enumerate(self._items) if not it.get("pinned")]
         excess = len(unpinned) - self.max_items
         if excess > 0:
-            evicted = [self._items[i] for i in unpinned[-excess:]]   # 最老的非置顶
-            for i in sorted(unpinned[-excess:], reverse=True):
+            oldest = unpinned[-excess:]                     # 最老的非置顶（只切一次）
+            evicted = [self._items[i] for i in oldest]
+            for i in sorted(oldest, reverse=True):
                 del self._items[i]
             self._delete_image_files(evicted)
 

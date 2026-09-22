@@ -20,7 +20,7 @@ from ..telemetry import GROUPS_DASH, GROUPS_SYSTEM, TelemetryWorker
 from . import theme
 from .confirm_dialog import ConfirmDialog
 from .dashboard_page import DashboardPage
-from .palette import CommandPalette, setup_global_hotkey
+from .palette import CommandPalette, setup_global_hotkey, setup_paste_hotkey
 from .system_page import SystemPage
 from .toolbox_page import ToolboxPage
 from .tray import TrayHost
@@ -191,7 +191,10 @@ class MainWindow(QMainWindow):
         """全局热键 + 应用内 Ctrl+K；注册失败静默降级（托盘菜单仍可呼出）。"""
         self._palette = None
         self._hotkey_filter = None
+        self._clip_paste = None
+        self._paste_hotkey_filter = None
         setup_global_hotkey(self)
+        setup_paste_hotkey(self)
         sc = QShortcut(QKeySequence("Ctrl+K"), self)
         sc.activated.connect(self.toggle_palette)
 
@@ -202,6 +205,19 @@ class MainWindow(QMainWindow):
             self._palette.toggle()
         except RuntimeError:
             pass        # C++ 对象已被销毁（测试卸载路径）
+
+    def toggle_clip_paste(self):
+        """快捷粘贴面板：呼出**前**记录前台窗口，粘贴时把焦点还给它。"""
+        try:
+            from .. import paste as paste_mod
+            from .clip_paste import ClipPastePanel
+            if self._clip_paste is None:
+                self._clip_paste = ClipPastePanel(self)
+            # 显隐判断在 ClipPastePanel.toggle 内；面板可见时前台就是它自己，
+            # 但 toggle 走隐藏分支、忽略该句柄，无副作用
+            self._clip_paste.toggle(paste_mod.foreground_window())
+        except RuntimeError:
+            pass        # 与 toggle_palette 同款防御
 
     def run_palette_command(self, value: str):
         """面板自定义命令：URL 直接打开；本地命令确认后执行并气泡反馈。"""
@@ -1014,6 +1030,17 @@ class MainWindow(QMainWindow):
         self.cmb_hotkey.setCurrentText(str(s.get("palette_hotkey", "Ctrl+Alt+K")))
         self.cmb_hotkey.setToolTip("命令面板全局热键（保存后立即生效；被占用时自动降级为托盘菜单呼出）")
         form3.addRow("命令面板热键", self.cmb_hotkey)
+
+        self.cmb_paste_hotkey = QComboBox()
+        self.cmb_paste_hotkey.setEditable(True)
+        self.cmb_paste_hotkey.addItems(["Ctrl+Alt+V", "Ctrl+Shift+V", "Ctrl+Alt+B",
+                                        "Alt+V", ""])
+        self.cmb_paste_hotkey.setCurrentText(
+            str(s.get("clip_paste_hotkey", config.DEFAULTS["clip_paste_hotkey"])))
+        self.cmb_paste_hotkey.setToolTip(
+            "剪贴板快捷粘贴面板全局热键：呼出历史列表，回车即粘回呼出前的窗口；\n"
+            "留空 = 禁用快捷键（仍可经托盘菜单呼出）；被占用时自动降级为托盘呼出")
+        form3.addRow("快捷粘贴热键", self.cmb_paste_hotkey)
         outer.addWidget(g3)
 
         btn_row = QHBoxLayout()
@@ -1052,6 +1079,16 @@ class MainWindow(QMainWindow):
                                 "本次保存不更改全局热键，其余设置将继续保存。")
             hotkey_text = settings.load().get("palette_hotkey", "Ctrl+Alt+K")
         previous_hotkey = settings.load().get("palette_hotkey", hotkey_text)  # 保存前快照（新键被占用时回退用）
+        # 快捷粘贴热键同款验证：非法输入不破坏当前热键；空串 = 显式禁用
+        paste_text = self.cmb_paste_hotkey.currentText().strip()
+        if paste_text and hotkey.parse_hotkey(paste_text) is None:
+            QMessageBox.warning(self, config.DISPLAY_NAME,
+                                f"热键「{self.cmb_paste_hotkey.currentText()}」无法识别（示例：Ctrl+Alt+V），"
+                                "留空表示禁用。\n本次保存不更改快捷粘贴热键，其余设置将继续保存。")
+            paste_text = str(settings.load().get("clip_paste_hotkey",
+                                                 config.DEFAULTS["clip_paste_hotkey"]))
+        previous_paste = str(settings.load().get("clip_paste_hotkey",
+                                                 config.DEFAULTS["clip_paste_hotkey"]))
         patch = {
             "auto_repair_enabled": self.chk_auto.isChecked(),
             "poll_interval_sec": self.spin_interval.value(),
@@ -1068,6 +1105,7 @@ class MainWindow(QMainWindow):
             "clip_process_blacklist": self.edt_blacklist.text().strip(),
             "vault_autolock_min": self.spin_autolock.value(),
             "palette_hotkey": hotkey_text,
+            "clip_paste_hotkey": paste_text,
         }
         if admin.is_admin():
             try:
@@ -1085,25 +1123,41 @@ class MainWindow(QMainWindow):
                                 f"设置写入失败：{e}\n本次改动在当前运行中仍生效，重启后会丢失。")
             return
         self._tray_rate = bool(patch["tray_rate_enabled"])   # 托盘速率开关即时生效
-        # 命令面板热键即时重注册；新键被占用时回退旧键（避免全局热键全丢）
-        from .palette import setup_global_hotkey, teardown_global_hotkey
-        teardown_global_hotkey(self)
-        if not setup_global_hotkey(self):
-            if hotkey_text != previous_hotkey:      # 新键被占 → 回退旧键
-                settings.save({"palette_hotkey": previous_hotkey})
-                self.cmb_hotkey.setCurrentText(previous_hotkey)
-                setup_global_hotkey(self)
-                QMessageBox.information(
-                    self, config.DISPLAY_NAME,
-                    f"热键「{hotkey_text}」已被其他程序占用，已恢复为「{previous_hotkey}」。")
-            else:                                    # 原键被抢 → 明确告知（不静默丢）
-                QMessageBox.warning(self, config.DISPLAY_NAME,
-                                    f"热键「{hotkey_text}」注册失败（可能刚被其他程序占用），"
-                                    "全局热键暂不可用；托盘菜单与 Ctrl+K 不受影响。")
+        # 两把全局热键即时重注册（命令面板 / 快捷粘贴同策略，单源见 _rehook_hotkey）
+        from .palette import (setup_global_hotkey, setup_paste_hotkey,
+                              teardown_global_hotkey, teardown_paste_hotkey)
+        self._rehook_hotkey("palette_hotkey", setup_global_hotkey,
+                            teardown_global_hotkey, hotkey_text, previous_hotkey,
+                            self.cmb_hotkey, "全局热键暂不可用；托盘菜单与 Ctrl+K 不受影响。")
+        self._rehook_hotkey("clip_paste_hotkey", setup_paste_hotkey,
+                            teardown_paste_hotkey, paste_text, previous_paste,
+                            self.cmb_paste_hotkey, "快捷粘贴暂可经托盘菜单呼出。")
         # 主题即时切换（保存入口的兜底路径；勾选本身在 _on_dark_toggled 已即时生效）
         if theme.is_dark() != self.chk_dark.isChecked():
             self._apply_theme(self.chk_dark.isChecked())
         QMessageBox.information(self, config.DISPLAY_NAME, "设置已保存。")
+
+    def _rehook_hotkey(self, key: str, setup, teardown, text: str, previous: str,
+                       combo, fail_hint: str):
+        """设置保存后即时重注册一把全局热键；新键被占 → 回退旧键（避免全丢）。
+
+        空串 = 显式禁用：只反注册、静默无提示（旧版命令面板分支会对空串
+        误报「已被其他程序占用」，合并后按禁用处理）。
+        """
+        teardown(self)
+        if not text or setup(self):
+            return
+        if text != previous:                         # 新键被占 → 回退旧键
+            settings.save({key: previous})
+            combo.setCurrentText(previous)
+            setup(self)
+            QMessageBox.information(
+                self, config.DISPLAY_NAME,
+                f"热键「{text}」已被其他程序占用，已恢复为「"
+                + (hotkey.hotkey_display(previous) or "无热键（已禁用）") + "」。")
+        else:                                        # 原键被抢 → 明确告知（不静默丢）
+            QMessageBox.warning(self, config.DISPLAY_NAME,
+                                f"热键「{text}」注册失败（可能刚被其他程序占用），{fail_hint}")
 
     def _apply_theme(self, dark: bool):
         from PySide6.QtWidgets import QApplication
@@ -1410,8 +1464,9 @@ class MainWindow(QMainWindow):
 
     def quit_app(self):
         self._save_window_state()
-        from .palette import teardown_global_hotkey
+        from .palette import teardown_global_hotkey, teardown_paste_hotkey
         teardown_global_hotkey(self)
+        teardown_paste_hotkey(self)
         self.mon.stop()
         self.tele.stop()
         self.tele.wait(3000)              # 等遥测线程退出，避免 QThread destroyed while running

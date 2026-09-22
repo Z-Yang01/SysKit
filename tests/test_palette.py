@@ -197,16 +197,17 @@ class TestBuildActions:
 class TestHotkeyFilter:
     def test_wm_hotkey_intercepted(self):
         fired = []
-        filt = HotkeyFilter(lambda: fired.append(True))
+        filt = HotkeyFilter(lambda: fired.append(True), expected_ids=(1,))
         msg = wintypes.MSG()
         msg.message = WM_HOTKEY
+        msg.wParam = 1                              # 自己的注册 id → 消费
         addr = ctypes.c_void_p(ctypes.addressof(msg))
         handled, _ret = filt.nativeEventFilter(b"windows_generic_MSG", addr)
         assert handled is True and fired == [True]
 
     def test_other_message_passthrough(self):
         fired = []
-        filt = HotkeyFilter(lambda: fired.append(True))
+        filt = HotkeyFilter(lambda: fired.append(True), expected_ids=(1,))
         msg = wintypes.MSG()
         msg.message = 0x0200                    # WM_MOUSEMOVE
         addr = ctypes.c_void_p(ctypes.addressof(msg))
@@ -379,19 +380,20 @@ def test_main_window_palette_integration(qtbot, monkeypatch, make_main_window):
     reg_calls = []
 
     def fake_register(mods, vk, hotkey_id=1):
-        reg_calls.append((mods, vk))
+        reg_calls.append((mods, vk, hotkey_id))
         return True
 
     monkeypatch.setattr(hotkey_mod, "register", fake_register)
     win.cmb_hotkey.setCurrentText("Ctrl+Alt+P")     # _save_settings 读 UI 控件值
     win._save_settings()
-    assert (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("P")) in reg_calls
+    assert (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("P"), 1) in reg_calls
 
     # 回归：非法热键保存 → 警告且以回退的旧值重注册（全局热键不丢），设置保持旧值
     reg_calls.clear()
     win.cmb_hotkey.setCurrentText("不是热键")
     win._save_settings()
-    assert reg_calls == [(hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("P"))]
+    assert reg_calls == [(hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("P"), 1),
+                         (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("V"), 2)]
     assert settings.load().get("palette_hotkey") == "Ctrl+Alt+P"
 
     # 回归：新热键被占用（注册失败）→ 自动恢复旧热键，全局热键不丢
@@ -409,8 +411,9 @@ def test_main_window_palette_integration(qtbot, monkeypatch, make_main_window):
     assert "占用" in str(warn_calls[0])
 
     # 清理全局热键与原生过滤器，避免悬空回调
-    from syskit.ui.palette import teardown_global_hotkey
+    from syskit.ui.palette import teardown_global_hotkey, teardown_paste_hotkey
     monkeypatch.setattr(hotkey_mod, "register",
                         lambda mods, vk, hotkey_id=1: True)
     win._save_settings()                                         # 用可注册键收尾
     teardown_global_hotkey(win)
+    teardown_paste_hotkey(win)

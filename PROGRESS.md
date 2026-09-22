@@ -2,7 +2,7 @@
 
 > 头部现状（2026-09-20 刷新；下方原文保留为历史）。原始任务「pytest 测试体系建设」
 > 已于 2026-09-10 达成（逻辑模块 ≥70% + 全绿），此后本文件按时间追加各会话记录。
-> 当前基线：分支 `test/pytest-setup`；全量 **1234 例**（两段式 0F/0E + 1 已知 skip）；
+> 当前基线：分支 `test/pytest-setup`；全量 **1308 例**（两段式 1263+45，0F/0E + 1 已知 skip）；
 > 总覆盖率 **99%**；pyflakes 门已钉成 `tests/test_pyflakes_gate.py`；
 > 全绿验证一条命令：`python tools/run_full_check.py`。
 > 环境：Windows 真机，Python 3.10.11，PySide6 6.11.2，pytest 9.1.1，pytest-qt 4.5.0，
@@ -1856,3 +1856,251 @@ netsh no-match 退出码探针直接省去总控重查）；③单源化收敛�
   无例外条款，下不为例。
 - 验证：全量 **1234 例** 0F/0E/1 已知 skip（junitxml 复核）；pyflakes 门 0；
   test_repairs+test_cli 分区 127 例先行全绿。哨兵未绕过未削弱，零真实系统调用。
+
+### 补充58（2026-09-21 交互会话）：深色主题修复 + 剪贴板体验升级（图片可视化/右键操作/监控默认关）
+
+用户四点反馈：深色模式不行、剪贴板只能看不够用、图片看不到、监控应默认关
+（仿自启确认开启）。两代理并行摸底 + 两项用户决策（历史保留只停新记录；
+不加「跟随系统」）。四笔提交：
+
+1. **深色主题修复（34a62a0）**：QSS 体系本身无恙，病灶是三类固化色——
+   ①两处 #000000 fallback（深色下文字隐身）→ pal["text"]；②约 12 处浅色
+   系字面状态色（#2e9e44/#2e7d32/#ef6c00/#c62828/#8a5a00，暗卡对比度
+   2~3:1）→ pal 语义角色现取（浅色值与原字面一致=像素级不回归）；③构造期
+   固化后切主题不刷新 → `_on_theme_changed` 补全（修复表重填/诊断树逐项
+   重取色/事件时间线 reload/电池健康色/管理员横幅）。charts.py 序列色支持
+   @role token（绘制时解析，自动跟随）。**深色勾选改为即时生效+立即持久化**
+   （旧路径要点「保存设置」才切——「不行」体感的一半来自这里）。验收：
+   浅色 4 处预期小差、深色重渲对比度恢复无残留。
+2. **图片可视化（7d82cdc）**：列表行 DecorationRole 缩略图（文件名缓存）；
+   详情缩略图 96→200px + 图片条目动作行「放大预览/另存为…」（此前对图片
+   直接 return 零动作）；文件缺失如实提示；托盘/面板标签改用自带占位
+   （含宽高）。
+3. **右键菜单 + 全文预览（213746b）**：行右键菜单按类型列操作（复制/置顶/
+   预览/另存为/删除），文本全文预览对话框（长条目不再只有 80 字折叠）。
+4. **监控默认关 + 确认开启（26b48cd）**：新键 `clipboard_watch=False`
+   （存量升级自动关，历史保留只停新记录——用户确认）；dataChanged 仅开启
+   时连接；用户点击走 `clicked` 信号，开启弹确认框（记录范围/豁免/历史
+   保留说明），关闭断开+吞当前内容防补录；开关状态立即持久化；隐私暂停
+   按钮在关闭态禁用。
+
+**并行会话注意**：本轮窗口内夜间无人值守会话（其条目占号「补充57」）与
+交互会话（本轮，提交信息误沿 57、PROGRESS 实为 58）并行提交——b3fc47a
+的还原点提示单源化与本轮组合弹窗提示互补不冲突。文档计数已按实测 1240 对齐。
+**验证**：全量 **1240 例**（1195+45）0F/0E/1 已知 skip；pyflakes 0；
+像素 15/15 全同（本轮剪贴板子页不在截图集，深色修复已在 r7 验收）。
+新增回归 7：深色即时切换 / 图片缩略图+详情动作 / 预览与另存为真实落盘 /
+右键菜单清单与删除接线 / 全文预览 / opt-in 全流程（默认关-确认-取消回滚-
+关闭保历史）。
+
+### 补充59（2026-09-21 交互会话）：剪贴板快捷粘贴——全局热键一键粘回原窗口
+
+用户反馈：剪贴板有历史但没有简单用法（例：快捷键直接粘贴）。落地为
+「快捷粘贴面板」闭环（对照 Ditto / Win+V 缺口）：
+
+1. **syskit/paste.py（新）**：无 Qt Win32 原语——foreground_window 记录 /
+   focus_window 还焦（IsIconic 还原 + AttachThreadInput/BringWindowToTop 兜底）/
+   send_ctrl_v SendInput 注键；失败一律 False 交调用方降级。
+2. **ClipPastePanel（syskit/ui/clip_paste.py 新）**：Ctrl+Alt+V 呼出（呼出**前**
+   记录前台 hwnd），输入即搜、↑↓/1-9 直选、回车=写回剪贴板→还焦→注 Ctrl+V；
+   任一步失败降级「已复制，手动 Ctrl+V」，不静默丢内容；Esc 取消不粘。
+3. **第二全局热键**：HotkeyFilter 增 expected_ids，按 WM_HOTKEY wParam 判归属、
+   不属己放行（Qt 原生过滤器后装先调用，两个过滤器才能共存）；
+   setup/teardown_paste_hotkey（id=2，设置键 clip_paste_hotkey，空=禁用）；
+   设置页可改键、被占回退旧键，与命令面板热键同策略。
+4. **回填不脏历史**：clipboard.suppress_next（2s TTL 摘要抑制）——自动写回
+   不被自己的监听器记成一次新复制（历史顺序不失真）。
+5. **入口三处**：全局热键 / 托盘「📋 快捷粘贴面板…」/ 命令面板动作
+   quick:clip_paste；系统助手页提示文案同步披露。
+6. **真机冒烟抓出并修复 1 个真实 bug**：还焦后 GUI 线程同步 sleep 会卡住
+   WM_ACTIVATE 派发、首拍注入 Ctrl+V 被丢（离屏测试测不出）——改为
+   QTimer.singleShot(150) 延一拍再注键。教训：Win32 输入/激活链路必须在
+   真桌面端到端验证，offscreen 断言不算数。
+- 测试：+20 例（tests/test_clip_paste.py：原语/抑制/热键注册与分发/面板交互/
+  主窗口接线），并适配 test_palette.py 热键集成断言（reg_calls 带 hotkey_id）；
+  真实 SendInput 注入路径在单测中一律 mock（防打污用户焦点窗口）。
+- **验证**：全量 **1260 例**（1240+20）exit 0 全绿；pyflakes 门 0；
+  真机端到端冒烟 10 项全过（真实 RegisterHotKey→WM_HOTKEY→面板→还焦→
+  记事本级靶窗口收到粘贴文本）。
+
+第 2 轮深测（同日续）：
+
+7. **真机冒烟抓到并修复第 2 个真实 bug**：focus_window 的跨线程兜底分支用
+   `u.GetCurrentThreadId()`，但 user32 根本没有这个导出（只在 kernel32）→
+   凡真正需要 AttachThreadInput 还焦的场合都 AttributeError 被吞、一律降级
+   「已复制，手动粘贴」。第 1 轮没暴露：同进程靶窗口总走「已在前台」早退，
+   永远到不了该分支。改 `_kernel32().GetCurrentThreadId()`，并补回归
+   test_focus_cross_thread_attach_path（桩刻意复刻真实导出表）。教训追加：
+   兜底/降级分支本身就是真机冒烟的一等公民场景。
+- **冗余清理（同轮，指令「删除冗余代码」）**：
+  ① HotkeyFilter 的 expected_ids=None「消费一切」兼容分支必填化——生产两处
+     调用点都已显式传 id，留着反成后装过滤器吞前面热键的暗雷；
+  ② palette.py 两组 setup/teardown 合并公共流程 _bind_hotkey/_unbind_hotkey；
+  ③ clipboard.py 中 mark_sensitive/suppress_next 四连同构摘要函数抽
+     _mark_text/_text_in 公共内核（公开 API 与语义不变）；
+  ④ ClipPastePanel.popup 双重装载去掉（edt.clear 经 textChanged 已刷新，
+     再显式 _refresh 每次呼出白做一遍 DPAPI 读盘）；
+  ⑤ MainWindow.toggle_clip_paste 去掉与 ClipPastePanel.toggle 重复的显隐
+     分支，_setup_palette 的 setup_paste_hotkey 并入顶层导入；
+  ⑥ _save_settings 中两把热键的「即时重注册+被占回退」孪生块（第 2 份正是
+     本次复制出来的）合并为 MainWindow._rehook_hotkey 单源方法。
+- **第 2 轮验证**：真机冒烟 **17/17**（外部进程 Set-Clipboard 经真监听器入库、
+  真实 Ctrl+Alt+Q 呼出、数字键直选粘进目标窗、回填抑制不脏历史、Esc 取消
+  零副作用、图片入库/回填/载荷去重、搜索过滤 + 真实记事本跨进程粘贴致标题
+  变脏 *）；全量 **1260 例**（+1 回归 −1 兼容用例）exit 0 全绿；pyflakes 0。
+- **性能优化（建议①）**：快捷粘贴面板改为「呼出时读一次盘（flush_pending +
+  DPAPI），按键只过滤内存快照」——旧实现每次 textChanged 都重建
+  ClipboardHistory，长历史 + 快连敲时读盘次数与击键数成正比；补回归
+  test_typing_filters_snapshot_without_reload 钉住读盘次数（重呼出才重载）。
+- **文案动态化（建议②）**：快捷粘贴热键展示文本不再写死「默认 Ctrl+Alt+V」——
+  新增 clip_paste.hotkey_hint()（按设置取键，hotkey_display 规范化，禁用/非法
+  返回 ''），成为 hotkey_display 的首个生产调用点；托盘「📋 快捷粘贴面板…」
+  tooltip 存为 _act_paste 并挂 menu.aboutToShow 每次弹出刷新（改键后即时同步，
+  禁用态显示「未设热键，可在此呼出」）；系统助手页剪贴板监听提示同口径拼接。
+  注：ClipboardTab 的 self.lbl 长提示在构造末尾被 reload() 的「共 N 条」覆盖
+  （补57 前既有行为），本条只保证文案构建期正确跟随设置。
+  测试 +3 例（hotkey_hint 规范化/禁用/非法、托盘 tooltip 随设置刷新）；
+  全量 **1264 例**（1261+3）exit 0 全绿；pyflakes 0。
+- **连击竞态守卫（建议③）**：粘贴链两段延时（120ms 写回/还焦、150ms 注键）
+  此前无取消机制——鼠标双击会先后发 itemActivated + itemDoubleClicked 两信号、
+  在途期间重新热键呼出也会被旧链「回马枪」抢焦点。新增 ClipPastePanel.
+  _paste_seq：_exec_row 与 popup 各自 bump，两步延时回调入口比对 token，
+  不匹配即静默作废（seq 为 _do_paste/_send_paste_keystroke 必传参数，不留
+  兼容 shim）。补 2 例回归：连击只粘最后一击一次、在途重呼出作废旧链。
+  全量 **1266 例**（1264+2）exit 0 全绿；pyflakes 0。
+- **ctypes 签名声明（建议④）**：paste.py 导入期为 user32/kernel32 入口声明
+  argtypes+restype（HWND=c_void_p，SendInput=(UINT, POINTER(INPUT), INT)）——
+  ctypes 默认 c_int 在 x64 下截断/符号扩展 64 位句柄（clipboard.py 排除格式
+  处同款前科）；INPUT 等 5 个结构提为模块级类（POINTER 签名要求类身份稳定，
+  顺带去掉每次调用重建类的旧写法）。真机探针验证：真实前台句柄读取、
+  clipboard.foreground_process_name()、跨进程 focus_window(记事本)→True
+  全链路走新签名无恙；+1 例签名断言。全量 **1267 例**（1266+1）exit 0 全绿；
+  pyflakes 0。
+- **第 3 轮优化（同日续，指令「继续优化」）**：
+  ⑤ 快捷粘贴面板按键过滤增量化——呼出时一次性填充行控件（≤200 行，
+     UserRole 绑定源条目），此后过滤只对既有行 setHidden（旧实现每键
+     clear+重建整个列表：分配/重排成本随击键数线性放大且闪烁）；↑↓ 跳过
+     隐藏行、到可见端点保持；回车/双击按条目身份执行（过滤态行号≠可见序，
+     直接当索引会粘错行）；无命中时回车不误触停在隐藏行的旧选择；当前
+     选择仍可见时过滤不强制跳回首行。
+  ⑥ clipboard.add 摘要单算——敏感/抑制两道闸共享一次 sha256（复制热路径
+     旧版各算一遍）+ _evict 最老切片只算一次。
+  ⑦ 面板失焦自动收起（Ditto/Win+V 同语义）——event() 拦 WindowDeactivate
+     （changeEvent 的 ActivationChange 激活/失活都会来，不能直接用）；
+     isVisible 守卫避免粘贴链「先 hide 再还焦」的自身收尾被当成用户离开。
+  ⑧ ClipboardTab.reload 批量重填（setUpdatesEnabled 括住整表重填）——
+     监听开启时每次复制、搜索时每键都全表重填，中间态不再逐行刷屏。
+  测试 +5（过滤只切显隐且控件数恒定 / ↑↓跳隐藏行 / 空结果回车零动作 /
+  失焦收起不写回不注键 / add 单次哈希）。全量 **1272 例**（1267+5）两段式
+  0F/0E（1 已知 skip）、pyflakes 0；像素 A/B 15/15 全同（本轮唯一渲染
+  路径改动⑧只抑制中间态重绘，终态逐字节不变实证）。
+- **Bug 猎取 + 人群习惯审计（同日续，指令「检测修复bug,检查当前逻辑是否符合
+  当前项目目标人群的习惯」）**，三处真修复 +1 处注释纠偏（命名描述化，
+  避免与上一轮 ⑤~⑧ 编号混淆）：
+  - 快捷粘贴写回排除系统侧历史：`_write_back` 文本/图片两分支补调
+    `exclude_os_history()`——自动回填不是「用户新复制」，旧版会被 Win+V/
+    云剪贴板记成一条新复制（自家历史已由 suppress_next 抑制，系统侧是
+    另一套排除格式，密码库/WLAN 复制同口径）。+1 例断言两分支各调用一次。
+  - 面板跟随鼠标所在屏居中：popup 旧版钉死主屏中心，副屏呼出时面板
+    「消失」在主屏——改 `screenAt(QCursor.pos())` 的 availableGeometry
+    居中（Ditto/PowerToys Run 同习惯）。+1 例几何断言（中心偏差 ≤4px）。
+  - 热键回退文案补禁用态：`_rehook_hotkey` 旧热键为空（用户已禁用）时
+    提示拼成「已恢复为「」」；改为 `hotkey_display(previous) or
+    「无热键（已禁用）」`。+1 例。
+  - config.py `palette_hotkey` 注释「重启后生效」为陈旧文案——实际经
+    `_rehook_hotkey` 保存即生效、被占自动回退，注释改正。
+  - 数字小键盘直选（原建议菜单⑥）查证为**非问题**：Qt 6.8 Windows 后端
+    静态 KeyTbl 把 VK_NUMPAD0-9 映射到 Qt::Key_0-9（与 NumLock 无关），
+    现有 `Key_1..9` 分支已同时覆盖小键盘；PySide6 并不暴露 `Qt.Key_Keypad*`
+    枚举（据此误改会 AttributeError，已回滚），分支处加缘由注释。
+  - 验证：全量 `run_full_check` exit 0，两段 **1307 例**（seg1 1262 +
+    seg2 45，即 tests/ 全收集）0F/0E、1 已知 skip、pyflakes 0。
+    注：头部基线 1267/上一轮 1272 均滞后——其后的通宵已提交轮次继续
+    加测未同步头部；本轮按 `--collect-only` 实测核对并把头部/README
+    对齐到 1307。遗留待用户拍板：系统助手页粘贴提示会被整表刷新覆盖
+    为「共 N 条…」（旧有行为，非本轮引入）。
+- **建议⑤：降级提示按内容类型点名**（同日续，指令「继续」）：快捷粘贴
+  两条降级提示（还焦失败「已复制；切换窗口后按 Ctrl+V 粘贴」、注键未
+  送达「已复制；自动粘贴未送达，请按 Ctrl+V」）旧版对所有条目一律含糊
+  「已复制」——图片/文件条目普通文本框根本接不住 Ctrl+V，用户无从判断
+  是没送达还是目标窗口不支持。新增 `_KIND_WORD`（图片/文件/富文本）+
+  `_copied(it)`：非文本条目点名「图片已复制；…」「文件已复制；…」，
+  文本保持原样；`_send_paste_keystroke` 改收 `(it, seq)`（无其他调用点，
+  不留兼容 shim）。+1 例回归（三前缀 + 延迟送达分支，`_write_back`
+  mock 免造真实图片文件）。全量 **1308 例**（1307+1）两段式 0F/0E
+  （1 已知 skip）、pyflakes 0。至此补充59 建议菜单 ①~⑥ 全部消化
+  （⑥ 小键盘查证为非问题）。
+
+### 无人值守通宵 · 轮次1（2026-09-22 00:44，方向A 纯逻辑冗余）
+
+**审计对齐（§3.3，功能域×落点×状态，紧凑口径）**：
+- 逻辑层：29 个非用户模块 298 个顶层符号 ast 扫描（引用语料递归含 syskit/ui/、
+  tests/、tools/），唯一死代码 = `vault._account_row`（本轮删除）；其余低引用
+  候选核实均为活代码——`close_resident`/`GROUPS_DASH`/`GROUPS_SYSTEM` 被
+  main_window 使用（教训：引用扫描不递归 ui/ 会误报，下轮沿用本轮脚本口径）。
+  §4-A「DPAPI 封装重复」线索核实为**不成立**：secure_store 已复用
+  vault_crypto._dpapi_protect/_dpapi_unprotect，单源，无需合并。
+- UI 层 11 页落点：概览+网络监控→dashboard_page；WiFi→wifi_page；诊断/修复→
+  main_window（page_diag/page_repair）；工具箱→toolbox_page；系统助手（含
+  性能/启动项/电池/清理/磁盘分析/剪贴板/场景模式）→system_page；密码库→
+  vault_page；命令面板→palette+palette_actions；托盘/主题→tray/theme；
+  设置/日志→main_window；快捷粘贴→clip_paste。均有对应测试，无孤立组件。
+- 状态：全图「已通」为主；标 `*` 者为用户补充59 未提交改动（clipboard/paste/
+  hotkey/config/palette_actions + ui 5 文件 + 3 测试文件），待真机冒烟后由
+  用户入库，本轮未触碰。缺失/部分/重复/死代码：除已删项外无新发现。
+
+**轮次日志 [00:44] 方向A** | 删 `syskit/vault.py` 零引用死函数 `_account_row`
+（6 行，账号级 SELECT 助手；全仓 py 递归扫描零引用，疑似被 global_search/
+账号详情查询取代的残留）| 验证：`tools/run_full_check.py` 两段 1227+45=1272
+例 0F/0E（1 已知 skip）+ pyflakes 0；定向 tests/test_vault.py 全过 | 覆盖率：
+被删函数零测试引用（grep 证据），6 行均为未覆盖行 → 总覆盖率不降（分母
+-6 未覆盖行）| 需人工复核：无（纯 SQL helper 删除，未触 Win32/焦点/注键/
+注册表/子进程）。
+
+**轮次日志 [02:07] 方向D（补哨兵盲区）** | 改 `conftest.py` 进程哨兵补 `os.spawnv/spawnve/spawnl/spawnle/execv/execve/execvp/execvpe/execl/execle/execlp/execlpe/popen` 共 13 个入口（nt 模块直通 CRT、不经 subprocess 的最后一条旁路；execv 一类会整体替换 pytest 进程；win32 无 spawn p 系变体，hasattr 逐个装保持平台兼容）；`tests/test_conftest_guards.py` +1 体检用例逐名断言拦截并点名入口 | 验证：guards 单文件 10/10 → `tools/run_full_check.py` 两段 1228+45=1273 例（上轮 1272+1）0F/0E、1 已知 skip、pyflakes 0，全绿；已提交 97d16bc（仅 conftest.py + 体检用例两个轮前干净文件，pathspec 提交） | 需人工决策：ctypes 层注键哨兵（user32.SendInput/keybd_event/mouse_event）本轮评估后放弃——`test_clip_paste.py::test_hwnd_signatures_declared_at_import` 直接断言真实 SendInput.argtypes，整体替换会破坏该签名用例；如要做需「拦调用、透属性」的包装对象，涉及用户补充59 文件的测试语义，留给用户决定
+
+**轮次日志 [02:38] 方向D（红线2看门哨兵）** | 改 `tests/test_conftest_guards.py` +1 用例：
+扫描 syskit.config 全部公开属性，凡是含 APP_NAME 的绝对路径常量必须已被 isolated_appdata
+重定向进 tmp_path——config.py 新增 *_DIR/*_FILE 常量而忘记同步 conftest 夹具时立即失败，
+不再依赖人工记忆维护重定向清单（核查当前 5 常量全部已覆盖、无存量漏洞）| 验证：guards
+11/11 → `tools/run_full_check.py` 1229+45=1274 例 0F/0E、1 已知 skip、pyflakes 0，全绿；
+已提交（仅该测试文件，轮前干净）| 需人工复核：无
+
+**轮次日志 [02:58] 方向D（测试加固·覆盖率缺口）** | 全量覆盖率扫描（排除 ui_smoke 口径）
+定位 proc.py 残余缺口，扩展 `tests/test_proc_resident.py` +5 用例：stdin 写失败→DEAD、
+deadline 已到→立即 TIMEOUT（remain<=0 先于队列等待）、close 优雅分支（stdin EOF 让子进程
+自然退出；stdin 失效转 kill）、close_resident 收尾清会话；FakeStdin 增加 fail_on_use 注入点 |
+验证：本文件 17/17 → `tools/run_full_check.py` 1234+45=1279 例 0F/0E、1 已知 skip、
+pyflakes 0 全绿；proc.py 全量缺口 6→3（剩 3 处均设计性不可测：Popen 本体被哨兵拦、
+泵线程 OSError except、kill 自身抛错的外层 except）；已提交（该测试文件轮前干净）|
+需人工复核：无
+
+**轮次日志 [03:15] 方向D（测试加固·workers.py 58%→饱和）** | 新增 `tests/test_ui_workers.py`
+14 用例：DiagnosisWorker（进度/结果回报、cancel 使 should_stop=True、异常发空列表保复位）、
+RepairWorker（未知动作仍发 done 防界面永久忙碌、带参执行）、ComboWorker（顺序执行跳过未知、
+cancel 跳过剩余仍发 all_done、execute 异常仍发 all_done）、SnapshotWorker（成功/失败发默认
+Snapshot）、PlainCmdWorker（成功 stdout 优先、非零回退 stderr、意外异常回报失败）；
+reap 的 setParent 挂树验证。口径与既有一致：run() 同步直调、后端全 mock、线程不 start() |
+验证：本文件 14/14 → `tools/run_full_check.py` 1248+45=1293 例 0F/0E、1 已知 skip、
+pyflakes 0 全绿；已提交（新文件）| 需人工复核：无
+
+**轮次日志 [03:25] 方向D（注键哨兵保守版）** | 改 `conftest.py`：新增 user32.keybd_event /
+mouse_event 注入哨兵（先物化缓存属性再打桩，非 Windows 平台自动跳过）——测试误触即断言失败
+而非向真实前台窗口注入键鼠；SendInput 维持不拦（test_clip_paste 签名用例需读取真实
+argtypes，评估记录见 02:07 条），故为保守版。`tests/test_conftest_guards.py` +1 体检用例 |
+验证：guards 12/12 → `tools/run_full_check.py` 1249+45=1294 例 0F/0E、1 已知 skip、
+pyflakes 0 全绿；已提交（两文件轮前均干净）| 需人工复核：无
+
+**轮次日志 [03:38] 方向D（vault 容错分支补强）** | 扩展 `tests/test_vault.py` +7 用例：
+get_secrets_bulk「单条解密失败只降级该条」契约（逐条计数断言）、缺失 id/NULL 密文跳过、
+空 ids 空 map、get_secret/get_secrets_bulk 未知字段 ValueError、totp_code 非法 base32
+返回空串、update_account/update_site 空 patch no-op（updated_at 不写）| 验证：
+test_vault 55/55 → `tools/run_full_check.py` 1256+45=1301 例 0F/0E、1 已知 skip、
+pyflakes 0 全绿；已提交（该测试文件轮前干净）| 需人工复核：无
+
+**轮次日志 [03:50] 方向D（netcheck 中止与隧道分支）** | 扩展 `tests/test_netcheck.py` +3：
+run_all 的 should_stop 中止语义（首检查完成后中止 → 追加 diag_aborted SKIP 记录且经
+progress 回报）、chk_proxy 的 VPN/Clash 隧道在线降级 INFO + 不建议 proxy_off（复用
+TUNNEL_PAT 的护栏语义）与无隧道维持 WARN 的对照 | 验证：test_netcheck 全过 →
+`tools/run_full_check.py` 1259+45=1304 例 0F/0E、1 已知 skip、pyflakes 0 全绿；
+已提交（该测试文件轮前干净）| 需人工复核：无

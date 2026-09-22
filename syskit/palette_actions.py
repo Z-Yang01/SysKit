@@ -202,6 +202,12 @@ def build_actions(window) -> list:
         "keywords": ["show", "主窗口"],
         "callback": window.showNormal,
     })
+    if hasattr(window, "toggle_clip_paste"):
+        actions.append({
+            "id": "quick:clip_paste", "label": "剪贴板快捷粘贴面板", "hint": "剪贴板",
+            "keywords": ["clipboard", "粘贴", "paste", "历史"],
+            "callback": window.toggle_clip_paste,
+        })
 
     # 自定义命令（url / cmd）
     for i, cmd in enumerate(load_custom_commands()):

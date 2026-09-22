@@ -32,11 +32,16 @@ def _message_addr(message) -> int:
 
 
 class HotkeyFilter(QAbstractNativeEventFilter):
-    """在线程消息队列中拦截 WM_HOTKEY（与 RegisterHotKey(None,…) 配对）。"""
+    """在线程消息队列中拦截 WM_HOTKEY（与 RegisterHotKey(None,…) 配对）。
 
-    def __init__(self, on_trigger):
+    expected_ids 声明本过滤器负责的注册 id 集合——Qt 原生过滤器后装先调用，
+    多热键共存必须靠 wParam 判归属、不属己放行，否则后注册的会吞掉先注册的。
+    """
+
+    def __init__(self, on_trigger, expected_ids):
         super().__init__()
         self.on_trigger = on_trigger
+        self.expected_ids = tuple(expected_ids)
 
     def nativeEventFilter(self, event_type, message):
         try:
@@ -48,7 +53,7 @@ class HotkeyFilter(QAbstractNativeEventFilter):
                 addr = _message_addr(message)
                 if addr:
                     msg = wintypes.MSG.from_address(addr)
-                    if msg.message == WM_HOTKEY:
+                    if msg.message == WM_HOTKEY and msg.wParam in self.expected_ids:
                         self.on_trigger()
                         return True, 0
             except Exception:
@@ -59,35 +64,79 @@ class HotkeyFilter(QAbstractNativeEventFilter):
 _installed_filter = None      # 模块级持活：过滤器装在 QApplication 上，不能被 GC
 
 
-def setup_global_hotkey(window, hotkey_id: int = 1) -> bool:
-    """读取设置并注册全局热键（须在主线程调用）。成功返回 True。"""
-    global _installed_filter
-    text = settings.load().get("palette_hotkey", "Ctrl+Alt+K")
+def _bind_hotkey(text, hotkey_id: int, on_trigger):
+    """两个全局热键的共同流程：解析→注册→装过滤器。成功返回过滤器，失败 None。"""
     parsed = hotkey.parse_hotkey(text)
     if parsed is None:
-        LOGGER.warning("命令面板热键无法解析: {}", text)
-        return False
+        LOGGER.warning("全局热键无法解析: {}", text)
+        return None
     if not hotkey.register(parsed[0], parsed[1], hotkey_id=hotkey_id):
-        LOGGER.warning("全局热键 {} 注册失败（可能被占用），面板可经托盘菜单呼出", text)
+        LOGGER.warning("全局热键 {} 注册失败（可能被占用），功能可经托盘菜单呼出", text)
+        return None
+    filt = HotkeyFilter(on_trigger, expected_ids=(hotkey_id,))
+    QApplication.instance().installNativeEventFilter(filt)
+    return filt
+
+
+def _unbind_hotkey(filt, window, attr: str, hotkey_id: int):
+    """teardown 共同流程：反注册 + 卸载过滤器 + 清 window 属性。"""
+    hotkey.unregister(hotkey_id)
+    if filt is not None:
+        app = QApplication.instance()
+        if app is not None:
+            app.removeNativeEventFilter(filt)
+        setattr(window, attr, None)
+
+
+def setup_global_hotkey(window, hotkey_id: int = 1) -> bool:
+    """注册命令面板全局热键（须在主线程调用）。成功返回 True。"""
+    global _installed_filter
+    text = settings.load().get("palette_hotkey", "Ctrl+Alt+K")
+    filt = _bind_hotkey(text, hotkey_id, window.toggle_palette)
+    if filt is None:
         return False
-    _installed_filter = HotkeyFilter(window.toggle_palette)
-    QApplication.instance().installNativeEventFilter(_installed_filter)
-    window._hotkey_filter = _installed_filter
+    _installed_filter = filt
+    window._hotkey_filter = filt
     return True
 
 
 def teardown_global_hotkey(window, hotkey_id: int = 1):
     """退出/窗口销毁路径：反注册并卸载过滤器。"""
     global _installed_filter
-    hotkey.unregister(hotkey_id)
     filt = getattr(window, "_hotkey_filter", None)
-    if filt is not None:
-        app = QApplication.instance()
-        if app is not None:
-            app.removeNativeEventFilter(filt)
-        if _installed_filter is filt:
-            _installed_filter = None
-        window._hotkey_filter = None
+    _unbind_hotkey(filt, window, "_hotkey_filter", hotkey_id)
+    if _installed_filter is filt:
+        _installed_filter = None
+
+
+# ---------------- 快捷粘贴全局热键（第二个热键 ID） ----------------
+
+_installed_paste_filter = None
+
+
+def setup_paste_hotkey(window, hotkey_id: int = 2) -> bool:
+    """注册「剪贴板快捷粘贴面板」全局热键（设置键 clip_paste_hotkey）。
+
+    与命令面板同款机制；注册/解析失败静默降级（面板仍可经托盘菜单呼出）。
+    """
+    global _installed_paste_filter
+    text = str(settings.load().get("clip_paste_hotkey", "") or "").strip()
+    if not text:
+        return False                    # 空串 = 用户显式关闭该热键
+    filt = _bind_hotkey(text, hotkey_id, window.toggle_clip_paste)
+    if filt is None:
+        return False
+    _installed_paste_filter = filt
+    window._paste_hotkey_filter = filt
+    return True
+
+
+def teardown_paste_hotkey(window, hotkey_id: int = 2):
+    global _installed_paste_filter
+    filt = getattr(window, "_paste_hotkey_filter", None)
+    _unbind_hotkey(filt, window, "_paste_hotkey_filter", hotkey_id)
+    if _installed_paste_filter is filt:
+        _installed_paste_filter = None
 
 
 class CommandPalette(QDialog):
