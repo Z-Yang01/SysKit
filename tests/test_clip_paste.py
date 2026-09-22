@@ -7,6 +7,7 @@ import ctypes
 import sys
 import time
 from ctypes import wintypes
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QEvent, Qt
@@ -111,6 +112,90 @@ class TestPastePrimitives:
         assert paste_mod.focus_window(0x2222) is True
         assert ("attach", True) in calls and ("attach", False) in calls
         assert "top" in calls and "setfg" in calls
+
+    # ---- 以下为轮次16盲区补强（paste.py 72%→100%）：_user32 一律打桩，绝不真实注入 ----
+
+    def test_foreground_window_non_win32_zero(self, monkeypatch):
+        """非 Windows 平台：foreground_window 返回 0（调用方按「无前台」降级）。"""
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert paste_mod.foreground_window() == 0
+
+    def test_foreground_window_error_zero(self, monkeypatch):
+        """Win32 调用抛异常（如桌面会话分离）→ 0，不向上抛。"""
+        class _U32:
+            def GetForegroundWindow(self):
+                raise OSError("no desktop")
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        assert paste_mod.foreground_window() == 0
+
+    def test_focus_window_restores_minimized_shortcut(self, monkeypatch):
+        """最小化窗口先 ShowWindow(SW_RESTORE)；还原后已在前台 → 走短路 True
+        （不再 AttachThreadInput）。"""
+        calls = []
+
+        class _U32:
+            def IsWindow(self, h): return True
+            def IsIconic(self, h): return True
+            def ShowWindow(self, h, cmd):
+                calls.append(("show", h, cmd)); return True
+            def GetForegroundWindow(self): return 0x2222   # 还原后即前台
+
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        assert paste_mod.focus_window(0x2222) is True
+        assert calls == [("show", 0x2222, paste_mod._SW_RESTORE)]
+
+    def test_focus_window_failure_swallowed(self, monkeypatch):
+        """Win32 链路任意一步抛异常 → debug 留痕并返回 False，不抛穿调用方。"""
+        notes = []
+
+        class _U32:
+            def IsWindow(self, h):
+                raise OSError("gone")
+
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        monkeypatch.setattr(paste_mod, "LOGGER",
+                            SimpleNamespace(debug=lambda msg, *a, **kw: notes.append(msg)))
+        assert paste_mod.focus_window(0x3333) is False
+        assert len(notes) == 1 and "focus_window" in notes[0]
+
+    def test_send_ctrl_v_non_win32_false(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert paste_mod.send_ctrl_v() is False
+
+    def test_send_ctrl_v_injects_ctrl_v_sequence(self, monkeypatch):
+        """注入序列锁定为 Ctrl↓ V↓ V↑ Ctrl↑ 四事件；size 显式传 sizeof(INPUT)。"""
+        seen = {}
+
+        class _U32:
+            def SendInput(self, n, arr, size):
+                seen["n"], seen["arr"], seen["size"] = n, list(arr), size
+                return n
+
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        assert paste_mod.send_ctrl_v() is True
+        assert seen["n"] == 4
+        assert seen["size"] == ctypes.sizeof(paste_mod.INPUT)
+        ks = [(e.iu.ki.wVk, e.iu.ki.dwFlags) for e in seen["arr"]]
+        assert ks == [(0x11, 0), (0x56, 0), (0x56, paste_mod._KEY_UP),
+                      (0x11, paste_mod._KEY_UP)]      # Ctrl↓ V↓ V↑ Ctrl↑
+
+    def test_send_ctrl_v_partial_delivery_false(self, monkeypatch):
+        """SendInput 少送事件（如被 UIPI 拦截）→ False，调用方降级手动粘贴。"""
+        class _U32:
+            def SendInput(self, n, arr, size):
+                return n - 1
+
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        assert paste_mod.send_ctrl_v() is False
+
+    def test_send_ctrl_v_exception_false(self, monkeypatch):
+        """SendInput 抛异常 → False（debug 日志被吞），不抛穿调用方。"""
+        class _U32:
+            def SendInput(self, n, arr, size):
+                raise OSError("blocked")
+
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        assert paste_mod.send_ctrl_v() is False
 
 
 # ---------------- 回填抑制（clipboard.suppress_next） ----------------
