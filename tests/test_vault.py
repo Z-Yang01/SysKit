@@ -251,6 +251,13 @@ class TestTotp:
         assert vault.totp_code("") == ""
         assert vault.totp_code(None) == ""
 
+    def test_invalid_group_length_returns_empty(self):
+        """字母表合法但 base32 分组长度非法（1/3/6 字符）：b32decode 兜底返回空，
+        不得向 Qt 槽抛 binascii.Error（录入错误按「密钥无效」提示口径处理）。"""
+        assert vault.totp_code("A", at=59) == ""
+        assert vault.totp_code("ABC", at=59) == ""
+        assert vault.totp_code("ABCDEF", at=59) == ""
+
 
 # ---------------- VaultPage UI ----------------
 
