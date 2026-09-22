@@ -611,6 +611,41 @@ def test_dns_preset_no_adapter_available(monkeypatch, recorder):
     assert recorder.cmds == []
 
 
+def test_backup_dns_write_error_returns_empty_and_readonly(recorder, monkeypatch):
+    """_backup_dns 落盘失败（磁盘满/备份目录不可写）→ 返回 ""，绝不抛出。
+
+    dns_auto/dns_preset 的「备份失败保留原配置」契约（上面两例）mock 的是整个
+    _backup_dns；这里补真函数自己的异常路径：netsh 读取照常、_save_note 抛
+    OSError 时必须吞掉并返回 ""，且备份阶段只有 show 读命令、无写命令。
+    """
+    def _boom(name, content):
+        raise OSError("模拟磁盘满")
+
+    monkeypatch.setattr(repairs, "_save_note", _boom)
+    assert repairs._backup_dns("WLAN") == ""
+    assert recorder.cmds == [
+        ["netsh", "interface", "ipv4", "show", "dnsservers", "WLAN"],
+        ["netsh", "interface", "ipv6", "show", "dnsservers", "WLAN"],
+    ]
+
+
+def test_dns_preset_set_failure_reports_primary_and_secondary(recorder):
+    """设置阶段 v4 主/备用 DNS 写入失败 → 整体失败并聚合两段错误详情。
+
+    此前该分支无覆盖：主 DNS 失败但备用成功的组合会把备用错误吞掉，用户只看到
+    一半线索。v6 恢复（r3）成功与否不影响本分支的成败判定（ok = r1.ok and r2.ok）。
+    """
+    recorder.respond_sub("ipv4 set dnsservers", code=1, stderr="主DNS写入被拒")
+    recorder.respond_sub("add dnsservers", code=1, stderr="备用DNS写入被拒")
+    r = repairs.get_action("dns_preset").execute({"adapter": "WLAN", "preset": "阿里"})
+    assert r.success is False
+    assert "DNS 设置失败" in r.message
+    assert "主DNS写入被拒" in r.message
+    assert "备用DNS" in r.message and "备用DNS写入被拒" in r.message
+    # 备份已先行完成：原静态值仍可从备份文件找回
+    assert list(Path(config.BACKUP_DIR).rglob("dns_backup_*.txt"))
+
+
 def test_ncsi_restore_restores_stock_values_with_reg_export_backup(recorder, reg_spy, events):
     r = repairs.get_action("ncsi_restore").execute({})
     assert r.success is True
@@ -961,6 +996,37 @@ def test_mac_random_off_without_profile_fails_cleanly(monkeypatch, recorder, tmp
     r = repairs.get_action("mac_random_off").execute({})
     assert r.success is False
     assert "未指定 WiFi 配置文件" in r.message
+
+
+def test_mac_random_on_without_profile_fails_cleanly(recorder):
+    """mac_random_on 与 off 同语义：探测不到 SSID/配置文件 → 明确失败而非误改。
+
+    与 off 侧（上一例）各自独立覆盖：两条路径在 RepairAction 子类里是两份代码，
+    on 侧此前只有 happy-path（插入/本来就是开启）覆盖，err 短路分支是盲区。
+    """
+    r = repairs.get_action("mac_random_on").execute({})
+    assert r.success is False
+    assert "未指定 WiFi 配置文件" in r.message
+
+
+def test_scan_wlan_profiles_survives_unreadable_entries(monkeypatch, tmp_path):
+    """stat 失败的条目以墓碑 (-1, -1) 入哨兵、open 失败的条目跳过：
+    单条损坏/消失的 XML 不许炸掉扫描，也不许混进 profiles 表。"""
+    good = _write_profile_xml(tmp_path, name="GoodWiFi", randomization="true")
+    ghost_dir = tmp_path / "interfaces" / "ghost-guid"
+    ghost_dir.mkdir(parents=True)
+    ghost = str(ghost_dir / "0002.xml")                 # 不存在：stat 失败 → 墓碑
+    dirmask = tmp_path / "interfaces" / "dirmask-guid"
+    (dirmask / "0003.xml").mkdir(parents=True)          # 目录伪装 .xml：stat 成功、open 失败
+    import glob
+    real = glob.glob
+    monkeypatch.setattr(
+        glob, "glob",
+        lambda pat: [str(good), ghost, str(dirmask / "0003.xml")]
+        if "Wlansvc" in pat else real(pat))
+    profiles = repairs._scan_wlan_profiles(force=True)
+    assert set(profiles) == {"goodwifi"}                # 坏条目跳过、好条目照常解析
+    assert (ghost, -1, -1) in repairs._MAC_SCAN["stamp"]  # 墓碑入哨兵：防逐轮重扫
 
 
 def test_mac_random_state_reader(monkeypatch, tmp_path):
