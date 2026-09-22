@@ -8,7 +8,7 @@ Mock 边界（配合 conftest 哨兵双保险）：
 - probe_quick 在模块级替换；time.sleep 置空；monitor 的 stop/force 事件换成假 Event
   （is_set 按脚本返回、wait 只记录不阻塞），让 run() 循环确定性退出。
 
-已修复行为（原 PROGRESS 疑似 bug，现已改源码）：
+已修复行为（原迭代日志疑似 bug，现已改源码）：
 1. probe_quick 遍历全部 PROBE_204_URLS，首端点失败时继续尝试后续端点。
 2. Monitor 停止事件命名为 _stop_evt（不可覆盖 Thread._stop）。
 3. force_check 可中断等待（_force_check.wait）——置位立即醒来（1s 节流），

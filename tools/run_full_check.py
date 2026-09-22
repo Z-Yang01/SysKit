@@ -1,6 +1,6 @@
 """两段式全量验证工具：SEG1（除 ui_smoke）+ SEG2（ui_smoke）+ pyflakes 门，一条命令出结论。
 
-为什么两段（README/PROGRESS 既有约定）：test_ui_smoke.py 在 coverage/并发等高负载下
+为什么两段（README 既有约定）：test_ui_smoke.py 在 coverage/并发等高负载下
 可复现 PySide6 离屏原生 teardown 崩溃；且该崩溃发生在全部用例之后、会吞掉 pytest 的
 末尾汇总行——所以计数一律读 junitxml，不信 stdout 摘要。
 

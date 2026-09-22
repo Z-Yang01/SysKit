@@ -161,7 +161,7 @@ python tools\diff_preview.py 改前目录 改后目录   :: 两张截图集逐�
 - 测试工具版本钉在 `dev-requirements.txt`（pytest/pytest-qt/pytest-cov/pytest-timeout/pyflakes）；
   升级其中任何一个前先跑全量回归。
 - 新增测试请遵守「局部夹具写在自己测试文件」的约定（conftest 由主线程独占维护）。
-- 代码结构详解见 `summary/PROJECT_SUMMARY.md`；会话日志见 `PROGRESS.md`。
+- 代码结构详解见 `summary/PROJECT_SUMMARY.md`；历史会话日志/修复记录不再入库，查 git 历史即可。
 
 ## 常见问题
 

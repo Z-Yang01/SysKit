@@ -1,6 +1,6 @@
 """tools/diff_preview.py 的退出码契约测试。
 
-背景：PROGRESS 补充53 曾误记「diff_preview 整桌 ONLY-A 而退出码仍是 0」——
+背景：git 历史迭代日志 补充53 曾误记「diff_preview 整桌 ONLY-A 而退出码仍是 0」——
 实测当前实现（ONLY-A/ONLY-B/SIZE-DIFF 均 failed=True → 返回 1）是对的，
 本文件把契约钉死，防止未来改挂：全部一致=0；任一 DIFF/SIZE-DIFF/ONLY-A/ONLY-B=1。
 

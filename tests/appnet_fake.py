@@ -7,7 +7,7 @@
 这类语义一律测不到。这里让 add/set/delete 真的改一份内存规则表、
 `show rule` 与 PowerShell 读同一份表，测试就能验到端到端语义。
 
-**模拟的是已在本机核实过的真实行为**（PROGRESS 补充52/53）：
+**模拟的是已在本机核实过的真实行为**（git 历史迭代日志 补充52/53）：
 - `show rule name=不存在` → 退出码 0 + 中文「没有与指定标准相匹配的规则。」
 - `set / delete rule name=不存在` → 同样退出码 0 + 「没有匹配」（净效果是啥也没干）
 - `Get-NetFirewallRule -Name 'a','不存在'` → 输出正常但 powershell 退出码 1

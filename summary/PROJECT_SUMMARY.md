@@ -22,7 +22,7 @@
 **当前状态**（2026-09-12）：分支 `test/pytest-setup`，基线 **775 passed / 1 skipped**，
 全量回归全绿；本日连续交付 10 个 commit（剪贴板升级/密码库/命令面板/Hosts 编辑器/
 安装向导/便携模式/退出崩溃修复/中止按钮/热键即时生效/非法热键保护）。遗留见
-PROGRESS.md 各会话「遗留与下一步」（浏览器扩展自动填充 API 边界已留、TOTP 二维码导入、
+git 历史迭代日志（原 PROGRESS.md）各会话「遗留与下一步」（浏览器扩展自动填充 API 边界已留、TOTP 二维码导入、
 PySide6 升级验证退出崩溃）。
 
 ## 技术栈
@@ -118,7 +118,7 @@ block_system_calls 哨兵 / fake_cmd_result 工厂 + 会话级 QThread 排空兜
 **新增**：协作式取消（worker.cancel 标志 + 项间检查，QThread 不可安全强杀下的正确模型）、
 敏感数据三层防线（密文落盘 → 按需解密 → 剪贴板防记录）。
 
-**已知技术债**（详见 PROGRESS.md 各会话遗留）：浏览器扩展自动填充（vault.find_by_domain
+**已知技术债**（详见 git 历史迭代日志（原 PROGRESS.md）各会话遗留）：浏览器扩展自动填充（vault.find_by_domain
 API 边界已留）；TOTP 二维码导入；退出阶段偶发原生崩溃已定位 QThread 析构竞态并修复
 （quit_app 等待 + _release_worker），PySide6 升级验证待做；测试环境 PySide6 离屏偶发
 fail-fast（约 1/3、重跑即绿、位置漂移）仍属环境性问题。
@@ -133,7 +133,7 @@ fail-fast（约 1/3、重跑即绿、位置漂移）仍属环境性问题。
 ./installer/SysKit.iss（Inno Setup 向导脚本）
 ./conftest.py（测试安全网三层设施）
 ./launcher.py（PyInstaller 入口）
-./PROGRESS.md / README.md / WiFi无网络问题分析.md
+./README.md
 ./pytest.ini / requirements.txt / SysKit.spec
 ./syskit/（27 模块，见代码结构分析）
   ├─ 剪贴板域：clipboard.py / cliprules.py

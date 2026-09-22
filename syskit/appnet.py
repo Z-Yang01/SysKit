@@ -101,7 +101,7 @@ def cmd_show(program: str) -> list:
 def _ps_status_script(programs) -> str:
     """批量查规则在离线：先输出一行可用性哨兵，再每行输出 `<ASCII 规则名>=Enabled=Action`。
 
-    三处都是真机踩出来的（见 PROGRESS 补充52/53）：
+    三处都是真机踩出来的（见 git 历史迭代日志 补充52/53）：
     - `-Name` 里有一个名字不存在时，powershell.exe **即使输出正常也返回退出码 1**，
       所以脚本末尾必须 `exit 0`，否则一次「查 3 条、1 条被外部删了」就被当成查询失败；
     - 光看退出码/空输出也分不清「NetSecurity 模块不可用」和「规则都不在」，
@@ -305,7 +305,7 @@ def apply_state(program: str, blocked: bool) -> tuple:
 
 
 def _confirm(program: str, expect: str, ok_msg: str) -> tuple:
-    """写完回查实际状态再报成败——netsh 的退出码不可信（见 PROGRESS 补充53）。
+    """写完回查实际状态再报成败——netsh 的退出码不可信（见 git 历史迭代日志 补充53）。
 
     真机已证实 netsh `show rule` 查不到时也返回退出码 0 且回显本地化文案，同一套
     语义下 `set rule name=<已不存在的规则>` 完全可能"成功"返回 0（规则被外部删了、

@@ -7,7 +7,7 @@
                             TrafficStore.add 零增量早退不标脏；
 - syskit/telemetry.py     ：_top_procs 单进程信息读取异常不中断整轮采样
                             （153-156/167 为不可达防御代码：name 经 `or str(pid)` 恒真值、
-                            非重建轮 seen 恒等于缓存键集——记录于 PROGRESS，不强凑）。
+                            非重建轮 seen 恒等于缓存键集——记录于 git 历史，不强凑）。
 
 安全（叠加 conftest 哨兵）：全程无真实系统调用——netcheck.run_all 打桩、
 os.replace/unlink 打桩（持久化目录已被 conftest 重定向到 tmp）、特效类打桩。

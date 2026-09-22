@@ -6,7 +6,7 @@ Mock 边界（配合 conftest 哨兵双保险）：
 
 历史记录（已清算）：
 1. physical_up_adapters 的 docstring 曾与实现不一致（只看 Up+IPv4），已按实现
-   对齐 docstring（PROGRESS 疑似 bug #10 结案）。
+   对齐 docstring（迭代日志疑似 bug #10 结案）。
 """
 import json
 

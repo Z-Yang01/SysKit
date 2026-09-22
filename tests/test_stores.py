@@ -5,7 +5,7 @@ Mock 边界（配合 conftest 哨兵双保险）：
 - "今天"通过替换 syskit.stores 的 time 模块引用固定（不动全局 time），验证跨天与 62 天修剪；
 - 异常路径用损坏 JSON / 目录占位 / 目录阻塞 os.replace 构造，不发真实系统调用。
 
-已修复行为（原 PROGRESS 疑似 bug）：
+已修复行为（原迭代日志疑似 bug）：
 1. TrafficStore.__init__ 对 _load 返回值做 isinstance(dict) 校验，非 object JSON 置空。
 2. save_if_dirty 仅在 _save 成功时清 _dirty；写盘失败保留脏标记待下次重试。
 """

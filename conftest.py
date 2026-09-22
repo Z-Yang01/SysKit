@@ -136,7 +136,7 @@ def block_system_calls(monkeypatch):
 
     # 注键哨兵（保守版）：拦遗留注入 API keybd_event / mouse_event——测试里误触
     # 等于把键鼠事件注入真实前台窗口。SendInput 不在列：test_clip_paste 的签名
-    # 用例要读取真实 argtypes（评估记录见 PROGRESS 2026-09-22 02:07 条）。
+    # 用例要读取真实 argtypes（评估记录见 git 历史迭代日志 2026-09-22 02:07 条）。
     try:
         import ctypes
         user32 = ctypes.windll.user32
