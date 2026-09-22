@@ -375,15 +375,6 @@ class VaultPage(QWidget):
         if t.currentRow() < 0 and t.rowCount():
             t.selectRow(0)
 
-    def _pw_display(self, account_id: int) -> str:
-        """密码列文本（单行场景）：明文模式显示真实密码，否则 ****。"""
-        if not self._showing_pw:
-            return "****"
-        try:
-            return vault.get_secret(account_id, self.crypto, "password", touch=False) or "****"
-        except VaultLockedError:
-            return "****"
-
     def _pw_tooltip(self) -> str:
         if self._showing_pw:
             return "单击复制密码"
