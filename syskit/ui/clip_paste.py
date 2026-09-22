@@ -126,9 +126,6 @@ class ClipPastePanel(QDialog):
         else:
             self.popup(target_hwnd)
 
-    def reject(self):               # Esc 关闭：不粘贴，目标窗口内容不动
-        self.hide()
-
     def event(self, e):
         # 焦点离开即收起（Ditto/Win+V 同语义）：点选其他窗口后面板不再悬浮。
         # 用 WindowDeactivate 而非 changeEvent(ActivationChange)——后者激活/失活
@@ -233,9 +230,7 @@ class ClipPastePanel(QDialog):
 
     def _write_back(self, it: dict) -> bool:
         """条目内容写回系统剪贴板；文本类回填同时抑制监听器重复记录。"""
-        clip = QApplication.instance().clipboard() if QApplication.instance() else None
-        if clip is None:
-            return False
+        clip = QApplication.instance().clipboard()
         kind = it.get("kind", "text")
         text = it.get("text", "")
         if kind == "image":
