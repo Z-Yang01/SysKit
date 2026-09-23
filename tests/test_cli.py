@@ -127,20 +127,7 @@ class TestRepair:
         order = []
         acts = {}
 
-        def make(aid):
-            a = FakeAct(aid, result=RepairResult(True, f"done-{aid}"))
-            acts[aid] = a
-            return a
-
-        def get_action(fid):
-            return make(fid) if fid in (
-                "flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan"
-            ) else None
-
-        # execute 时记 id 顺序
-        for aid in ("flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan"):
-            pass
-
+        # execute 时记 id 顺序：首次取用动作时包一层记录桩
         def get_action2(fid):
             if fid not in acts:
                 if fid not in ("flush_dns", "renew_dhcp", "start_nlasvc", "restart_wlan"):
