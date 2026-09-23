@@ -222,8 +222,13 @@ class TestRepair:
 
 class TestMainArgparse:
     def test_no_cmd_prints_help(self, monkeypatch, capsys):
+        """无子命令 = 打印帮助并返回 0（轮次19 审计：原用例只锁 rc，
+        未校验 print_help 真的打到 stdout——main() 末尾 p.print_help() 回归即漏）。"""
         rc = cli.main([])
         assert rc == 0
+        out = capsys.readouterr().out
+        assert "usage: syskit" in out                 # argparse 帮助打到 stdout
+        assert "diagnose" in out and "repair" in out  # 子命令一览随帮助可见
 
     def test_diagnose_routes_to_cmd(self, monkeypatch, admin_on):
         seen = {}
