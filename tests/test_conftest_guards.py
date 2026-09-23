@@ -10,6 +10,7 @@ import os
 import socket
 import subprocess
 import urllib.request
+import webbrowser
 
 import pytest
 
@@ -69,6 +70,8 @@ def test_socket_egress_is_blocked():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         _blocked(s.connect, "socket.socket.connect", ("1.2.3.4", 53))
+        # connect_ex 失败时返回错误码而非抛异常，真实调用同样算出网，必须单独自检
+        _blocked(s.connect_ex, "socket.socket.connect_ex", ("1.2.3.4", 53))
         _blocked(s.sendto, "socket.socket.sendto", (b"x", ("1.2.3.4", 53)))
     finally:
         s.close()
@@ -84,6 +87,12 @@ def test_url_paths_that_bypass_urlopen_are_blocked_too():
     _blocked(urllib.request.build_opener().open, "urllib.request.OpenerDirector.open",
              "http://127.0.0.1/x")
     _blocked(urllib.request.urlopen, "urllib.request.urlopen", "http://127.0.0.1/x")
+
+
+def test_webbrowser_open_is_blocked():
+    """拉起浏览器同样是真实副作用：conftest 单独装了 webbrowser.open 哨兵，
+    此处漏检的话，它被重构删掉后测试会静默弹真浏览器。"""
+    _blocked(webbrowser.open, "webbrowser.open", "http://127.0.0.1/x")
 
 
 def test_sound_playback_is_blocked():
