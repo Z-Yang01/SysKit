@@ -421,7 +421,9 @@ class TestModeSteps:
         monkeypatch.setattr("psutil.Process", lambda pid: RenamedProc(pid), raising=False)
         r2 = m.close_background([{"pid": 123, "name": "Spotify.exe"}])
         assert killed == [123]                    # 未新增击杀
-        assert any("已复用" in x for x in r2["detail"].split("；")) or "失败" in r2["detail"]
+        assert r2["ok"] is False                  # 复用防护跳过后不得报成功
+        # modes.py 只把失败计数写进 detail（"失败 1"），跳过原因仅存在于内部 failed 列表
+        assert "失败 1" in r2["detail"]
 
 
     def test_run_office_mode_order(self, monkeypatch):
