@@ -50,9 +50,17 @@ class TestHotkeyParse:
 @pytest.mark.skipif(sys.platform != "win32", reason="RegisterHotKey 仅限 Windows")
 class TestHotkeyRegister:
     def test_register_unregister_roundtrip(self):
-        # F13 无修饰，几乎不可能与其他程序冲突
-        assert hotkey.register(0, 0x7C, hotkey_id=0x4D2) in (True, False)
-        hotkey.unregister(0x4D2)                             # 无论如何清理
+        # F13 无修饰，几乎不可能与其他程序冲突。
+        # 原断言 `in (True, False)` 恒真且 unregister 返回值被忽略——注册是否
+        # 真实生效从未被验证；现用系统级互斥做有效性证据。
+        ok = hotkey.register(0, 0x7C, hotkey_id=0x4D2)
+        if ok:
+            # 注册真实生效的硬证据：同组合换 id 再注册必须被系统拒绝
+            #（RegisterHotKey 对同线程/跨进程的同组合互斥）
+            assert hotkey.register(0, 0x7C, hotkey_id=0x4D3) is False
+            assert hotkey.unregister(0x4D2) is True     # 成功注册的解绑必须成功
+        else:
+            hotkey.unregister(0x4D2)                     # 罕见被他程序占用：幂等清理
 
 
 # ---------------- 模糊匹配 ----------------
@@ -83,10 +91,16 @@ class TestMatchAndRank:
                 {"id": "3", "label": "深度诊断（全部检查）", "keywords": []}]
 
     def test_keywords_half_weight(self):
-        s_label = palette_actions.match_action("立即快速诊断", self._acts()[0])
-        s_kw = palette_actions.match_action("体检", self._acts()[0])
+        act = self._acts()[0]
+        s_label = palette_actions.match_action("立即快速诊断", act)
+        s_kw = palette_actions.match_action("体检", act)
         assert s_label > 0 and s_kw > 0
-        assert palette_actions.match_action("zzz", self._acts()[0]) is None
+        # 半权性质钉死（原断言只验 >0，0.5 因子从未被锁定）：
+        # label 命中按 fuzzy_score 原分计入；keywords 命中按 fuzzy_score×0.5 计入。
+        # "体检" 不在 label 中、"立即快速诊断" 不在 keywords 中——两条路径互不干扰。
+        assert s_label == palette_actions.fuzzy_score("立即快速诊断", "立即快速诊断")
+        assert s_kw == palette_actions.fuzzy_score("体检", "体检") * 0.5
+        assert palette_actions.match_action("zzz", act) is None
 
     def test_rank_orders_and_filters(self):
         ranked = palette_actions.rank_actions("诊断", self._acts())
