@@ -18,17 +18,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARGETS = ("syskit", "tools", "conftest.py")
 
 
-def _py_files():
-    for target in TARGETS:
-        path = os.path.join(ROOT, target)
-        if os.path.isfile(path):
-            yield path
-            continue
-        for dirpath, dirnames, names in os.walk(path):
-            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
-            for name in sorted(names):
-                if name.endswith(".py"):
-                    yield os.path.join(dirpath, name)
+def _py_files(target):
+    path = os.path.join(ROOT, target)
+    if os.path.isfile(path):
+        yield path
+        return
+    for dirpath, dirnames, names in os.walk(path):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for name in sorted(names):
+            if name.endswith(".py"):
+                yield os.path.join(dirpath, name)
 
 
 class _Collector:
@@ -49,7 +48,16 @@ class _Collector:
 
 
 def test_pyflakes_gate_is_clean():
-    files = sorted(_py_files())
+    # 逐目标下限：只看总数时，syskit 一家（约 50 个文件）就足以撑过总量下限，
+    # 某个目标目录被改名/移动而静默退出扫描范围将无人察觉，故各自设防。
+    per_target = {t: sorted(_py_files(t)) for t in TARGETS}
+    assert len(per_target["conftest.py"]) == 1, \
+        f"conftest.py 未进入扫描（{len(per_target['conftest.py'])} 个）"
+    assert len(per_target["syskit"]) >= 40, \
+        f"syskit 扫描文件数异常偏少（{len(per_target['syskit'])}），路径配置可能失效"
+    assert len(per_target["tools"]) >= 3, \
+        f"tools 扫描文件数异常偏少（{len(per_target['tools'])}），路径配置可能失效"
+    files = sorted(f for fs in per_target.values() for f in fs)
     assert len(files) > 50, f"扫描文件数异常偏少（{len(files)}），路径配置可能失效"
     rep = _Collector()
     for f in files:
