@@ -710,17 +710,22 @@ class ClipboardTab(QWidget):
             text = self._clip.text() or ""
         except Exception:
             return
-        if text == self._last:
+        try:
+            mime = self._clip.mimeData()
+        except Exception:
+            mime = None
+        # 图片/文件复制通常不带 CF_UNICODETEXT：text 恒为 ""，而 _last 启动初值
+        # 与图片落库后（_after_add）也都是 ""——旧版 text == self._last 的文本
+        # 去重把截图/文件复制整段吞掉（图片条目根本进不了历史，真机症状
+        # 「剪贴板不显示图片」；73d02c1 引入图片捕获起即如此）。带非文本载荷
+        # 时绕过该闸；同一内容重复复制由 hist.add 的 md5/载荷去重兜底不重记。
+        if text == self._last and not self._has_nontext_payload(mime):
             return
         # 前台进程黑名单（密码管理器等来源不记录）；当前内容吞掉防止恢复后补录
         if not clipboard_mod.should_record_now():
             self._last = text
             return
         added = False
-        try:
-            mime = self._clip.mimeData()
-        except Exception:
-            mime = None
         if mime is not None:
             try:
                 if mime.hasUrls():
@@ -747,6 +752,20 @@ class ClipboardTab(QWidget):
             added = self.hist.add(text)
         if added:
             self._after_add()
+
+    @staticmethod
+    def _has_nontext_payload(mime) -> bool:
+        """剪贴板是否携带文本以外的载荷（文件列表/图片位图）。
+
+        这些复制的 text() 往往恒为 ""，不能参与基于文本的「内容未变」去重；
+        mime 不可用/探测异常一律按纯文本处理（去重闸保持旧语义）。
+        """
+        if mime is None:
+            return False
+        try:
+            return bool(mime.hasUrls() or mime.hasImage())
+        except Exception:
+            return False
 
     def _after_add(self):
         self._last = self._clip.text() or ""
