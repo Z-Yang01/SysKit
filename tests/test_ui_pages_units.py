@@ -203,14 +203,37 @@ def test_mw_guards_helpers_proxy_vpn_and_window_state(main_win, monkeypatch):
              {"level": "weird", "name": "未知级别", "detail": "?"}]
     monkeypatch.setattr(vpn, "vpn_checklist", lambda snap=None: steps)
     monkeypatch.setattr(vpn, "summarize", lambda checklist: "总体：注意")
-    monkeypatch.setattr(QMessageBox, "exec",
-                        lambda self, *a, **k: QMessageBox.StandardButton.Ok)
+    vpn_boxes = []
+
+    def _cap_exec(self, *a, **k):
+        vpn_boxes.append((self.windowTitle(), self.text(),
+                          self.informativeText(), self.detailedText()))
+        return QMessageBox.StandardButton.Ok
+    monkeypatch.setattr(QMessageBox, "exec", _cap_exec)
     win._vpn_checklist()
+    assert len(vpn_boxes) == 1                    # 成功路径弹窗内容逐字钉死（原零断言）
+    vp_title, vp_head, vp_info, vp_detail = vpn_boxes[0]
+    assert vp_title == "VPN 排查（只读）" and vp_head == "总体：注意"
+    assert vp_info == ("[√] 系统代理\n    未启用\n\n"
+                       "[!] 隧道网卡\n    检测到 TUN\n\n"
+                       "[×] 持久路由\n    存在 hijack 路由\n\n"
+                       "[·] 默认出口\n    192.168.1.1\n\n"
+                       "[?] 未知级别\n    ?")     # 未知级别回落 ? 标记
+    assert "不修改任何系统设置" in vp_detail
 
     def _vpn_boom(snap=None):
         raise RuntimeError("vpn 排查炸了")
     monkeypatch.setattr(vpn, "vpn_checklist", _vpn_boom)
+    vpn_warns = []
+
+    def _cap_warn(*a, **k):
+        vpn_warns.append(a[2] if len(a) > 2 else "")
+        return QMessageBox.StandardButton.Ok
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(_cap_warn))
     win._vpn_checklist()
+    assert len(vpn_warns) == 1                    # 异常路径恰好一条 warning
+    assert "VPN 排查失败" in vpn_warns[0]
+    assert "vpn 排查炸了" in vpn_warns[0]
 
     # ---- 窗口状态记忆（158-159 / 163-169）
     # 回归：此前 bytes(QByteArray).toBase64() 误用使保存静默失败、状态从不落盘（已修复）。
@@ -1055,7 +1078,12 @@ def test_wifi_scan_failed_and_channel_chart_skip(qtbot):
          "channel": 0, "radio": "", "auth": "", "band": "?"}]
     page._aps = aps
     page._update_channel_charts()
-    assert "推荐" in page.lbl_advice.text()
+    # 恒真钉死：初始文案「扫描后显示推荐信道。」本就含"推荐"，含"推荐"零证伪力；
+    # 必须钉死完整推荐串——信道 0 的 NoCh 不得入桶（best24=1 计 0 个 AP，5G 仅 36）
+    assert page.lbl_advice.text() == \
+        "推荐：2.4G 用信道 1（当前 0 个 AP）；5G 用信道 36（当前 1 个 AP）"
+    assert page.chart_24._bars == [(6, 1, "@accent")]
+    assert page.chart_5g._bars == [(36, 1, "@accent")]
 
 
 def test_wifi_gen_qr_empty_failure_and_save(qtbot, monkeypatch, tmp_path):

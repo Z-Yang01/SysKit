@@ -310,6 +310,7 @@ def test_startup_folder_disable_enable_real_tmp(tmp_path, qtbot, monkeypatch):
     assert target.is_file() and not (startup / "tool.lnk.disabled").exists()
     tab._disable_one("启动文件夹", "ghost.lnk")   # 目标不存在 → no-op
     tab._enable_one("启动文件夹", "ghost.lnk")
+    assert [p.name for p in sorted(startup.iterdir())] == ["tool.lnk"]   # no-op 零副作用
 
 
 # ---------------- BatteryTab ----------------
@@ -655,7 +656,8 @@ def test_clipboard_watch_change_and_guards(qtbot, monkeypatch):
             raise RuntimeError("clipboard gone")
 
     tab._clip = Boom()
-    tab._on_clip_change()                        # 读取异常 → 安全返回
+    tab._on_clip_change()                        # 读取异常 → 安全返回，历史不得有半条记录
+    assert tab.hist.texts() == ["new-after-resume"]
 
 
 def test_clipboard_copy_delete_clear(qtbot, monkeypatch, msgbox_recorder):

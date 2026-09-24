@@ -876,8 +876,13 @@ def test_perf_tab_update_tick_charts_and_proc_table(qtbot):
     assert list(tab.chart_disk._series[0][2])[-1] == 1024
     assert list(tab.chart_disk._series[1][2])[-1] == 2048
 
-    tab.update_tick({})                                 # 无任何键 → 图表不动
+    sys_before = [list(s[2]) for s in tab.chart_sys._series]
+    disk_before = [list(s[2]) for s in tab.chart_disk._series]
+    tab.update_tick({})                                 # 无任何键 → 图表不动（原仅注释，零断言）
     tab.update_tick({"top_procs": None})                # 显式 None → 早退
+    assert [list(s[2]) for s in tab.chart_sys._series] == sys_before
+    assert [list(s[2]) for s in tab.chart_disk._series] == disk_before
+    assert tab.tbl.rowCount() == 0
 
     tab.update_tick({"top_procs": [
         {"pid": 7, "name": "busy.exe", "cpu": 9.5, "mem": 2048},
@@ -886,6 +891,10 @@ def test_perf_tab_update_tick_charts_and_proc_table(qtbot):
     assert tab.tbl.item(0, 1).text() == "busy.exe"
     assert tab.tbl.item(0, 3).text() == "2.0KB"
     assert tab.tbl.item(1, 0).text() == "3"
+
+    tab.update_tick({"top_procs": None})                # None 不得清空既有表格
+    assert tab.tbl.rowCount() == 2
+    assert tab.tbl.item(0, 1).text() == "busy.exe"
 
 
 def test_battery_tab_full_data_green_health(qtbot, monkeypatch):

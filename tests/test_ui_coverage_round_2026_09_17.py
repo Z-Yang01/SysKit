@@ -188,13 +188,18 @@ def test_mw_palette_toggle_and_run_command(main_win, qtbot, monkeypatch, msgbox_
     from syskit import proc
     win.run_palette_command("echo hi")         # 确认取消 → 不执行
     assert opened == ["https://example.com/qr"]
+    assert win._cmd_worker is None             # 取消路径不得启动后台执行
 
+    bubbles = []
+    monkeypatch.setattr(win.tray, "notify",
+                        lambda title, body: bubbles.append((title, body)))
     ret["v"] = QMessageBox.StandardButton.Yes
     monkeypatch.setattr(proc, "run",
                         lambda cmd, timeout=30: proc.CmdResult(code=0, stdout="  ok-out ", stderr=""))
-    win.run_palette_command("echo hi")         # 执行成功 → 托盘气泡「完成: …」（后台线程）
+    win.run_palette_command("echo hi")         # 执行成功 → 托盘气泡「完成: ok-out」
     qtbot.wait_until(lambda: win._cmd_worker is None)
     assert questions and "echo hi" in questions[-1]  # question 弹窗内容含命令
+    assert bubbles == [("命令面板", "完成: ok-out")]   # stdout 剥空白后进气泡（原零断言）
 
     def _boom_run(cmd, timeout=30):
         raise RuntimeError("no proc")
@@ -202,6 +207,7 @@ def test_mw_palette_toggle_and_run_command(main_win, qtbot, monkeypatch, msgbox_
     monkeypatch.setattr(proc, "run", _boom_run)
     win.run_palette_command("echo hi")         # 执行异常 → 失败气泡，不抛
     qtbot.wait_until(lambda: win._cmd_worker is None)
+    assert bubbles[-1] == ("命令面板", "失败: no proc")
 
 
 def test_mw_diag_aborted_and_save_window_state_error(main_win, monkeypatch):
