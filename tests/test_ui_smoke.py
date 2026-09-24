@@ -481,10 +481,16 @@ def test_wifi_page_scan_fills_table_and_channel_advice(qtbot, monkeypatch):
     assert page.tbl_aps.rowCount() == 2
     assert page.tbl_aps.item(0, 0).text() == "HomeWiFi"   # 按信号降序
     assert "共发现 2" in page.lbl_scan.text()
-    assert "推荐" in page.lbl_advice.text()               # 信道推荐已生成
+    advice = page.lbl_advice.text()                   # 信道推荐已生成——初始提示
+    assert "扫描后显示" not in advice                  # 「扫描后显示推荐信道。」也含"推荐"，必须排除
+    assert "2.4G 用信道 1（当前 0 个 AP）" in advice   # 2.4G 桶仅 ch6 一个 AP → 最优为空闲的信道 1
+    assert "5G 用信道 36（当前 1 个 AP）" in advice    # ch36 按 band 归入 5G 桶
     assert page.cmb_share.count() == 1
+    page.chk_auto.setChecked(True)                    # 页面可见时勾选自动刷新 → 定时器应启动
+    assert page._scan_timer.isActive()                # （未开启自动刷新时"隐藏后停止"断言恒真，无鉴别力）
     page.hide()                                       # 隐藏时应停掉自动扫描
     assert not page._scan_timer.isActive()
+    assert page._resume_auto is True                  # 重显恢复自动刷新的哨兵已置位
 
 
 def test_wifi_page_generate_qr(qtbot, monkeypatch):
@@ -500,6 +506,7 @@ def test_wifi_page_generate_qr(qtbot, monkeypatch):
                      timeout=10000)
     pix = page.lbl_qr.pixmap()
     assert pix is not None and not pix.isNull()
+    assert page.lbl_qr.toolTip() == "WIFI:T:WPA;S:HomeWiFi;P:s3cret;;"   # 载荷钉死：WPA2-PSK→WPA、明文密码入库
 
 
 def test_wifi_page_password_table_fill(qtbot):
@@ -663,7 +670,10 @@ def test_lan_tab_done_and_scan_worker(qtbot, monkeypatch):
     w.done.connect(out.append)
     w.run()
     assert out and out[0], "扫描 worker 应返回非空设备列表"
-    assert out[0][0][0].startswith("192.168.1.")
+    # /24 网段派生自 192.168.1.5：hosts() 应扫满 254 个地址（排除网络/广播地址）
+    assert len(out[0]) == 254
+    assert out[0][0] == ("192.168.1.1", "?", "3")     # 按数值 IP 升序；arp 假输出为空 → MAC 占位"?"；延迟取整
+    assert out[0][-1] == ("192.168.1.254", "?", "3")
 
 
 def test_dns_subnet_tab_smoke(qtbot, monkeypatch):
@@ -776,6 +786,9 @@ def test_port_tab_refresh_filter_and_worker(qtbot, monkeypatch):
     w.done.connect(out.append)
     w.run()
     assert out and out[0][0]["name"] == "p.exe" and out[0][0]["proto"] == "TCP"
+    row0 = out[0][0]
+    assert row0["laddr"] == "127.0.0.1:80" and row0["raddr"] == "-"   # 地址拼接 / 无远程占位
+    assert row0["status"] == "LISTEN" and row0["pid"] == 99
 
 
 # ---------------- system_page.py ----------------
@@ -793,6 +806,8 @@ def test_system_page_tabs_and_perf_tick(qtbot):
     assert page.perf.tbl.rowCount() == 1
     assert page.perf.tbl.item(0, 1).text() == "a.exe"
     assert page.perf.tbl.item(0, 0).text() == "7"
+    assert page.perf.tbl.item(0, 2).text() == "12.5"   # CPU 一位小数
+    assert page.perf.tbl.item(0, 3).text() == "4.0KB"  # 内存走 human_bytes
 
 
 def test_battery_tab_both_branches(qtbot, monkeypatch):
@@ -859,6 +874,8 @@ def test_app_icon_multi_size(qtbot):
     assert not icon.isNull()
     for size in (16, 32, 256):
         assert icon.pixmap(size).width() == size
+    # pixmap() 对不足尺寸会放大兜底：多尺寸必须以 availableSizes 真实验证已注册
+    assert {16, 32, 256} <= {s.width() for s in icon.availableSizes()}
 
 
 def test_tray_host_state_rate_notify_and_menu(qtbot):
