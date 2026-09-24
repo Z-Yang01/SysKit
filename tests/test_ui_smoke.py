@@ -1064,16 +1064,38 @@ def main_win(make_main_window):
     return make_main_window()
 
 
-def test_main_window_constructs_and_diag_fills_ui(main_win):
+def test_main_window_constructs_and_diag_fills_ui(make_main_window, monkeypatch):
     from syskit import config
-    win = main_win
+    from syskit import netcheck
+    from syskit.netcheck import CheckResult
+    from syskit.ui.tray import TrayHost
+    # 托盘 set_state 间谍：装在窗口构造前才能捕到诊断完成那一次派发。
+    # 原断言 `tray._state in (5 个状态)` 恒真——"offline" 是 TrayHost 初始值，
+    # 其余 4 个恰是 set_state 全部可能入参，任何实现都无法使它失败。
+    calls = []
+    _orig_set_state = TrayHost.set_state
+
+    def _spy(self, state, message=""):
+        calls.append((state, message))
+        _orig_set_state(self, state, message)     # 透传：托盘保持可用（夹具 teardown 依赖）
+
+    monkeypatch.setattr(TrayHost, "set_state", _spy)
+    win = make_main_window()
     assert config.DISPLAY_NAME in win.windowTitle()      # 标题可附带版本号
     assert config.VERSION in win.windowTitle()
     assert not win.windowIcon().isNull()                 # 标题栏/任务栏图标已接线
     assert win.stack.count() == 10                # 概览/监控/WiFi/诊断/修复/工具箱/系统/密码库/设置/日志
     assert win.nav.count() == 13                  # 10 个页面项 + 3 个分组标题
-    # 构造时的静默快速诊断已回填 UI
-    assert win.lbl_verdict.text() != "尚未诊断"
+    # 构造时的静默快速诊断已回填 UI。夹具假结果（real_conn=pass、无 ncsi_probe）
+    # 经 netcheck.verdict 必得 ncsi_false_alarm——lbl_verdict 只在 _diag_done 被
+    # 赋值且该槽在夹具 wait_until 判真前已整体执行完，文本确定性，精确钉死
+    # （原断言 != "尚未诊断" 连「诊断进行中…」都放行）
+    _base, verdict_text = netcheck.verdict([
+        CheckResult("real_conn", "真实连通性探测", "pass", "204探测:OK"),
+        CheckResult("nlasvc", "NlaSvc 服务", "warn", "手动启动且无触发器",
+                    fix_ids=["fix_nlasvc"]),
+    ])
+    assert win.lbl_verdict.text() == verdict_text
     assert "204探测:OK" in win.lbl_probe.text()
     assert win.pb_diag.isHidden()
     fix_titles = [win.fix_btn_row.itemAt(i).widget().text()
@@ -1081,7 +1103,9 @@ def test_main_window_constructs_and_diag_fills_ui(main_win):
                   if win.fix_btn_row.itemAt(i).widget()]
     assert any("NlaSvc" in t for t in fix_titles)         # warn 项生成建议修复按钮
     assert win.tbl_actions.rowCount() == len(repairs_actions())
-    assert win.tray._state in ("ok", "no_net", "ncsi_false", "offline", "no_internet")
+    # TRAY_STATE["ncsi_false_alarm"] == "ncsi_false"：诊断结论必须同步到托盘。
+    # 监控线程的真实状态可能异步入参，故断言「诊断那次派发出现过」而非末值。
+    assert ("ncsi_false", "") in calls
 
 
 def repairs_actions():
@@ -1169,13 +1193,36 @@ def test_quit_app_waits_page_workers(make_main_window, qtbot, monkeypatch):
 
 
 def test_release_worker_waits_before_drop(make_main_window):
-    """_release_worker：复位前 wait，线程 emit 后的收尾不再有 GC 析构竞态。"""
+    """_release_worker：复位前 wait，线程 emit 后的收尾不再有 GC 析构竞态。
+
+    原版在夹具保证 _snap_worker 已为 None 的窗口上调它：getattr 拿到 None、
+    wait 分支被跳过、`assert is None` 与 `if w is not None` 全部恒真——零证伪力。
+    现改为占位一个真实运行的 QThread，验证复位确实发生在 run 完整结束之后。
+    """
+    from PySide6.QtCore import QThread, Signal
+
+    class _Slow(QThread):
+        done = Signal()
+
+        def __init__(self):
+            super().__init__()
+            self._finished_run = False
+
+        def run(self):
+            import time as _t
+            _t.sleep(0.3)               # 模拟 emit 后仍需等待的收尾窗口
+            self._finished_run = True
+            self.done.emit()
+
     win = make_main_window()
-    w = win._snap_worker
-    win._release_worker("_snap_worker")
-    assert win._snap_worker is None
-    if w is not None:
-        assert not w.isRunning()
+    from syskit.ui.workers import reap
+    slow = reap(_Slow(), win)           # 挂宿主对象树，与真实 worker 同生命周期
+    win._snap_worker = slow             # 占住槽位：_release_worker 只认该属性
+    slow.start()
+    win._release_worker("_snap_worker") # 必须先 wait(3000) 到线程结束再复位
+    assert slow._finished_run           # wait 真的等到了 run 完整结束（不等待则此刻必为 False）
+    assert win._snap_worker is None     # 复位发生在等待之后
+    assert not slow.isRunning()
 
 
 def test_main_window_monitor_status_and_telemetry(main_win):
@@ -1306,3 +1353,4 @@ def test_repair_done_refreshes_proxy_label(monkeypatch):
     assert obj.mac_checked == 1
     assert obj.busy and obj.busy[-1] is False
     assert obj.diag_calls and obj.diag_calls[0].get("quick") is True
+    assert obj.diag_calls[0].get("silent") is True   # 静默重诊：不得弹忙碌态/切页/展示进度
