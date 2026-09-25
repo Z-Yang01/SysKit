@@ -483,8 +483,8 @@ def test_wifi_page_scan_fills_table_and_channel_advice(qtbot, monkeypatch):
     assert "共发现 2" in page.lbl_scan.text()
     advice = page.lbl_advice.text()                   # 信道推荐已生成——初始提示
     assert "扫描后显示" not in advice                  # 「扫描后显示推荐信道。」也含"推荐"，必须排除
-    assert "2.4G 用信道 1（当前 0 个 AP）" in advice   # 2.4G 桶仅 ch6 一个 AP → 最优为空闲的信道 1
-    assert "5G 用信道 36（当前 1 个 AP）" in advice    # ch36 按 band 归入 5G 桶
+    assert "2.4G 用信道 1（同频 0 / 邻频 0 个 AP）" in advice   # ch6 距 1/11 均 5 无重叠 → 1/11 并列空闲，取 1
+    assert "5G 用信道 149（80M 块内 0 个 AP）" in advice        # 36 块内有 AP → 加权推荐全空的非 DFS 锚点 149
     assert page.cmb_share.count() == 1
     page.chk_auto.setChecked(True)                    # 页面可见时勾选自动刷新 → 定时器应启动
     assert page._scan_timer.isActive()                # （未开启自动刷新时"隐藏后停止"断言恒真，无鉴别力）

@@ -1079,9 +1079,10 @@ def test_wifi_scan_failed_and_channel_chart_skip(qtbot):
     page._aps = aps
     page._update_channel_charts()
     # 恒真钉死：初始文案「扫描后显示推荐信道。」本就含"推荐"，含"推荐"零证伪力；
-    # 必须钉死完整推荐串——信道 0 的 NoCh 不得入桶（best24=1 计 0 个 AP，5G 仅 36）
+    # 必须钉死完整推荐串——信道 0 的 NoCh 不得入桶（best24=1 同频/邻频 0；
+    # 5G 按 80M 块评分：36 块内 1 个 AP → 推荐全空非 DFS 锚点 149）
     assert page.lbl_advice.text() == \
-        "推荐：2.4G 用信道 1（当前 0 个 AP）；5G 用信道 36（当前 1 个 AP）"
+        "推荐：2.4G 用信道 1（同频 0 / 邻频 0 个 AP）；5G 用信道 149（80M 块内 0 个 AP）"
     assert page.chart_24._bars == [(6, 1, "@accent")]
     assert page.chart_5g._bars == [(36, 1, "@accent")]
 

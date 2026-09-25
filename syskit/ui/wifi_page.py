@@ -14,7 +14,7 @@ from .charts import BarChart
 from . import theme
 from .theme import make_table
 from .workers import reap
-from .. import admin, proc
+from .. import admin, proc, wifi
 
 
 def _signal_color(pct: int) -> str:
@@ -274,14 +274,15 @@ class WifiPage(QWidget):
                     for ch in channels if ch in counter]
         self.chart_24.set_bars(bars(c24, list(range(1, 14))))
         self.chart_5g.set_bars(bars(c5, sorted(c5)))
-        # 推荐信道
-        best24 = min((c for c in (1, 6, 11)), key=lambda c: len(c24.get(c, [])))
-        n24 = len(c24.get(best24, []))
-        if c5:
-            best5 = min(c5, key=lambda c: len(c5[c]))
-            advice = f"推荐：2.4G 用信道 {best24}（当前 {n24} 个 AP）；5G 用信道 {best5}（当前 {len(c5[best5])} 个 AP）"
+        # 推荐信道：干扰加权评分（syskit/wifi.py）——2.4G 计邻频重叠+信号强弱，
+        # 5G 按 80MHz 块挑最空锚点、避开 DFS；不再只数同频 AP
+        rec = wifi.recommend_channels(self._aps)
+        b24 = (f"2.4G 用信道 {rec['24g']}"
+               f"（同频 {rec['24g_same']} / 邻频 {rec['24g_adj']} 个 AP）")
+        if rec["5g"] is not None:
+            advice = f"推荐：{b24}；5G 用信道 {rec['5g']}（80M 块内 {rec['5g_block']} 个 AP）"
         else:
-            advice = f"推荐：2.4G 用信道 {best24}（当前 {n24} 个 AP）；未发现 5G 网络"
+            advice = f"推荐：{b24}；未发现 5G 网络"
         self.lbl_advice.setText(advice)
 
     # ---- 二维码分享 ----
