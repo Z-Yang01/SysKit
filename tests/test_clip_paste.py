@@ -517,6 +517,23 @@ class TestClipPastePanel:
         qtbot.wait(300)
         assert calls == []
 
+    def test_item_activated_uses_bound_entry_identity(self, qtbot, monkeypatch):
+        """itemActivated / itemDoubleClicked（含过滤态）必须按行控件绑定的
+        条目身份执行（UserRole 身份回传），不得按可见序号取条目——过滤后
+        行号与 _rows 不对齐，按序号会粘错行。"""
+        _seed_history("alpha", "beta")
+        p, _win = _panel(qtbot)
+        calls = []
+        monkeypatch.setattr(p, "_do_paste",
+                            lambda it, hwnd, seq: calls.append(it["text"]))
+        p.popup(0)
+        p.edt.setText("bet")            # 过滤：仅 beta 命中（最新在前：beta 在第 0 行）
+        w = p.lst.item(0)               # beta 的行控件
+        assert w is not None and not w.isHidden()
+        p.lst.itemActivated.emit(w)     # 激活路径（非 paste_index / 非 _exec_row）
+        qtbot.wait(300)
+        assert calls == ["beta"]
+
     def test_deactivate_hides_panel_without_pasting(self, qtbot, monkeypatch):
         """⑦：焦点离开自动收起（Ditto/Win+V 同语义），不写回不注键。"""
         _seed_history("one")

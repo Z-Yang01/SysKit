@@ -8,15 +8,25 @@ _on_clip_change 的 `text == self._last` 闸在 _last 同为 ""（启动初值 /
 
 本文件用假剪贴板复刻真实形态（text() 恒 ""）+ 真 QImage/PNG 落盘驱动
 _on_clip_change，断言条目生成与行内缩略图数据就绪；零 Win32 注入。
+
+后续补强（同轮次25·方向D）：
+- 大图（>4MP）PNG 编码/落盘移交后台 FIFO 线程——dataChanged 在 GUI 线程
+  触发，4K 截图同步编码百毫秒级冻界面；
+- save_image_bytes 失败不得产生 data="" 的僵尸条目（毒化后续同尺寸截图）；
+- clipboard_files 孤儿载荷（崩溃残留）按引用集+mtime 宽限清扫。
 """
 import os
+import threading
+import time
 
 import pytest
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication
 
 from syskit import clipboard as clip_mod
 from syskit import settings
+from syskit.ui import system_page as system_page_mod
 from syskit.ui.system_page import ClipboardTab
 
 
@@ -176,3 +186,163 @@ class TestHasNonTextPayload:
                 raise RuntimeError("mime provider gone")
 
         assert ClipboardTab._has_nontext_payload(_Boom()) is False
+
+
+# ---------------- 方向D：大图异步编码（不阻塞 GUI 线程） ----------------
+
+class TestLargeImageAsyncCapture:
+    def test_large_image_goes_through_background_fifo(self, qtbot, monkeypatch):
+        """超阈值大图走后台 FIFO：_on_clip_change 只拷位图不做 PNG 压缩，
+        编码/入库由工作者线程按复制顺序完成，线程身份非 GUI 线程。"""
+        tab = _make_tab(qtbot, monkeypatch)
+        monkeypatch.setattr(system_page_mod, "_ASYNC_ENCODE_PIXELS", 0)
+        seen = []
+
+        def fake_encode(img):
+            seen.append((threading.current_thread(), img.pixel(0, 0)))
+            return tab.hist.add(f"[图片 {img.width()}×{img.height()}]",
+                                kind="image", data=f"bg{len(seen)}.png")
+
+        monkeypatch.setattr(tab, "_encode_and_add", fake_encode)
+        tab._clip._image = _img(0xFF000001)
+        tab._clip._mime = _FakeMime(has_image=True)
+        tab._on_clip_change()
+        tab._clip._image = _img(0xFF000002)
+        tab._on_clip_change()
+
+        assert tab._cap_thread is not None                     # 后台线程已启动
+        qtbot.waitUntil(lambda: len(seen) == 2, timeout=5000)
+        assert [px for _t, px in seen] == [0xFF000001, 0xFF000002]   # FIFO=复制顺序
+        assert all(t is not threading.current_thread() for t, _px in seen)
+        assert tab.hist.texts() == ["[图片 4×4]", "[图片 4×4]"]
+
+    def test_large_image_end_to_end_png_on_disk(self, qtbot, monkeypatch):
+        """真编码端到端：后台编码→落盘→入库→capture_added 回 GUI 刷新，
+        条目载荷文件就绪、行内缩略图非空（显示链路在异步路径同样成立）。"""
+        tab = _make_tab(qtbot, monkeypatch)
+        monkeypatch.setattr(system_page_mod, "_ASYNC_ENCODE_PIXELS", 0)
+        tab._clip._image = _img(0xFF00AACC, 16, 16)
+        tab._clip._mime = _FakeMime(has_image=True)
+        tab._on_clip_change()
+        qtbot.waitUntil(lambda: bool(tab.hist.items()), timeout=5000)
+        it = tab.hist.items()[0]
+        assert it["kind"] == "image" and it["text"] == "[图片 16×16]"
+        assert os.path.exists(clip_mod.image_path(it["data"]))
+        qtbot.waitUntil(lambda: tab.tbl.rowCount() == 1, timeout=2000)
+        assert not tab.tbl.item(0, 2).icon().isNull()
+
+    def test_worker_failure_swallowed(self, qtbot, monkeypatch):
+        """后台链路任一步异常：吞掉留痕不入库，线程存活可接后续任务。"""
+        tab = _make_tab(qtbot, monkeypatch)
+        monkeypatch.setattr(system_page_mod, "_ASYNC_ENCODE_PIXELS", 0)
+        calls = {"n": 0}
+
+        def boom(img):
+            calls["n"] += 1
+            raise RuntimeError("encode exploded")
+
+        monkeypatch.setattr(tab, "_encode_and_add", boom)
+        tab._clip._image = _img(0xFF000003)
+        tab._clip._mime = _FakeMime(has_image=True)
+        tab._on_clip_change()
+        tab._cap_jobs.join()               # 确定性等工作者处理完，不赌时序
+        QApplication.processEvents()       # 放掉可能 queued 的信号
+        assert tab.hist.items() == []
+        assert calls["n"] == 1
+        assert tab._cap_thread.is_alive()
+
+    def test_small_image_stays_synchronous(self, qtbot, monkeypatch):
+        """阈值内小图保持同步路径（行为与既有用例形态不变），不启动后台线程。"""
+        tab = _make_tab(qtbot, monkeypatch)
+        tab._clip._image = _img(0xFF000004)
+        tab._clip._mime = _FakeMime(has_image=True)
+        tab._on_clip_change()
+        assert tab._cap_thread is None
+        assert len(tab.hist.items()) == 1
+
+
+# ---------------- 方向D：落盘失败的僵尸条目守卫 ----------------
+
+class TestZombieImageEntryGuard:
+    def test_save_failure_no_zombie_entry(self, qtbot, monkeypatch):
+        """save_image_bytes 失败（磁盘满等）不得入库：旧版产生 data="" 的
+        僵尸条目——既不能复制回放，又把后续同尺寸截图挡在「与最新条相同」
+        闸外（用户观感：截图又没进历史）。"""
+        tab = _make_tab(qtbot, monkeypatch)
+        real = clip_mod.save_image_bytes
+        state = {"fail": True}
+
+        def flaky_save(png):
+            return "" if state["fail"] else real(png)
+
+        monkeypatch.setattr(clip_mod, "save_image_bytes", flaky_save)
+        tab._clip._image = _img(0xFF000005)
+        tab._clip._mime = _FakeMime(has_image=True)
+        tab._on_clip_change()
+        assert tab.hist.items() == []          # 旧版此处产生 [图片 4×4]/data="" 僵尸
+
+        state["fail"] = False                  # 恢复后同尺寸截图照常入库（不再被毒化）
+        tab._clip._image = _img(0xFF000006)
+        tab._on_clip_change()
+        assert len(tab.hist.items()) == 1
+        assert tab.hist.items()[0]["text"] == "[图片 4×4]"
+        assert os.path.exists(clip_mod.image_path(tab.hist.items()[0]["data"]))
+
+
+# ---------------- 方向D：clipboard_files 孤儿载荷清扫 ----------------
+
+class TestOrphanPngSweep:
+    def test_sweep_removes_unreferenced_aged_files_only(self, qtbot, monkeypatch):
+        """孤儿清扫：删「过期 + 无引用」，保「新文件（在途捕获宽限）」与
+        「仍被历史条目引用的载荷」（无论多老）。"""
+        tab = _make_tab(qtbot, monkeypatch)
+        d = clip_mod.files_dir()
+        os.makedirs(d, exist_ok=True)
+        t_old = time.time() - 7200
+
+        orphan_old = os.path.join(d, "deadbeef.png")
+        with open(orphan_old, "wb") as f:
+            f.write(b"x")
+        os.utime(orphan_old, (t_old, t_old))
+        orphan_fresh = os.path.join(d, "cafebabe.png")
+        with open(orphan_fresh, "wb") as f:
+            f.write(b"y")
+
+        tab.hist.add("[图片 1×1]", kind="image", data="kept.png")
+        kept = clip_mod.image_path("kept.png")
+        with open(kept, "wb") as f:
+            f.write(b"z")
+        os.utime(kept, (t_old, t_old))         # 被引用：即使很老也不删
+
+        tab._purge_expired()
+        assert not os.path.exists(orphan_old)
+        assert os.path.exists(orphan_fresh)
+        assert os.path.exists(kept)
+
+    def test_sweep_edges_missing_dir_and_non_png(self, monkeypatch):
+        """目录不存在返回 0；空引用名被忽略；非 .png 文件不动。"""
+        assert clip_mod.sweep_orphan_files([]) == 0        # 目录尚未创建
+        d = clip_mod.files_dir()
+        os.makedirs(d, exist_ok=True)
+        txt = os.path.join(d, "notes.txt")
+        with open(txt, "w", encoding="utf-8") as f:
+            f.write("keep")
+        png = os.path.join(d, "a.png")
+        with open(png, "wb") as f:
+            f.write(b"p")
+        os.utime(png, (time.time() - 7200,) * 2)
+        assert clip_mod.sweep_orphan_files(["", None]) == 1
+        assert not os.path.exists(png)
+        assert os.path.exists(txt)
+
+    def test_purge_expired_reports_sweep_count(self, qtbot, monkeypatch):
+        """清扫发生时提示条带出残留清理数（removed=0 也有可感知反馈）。"""
+        tab = _make_tab(qtbot, monkeypatch)
+        d = clip_mod.files_dir()
+        os.makedirs(d, exist_ok=True)
+        orphan = os.path.join(d, "ghost.png")
+        with open(orphan, "wb") as f:
+            f.write(b"x")
+        os.utime(orphan, (time.time() - 7200,) * 2)
+        tab._purge_expired()
+        assert "1 个残留图片文件" in tab.lbl.text()

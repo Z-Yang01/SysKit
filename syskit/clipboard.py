@@ -58,6 +58,34 @@ def save_image_bytes(png: bytes) -> str:
     return name
 
 
+def sweep_orphan_files(referenced, min_age_sec: float = 3600.0) -> int:
+    """删除 clipboard_files 下未被任何历史条目引用的孤儿 PNG，返回删除数。
+
+    引用集来自**内存**历史（防抖未刷盘的条目也算已引用，与磁盘态无关）。
+    mtime 早于 min_age_sec 的才删：给「刚写完文件、还没入库」的在途捕获
+    （大图后台编码窗口）留宽限，避免误删刚落盘的载荷。
+    目录不存在/遍历失败返回 0——清扫是兜底维护，绝不向调用方抛错。
+    """
+    try:
+        names = {str(n) for n in referenced if n}
+        cut = time.time() - max(0.0, float(min_age_sec))
+        d = files_dir()
+        removed = 0
+        for fn in os.listdir(d):
+            if not fn.lower().endswith(".png") or fn in names:
+                continue
+            path = os.path.join(d, fn)
+            try:
+                if os.path.getmtime(path) < cut:
+                    os.unlink(path)
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+    except OSError:
+        return 0
+
+
 def _digest(text) -> str:
     return hashlib.sha256(str(text).encode("utf-8", "ignore")).hexdigest()
 

@@ -1,6 +1,8 @@
 """系统助手：性能监控 / 启动项管理 / 电池健康 / 安全清理 / 剪贴板历史 / 场景模式。"""
 import glob
 import os
+import queue
+import threading
 import time
 
 from PySide6.QtCore import Qt, QBuffer, QThread, QTimer, QUrl, Signal
@@ -524,8 +526,17 @@ class _ClipActionWorker(QThread):
         self.done.emit(msg)
 
 
+# 大图异步编码阈值（像素数，≈2560×1600）：超过则 PNG 编码/落盘移交后台线程。
+# 4K 截图（3840×2160≈8.3MP、33MB 位图）同步 img.save("PNG") 是百毫秒级，
+# 而 dataChanged 在 GUI 线程触发——截图瞬间整个界面冻住；小图（2K 及以下
+# ≈几十 ms）保持同步路径，行为与测试形态不变。
+_ASYNC_ENCODE_PIXELS = 4_000_000
+
+
 class ClipboardTab(QWidget):
     """剪贴板历史：监听系统剪贴板（文本/图片/文件/HTML），支持搜索/置顶/分类/规则动作。"""
+
+    capture_added = Signal()    # 大图后台捕获入库完成（worker 线程 → GUI 线程刷新）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -614,6 +625,9 @@ class ClipboardTab(QWidget):
         self._bg = None
         self._thumb_cache = {}          # 图片条目列表缩略图缓存：{png 文件名: QPixmap}
         self._watch_connected = False
+        self._cap_jobs = queue.Queue()  # 大图后台编码任务（FIFO，保入库顺序）
+        self._cap_thread = None         # 懒启动的单工作者线程（见 _queue_image_capture）
+        self.capture_added.connect(self._after_add)
         if self._clip and watch:
             self._clip.dataChanged.connect(self._on_clip_change)
             self._watch_connected = True
@@ -633,9 +647,19 @@ class ClipboardTab(QWidget):
         try:
             days = int(settings.load().get("clipboard_retain_days", 1))
             removed = self.hist.purge_older_than(days)
+            # 孤儿载荷清扫：崩溃/落盘后未及入库等留下的无主 PNG 不在任何条目的
+            # 淘汰链上，只会随时间累积（截图载荷动辄数 MB）——按内存历史引用集
+            # 兜底删除（含 1h mtime 宽限，见 sweep_orphan_files）
+            swept = clipboard_mod.sweep_orphan_files(
+                it.get("data", "") for it in self.hist.items()
+                if it.get("kind") == "image")
             if removed:
                 self.reload()
-                self.lbl.setText(f"已按保留策略清理 {removed} 条过期剪贴板记录")
+            if swept:
+                LOGGER.info("clipboard_files 孤儿载荷清扫: {} 个", swept)
+            if removed or swept:
+                self.lbl.setText(f"已按保留策略清理 {removed} 条过期剪贴板记录"
+                                 + (f"，并清掉 {swept} 个残留图片文件" if swept else ""))
         except Exception:
             pass
 
@@ -734,14 +758,16 @@ class ClipboardTab(QWidget):
                         added = self.hist.add("\n".join(paths), kind="file")
                 if (not added and mime.hasImage()
                         and settings.load().get("clip_capture_images", True)):
-                    img = self._clip.image()
+                    img = self._clip.image()    # 位图须在 GUI 线程同步拷出（剪贴板属主）
                     if img is not None and not img.isNull():
-                        buf = QBuffer()
-                        buf.open(QBuffer.WriteOnly)
-                        img.save(buf, "PNG")
-                        name = clipboard_mod.save_image_bytes(bytes(buf.data()))
-                        added = self.hist.add(f"[图片 {img.width()}×{img.height()}]",
-                                              kind="image", data=name)
+                        if img.width() * img.height() > _ASYNC_ENCODE_PIXELS:
+                            # 大图：编码/落盘移交后台（_queue_image_capture）；
+                            # added=True 与同步成功同语义——载荷明确是图片，
+                            # 不再落 html/text 兜底，条目稍后经信号入列刷新
+                            self._queue_image_capture(img)
+                            added = True
+                        else:
+                            added = self._encode_and_add(img)
                 if not added and mime.hasHtml():
                     html = mime.html() or ""
                     if html.strip() and html.strip() != text.strip():
@@ -770,6 +796,54 @@ class ClipboardTab(QWidget):
     def _after_add(self):
         self._last = self._clip.text() or ""
         self.reload()
+
+    def _encode_and_add(self, img) -> bool:
+        """PNG 编码 + 落盘 + 入库；任一步失败返回 False。
+
+        落盘失败（磁盘满/目录不可写）不得以 data="" 照常入库：那样会产生
+        既不能复制回放、又把后续同尺寸截图挡在「与最新条相同」闸外的僵尸条目
+        （本次复制的内容悄然丢失，用户只会觉得「截图又没进历史」）。
+        """
+        buf = QBuffer()
+        buf.open(QBuffer.WriteOnly)
+        if not img.save(buf, "PNG"):
+            return False
+        name = clipboard_mod.save_image_bytes(bytes(buf.data()))
+        if not name:
+            return False
+        return self.hist.add(f"[图片 {img.width()}×{img.height()}]",
+                             kind="image", data=name)
+
+    def _queue_image_capture(self, img):
+        """大图捕获移交单线程 FIFO 后台：dataChanged 在 GUI 线程触发，4K 截图
+        （≈33MB 位图）同步 img.save("PNG") 是百毫秒级阻塞——截图瞬间整个
+        界面冻住。QImage 拷出后自带像素数据，工作者线程只做编码/写盘/入库
+        （ClipboardHistory 自带 RLock）；完成经 capture_added 排队回 GUI
+        线程刷新列表。单工作者 + FIFO 保证连拍多图的入库顺序与复制顺序一致；
+        应用退出时守护线程随进程终止，最多丢一条刚复制的截图（与崩溃丢防抖
+        窗口内历史同口径，残留 PNG 由孤儿清扫回收）。"""
+        if self._cap_thread is None:
+            self._cap_thread = threading.Thread(
+                target=self._capture_worker, daemon=True,
+                name="clip-image-encode")
+            self._cap_thread.start()
+        self._cap_jobs.put(img)
+
+    def _capture_worker(self):
+        while True:
+            img = self._cap_jobs.get()
+            try:
+                added = self._encode_and_add(img)
+            except Exception:
+                LOGGER.warning("大图后台捕获失败", exc_info=True)
+                added = False
+            finally:
+                self._cap_jobs.task_done()
+            if added:
+                try:
+                    self.capture_added.emit()
+                except RuntimeError:
+                    break       # C++ 侧已销毁（应用退出）：后续任务没有意义，收摊
 
     # ---------------- 选中 / 操作 ----------------
 

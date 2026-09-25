@@ -143,19 +143,23 @@ class ClipPastePanel(QDialog):
         return clipboard_mod.ClipboardHistory(max_items=max_items).items()
 
     def _build_rows(self):
-        """呼出时一次性填充行控件（≤200 行），行与源条目按身份绑定（UserRole）。
+        """呼出时一次性填充行控件（≤200 行），行与源条目按下标绑定（UserRole）。
 
         旧实现每敲一键 clear+重建整个列表（O(击键×行数) 的分配与重排）；
         现在过滤只对既有控件做 setHidden——无闪烁，滚动位置保留。
+
+        UserRole 存 _all 的**下标**而非条目 dict：PySide6 会把 dict 深拷成
+        QVariantMap，data() 取回是内容相等的新对象——身份比较（`is`）永假，
+        曾致双击/回车激活静默失灵（只剩数字直选可用）。int 过 QVariant 精确。
         """
         self.lst.clear()
         self._widgets = []
-        for it in self._all[:200]:
+        for i, it in enumerate(self._all[:200]):
             label = clipboard_mod.ClipboardHistory.preview(it.get("text", ""), 60)
             prefix = ("📌 " if it.get("pinned") else "") + \
                 _KIND_EMOJI.get(it.get("kind", "text"), "")
             w = QListWidgetItem(prefix + label)
-            w.setData(Qt.UserRole, it)
+            w.setData(Qt.UserRole, i)
             self.lst.addItem(w)
             self._widgets.append(w)
 
@@ -163,12 +167,12 @@ class ClipPastePanel(QDialog):
         """按键过滤：只切行显隐；当前选择仍可见时不打扰（不强制跳回首行）。"""
         q = self.edt.text().strip().lower()
         self._rows = []
-        for w in self._widgets:
-            it = w.data(Qt.UserRole)
+        for i, w in enumerate(self._widgets):
+            it = self._all[i]               # _widgets 与 _all[:200] 按构造同序
             hit = not q or q in str(it.get("text", "")).lower()
             w.setHidden(not hit)
             if hit:
-                self._rows.append(it)
+                self._rows.append(it)       # 与 _all 共享同一批 dict（身份可比较）
         cur = self.lst.currentItem()
         if cur is not None and not cur.isHidden():
             return
@@ -207,8 +211,16 @@ class ClipPastePanel(QDialog):
             self._exec_item(w)          # 过滤无命中时 currentItem 可能停在隐藏行
 
     def _exec_item(self, w):
-        """按行控件绑定的条目身份执行：过滤态下行号 ≠ 可见序，不能直接当索引。"""
-        it = w.data(Qt.UserRole)
+        """按行控件绑定的条目身份执行：过滤态下行号 ≠ 可见序，不能直接当索引。
+
+        行控件 UserRole 存 _all 下标，_rows 与 _all 共享同一批 dict 对象，
+        身份（is）比较成立；换回 dict 存取则 PySide6 经 QVariantMap 深拷，
+        is 永假、激活失灵（见 _build_rows 注释）。
+        """
+        idx = w.data(Qt.UserRole)
+        if not isinstance(idx, int) or not (0 <= idx < len(self._all)):
+            return
+        it = self._all[idx]
         for i, row in enumerate(self._rows):
             if row is it:
                 self._exec_row(i)
