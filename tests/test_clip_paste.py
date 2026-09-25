@@ -10,8 +10,8 @@ from ctypes import wintypes
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QCursor
+from PySide6.QtCore import QBuffer, QEvent, Qt
+from PySide6.QtGui import QCursor, QImage
 from PySide6.QtWidgets import QApplication, QWidget
 
 from syskit import clipboard as clipboard_mod
@@ -491,6 +491,40 @@ class TestClipPastePanel:
         p.edt.setText("")
         assert all(not p.lst.item(i).isHidden() for i in range(3))
         assert len(p._rows) == 3
+
+    def _png_entry(self, argb=0xFF00FF00):
+        """造一枚真 PNG 载荷（md5 内容寻址落盘），返回文件名。"""
+        img = QImage(4, 4, QImage.Format_ARGB32)
+        img.fill(argb)
+        buf = QBuffer()
+        buf.open(QBuffer.WriteOnly)
+        img.save(buf, "PNG")
+        return clipboard_mod.save_image_bytes(bytes(buf.data()))
+
+    def test_image_rows_show_thumbnail_and_fallback(self, qtbot):
+        """图片行文件在 → 真缩略图替位（无 🖼）；载荷丢失 → 回退 emoji 占位。"""
+        name = self._png_entry()
+        hist = clipboard_mod.ClipboardHistory()
+        hist.add("[图片 B]", kind="image", data="missing.png")
+        hist.add("[图片 A]", kind="image", data=name)     # 最新在前：第 0 行 A
+        hist.save()
+        p, _win = _panel(qtbot)
+        p.popup(0)
+        w0 = p.lst.item(0)                                # [图片 A]（文件在）
+        assert not w0.icon().isNull()
+        assert "🖼" not in w0.text()
+        w1 = p.lst.item(1)                                # [图片 B]（载荷丢失）
+        assert w1.icon().isNull()
+        assert w1.text().startswith("🖼 ")
+
+    def test_icon_for_single_source_and_cache(self):
+        """单源助手：同载荷返回同一 QIcon（缓存命中），丢失/空载荷稳定 None。"""
+        from syskit.ui.clip_thumbs import icon_for
+        name = self._png_entry()
+        a = icon_for(name)
+        assert a is not None and a is icon_for(name)
+        assert icon_for("missing.png") is None
+        assert icon_for("") is None
 
     def test_arrow_keys_skip_hidden_rows(self, qtbot):
         """⑤：过滤后 ↑↓ 只在可见行间移动（中间隐藏行不消耗按键）。"""

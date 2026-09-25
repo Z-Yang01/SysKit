@@ -19,6 +19,7 @@ from .. import hotkey as hotkey_mod
 from .. import paste as paste_mod
 from .. import settings
 from ..logger import LOGGER
+from .clip_thumbs import icon_for
 
 _KIND_EMOJI = {"image": "🖼 ", "file": "📁 ", "html": "🌐 "}
 
@@ -151,14 +152,24 @@ class ClipPastePanel(QDialog):
         UserRole 存 _all 的**下标**而非条目 dict：PySide6 会把 dict 深拷成
         QVariantMap，data() 取回是内容相等的新对象——身份比较（`is`）永假，
         曾致双击/回车激活静默失灵（只剩数字直选可用）。int 过 QVariant 精确。
+
+        图片条目行内直接给缩略图（与系统助手页单源 clip_thumbs）：文件仍在
+        才用图标替位；载荷丢失回退 🖼 emoji 占位（与另两种类型同款前缀）。
         """
         self.lst.clear()
         self._widgets = []
         for i, it in enumerate(self._all[:200]):
             label = clipboard_mod.ClipboardHistory.preview(it.get("text", ""), 60)
-            prefix = ("📌 " if it.get("pinned") else "") + \
-                _KIND_EMOJI.get(it.get("kind", "text"), "")
+            prefix = "📌 " if it.get("pinned") else ""
             w = QListWidgetItem(prefix + label)
+            icon = (icon_for(it.get("data", ""))
+                    if it.get("kind", "text") == "image" else None)
+            if icon is not None:
+                w.setIcon(icon)
+            elif it.get("kind", "text") == "image":
+                w.setText("🖼 " + w.text())     # 载荷丢失：回退 emoji 占位
+            else:
+                w.setText(_KIND_EMOJI.get(it.get("kind", "text"), "") + w.text())
             w.setData(Qt.UserRole, i)
             self.lst.addItem(w)
             self._widgets.append(w)

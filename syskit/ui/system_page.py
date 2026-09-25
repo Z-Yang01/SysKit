@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 
 from .charts import LineChart, human_bytes
 from . import theme
+from .clip_thumbs import icon_for as _clip_icon_for
 from .disk_page import DiskTab
 from .theme import make_table
 from .workers import reap
@@ -623,7 +624,6 @@ class ClipboardTab(QWidget):
         self._clip = app.clipboard() if app else None
         self._last = (self._clip.text() or "") if self._clip else ""
         self._bg = None
-        self._thumb_cache = {}          # 图片条目列表缩略图缓存：{png 文件名: QPixmap}
         self._watch_connected = False
         self._cap_jobs = queue.Queue()  # 大图后台编码任务（FIFO，保入库顺序）
         self._cap_thread = None         # 懒启动的单工作者线程（见 _queue_image_capture）
@@ -709,19 +709,8 @@ class ClipboardTab(QWidget):
         self.lbl.setText(f"共 {len(items)} 条　双击行可复制")
 
     def _thumb_for(self, name: str):
-        """图片条目的行内缩略图（带缓存）；文件丢失返回 None。"""
-        if not name:
-            return None
-        if name in self._thumb_cache:
-            return self._thumb_cache[name]
-        path = clipboard_mod.image_path(name)
-        pix = QPixmap(path) if path and os.path.exists(path) else QPixmap()
-        if pix.isNull():
-            return None
-        from PySide6.QtGui import QIcon
-        icon = QIcon(pix.scaledToHeight(28, Qt.SmoothTransformation))
-        self._thumb_cache[name] = icon
-        return icon
+        """图片条目的行内缩略图；文件丢失/损坏返回 None（单源见 ui/clip_thumbs.py）。"""
+        return _clip_icon_for(name)
 
     def _on_clip_change(self):
         if not self.chk_watch.isChecked():
