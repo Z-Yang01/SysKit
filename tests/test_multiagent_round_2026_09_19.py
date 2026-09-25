@@ -151,25 +151,36 @@ def test_dns_query_tc_truncated_raises(monkeypatch):
         dq.query("www.baidu.com", "223.5.5.5")
 
 
-def test_http_get_bypasses_system_proxy():
+def test_http_get_bypasses_system_proxy(monkeypatch):
     """诊断探测必须直连：经系统代理转发会把「代理挂了」误判成断网。
 
     build_opener(ProxyHandler({})) 的 opener 不做任何系统代理查找
-    （无 ProxyHandler 或空代理表均等价于直连）。
+    （无 ProxyHandler 或空代理表均等价于直连）。opener 现为懒建
+    （冷启动不拉 urllib ~48ms 导入链）——监听 build_opener 入参断言
+    显式传入了空 ProxyHandler，不依赖 urllib 内部 handlers 结构。
     """
     import urllib.request as ur
     from syskit import netcheck
 
-    ph = [h for h in netcheck._OPENER_DIRECT.handlers
-          if type(h).__name__ == "ProxyHandler"]
-    assert ph == [] or ph[0].proxies == {}
+    calls = []
+    real_build = ur.build_opener
+
+    def spy(*handlers):
+        calls.append(handlers)
+        return real_build(*handlers)
+
+    monkeypatch.setattr(ur, "build_opener", spy)
+    monkeypatch.setattr(netcheck, "_OPENER", None)      # 强制走构建分支
+    netcheck._direct_opener()
+    assert calls and any(type(h).__name__ == "ProxyHandler" and h.proxies == {}
+                         for h in calls[0])
     # 对照：默认 opener 的 ProxyHandler 读 getproxies()（注册表/环境）。
     # 注意（3.10 实测）：ProxyHandler 的 <scheme>_open 方法按 proxies 键动态
     # 生成，系统没配代理时它一个 _open 都没有，add_handler 根本不会把它装进
     # handlers——所以对照断言必须跟随本机 getproxies() 的两种状态，不能假设
     # ProxyHandler 一定在场（补54：机器关代理后此断言曾红）。
     sys_proxies = ur.getproxies()
-    default_ph = [h for h in ur.build_opener().handlers
+    default_ph = [h for h in real_build().handlers
                   if type(h).__name__ == "ProxyHandler"]
     if sys_proxies:
         assert default_ph and default_ph[0].proxies == sys_proxies

@@ -1,8 +1,6 @@
 """13 项网络诊断。每项返回 CheckResult(status/detail/fix_ids)。"""
 import ipaddress
 import re
-import urllib.request
-import urllib.error
 
 from . import config, dnsquery, proc, winregread
 from .snapshot import Snapshot, current_ssid
@@ -27,14 +25,26 @@ class CheckResult:
 # ---------------- HTTP 探测 ----------------
 
 # 直连 opener：urlopen 默认走系统代理——被检测对象（残留代理）会劫持全部
-# 探测，把「代理挂了」误判成「断网」，进而驱动重启网卡等无效修复
-_OPENER_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# 探测，把「代理挂了」误判成「断网」，进而驱动重启网卡等无效修复。
+# 懒建：urllib.request 模块级导入拖 ~48ms 冷启动（http.client 整链），主窗口
+# 启动并不探测——全部下沉到首个 _http_get 调用（sys.modules 缓存，均摊零）
+_OPENER = None
+
+
+def _direct_opener():
+    global _OPENER
+    if _OPENER is None:
+        import urllib.request
+        _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return _OPENER
 
 
 def _http_get(url: str, timeout: float = 6.0, need_body: bool = False):
+    import urllib.error
+    import urllib.request
     req = urllib.request.Request(url, headers={"User-Agent": "SysKit/1.0"})
     try:
-        with _OPENER_DIRECT.open(req, timeout=timeout) as resp:
+        with _direct_opener().open(req, timeout=timeout) as resp:
             body = resp.read(512).decode("utf-8", errors="replace") if need_body else ""
             return resp.status, body, None
     except urllib.error.HTTPError as e:

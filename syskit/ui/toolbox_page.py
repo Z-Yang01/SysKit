@@ -7,7 +7,6 @@ import subprocess
 import threading
 import time
 import traceback
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import psutil
@@ -42,6 +41,7 @@ class SpeedTestWorker(QThread):
         self.seconds = seconds
 
     def run(self):
+        import urllib.request      # 冷启动不测速：下沉到工作者线程（省 ~48ms 导入链）
         for url in TEST_URLS:
             # 每个 URL 独立计数/计时：避免跨 URL 累计字节导致速率高估
             stop = threading.Event()

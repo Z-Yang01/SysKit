@@ -125,27 +125,34 @@ class _FakeResp:
         return False
 
 
+class _FakeOpener:
+    """替代真 opener 注入 netcheck._OPENER 缓存位（opener 已懒建：冷启动不拉
+    urllib.request ~48ms 导入链）。"""
+    def open(self, req, timeout=None):
+        return _FakeResp()
+
+
 class TestHttpGet:
     def test_ok_with_body(self, monkeypatch):
-        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", lambda req, timeout=None: _FakeResp())
+        monkeypatch.setattr(netcheck, "_OPENER", _FakeOpener())
         code, body, err = netcheck._http_get("http://example/x", need_body=True)
         assert (code, body, err) == (204, "resp-body", None)
 
     def test_ok_without_body(self, monkeypatch):
-        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", lambda req, timeout=None: _FakeResp())
+        monkeypatch.setattr(netcheck, "_OPENER", _FakeOpener())
         code, body, err = netcheck._http_get("http://example/x")
         assert (code, body, err) == (204, "", None)
 
     def test_http_error_returns_code(self, monkeypatch):
         def boom(req, timeout=None):
             raise urllib.error.HTTPError("http://example/x", 404, "Not Found", None, None)
-        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", boom)
+        monkeypatch.setattr(netcheck, "_OPENER", type("O", (), {"open": staticmethod(boom)}))
         assert netcheck._http_get("http://example/x") == (404, "", None)
 
     def test_generic_error_returns_err_text(self, monkeypatch):
         def boom(req, timeout=None):
             raise OSError("connection refused")
-        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", boom)
+        monkeypatch.setattr(netcheck, "_OPENER", type("O", (), {"open": staticmethod(boom)}))
         code, body, err = netcheck._http_get("http://example/x")
         assert code is None and body == "" and err == "connection refused"
 
@@ -157,10 +164,12 @@ class TestHttpGet:
             seen["url"] = req.full_url
             seen["ua"] = req.headers.get("User-agent")   # Request 规范化首字母
             return _FakeResp()
-        monkeypatch.setattr(netcheck._OPENER_DIRECT, "open", fake_open)
+        monkeypatch.setattr(netcheck, "_OPENER", type("O", (), {"open": staticmethod(fake_open)}))
         netcheck._http_get("http://example/x")
         assert seen["url"] == "http://example/x"
         assert seen["ua"] == "SysKit/1.0"
+        # 直连语义（显式空 ProxyHandler）由 test_multiagent_round 的
+        # test_http_get_bypasses_system_proxy 钉住，此处不重复
 
 
 class TestProbe204:
