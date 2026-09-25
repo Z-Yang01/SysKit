@@ -276,7 +276,7 @@ def chk_real(snap: Snapshot) -> CheckResult:
 
 def chk_ncsi_registry(snap: Snapshot) -> CheckResult:
     r = CheckResult("ncsi_reg", "NCSI 注册表配置核对", PASS)
-    vals = winregread.values(rf"HKLM\{config.NCSI_REG_PATH}")
+    vals = winregread.values(config.NCSI_REG_FULL)
     if not vals:
         r.status, r.detail = FAIL, "无法读取 NCSI 注册表（需管理员？）"
         return r
@@ -422,7 +422,7 @@ def chk_routes(snap: Snapshot) -> CheckResult:
 
 def chk_ipv6(snap: Snapshot) -> CheckResult:
     r = CheckResult("ipv6", "IPv6 状态（V6 探测值缺失会导致 v6 网络误判）", INFO)
-    vals = winregread.values(rf"HKLM\{config.NCSI_REG_PATH}")
+    vals = winregread.values(config.NCSI_REG_FULL)
     has_v6_vals = bool(vals) and "ActiveWebProbeHostV6" in vals
     r.detail = f"NCSI V6 探测值: {'有' if has_v6_vals else '无'}"
     return r

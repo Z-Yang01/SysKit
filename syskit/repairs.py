@@ -341,7 +341,7 @@ class NcsiRestore(RepairAction):
                          "双击备份目录中的 .reg 文件导入即可还原")
 
     def _run(self, param):
-        backup = _reg_export(rf"HKLM\{config.NCSI_REG_PATH}")
+        backup = _reg_export(config.NCSI_REG_FULL)
         try:
             import winreg
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, config.NCSI_REG_PATH, 0, winreg.KEY_SET_VALUE)
@@ -366,7 +366,7 @@ class NcsiDisable(RepairAction):
                          "运行 ncsi_restore 恢复探测")
 
     def _run(self, param):
-        backup = _reg_export(rf"HKLM\{config.NCSI_REG_PATH}")
+        backup = _reg_export(config.NCSI_REG_FULL)
         try:
             import winreg
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, config.NCSI_REG_PATH, 0, winreg.KEY_SET_VALUE)

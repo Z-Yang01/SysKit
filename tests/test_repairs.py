@@ -649,7 +649,7 @@ def test_dns_preset_set_failure_reports_primary_and_secondary(recorder):
 def test_ncsi_restore_restores_stock_values_with_reg_export_backup(recorder, reg_spy, events):
     r = repairs.get_action("ncsi_restore").execute({})
     assert r.success is True
-    full = "HKLM\\" + config.NCSI_REG_PATH
+    full = config.NCSI_REG_FULL          # 单源常量（生产同口径，不再手拼）
     # 第一条命令就是 reg export 全量备份，落盘在 BACKUP_DIR
     assert recorder.cmds[0][:3] == ["reg", "export", full]
     assert recorder.cmds[0][3].startswith(config.BACKUP_DIR)
@@ -687,7 +687,7 @@ def test_ncsi_disable_sets_probing_0_with_backup(recorder, reg_spy):
     assert r.success is True
     assert [(w[1], w[2], w[3]) for w in reg_spy.written] == \
         [("EnableActiveProbing", winreg.REG_DWORD, 0)]
-    assert recorder.cmds[0][:3] == ["reg", "export", "HKLM\\" + config.NCSI_REG_PATH]
+    assert recorder.cmds[0][:3] == ["reg", "export", config.NCSI_REG_FULL]
     assert recorder.find("sc start") is None   # 关闭探测无需启动 NlaSvc
 
 
