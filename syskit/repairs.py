@@ -441,9 +441,18 @@ class DelPersistentRoute(RepairAction):
     def _run(self, param):
         from .snapshot import take
         snap = take()
-        target = None
-        if param.get("dest") and param.get("gw"):
-            target = {"dest": param["dest"], "nextHop": param["gw"], "metric": 1}
+        dest_param = str(param.get("dest") or "").strip()
+        gw_param = str(param.get("gw") or "").strip()
+        if dest_param:
+            # 只给了 dest（UI 可只填一个框）：必须沿该网段反查网关——绝不回落到
+            # 自动检测分支，否则用户想删 10.0.0.0/8，实际删掉的却是默认路由
+            if not gw_param:
+                cand = [p for p in snap.persistent_routes if p["dest"] == dest_param]
+                if not cand:
+                    return RepairResult(False, f"持久路由中未找到目标网段 {dest_param}，未删除任何路由")
+                target = dict(cand[0])      # 携带快照里的真实 metric 供备份还原命令
+            else:
+                target = {"dest": dest_param, "nextHop": gw_param, "metric": 1}
         else:
             defaults = [p for p in snap.persistent_routes if p["dest"] == "0.0.0.0/0"]
             target = defaults[0] if defaults else None

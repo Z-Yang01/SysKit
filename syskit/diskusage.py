@@ -179,7 +179,8 @@ def scan_tree(root: str, stop=None, progress=None) -> ScanResult:
             st = ent.stat(follow_symlinks=False)
         except OSError:
             error_count += 1
-            continue
+            node.error_count += 1   # 与全局口径一致：scandir/stat 失败两处都计节点，
+            continue                # 否则父目录汇总（finalize）后节点侧少 1、总数对不上
         if getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT:
             continue
         if stat.S_ISDIR(st.st_mode):

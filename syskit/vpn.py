@@ -7,9 +7,14 @@ import re
 
 from . import proxy
 
-# TUNNEL_PAT 的唯一源头：netcheck `from .vpn import TUNNEL_PAT` 复用（补39 收敛）
+# TUNNEL_PAT 的唯一源头：netcheck `from .vpn import TUNNEL_PAT` 复用（补39 收敛）。
+# tap-win32：旧版 OpenVPN 驱动描述是 "TAP-Win32 Adapter V9"（三方发行版
+# "TAP-<厂商> Windows Adapter V9" 同族）——只有 tap-windows/tap9 时该家族永不
+# 命中："tap9" 作为连续子串在任何真实描述里都不出现（V9 与 TAP 之间隔着整段
+# 文本），纯死令牌；这类 TAP 在用时护栏 should_skip_auto_repair 会放行
+# renew_dhcp/restart_wlan，恰好砍断 OpenVPN 会话。
 TUNNEL_PAT = re.compile(
-    r"wintun|tap-windows|tap9|tun|utun|wireguard|openvpn|easyconnect|"
+    r"wintun|tap-windows|tap-win32|tap9|tun|utun|wireguard|openvpn|easyconnect|"
     r"sangfor|clash|v2ray|sing-box|nekoray|hysteria|uu加速|uu |"
     r"hamachi|zerotier|tailscale|oray|pgyer",
     re.I,
