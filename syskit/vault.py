@@ -63,9 +63,17 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+_SCHEMA_VERSION = 1     # SCHEMA 结构变更时递增并补迁移（当前纯 IF-NOT-EXISTS 幂等 DDL）
+
+
 def init_db():
+    """建库/补齐 schema。executescript 会隐式 COMMIT 且整脚本重放（~20ms/启动）：
+    user_version 已达当前版本即跳过；旧库/新库首跑幂等 DDL 后盖章。"""
     with _connect() as conn:
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
+            return
         conn.executescript(SCHEMA)
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
 # ---------------- sites ----------------

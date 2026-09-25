@@ -87,14 +87,25 @@ def make_table(headers, select_rows: bool = False, alternating: bool = True):
     return t
 
 
+_LOGO_CACHE = {}        # {size: QPixmap}——启动期渲染 ~15 次（app_icon×2×7 尺寸 + 侧栏）
+_ICON_CACHE = None      # 静态内容，进程级一份
+
+
 def app_logo_pixmap(size: int = 34):
     """代码绘制 SysKit 标识：蓝色圆角底 + 白色 S（与 assets/app.ico 观感一致）。
 
     不走文件资源——PyInstaller onefile 未打包 assets，用绘制保证任何分发方式都可用。
+    结果按尺寸缓存：绘制是确定性纯函数（颜色写死与主题无关），启动期
+    app_icon() 两处调用 + 侧栏 logo 共渲染 ~15 次，QPainter 画字 ~5ms/次。
     """
+    global _ICON_CACHE
+    pm = _LOGO_CACHE.get(size)
+    if pm is not None:
+        return pm
     from PySide6.QtCore import QRectF, Qt
     from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPixmap
 
+    _ICON_CACHE = None                  # 底层位图变了，旧 QIcon 不再复用
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
@@ -113,16 +124,21 @@ def app_logo_pixmap(size: int = 34):
         p.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, "S")
     finally:
         p.end()
+    _LOGO_CACHE[size] = pm
     return pm
 
 
 def app_icon():
     """应用图标（窗口标题栏 / 任务栏 / Alt+Tab）：多尺寸代码绘制，与 exe 图标观感一致。"""
+    global _ICON_CACHE
+    if _ICON_CACHE is not None:
+        return _ICON_CACHE
     from PySide6.QtGui import QIcon
 
     icon = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):
         icon.addPixmap(app_logo_pixmap(size))
+    _ICON_CACHE = icon
     return icon
 
 
