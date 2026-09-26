@@ -712,3 +712,49 @@ class TestVaultBulkAndDegradation:
         before = vault.get_site(gh)
         vault.update_site(gh)
         assert vault.get_site(gh) == before
+
+
+# ---------------- init_db user_version 守卫（轮次28 审计 280597a） ----------------
+
+class TestInitDbUserVersionGuard:
+    def test_fresh_db_stamped_to_schema_version(self):
+        """新库首跑：建表并把 user_version 盖到 _SCHEMA_VERSION
+        （守卫的判据就是这个章——不盖章则守卫永不生效，每次启动仍全量重放）。"""
+        vault.init_db()
+        with vault._connect() as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] \
+                == vault._SCHEMA_VERSION
+            names = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"sites", "accounts"} <= names
+
+    def test_stamped_db_skips_schema_replay(self, monkeypatch):
+        """已盖章的库二次 init_db 不得重放 schema（启动省 ~35ms 的依据）。
+        哨兵表挂在 SCHEMA 尾部：若守卫失效导致 executescript 重放，
+        库里会留下 _replay_sentinel 表 → 本用例红。"""
+        vault.init_db()                                   # 首跑建库+盖章
+        monkeypatch.setattr(
+            vault, "SCHEMA",
+            vault.SCHEMA + "\nCREATE TABLE IF NOT EXISTS _replay_sentinel(x);")
+        vault.init_db()                                   # 已盖章：必须跳过
+        with vault._connect() as conn:
+            names = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "_replay_sentinel" not in names
+
+    def test_old_db_without_stamp_gets_replayed_and_stamped(self):
+        """旧库迁移路径（守卫的另一半）：user_version=0 的既有库即使表已存在，
+        也要补跑幂等 DDL 并盖章——否则守卫把旧库永久挡在 schema 之外。"""
+        import os
+        import sqlite3
+        from syskit import config
+        os.makedirs(config.APPDATA_DIR, exist_ok=True)
+        raw = sqlite3.connect(os.path.join(config.APPDATA_DIR, "vault.db"))
+        raw.executescript(vault.SCHEMA)                   # 手工建库：不盖章
+        raw.commit()
+        raw.close()
+        assert vault._SCHEMA_VERSION >= 1
+        vault.init_db()
+        with vault._connect() as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] \
+                == vault._SCHEMA_VERSION

@@ -113,3 +113,48 @@ class TestRecommend5g:
         rec = recommend_channels([{"ssid": "x", "channel": 0, "signal": 90},
                                   {"ssid": "y", "channel": 40, "signal": 100}])
         assert rec["5g"] == 149 and rec["5g_block"] == 0   # 40 污染 36 块 → 149
+
+
+class TestAuditRound28BranchLocks:
+    """无人值守轮次28 审计补锁：f8d03d1 新逻辑里零覆盖的四个分支——
+    信号越界钳位（下沿）/ DFS 边界信道 52 与 144 / 165 不属任何 80M 块 /
+    band 字段在场时优先于信道号推导。"""
+
+    def test_negative_or_missing_signal_clamped_to_zero(self):
+        """信号下沿钳位：-20 必须按 0 计（去掉 max(0,·) 会得 -0.2 负分，
+        干扰源反而「降低」候选信道得分）；缺 signal 键同理按 0。"""
+        assert score_24g([{"channel": 6, "signal": -20}], 6) == 0.0
+        assert score_24g([{"channel": 6}], 6) == 0.0
+        assert score_24g([{"channel": 7, "signal": -100}], 7) == 0.0
+
+    def test_dfs_boundaries_52_and_144_both_penalized(self):
+        """DFS 块边界钉死：下沿块 52-64、上沿块 132-144 都必须吃到 +1.0 罚
+        且块成员 52/144 都按占用计权（罚按块锚点查 _DFS_CHANNELS，占用按
+        块成员表）。十个满强 AP 把六个 80M 块全部顶到 2.0 → 六块并列，取
+        先到者 36。若 52/144 所在块的锚点漏出 DFS 集、或成员被划出块表，
+        对应块跌到 1.0 胜出 → 本用例红。"""
+        aps = [_ap(36, 100, band="5G"), _ap(40, 100, band="5G"),     # 36 块 2.0
+               _ap(52, 100, band="5G"),                              # 52 块 1.0+罚 1.0
+               _ap(100, 100, band="5G"), _ap(104, 100, band="5G"),   # 100 块 2.0
+               _ap(116, 100, band="5G"), _ap(120, 100, band="5G"),   # 116 块 2.0
+               _ap(144, 100, band="5G"),                             # 132 块 1.0+罚 1.0
+               _ap(149, 100, band="5G"), _ap(153, 100, band="5G")]   # 149 块 2.0
+        rec = recommend_channels(aps)
+        assert rec["5g"] == 36 and rec["5g_block"] == 2
+
+    def test_channel_165_not_in_any_80m_block(self):
+        """165 非标准 80M 块（模块头注释契约）：既不被推荐，也不给 149 块加占用。
+        鉴别构造：36 块 1 个满强 AP（1.0）时，149 块为 0.0 应胜出——若 165 被
+        错误划入 149 块，149 块变 1.0 与各空 DFS 块并列 → 回落荐 36，本用例红。"""
+        rec = recommend_channels([_ap(165, 100, band="5G")])
+        assert rec["5g"] == 36 and rec["5g_block"] == 0    # 全空环境：165 不被推荐
+        rec2 = recommend_channels([_ap(36, 100, band="5G"), _ap(165, 100, band="5G")])
+        assert rec2["5g"] == 149 and rec2["5g_block"] == 0  # 165 未污染 149 块
+
+    def test_band_field_overrides_channel_derivation(self):
+        """band 字段在场时优先于信道号推导（docstring 契约「缺省时」才推导）：
+        ch6+band=5G 归 5G 侧（ch6 不属任何 5G 块→全空非 DFS 锚 36），
+        2.4G 侧保持全空推荐 1。若反转为按信道优先，ch6 落 2.4G → 5g=None 即红。"""
+        rec = recommend_channels([_ap(6, 100, band="5G")])
+        assert rec["5g"] == 36 and rec["5g_block"] == 0
+        assert rec["24g"] == 1 and rec["24g_same"] == 0 and rec["24g_adj"] == 0

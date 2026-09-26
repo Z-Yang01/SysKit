@@ -171,6 +171,25 @@ class TestHttpGet:
         # 直连语义（显式空 ProxyHandler）由 test_multiagent_round 的
         # test_http_get_bypasses_system_proxy 钉住，此处不重复
 
+    def test_direct_opener_cached_single_build(self, monkeypatch):
+        """懒建 opener 必须带缓存（轮次28 审计 13406cf）：_OPENER 已有值时
+        不得再走 build_opener——两次调用只构建一次、返回同一对象。
+        若缓存分支被改坏（每次重建），直连语义不变但监控/诊断每次探测
+        白付一次 opener 构建，本用例 len(calls)==1 即红。"""
+        import urllib.request as ur
+        calls = []
+        real_build = ur.build_opener
+
+        def spy(*handlers):
+            calls.append(handlers)
+            return real_build(*handlers)
+        monkeypatch.setattr(ur, "build_opener", spy)
+        monkeypatch.setattr(netcheck, "_OPENER", None)      # 首次：走构建分支
+        o1 = netcheck._direct_opener()
+        o2 = netcheck._direct_opener()                      # 第二次：必须命中缓存
+        assert o1 is o2
+        assert len(calls) == 1
+
 
 class TestProbe204:
     def test_first_endpoint_ok(self, monkeypatch):
@@ -693,6 +712,16 @@ def stock_values(**overrides):
 
 
 class TestChkNcsiRegistry:
+    def test_ncsi_registry_constants_literal_pinned(self):
+        """NCSI 注册表路径单源常量字面量钉死（轮次28 审计 ddc2f5a）：
+        单源化后 netcheck/repairs/test_repairs 全部读同一常量，假 winregread
+        又按「Parameters\\Internet」子串匹配——常量值被改坏时全套测试仍绿。
+        此处锚定真实注册表路径，保住单源的可证伪性。"""
+        assert config.NCSI_REG_PATH == \
+            r"SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet"
+        assert config.NCSI_REG_FULL == \
+            r"HKLM\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet"
+
     def test_unreadable_fail(self, monkeypatch):
         patch_winreg(monkeypatch, values={})
         r = netcheck.chk_ncsi_registry(make_snap())

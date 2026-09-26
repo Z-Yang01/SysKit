@@ -878,6 +878,30 @@ def test_app_icon_multi_size(qtbot):
     assert {16, 32, 256} <= {s.width() for s in icon.availableSizes()}
 
 
+def test_app_logo_and_icon_caches(qtbot, monkeypatch):
+    """启动优化锁（轮次28 审计 280597a）：logo 按尺寸缓存（同尺寸命中返回
+    同一 QPixmap）、app_icon 进程级单例；渲染新尺寸后 icon 缓存必须失效，
+    下次 app_icon() 重建出的仍是合法多尺寸图标（绘制是确定性纯函数）。"""
+    from syskit.ui import theme
+    monkeypatch.setattr(theme, "_LOGO_CACHE", {})
+    monkeypatch.setattr(theme, "_ICON_CACHE", None)
+
+    p1 = theme.app_logo_pixmap(48)
+    p2 = theme.app_logo_pixmap(48)
+    assert p1 is p2                          # 同尺寸命中缓存：同一对象
+
+    icon1 = theme.app_icon()
+    icon2 = theme.app_icon()
+    assert icon1 is icon2 and not icon1.isNull()   # 单例
+
+    theme.app_logo_pixmap(96)                # 缓存未命中 → 新尺寸渲染
+    assert theme._ICON_CACHE is None         # 旧 QIcon 不再复用（280597a 语义）
+
+    icon3 = theme.app_icon()
+    assert icon3 is not icon2 and not icon3.isNull()
+    assert {16, 32, 48} <= {s.width() for s in icon3.availableSizes()}
+
+
 def test_tray_host_state_rate_notify_and_menu(qtbot):
     from syskit.ui.tray import TrayHost
 
