@@ -18,7 +18,9 @@
 2. 运行：
      python -m pytest tools/test_smoke_real.py --run-real -v
    （默认被跳过：不带 --run-real 时全数 skip，且默认全量收集不含 tools/，
-     门禁计数不受影响。）
+     门禁计数不受影响。带 --run-real 时根 conftest 对 @pytest.mark.real
+     用例豁免系统调用哨兵——冒烟靶要真实 os.startfile 拉起窗口，无豁免
+     第一个靶即被红线击落；无 --run-real 时哨兵照常在位。）
 3. 边界靶说明：
    - 边界 a（回退链）需要人配合：脚本先占住 Ctrl+Win+V，然后请你在 SysKit
      设置页把面板粘贴热键改回/确认为 Ctrl+Win+V 并点「保存设置」——脚本轮询
@@ -49,16 +51,19 @@ from ctypes import wintypes
 
 import pytest
 
+RUN_REAL = "--run-real" in sys.argv
+
 # conftest 顶层把 QT_QPA_PLATFORM 设为 offscreen（离屏测试需要）；本脚本必须
-# 用真实平台，否则 QApplication 剪贴板不与真实系统剪贴板互通
-os.environ.pop("QT_QPA_PLATFORM", None)
+# 用真实平台，否则 QApplication 剪贴板不与真实系统剪贴板互通。仅在真机跑时
+# 清除——默认 skip 路径（含 pytest 收集期的模块导入）不得改动会话平台设置，
+# 否则 tools 与 tests/ 同场收集时会把离屏测试拖到真实窗口平台（审计修复）。
+if RUN_REAL:
+    os.environ.pop("QT_QPA_PLATFORM", None)
 
 from PySide6.QtCore import QMimeData, QUrl          # noqa: E402
 from PySide6.QtGui import QGuiApplication            # noqa: E402
 
 from syskit import paste as sk                        # noqa: E402  复用 INPUT 结构/签名/magic
-
-RUN_REAL = "--run-real" in sys.argv
 
 pytestmark = [
     pytest.mark.real,

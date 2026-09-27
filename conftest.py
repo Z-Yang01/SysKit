@@ -58,9 +58,45 @@ def _sentinel(name):
     return _blocked
 
 
+def pytest_addoption(parser):
+    """--run-real：真机冒烟总开关（tools/test_smoke_real.py 文档化入口）。
+
+    未注册时 pytest 对未知参数直接 usage error 退出（exit 4）——冒烟脚本
+    连收集都进不去，故必须在根 conftest 声明。默认 False：门禁/CI 不受影响。
+    """
+    parser.addoption("--run-real", action="store_true", default=False,
+                     help="真机冒烟开关：允许 @pytest.mark.real 用例实际运行"
+                          "（向真实桌面注入按键，须人工在场）")
+
+
+def _sentinels_armed_for(request) -> bool:
+    """block_system_calls 是否武装哨兵（真机冒烟豁免判定；tests/ 有回归锁）。
+
+    豁免条件须**同时**满足：用例带 @pytest.mark.real 标记（目前仅
+    tools/test_smoke_real.py 真机冒烟）且本次命令行显式给了 --run-real。
+    缺一即照常武装——默认收集 / 门禁 / CI 路径绝无可能触发真实注入；
+    探针实证（2026-09-27 审计）：无豁免时冒烟靶的第一个 os.startfile
+    即被哨兵击落，文档化的 --run-real 运行方式必挂。
+    """
+    if request.node.get_closest_marker("real") is None:
+        return True
+    try:
+        run_real = bool(request.config.getoption("--run-real"))
+    except (AttributeError, ValueError):    # 非常规 request（回归锁传桩）
+        run_real = "--run-real" in sys.argv
+    return not run_real
+
+
 @pytest.fixture(autouse=True)
-def block_system_calls(monkeypatch):
-    """未显式 mock 的系统调用一律抛 AssertionError（而非真实执行）。"""
+def block_system_calls(request, monkeypatch):
+    """未显式 mock 的系统调用一律抛 AssertionError（而非真实执行）。
+
+    唯一豁免：@pytest.mark.real + --run-real 的真机冒烟（见
+    _sentinels_armed_for）——冒烟靶要真实拉起记事本/终端/资源管理器。
+    """
+    if not _sentinels_armed_for(request):
+        yield
+        return
     from syskit import proc
 
     monkeypatch.setattr(proc, "run", _sentinel("proc.run"))
