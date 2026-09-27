@@ -44,6 +44,9 @@ class _FakeWindow(QWidget):
     def toggle_clip_paste(self):
         pass
 
+    def quick_paste_latest(self):
+        pass
+
     def quit_app(self):                 # TrayHost 构造期即 connect（建议②托盘测试）
         pass
 
@@ -57,6 +60,9 @@ def _panel(qtbot):
 
 
 def _seed_history(*texts):
+    # 先清抑制窗口：前面用例的写回链可能对同文本做过 suppress_next（2s TTL），
+    # 不清会让本用例的 add 被抑制闸拒绝、历史为空（跨用例污染实测）
+    clipboard_mod._suppressed.clear()
     hist = clipboard_mod.ClipboardHistory()
     for t in texts:
         hist.add(t)
@@ -266,9 +272,35 @@ class TestPasteHotkeySetup:
         qtbot.addWidget(win)
         assert setup_paste_hotkey(win) is True
         filt = win._paste_hotkey_filter
-        assert isinstance(filt, HotkeyFilter) and filt.expected_ids == (2,)
+        assert isinstance(filt, HotkeyFilter) and filt.expected_ids == (3,)
         teardown_paste_hotkey(win)
         assert win._paste_hotkey_filter is None
+
+    def test_quick_setup_success_and_teardown(self, qtbot, monkeypatch):
+        """快速粘贴热键（id=2，clip_quick_hotkey）：注册/卸载与面板键（id=3）平行。"""
+        from syskit.ui.palette import setup_quick_paste_hotkey, teardown_quick_paste_hotkey
+        monkeypatch.setattr(hotkey_mod, "register",
+                            lambda m, v, hotkey_id=1: True)
+        monkeypatch.setattr(hotkey_mod, "unregister", lambda hotkey_id=1: True)
+        settings.save({"clip_quick_hotkey": "Ctrl+Alt+Z"})
+        win = _FakeWindow()
+        qtbot.addWidget(win)
+        assert setup_quick_paste_hotkey(win) is True
+        filt = win._quick_hotkey_filter
+        assert isinstance(filt, HotkeyFilter) and filt.expected_ids == (2,)
+        teardown_quick_paste_hotkey(win)
+        assert win._quick_hotkey_filter is None
+
+    def test_quick_empty_setting_means_disabled(self, qtbot, monkeypatch):
+        from syskit.ui.palette import setup_quick_paste_hotkey
+        calls = []
+        monkeypatch.setattr(hotkey_mod, "register",
+                            lambda m, v, hotkey_id=1: calls.append(hotkey_id) or True)
+        settings.save({"clip_quick_hotkey": ""})
+        win = _FakeWindow()
+        qtbot.addWidget(win)
+        assert setup_quick_paste_hotkey(win) is False
+        assert calls == []
 
 
 class TestFilterDispatch:
@@ -358,30 +390,65 @@ class TestClipPastePanel:
         # 注意：绝不调用真实 send_ctrl_v（SendInput 会注入到用户当前焦点窗口）
         _seed_history("zz")
         p, win = _panel(qtbot)
-        focused = []
-        monkeypatch.setattr(paste_mod, "focus_window",
-                            lambda hwnd: focused.append(hwnd) or True)
-        monkeypatch.setattr(paste_mod, "send_ctrl_v", lambda: True)
+        monkeypatch.setattr(clipboard_mod, "foreground_process_name",
+                            lambda: "notepad")
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 4321)
+        calls = []
+        monkeypatch.setattr(paste_mod, "release_modifiers",
+                            lambda: calls.append("rel") or True)
+        monkeypatch.setattr(paste_mod, "send_ctrl_v",
+                            lambda: calls.append("send") or True)
         p.popup(0)
         p._do_paste(p._rows[0], 4321, p._paste_seq)
-        assert focused == [4321]
-        # 还焦成功后按键注入要等一拍事件循环（激活消息先派发）
         qtbot.waitUntil(lambda: bool(win.tray.notes), timeout=2000)
-        assert win.tray.notes[-1][1].startswith("已粘贴")
+        assert win.tray.notes[-1][1] == "已粘贴到原窗口"
+        assert calls == ["rel", "send"]      # 修饰键释放先于注键（硬约束④）
 
-        # 还焦失败：不注按键，立即降级提示
+        # SendInput 未生效 → 降级提示（等一拍后）
         win.tray.notes.clear()
-        monkeypatch.setattr(paste_mod, "focus_window", lambda hwnd: False)
-        p._do_paste(p._rows[0], 4321, p._paste_seq)
-        assert "Ctrl+V" in win.tray.notes[-1][1]
-
-        # 还焦成功但 SendInput 未生效 → 降级提示（等一拍后）
-        win.tray.notes.clear()
-        monkeypatch.setattr(paste_mod, "focus_window", lambda hwnd: True)
         monkeypatch.setattr(paste_mod, "send_ctrl_v", lambda: False)
         p._do_paste(p._rows[0], 4321, p._paste_seq)
         qtbot.waitUntil(lambda: bool(win.tray.notes), timeout=2000)
-        assert "Ctrl+V" in win.tray.notes[-1][1]
+        assert "自动粘贴未送达" in win.tray.notes[-1][1]
+
+        # 前台已切到第三方窗口 → 放弃注键（硬约束⑩），不抢焦点
+        win.tray.notes.clear()
+        calls.clear()
+        monkeypatch.setattr(paste_mod, "send_ctrl_v", lambda: True)
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0x9999)
+        p._do_paste(p._rows[0], 4321, p._paste_seq)
+        qtbot.waitUntil(lambda: bool(win.tray.notes), timeout=2000)
+        assert "目标窗口已切换" in win.tray.notes[-1][1]
+        assert calls == []                   # 第三方分支不注键（硬约束⑩）
+
+    def test_do_paste_focus_drift_to_own_window_refocuses(self, qtbot, monkeypatch):
+        """前台为本应用（面板刚隐藏过渡态）→ focus_window 还焦，复核通过才注键；
+        还焦失败（复核不过）→ 取消并提示，绝不无条件抢焦点（硬约束⑩）。"""
+        _seed_history("zz")
+        p, win = _panel(qtbot)
+        fg = {"hwnd": 0x1111}                # 本应用窗口占前台
+        monkeypatch.setattr(clipboard_mod, "foreground_process_name",
+                            lambda: "syskit")
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: fg["hwnd"])
+        monkeypatch.setattr(paste_mod, "focus_window",
+                            lambda hwnd: fg.update(hwnd=hwnd) or True)
+        calls = []
+        monkeypatch.setattr(paste_mod, "release_modifiers", lambda: calls.append("rel") or True)
+        monkeypatch.setattr(paste_mod, "send_ctrl_v", lambda: calls.append("send") or True)
+        p.popup(0)
+        p._do_paste(p._rows[0], 4321, p._paste_seq)
+        qtbot.waitUntil(lambda: bool(win.tray.notes), timeout=2000)
+        assert win.tray.notes[-1][1] == "已粘贴到原窗口"
+
+        # 还焦失败：前台回到自身窗口 → 复核不过 → 取消
+        win.tray.notes.clear()
+        calls.clear()
+        fg.update(hwnd=0x1111)               # 复位前台状态（第一段还焦已改写）
+        monkeypatch.setattr(paste_mod, "focus_window", lambda hwnd: False)
+        p._do_paste(p._rows[0], 4321, p._paste_seq)
+        qtbot.waitUntil(lambda: bool(win.tray.notes), timeout=2000)
+        assert "目标窗口已切换" in win.tray.notes[-1][1]
+        assert calls == []                   # 复核不过不注键
 
     def test_fallback_wording_names_content_kind(self, qtbot, monkeypatch):
         """建议⑤：降级提示按条目类型点名——图片/文件普通文本框接不住
@@ -390,21 +457,44 @@ class TestClipPastePanel:
         p, win = _panel(qtbot)
         p.popup(0)
         monkeypatch.setattr(p, "_write_back", lambda it: True)   # 免造真实图片文件
-        monkeypatch.setattr(paste_mod, "focus_window", lambda hwnd: False)
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0)
         img = {"kind": "image", "text": "[图片]", "data": "x"}
-        p._do_paste(img, 4321, p._paste_seq)
+        p._do_paste(img, 0, p._paste_seq)               # target=0：降级走一拍延时
+        qtbot.waitUntil(lambda: len(win.tray.notes) >= 1, timeout=2000)
         assert win.tray.notes[-1][1].startswith("图片已复制")
-        p._do_paste({"kind": "file", "text": "a.txt"}, 4321, p._paste_seq)
+        p._do_paste({"kind": "file", "text": "a.txt"}, 0, p._paste_seq)
+        qtbot.waitUntil(lambda: len(win.tray.notes) >= 2, timeout=2000)
         assert win.tray.notes[-1][1].startswith("文件已复制")
-        p._do_paste(p._rows[0], 4321, p._paste_seq)               # 文本：无前缀
+        p._do_paste(p._rows[0], 0, p._paste_seq)               # 文本：无前缀
+        qtbot.waitUntil(lambda: len(win.tray.notes) >= 3, timeout=2000)
         assert win.tray.notes[-1][1].startswith("已复制")
         # SendInput 未送达分支同样点名类型
         win.tray.notes.clear()
-        monkeypatch.setattr(paste_mod, "focus_window", lambda hwnd: True)
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 4321)
+        monkeypatch.setattr(clipboard_mod, "foreground_process_name",
+                            lambda: "notepad")
+        monkeypatch.setattr(paste_mod, "release_modifiers", lambda: True)
         monkeypatch.setattr(paste_mod, "send_ctrl_v", lambda: False)
         p._do_paste(img, 4321, p._paste_seq)
         qtbot.waitUntil(lambda: bool(win.tray.notes), timeout=2000)
         assert "图片已复制" in win.tray.notes[-1][1]
+
+    def test_do_paste_image_write_back_retries_once_async(self, qtbot, monkeypatch):
+        """硬约束⑨：图片读取失败 → QTimer 异步重试一次（UI 线程零 sleep），
+        再失败才降级提示。"""
+        _seed_history("t")
+        p, win = _panel(qtbot)
+        p.popup(0)
+        attempts = []
+        monkeypatch.setattr(p, "_write_back",
+                            lambda it: attempts.append(1) or False)
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0)
+        p._do_paste({"kind": "image", "text": "[图片]", "data": "x"},
+                    0, p._paste_seq)
+        qtbot.waitUntil(lambda: len(attempts) >= 2, timeout=2000)
+        qtbot.waitUntil(lambda: bool(win.tray.notes), timeout=2000)
+        assert len(attempts) == 2               # 恰好重试一次
+        assert "粘贴失败" in win.tray.notes[-1][1]
 
     def test_exec_row_hides_then_schedules_paste(self, qtbot, monkeypatch):
         _seed_history("one", "two")
@@ -624,30 +714,35 @@ def test_main_window_clip_paste_integration(make_main_window, monkeypatch):
     monkeypatch.setattr(proc, "run_ps", lambda *a, **k: CmdResult(0, "", ""))
     win = make_main_window()
     assert hasattr(win, "toggle_clip_paste")
+    assert hasattr(win, "quick_paste_latest")
     assert win._clip_paste is None               # 懒建
     win.toggle_clip_paste()
     assert win._clip_paste is not None and win._clip_paste.isVisible()
     win.toggle_clip_paste()
     assert not win._clip_paste.isVisible()
 
-    # 设置页新控件存在且回填已存值
-    assert win.cmb_paste_hotkey.currentText() == "Ctrl+Alt+V"
+    # 设置页控件存在且回填默认值（面板 Ctrl+Win+V / 快速 Ctrl+Alt+V）
+    assert win.cmb_paste_hotkey.currentText() == "Ctrl+Win+V"
+    assert win.cmb_quick_hotkey.currentText() == "Ctrl+Alt+V"
 
-    # 保存即重注册（第二热键 ID），空串 = 禁用不再注册
-    from syskit.ui.palette import teardown_paste_hotkey
+    # 保存即重注册（面板 id=3 / 快速 id=2），空串 = 禁用不再注册
+    from syskit.ui.palette import teardown_paste_hotkey, teardown_quick_paste_hotkey
     reg = []
     monkeypatch.setattr(hotkey_mod, "register",
                         lambda m, v, hotkey_id=1: reg.append(hotkey_id) or True)
     monkeypatch.setattr("syskit.admin.is_admin", lambda: False)
     win.cmb_paste_hotkey.setCurrentText("Ctrl+Alt+B")
     win._save_settings()
-    assert 2 in reg
+    assert 3 in reg                              # 面板键重注册
+    assert 2 in reg                              # 快速键同场重注册（未改也重挂）
     win.cmb_paste_hotkey.setCurrentText("")
     reg.clear()
     win._save_settings()
     assert settings.load().get("clip_paste_hotkey") == ""
-    assert 2 not in reg                          # 禁用：不注册
+    assert 3 not in reg                          # 面板禁用：不注册
+    assert 2 in reg                              # 快速键不受影响
     teardown_paste_hotkey(win)
+    teardown_quick_paste_hotkey(win)
 
 
 def test_rehook_fallback_to_disabled_wording(make_main_window, monkeypatch):
@@ -668,3 +763,402 @@ def test_rehook_fallback_to_disabled_wording(make_main_window, monkeypatch):
     assert len(infos) == 1
     assert "无热键（已禁用）" in str(infos[0])
     assert settings.load().get("clip_paste_hotkey") == ""    # 回退后仍为禁用
+
+from syskit.ui.clip_paste import write_back_entry  # noqa: E402  （新块内直接引用）
+
+
+# ---------------- Win32 原语扩展（NOREPEAT / release_modifiers / magic） ----------------
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 原语仅限 Windows")
+class TestPastePrimitiveExtensions:
+    def test_register_sets_norepeat(self, monkeypatch):
+        """硬约束（规格书 1）：注册恒置 MOD_NOREPEAT（长按不重复触发）。"""
+        import types
+        calls = []
+
+        class _U32:
+            def RegisterHotKey(self, hwnd, hid, mods, vk):
+                calls.append((hid, mods, vk))
+                return True
+
+        monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(user32=_U32()))
+        assert hotkey_mod.register(hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT,
+                                   0x56, hotkey_id=2) is True
+        hid, mods, vk = calls[0]
+        assert (hid, vk) == (2, 0x56)
+        assert mods == (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT
+                        | hotkey_mod.MOD_NOREPEAT)
+
+    def test_release_modifiers_order_and_magic(self, monkeypatch):
+        """硬约束④⑤：KEYUP 顺序固定 SHIFT→CONTROL→MENU→LWIN→RWIN，
+        dwExtraInfo 统一 magic 0x53594B54。"""
+        seen = {}
+
+        class _U32:
+            def SendInput(self, n, arr, size):
+                seen["events"] = [(arr[i].iu.ki.wVk, arr[i].iu.ki.dwFlags,
+                                   arr[i].iu.ki.dwExtraInfo) for i in range(n)]
+                return n
+
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        assert paste_mod.release_modifiers() is True
+        ev = seen["events"]
+        assert [e[0] for e in ev] == [paste_mod.VK_SHIFT, paste_mod.VK_CONTROL,
+                                      paste_mod.VK_MENU, paste_mod.VK_LWIN,
+                                      paste_mod.VK_RWIN]
+        assert all(e[1] == paste_mod._KEY_UP for e in ev)
+        assert all(e[2] == paste_mod.PASTE_MAGIC for e in ev)
+
+    def test_send_ctrl_v_carries_magic(self, monkeypatch):
+        """硬约束⑤：Ctrl+V 注入四事件全部携带 magic。"""
+        seen = {}
+
+        class _U32:
+            def SendInput(self, n, arr, size):
+                seen["vk"] = [arr[i].iu.ki.wVk for i in range(n)]
+                seen["extra"] = [arr[i].iu.ki.dwExtraInfo for i in range(n)]
+                return n
+
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        assert paste_mod.send_ctrl_v() is True
+        assert seen["vk"] == [paste_mod.VK_CONTROL, paste_mod.VK_V,
+                              paste_mod.VK_V, paste_mod.VK_CONTROL]
+        assert all(e == paste_mod.PASTE_MAGIC for e in seen["extra"])
+
+    def test_send_count_mismatch_fails(self, monkeypatch):
+        """硬约束⑥：SendInput 返回数 != 期望注入数 → 视为失败。"""
+
+        class _U32:
+            def SendInput(self, n, arr, size):
+                return n - 1        # 模拟部分注入被拦
+
+        monkeypatch.setattr(paste_mod, "_user32", lambda: _U32())
+        assert paste_mod.release_modifiers() is False
+        assert paste_mod.send_ctrl_v() is False
+
+
+# ---------------- 写回多格式（file/html，硬约束⑦⑧） ----------------
+
+class TestWriteBackMime:
+    def test_file_entry_uses_uri_list(self, qtbot):
+        """硬约束⑦：file 条目走 QMimeData.setUrls(fromLocalFile)，
+        mime.formats() 必含 text/uri-list；禁止 setText(路径)。"""
+        clipboard_mod._suppressed.clear()
+        hist = clipboard_mod.ClipboardHistory()
+        hist.add("C:\\测试目录\\a.txt\nC:\\测试目录\\b.txt", kind="file")
+        hist.save()
+        it = hist.items()[0]
+        assert write_back_entry(it) is True
+        mime = QApplication.clipboard().mimeData()
+        assert "text/uri-list" in mime.formats()
+        assert [u.toLocalFile() for u in mime.urls()] == \
+            ["C:/测试目录/a.txt", "C:/测试目录/b.txt"]   # QUrl 归一化正斜杠
+        # 回填不算一次新复制：路径列表文本在抑制窗口内不入库
+        assert hist.add(it["text"], kind="file") is False
+
+    def test_html_entry_sets_html_with_text_fallback(self, qtbot):
+        """硬约束⑧：html 条目 setHtml(原始 HTML) + setText(纯文本兜底)。"""
+        it = {"kind": "html", "text": "加粗文本", "data": "<b>加粗</b>"}
+        assert write_back_entry(it) is True
+        mime = QApplication.clipboard().mimeData()
+        assert mime.html() == "<b>加粗</b>"
+        assert mime.text() == "加粗文本"
+
+
+# ---------------- 焦点守卫注键（硬约束⑩⑥单源） ----------------
+
+class TestInjectGuard:
+    def _patch_env(self, monkeypatch, fg, proc="notepad"):
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: fg)
+        monkeypatch.setattr(clipboard_mod, "foreground_process_name",
+                            lambda: proc)
+        calls = []
+        monkeypatch.setattr(paste_mod, "release_modifiers",
+                            lambda: calls.append("rel") or True)
+        monkeypatch.setattr(paste_mod, "send_ctrl_v",
+                            lambda: calls.append("send") or True)
+        return calls
+
+    def test_fg_is_target_pastes(self, qtbot, monkeypatch):
+        notes = []
+        calls = self._patch_env(monkeypatch, 0x4321)
+        clip_paste_mod.inject_ctrl_v_guarded(0x4321, {"kind": "text", "text": "x"},
+                                             notes.append)
+        qtbot.waitUntil(lambda: bool(notes), timeout=2000)
+        assert notes == ["已粘贴到原窗口"]
+        assert calls == ["rel", "send"]      # 修饰键先于注键
+
+    def test_third_party_fg_aborts(self, qtbot, monkeypatch):
+        """硬约束⑩：前台为第三方应用 → 放弃注键并托盘提示，不抢焦点。"""
+        notes = []
+        calls = self._patch_env(monkeypatch, 0x9999)   # 0x9999 != target
+        clip_paste_mod.inject_ctrl_v_guarded(0x4321, {"kind": "text", "text": "x"},
+                                             notes.append)
+        qtbot.waitUntil(lambda: bool(notes), timeout=2000)
+        assert "目标窗口已切换" in notes[0] and "已取消自动粘贴" in notes[0]
+        assert calls == []
+
+    def test_own_fg_refocuses_then_verifies(self, qtbot, monkeypatch):
+        """前台为本应用 → focus_window 后复核通过才注键。"""
+        notes = []
+        fg = {"hwnd": 0x1111}
+        monkeypatch.setattr(clipboard_mod, "foreground_process_name",
+                            lambda: "syskit")
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: fg["hwnd"])
+        monkeypatch.setattr(paste_mod, "focus_window",
+                            lambda hwnd: fg.update(hwnd=hwnd) or True)
+        calls = []
+        monkeypatch.setattr(paste_mod, "release_modifiers",
+                            lambda: calls.append("rel") or True)
+        monkeypatch.setattr(paste_mod, "send_ctrl_v",
+                            lambda: calls.append("send") or True)
+        clip_paste_mod.inject_ctrl_v_guarded(0x4321, {"kind": "text", "text": "x"},
+                                             notes.append)
+        qtbot.waitUntil(lambda: bool(notes), timeout=2000)
+        assert notes == ["已粘贴到原窗口"]
+        assert calls == ["rel", "send"]
+
+    def test_own_fg_refocus_fail_cancels(self, qtbot, monkeypatch):
+        """还焦后复核不过（前台仍是自身）→ 取消，绝不注到错误窗口。"""
+        notes = []
+        self._patch_env(monkeypatch, 0x1111, proc="syskit")
+        monkeypatch.setattr(paste_mod, "focus_window", lambda hwnd: False)
+        clip_paste_mod.inject_ctrl_v_guarded(0x4321, {"kind": "text", "text": "x"},
+                                             notes.append)
+        qtbot.waitUntil(lambda: bool(notes), timeout=2000)
+        assert "目标窗口已切换" in notes[0]
+
+    def test_release_failure_degrades_without_send(self, qtbot, monkeypatch):
+        """硬约束⑥：release_modifiers 失败 → 不注键，降级提示。"""
+        notes = []
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0x4321)
+        monkeypatch.setattr(clipboard_mod, "foreground_process_name",
+                            lambda: "notepad")
+        calls = []
+        monkeypatch.setattr(paste_mod, "release_modifiers", lambda: False)
+        monkeypatch.setattr(paste_mod, "send_ctrl_v",
+                            lambda: calls.append("send") or True)
+        clip_paste_mod.inject_ctrl_v_guarded(0x4321, {"kind": "text", "text": "x"},
+                                             notes.append)
+        qtbot.waitUntil(lambda: bool(notes), timeout=2000)
+        assert "自动粘贴未送达" in notes[0]
+        assert calls == []
+
+    def test_zero_target_falls_back_to_manual(self, qtbot, monkeypatch):
+        notes = []
+        self._patch_env(monkeypatch, 0)
+        clip_paste_mod.inject_ctrl_v_guarded(
+            0, {"kind": "image", "text": "[图片]", "data": "x"}, notes.append)
+        qtbot.waitUntil(lambda: bool(notes), timeout=2000)
+        assert notes[0].startswith("图片已复制")
+
+    def test_seq_check_false_is_silent(self, qtbot, monkeypatch):
+        notes = []
+        calls = self._patch_env(monkeypatch, 0x4321)
+        clip_paste_mod.inject_ctrl_v_guarded(0x4321, {"kind": "text", "text": "x"},
+                                             notes.append, seq_check=lambda: False)
+        qtbot.wait(300)
+        assert notes == [] and calls == []
+
+
+# ---------------- 双热键 id 分发互不串扰 ----------------
+
+class TestDualIdDispatch:
+    def test_quick_and_panel_ids_dispatch_independently(self, qtbot):
+        quick_fired, panel_fired = [], []
+        fq = HotkeyFilter(lambda: quick_fired.append(1), expected_ids=(2,))
+        fp = HotkeyFilter(lambda: panel_fired.append(1), expected_ids=(3,))
+        handled, _ = fq.nativeEventFilter(b"windows_generic_MSG",
+                                          TestFilterDispatch._msg(2))
+        assert handled is True and quick_fired == [1] and panel_fired == []
+        handled, _ = fp.nativeEventFilter(b"windows_generic_MSG",
+                                          TestFilterDispatch._msg(3))
+        assert handled is True and panel_fired == [1]
+        handled, _ = fp.nativeEventFilter(b"windows_generic_MSG",
+                                          TestFilterDispatch._msg(2))
+        assert handled is False                    # 快速键归另一过滤器
+
+
+# ---------------- 快速粘贴链（MainWindow.quick_paste_latest） ----------------
+
+def _stub_system(monkeypatch):
+    """构造 MainWindow 前必须打桩的系统调用（conftest 哨兵红线）。"""
+    from syskit import proc
+    from syskit.proc import CmdResult
+    monkeypatch.setattr("syskit.repairs.wlan_profiles", lambda: [])
+    monkeypatch.setattr(proc, "run", lambda *a, **k: CmdResult(0, "", ""))
+    monkeypatch.setattr(proc, "run_ps", lambda *a, **k: CmdResult(0, "", ""))
+
+
+def _prep_settings(panel=None, quick=None, migrated=True):
+    """构造窗口前落设置（面板/快速键、迁移标志）。"""
+    patch = {"migrated_v2": migrated}
+    if panel is not None:
+        patch["clip_paste_hotkey"] = panel
+    if quick is not None:
+        patch["clip_quick_hotkey"] = quick
+    settings.save(patch)
+
+
+class TestQuickPasteLatest:
+    def test_pastes_newest_entry_with_modifier_order(self, qtbot, make_main_window, monkeypatch):
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        notes = []
+        monkeypatch.setattr(win.tray, "notify",
+                            lambda title, msg, level="ok": notes.append(msg))
+        hist = clipboard_mod.ClipboardHistory()
+        hist.add("older")
+        hist.add("newest")
+        hist.save()
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0x777)
+        monkeypatch.setattr(clipboard_mod, "foreground_process_name",
+                            lambda: "notepad")
+        calls = []
+        monkeypatch.setattr(paste_mod, "release_modifiers",
+                            lambda: calls.append("rel") or True)
+        monkeypatch.setattr(paste_mod, "send_ctrl_v",
+                            lambda: calls.append("send") or True)
+        win.quick_paste_latest()
+        qtbot.waitUntil(lambda: bool(notes), timeout=2000)
+        assert notes[0] == "已粘贴到原窗口"
+        assert calls == ["rel", "send"]       # 修饰键先于注键
+        assert QApplication.clipboard().text() == "newest"
+
+    def test_empty_history_notifies_without_sending(self, qtbot, make_main_window, monkeypatch):
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        notes = []
+        monkeypatch.setattr(win.tray, "notify",
+                            lambda title, msg, level="ok": notes.append(msg))
+        clipboard_mod.ClipboardHistory().clear()
+        clipboard_mod.ClipboardHistory().save()
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0x777)
+        calls = []
+        monkeypatch.setattr(paste_mod, "send_ctrl_v",
+                            lambda: calls.append(1) or True)
+        win.quick_paste_latest()
+        assert "剪贴板历史为空" in notes[0]
+        assert calls == []
+
+    def test_write_back_failure_notifies_without_sending(self, qtbot, make_main_window, monkeypatch):
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        notes = []
+        monkeypatch.setattr(win.tray, "notify",
+                            lambda title, msg, level="ok": notes.append(msg))
+        hist = clipboard_mod.ClipboardHistory()
+        hist.add("something")
+        hist.save()
+        import syskit.ui.clip_paste as cp
+        monkeypatch.setattr(cp, "write_back_entry", lambda it: False)
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0x777)
+        calls = []
+        monkeypatch.setattr(paste_mod, "send_ctrl_v",
+                            lambda: calls.append(1) or True)
+        win.quick_paste_latest()
+        assert "粘贴失败" in notes[0]
+        assert calls == []
+
+
+# ---------------- 迁移（硬约束⑪）与 Office 警示（硬约束①） ----------------
+
+class TestMigrationAndWarn:
+    def test_migration_moves_old_default_once(self, make_main_window, monkeypatch):
+        _prep_settings(panel="Ctrl+Alt+V", migrated=False)
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        assert settings.load()["migrated_v2"] is True
+        assert settings.load()["clip_paste_hotkey"] == "Ctrl+Win+V"
+        assert settings.load()["clip_quick_hotkey"] == "Ctrl+Alt+V"
+        assert win.cmb_paste_hotkey.currentText() == "Ctrl+Win+V"
+
+    def test_migration_idempotent_user_change_respected(self, make_main_window, monkeypatch):
+        """二次调用不再迁移——migrated_v2 幂等，用户改回旧值不被搬回。"""
+        _prep_settings(panel="Ctrl+Alt+V", migrated=False)
+        _stub_system(monkeypatch)
+        win = make_main_window()               # 首启迁移完成
+        settings.save({"clip_paste_hotkey": "Ctrl+Alt+V"})   # 用户改回旧键
+        win._migrate_hotkey_settings_v2()      # 二次调用
+        assert settings.load()["clip_paste_hotkey"] == "Ctrl+Alt+V"
+
+    def test_migration_keeps_custom_panel_key(self, make_main_window, monkeypatch):
+        _prep_settings(panel="Ctrl+Shift+V", migrated=False)
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        assert settings.load()["clip_paste_hotkey"] == "Ctrl+Shift+V"
+        assert settings.load()["migrated_v2"] is True
+
+    def test_office_warn_label_visibility(self, make_main_window, monkeypatch):
+        """硬约束①：热键为 Ctrl+Alt+V 时显示覆盖警示，改键即隐。"""
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        warn_text = "此键会覆盖 Office 选择性粘贴等应用内快捷键，冲突时请改用其他组合。"
+        assert warn_text in win.lbl_quick_warn.text()
+        assert not win.lbl_quick_warn.isHidden()      # 快速键默认 Ctrl+Alt+V → 显示
+        assert win.lbl_paste_warn.isHidden()          # 面板键默认 Ctrl+Win+V → 隐藏
+        win.cmb_quick_hotkey.setCurrentText("Ctrl+Shift+V")
+        assert win.lbl_quick_warn.isHidden()
+        win.cmb_quick_hotkey.setCurrentText("ctrl+alt+v")   # 大小写不敏感
+        assert not win.lbl_quick_warn.isHidden()
+
+
+# ---------------- 面板热键回退链（硬约束③） ----------------
+
+def _stub_register_by_win(monkeypatch, fail_win_key=True):
+    """注册桩：Ctrl+Win 组合按需失败（模拟 1409 占用），其余成功。"""
+
+    def fake_register(m, v, hotkey_id=1):
+        if fail_win_key and (m & hotkey_mod.MOD_WIN) and v == 0x56:
+            return False
+        return True
+
+    monkeypatch.setattr(hotkey_mod, "register", fake_register)
+    monkeypatch.setattr(hotkey_mod, "unregister", lambda hotkey_id=1: True)
+
+
+def _attach_boxes(monkeypatch, win):
+    from PySide6.QtWidgets import QMessageBox
+    boxes = {"info": [], "warn": []}
+    monkeypatch.setattr(QMessageBox, "information",
+                        staticmethod(lambda *a, **k: boxes["info"].append(str(a))))
+    monkeypatch.setattr(QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: boxes["warn"].append(str(a))))
+    return boxes
+
+
+class TestPanelFallbackChain:
+    def test_winv_occupied_falls_back_to_ctrl_alt_v(self, make_main_window, monkeypatch):
+        """Ctrl+Win+V 被占 → 回退 Ctrl+Alt+V 预设（快速键未占用），提示回退。"""
+        _prep_settings(panel="Ctrl+Win+V", quick="Ctrl+Shift+V")
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        _stub_register_by_win(monkeypatch, fail_win_key=True)
+        boxes = _attach_boxes(monkeypatch, win)
+        win._rehook_paste_hotkey("Ctrl+Win+V", "Ctrl+Win+V")
+        assert settings.load()["clip_paste_hotkey"] == "Ctrl+Alt+V"
+        assert win.cmb_paste_hotkey.currentText() == "Ctrl+Alt+V"
+        assert len(boxes["info"]) == 1 and "Ctrl+Alt+V" in boxes["info"][0]
+
+    def test_fallback_taken_by_quick_key_disables_and_prompts(self, make_main_window, monkeypatch):
+        """Ctrl+Alt+V 已被快速键占用 → 面板热键禁用 + 提示自定义（硬约束③）。"""
+        _prep_settings(panel="Ctrl+Win+V", quick="Ctrl+Alt+V")
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        _stub_register_by_win(monkeypatch, fail_win_key=True)
+        boxes = _attach_boxes(monkeypatch, win)
+        win._rehook_paste_hotkey("Ctrl+Win+V", "Ctrl+Win+V")
+        assert settings.load()["clip_paste_hotkey"] == ""
+        assert win.cmb_paste_hotkey.currentText() == ""
+        assert len(boxes["warn"]) == 1 and "自定义" in boxes["warn"][0]
+
+    def test_quick_disabled_fallback_free(self, make_main_window, monkeypatch):
+        """快速键禁用时回退链不受占用限制。"""
+        _prep_settings(panel="Ctrl+Win+V", quick="")
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        _stub_register_by_win(monkeypatch, fail_win_key=True)
+        boxes = _attach_boxes(monkeypatch, win)
+        win._rehook_paste_hotkey("Ctrl+Win+V", "Ctrl+Win+V")
+        assert settings.load()["clip_paste_hotkey"] == "Ctrl+Alt+V"
+        assert len(boxes["info"]) == 1

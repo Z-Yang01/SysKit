@@ -116,6 +116,8 @@ DEFAULTS = {
     "vault_autolock_min": 10,          # 密码库自动锁定分钟数（0=不锁，DPAPI 模式默认值）
     "vault_trust_min": 30,             # 主密码验证后的免重复输入窗口（分钟）
     "palette_hotkey": "Ctrl+Alt+K",    # 命令面板全局热键（保存后即时生效，被占自动回退）
-    "clip_paste_hotkey": "Ctrl+Alt+V",  # 剪贴板快捷粘贴面板全局热键（空=禁用，仅托盘呼出）
+    "clip_paste_hotkey": "Ctrl+Win+V",  # 剪贴板快捷粘贴面板全局热键（空=禁用，仅托盘呼出）
+    "clip_quick_hotkey": "Ctrl+Alt+V",  # 快速粘贴最新一条全局热键（不弹面板直贴；空=禁用）
+    "migrated_v2": False,              # 双热键迁移标志（v2：面板键 Ctrl+Alt+V→Ctrl+Win+V）一次性
     "palette_commands": "",            # 命令面板自定义命令 JSON [{name,type,value}]
 }

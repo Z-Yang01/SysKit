@@ -17,11 +17,17 @@ from ctypes import wintypes
 
 from .logger import LOGGER
 
+VK_SHIFT = 0x10
 VK_CONTROL = 0x11
+VK_MENU = 0x12
 VK_V = 0x56
+VK_LWIN = 0x5B
+VK_RWIN = 0x5C
 _KEY_UP = 0x0002
 _INPUT_KEYBOARD = 1
 _SW_RESTORE = 9
+# 注入标记（"SYKT"）：dwExtraInfo 统一携带，便于识别 SysKit 注入的输入（硬约束⑤）
+PASTE_MAGIC = 0x53594B54
 
 
 def _user32():
@@ -128,7 +134,10 @@ def focus_window(hwnd: int) -> bool:
 
 
 def send_ctrl_v() -> bool:
-    """向当前焦点窗口注入一次 Ctrl+V（SendInput 键盘事件）。"""
+    """向当前焦点窗口注入一次 Ctrl+V（SendInput 键盘事件）。
+
+    返回值断言等于期望注入数（硬约束⑥）：不足即失败走调用方降级提示。
+    """
     if sys.platform != "win32":
         return False
     try:
@@ -137,6 +146,7 @@ def send_ctrl_v() -> bool:
             inp.type = _INPUT_KEYBOARD
             inp.iu.ki.wVk = vk
             inp.iu.ki.dwFlags = _KEY_UP if up else 0
+            inp.iu.ki.dwExtraInfo = PASTE_MAGIC
             return inp
 
         events = (key(VK_CONTROL, False), key(VK_V, False),
@@ -146,4 +156,32 @@ def send_ctrl_v() -> bool:
         return sent == len(events)
     except Exception:
         LOGGER.debug("send_ctrl_v 失败", exc_info=True)
+        return False
+
+
+def release_modifiers() -> bool:
+    """释放物理按住的修饰键（全局热键触发时用户仍按着组合键，直接注键会被
+    目标窗口当成组合键——Ctrl+Alt+V 触发后必须先放掉再注 Ctrl+V）。
+
+    顺序固定（硬约束④）：SHIFT→CONTROL→MENU→LWIN→RWIN，一次 SendInput；
+    返回值断言等于 5（硬约束⑥），失败交调用方降级。
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        def keyup(vk):
+            inp = INPUT()
+            inp.type = _INPUT_KEYBOARD
+            inp.iu.ki.wVk = vk
+            inp.iu.ki.dwFlags = _KEY_UP
+            inp.iu.ki.dwExtraInfo = PASTE_MAGIC
+            return inp
+
+        events = (keyup(VK_SHIFT), keyup(VK_CONTROL), keyup(VK_MENU),
+                  keyup(VK_LWIN), keyup(VK_RWIN))
+        arr = (INPUT * len(events))(*events)
+        sent = int(_user32().SendInput(len(events), arr, ctypes.sizeof(INPUT)))
+        return sent == len(events)
+    except Exception:
+        LOGGER.debug("release_modifiers 失败", exc_info=True)
         return False

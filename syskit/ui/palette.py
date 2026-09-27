@@ -109,15 +109,17 @@ def teardown_global_hotkey(window, hotkey_id: int = 1):
         _installed_filter = None
 
 
-# ---------------- 快捷粘贴全局热键（第二个热键 ID） ----------------
+# ---------------- 快捷粘贴双热键（面板 id=3 / 快速直贴 id=2） ----------------
 
 _installed_paste_filter = None
+_installed_quick_filter = None
 
 
-def setup_paste_hotkey(window, hotkey_id: int = 2) -> bool:
+def setup_paste_hotkey(window, hotkey_id: int = 3) -> bool:
     """注册「剪贴板快捷粘贴面板」全局热键（设置键 clip_paste_hotkey）。
 
     与命令面板同款机制；注册/解析失败静默降级（面板仍可经托盘菜单呼出）。
+    id=3（Ctrl+Win+V 习惯位）；快速直贴另占 id=2，见 setup_quick_paste_hotkey。
     """
     global _installed_paste_filter
     text = str(settings.load().get("clip_paste_hotkey", "") or "").strip()
@@ -131,12 +133,38 @@ def setup_paste_hotkey(window, hotkey_id: int = 2) -> bool:
     return True
 
 
-def teardown_paste_hotkey(window, hotkey_id: int = 2):
+def teardown_paste_hotkey(window, hotkey_id: int = 3):
     global _installed_paste_filter
     filt = getattr(window, "_paste_hotkey_filter", None)
     _unbind_hotkey(filt, window, "_paste_hotkey_filter", hotkey_id)
     if _installed_paste_filter is filt:
         _installed_paste_filter = None
+
+
+def setup_quick_paste_hotkey(window, hotkey_id: int = 2) -> bool:
+    """注册「快速粘贴最新一条」全局热键（设置键 clip_quick_hotkey，id=2）。
+
+    按下不弹面板：取历史最新直贴前台（window.quick_paste_latest）。
+    注册/解析失败静默降级（同款模式，绝不钩子强拦）。
+    """
+    global _installed_quick_filter
+    text = str(settings.load().get("clip_quick_hotkey", "") or "").strip()
+    if not text:
+        return False                    # 空串 = 用户显式关闭该热键
+    filt = _bind_hotkey(text, hotkey_id, window.quick_paste_latest)
+    if filt is None:
+        return False
+    _installed_quick_filter = filt
+    window._quick_hotkey_filter = filt
+    return True
+
+
+def teardown_quick_paste_hotkey(window, hotkey_id: int = 2):
+    global _installed_quick_filter
+    filt = getattr(window, "_quick_hotkey_filter", None)
+    _unbind_hotkey(filt, window, "_quick_hotkey_filter", hotkey_id)
+    if _installed_quick_filter is filt:
+        _installed_quick_filter = None
 
 
 class CommandPalette(QDialog):

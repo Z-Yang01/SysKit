@@ -20,7 +20,9 @@ from ..telemetry import GROUPS_DASH, GROUPS_SYSTEM, TelemetryWorker
 from . import theme
 from .confirm_dialog import ConfirmDialog
 from .dashboard_page import DashboardPage
-from .palette import CommandPalette, setup_global_hotkey, setup_paste_hotkey
+from .palette import (CommandPalette, setup_global_hotkey, setup_paste_hotkey,
+                      setup_quick_paste_hotkey, teardown_global_hotkey,
+                      teardown_paste_hotkey, teardown_quick_paste_hotkey)
 from .system_page import SystemPage
 from .toolbox_page import ToolboxPage
 from .tray import TrayHost
@@ -64,6 +66,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self, minimized=False):
         super().__init__()
+        # v2 热键迁移必须在任何设置读取方（设置页/热键注册）之前跑一次，
+        # 否则组合框回显与实际注册键不一致
+        self._migrate_hotkey_settings_v2()
         self.setWindowTitle(f"{config.DISPLAY_NAME}  v{config.VERSION}")
         self.setWindowIcon(theme.app_icon())   # 标题栏/任务栏/Alt+Tab 蓝色 S 标识
         self.resize(980, 680)
@@ -187,14 +192,36 @@ class MainWindow(QMainWindow):
         self._refresh_telemetry_scope()
 
     # ---------------- 命令面板 ----------------
+    def _migrate_hotkey_settings_v2(self):
+        """v2 双热键一次性迁移（migrated_v2 幂等标志，硬约束⑪）。
+
+        旧默认 clip_paste_hotkey=="Ctrl+Alt+V" → 面板键迁 Ctrl+Win+V、快速键
+        Ctrl+Alt+V；自定义过面板键的用户不动。只跑一次：用户事后改回旧值
+        也不会再迁移。写盘失败仅留痕（最坏情形：双键同串，面板键注册失败走
+        回退链降级，不阻塞启动）。
+        """
+        s = settings.load()
+        if s.get("migrated_v2"):
+            return
+        patch = {"migrated_v2": True}
+        if str(s.get("clip_paste_hotkey", "") or "").strip() == "Ctrl+Alt+V":
+            patch["clip_paste_hotkey"] = "Ctrl+Win+V"
+            patch["clip_quick_hotkey"] = "Ctrl+Alt+V"
+        try:
+            settings.save(patch)
+        except OSError:
+            LOGGER.warning("v2 热键迁移写盘失败（不影响本次运行，重启后重试）", exc_info=True)
+
     def _setup_palette(self):
         """全局热键 + 应用内 Ctrl+K；注册失败静默降级（托盘菜单仍可呼出）。"""
         self._palette = None
         self._hotkey_filter = None
         self._clip_paste = None
         self._paste_hotkey_filter = None
+        self._quick_hotkey_filter = None
         setup_global_hotkey(self)
-        setup_paste_hotkey(self)
+        setup_quick_paste_hotkey(self)      # id=2 快速直贴
+        setup_paste_hotkey(self)            # id=3 面板
         sc = QShortcut(QKeySequence("Ctrl+K"), self)
         sc.activated.connect(self.toggle_palette)
 
@@ -216,6 +243,43 @@ class MainWindow(QMainWindow):
             # 显隐判断在 ClipPastePanel.toggle 内；面板可见时前台就是它自己，
             # 但 toggle 走隐藏分支、忽略该句柄，无副作用
             self._clip_paste.toggle(paste_mod.foreground_window())
+        except RuntimeError:
+            pass        # 与 toggle_palette 同款防御
+
+    def _paste_notify(self, title: str, msg: str):
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            try:
+                tray.notify(title, msg)
+                return
+            except Exception:
+                pass
+        LOGGER.info("{}: {}", title, msg)
+
+    def quick_paste_latest(self):
+        """快速粘贴最新一条剪贴板历史（全局热键 Ctrl+Alt+V，不弹面板）。
+
+        记录前台 → 写回历史最新条 → 焦点守卫注键（clip_paste.
+        inject_ctrl_v_guarded 单源：修饰键释放/前台分派/计数断言全在内）。
+        历史空/写回失败托盘降级提示，绝不静默丢内容。
+        """
+        try:
+            from .. import clipboard as clipboard_mod
+            from .. import paste as paste_mod
+            from .clip_paste import inject_ctrl_v_guarded, write_back_entry
+            hwnd = paste_mod.foreground_window()
+            clipboard_mod.flush_pending()
+            items = clipboard_mod.ClipboardHistory(
+                max_items=int(settings.load().get("clipboard_max", 50))).items()
+            if not items:
+                self._paste_notify("快速粘贴", "剪贴板历史为空，无可粘贴内容")
+                return
+            if not write_back_entry(items[0]):
+                self._paste_notify("快速粘贴",
+                                   "粘贴失败：内容不可用（图片文件可能已被清理）")
+                return
+            inject_ctrl_v_guarded(
+                hwnd, items[0], lambda msg: self._paste_notify("快速粘贴", msg))
         except RuntimeError:
             pass        # 与 toggle_palette 同款防御
 
@@ -1033,14 +1097,29 @@ class MainWindow(QMainWindow):
 
         self.cmb_paste_hotkey = QComboBox()
         self.cmb_paste_hotkey.setEditable(True)
-        self.cmb_paste_hotkey.addItems(["Ctrl+Alt+V", "Ctrl+Shift+V", "Ctrl+Alt+B",
-                                        "Alt+V", ""])
+        self.cmb_paste_hotkey.addItems(["Ctrl+Win+V", "Ctrl+Alt+V", "Ctrl+Shift+V",
+                                        "Ctrl+Alt+B", "Alt+V", ""])
         self.cmb_paste_hotkey.setCurrentText(
             str(s.get("clip_paste_hotkey", config.DEFAULTS["clip_paste_hotkey"])))
         self.cmb_paste_hotkey.setToolTip(
             "剪贴板快捷粘贴面板全局热键：呼出历史列表，回车即粘回呼出前的窗口；\n"
-            "留空 = 禁用快捷键（仍可经托盘菜单呼出）；被占用时自动降级为托盘呼出")
-        form3.addRow("快捷粘贴热键", self.cmb_paste_hotkey)
+            "留空 = 禁用快捷键（仍可经托盘菜单呼出）；被占用时自动回退默认键并提示")
+        form3.addRow("面板粘贴热键", self.cmb_paste_hotkey)
+        self.lbl_paste_warn = self._make_office_warn(self.cmb_paste_hotkey)
+        form3.addRow("", self.lbl_paste_warn)
+
+        self.cmb_quick_hotkey = QComboBox()
+        self.cmb_quick_hotkey.setEditable(True)
+        self.cmb_quick_hotkey.addItems(["Ctrl+Alt+V", "Ctrl+Shift+V", "Ctrl+Alt+Z",
+                                        "Ctrl+Win+V", ""])
+        self.cmb_quick_hotkey.setCurrentText(
+            str(s.get("clip_quick_hotkey", config.DEFAULTS["clip_quick_hotkey"])))
+        self.cmb_quick_hotkey.setToolTip(
+            "快速粘贴最新一条剪贴板历史：按下直接粘进当前窗口，不弹面板；\n"
+            "留空 = 禁用快捷键；被占用时自动回退旧键并提示")
+        form3.addRow("快速粘贴热键", self.cmb_quick_hotkey)
+        self.lbl_quick_warn = self._make_office_warn(self.cmb_quick_hotkey)
+        form3.addRow("", self.lbl_quick_warn)
         outer.addWidget(g3)
 
         btn_row = QHBoxLayout()
@@ -1064,6 +1143,21 @@ class MainWindow(QMainWindow):
         outer.addWidget(note)
         outer.addStretch(1)
         return w
+
+    def _make_office_warn(self, combo):
+        """Office 冲突动态警示（硬约束①）：热键为 Ctrl+Alt+V 时显示，改键即隐。"""
+        lbl = QLabel("此键会覆盖 Office 选择性粘贴等应用内快捷键，冲突时请改用其他组合。")
+        lbl.setObjectName("hint")
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(f"color:{theme.pal()['warn']};")
+
+        def sync():
+            shown = hotkey.hotkey_display(combo.currentText().strip()) == "Ctrl+Alt+V"
+            lbl.setVisible(shown)
+
+        combo.currentTextChanged.connect(sync)
+        sync()
+        return lbl
 
     def _save_settings(self):
         # 防御性回填：保存按钮物理上只在设置页可达（进入即回填），但该不变式
@@ -1089,6 +1183,16 @@ class MainWindow(QMainWindow):
                                                  config.DEFAULTS["clip_paste_hotkey"]))
         previous_paste = str(settings.load().get("clip_paste_hotkey",
                                                  config.DEFAULTS["clip_paste_hotkey"]))
+        # 快速粘贴热键同款验证：非法输入不破坏当前热键；空串 = 显式禁用
+        quick_text = self.cmb_quick_hotkey.currentText().strip()
+        if quick_text and hotkey.parse_hotkey(quick_text) is None:
+            QMessageBox.warning(self, config.DISPLAY_NAME,
+                                f"热键「{self.cmb_quick_hotkey.currentText()}」无法识别（示例：Ctrl+Alt+V），"
+                                "留空表示禁用。\n本次保存不更改快速粘贴热键，其余设置将继续保存。")
+            quick_text = str(settings.load().get("clip_quick_hotkey",
+                                                 config.DEFAULTS["clip_quick_hotkey"]))
+        previous_quick = str(settings.load().get("clip_quick_hotkey",
+                                                 config.DEFAULTS["clip_quick_hotkey"]))
         patch = {
             "auto_repair_enabled": self.chk_auto.isChecked(),
             "poll_interval_sec": self.spin_interval.value(),
@@ -1106,6 +1210,7 @@ class MainWindow(QMainWindow):
             "vault_autolock_min": self.spin_autolock.value(),
             "palette_hotkey": hotkey_text,
             "clip_paste_hotkey": paste_text,
+            "clip_quick_hotkey": quick_text,
         }
         if admin.is_admin():
             try:
@@ -1123,15 +1228,19 @@ class MainWindow(QMainWindow):
                                 f"设置写入失败：{e}\n本次改动在当前运行中仍生效，重启后会丢失。")
             return
         self._tray_rate = bool(patch["tray_rate_enabled"])   # 托盘速率开关即时生效
-        # 两把全局热键即时重注册（命令面板 / 快捷粘贴同策略，单源见 _rehook_hotkey）
-        from .palette import (setup_global_hotkey, setup_paste_hotkey,
-                              teardown_global_hotkey, teardown_paste_hotkey)
+        # 三把全局热键即时重注册（命令面板 / 快速粘贴走通用回退；面板键走
+        # 专用回退链，硬约束③——单源见 _rehook_hotkey / _rehook_paste_hotkey）。
+        # 局部导入是刻意的补丁点：测试经 palette_mod 属性替换这些入口
+        # （面板键经 _rehook_paste_hotkey 内的 palette_mod 属性调用，不在此列）
+        from .palette import (setup_global_hotkey, setup_quick_paste_hotkey,
+                              teardown_global_hotkey, teardown_quick_paste_hotkey)
         self._rehook_hotkey("palette_hotkey", setup_global_hotkey,
                             teardown_global_hotkey, hotkey_text, previous_hotkey,
                             self.cmb_hotkey, "全局热键暂不可用；托盘菜单与 Ctrl+K 不受影响。")
-        self._rehook_hotkey("clip_paste_hotkey", setup_paste_hotkey,
-                            teardown_paste_hotkey, paste_text, previous_paste,
-                            self.cmb_paste_hotkey, "快捷粘贴暂可经托盘菜单呼出。")
+        self._rehook_hotkey("clip_quick_hotkey", setup_quick_paste_hotkey,
+                            teardown_quick_paste_hotkey, quick_text, previous_quick,
+                            self.cmb_quick_hotkey, "快速粘贴暂不可用；可经面板热键或托盘菜单呼出。")
+        self._rehook_paste_hotkey(paste_text, previous_paste)
         # 主题即时切换（保存入口的兜底路径；勾选本身在 _on_dark_toggled 已即时生效）
         if theme.is_dark() != self.chk_dark.isChecked():
             self._apply_theme(self.chk_dark.isChecked())
@@ -1158,6 +1267,36 @@ class MainWindow(QMainWindow):
         else:                                        # 原键被抢 → 明确告知（不静默丢）
             QMessageBox.warning(self, config.DISPLAY_NAME,
                                 f"热键「{text}」注册失败（可能刚被其他程序占用），{fail_hint}")
+
+    def _rehook_paste_hotkey(self, text: str, previous: str):
+        """面板粘贴热键重注册 + 专用回退链（硬约束③，绝不钩子强拦）。
+
+        新键（如 Ctrl+Win+V）注册失败 → 尝试 "Ctrl+Alt+V" 预设（快速键未占用
+        该组合时；写回设置并在组合框回显）→ 仍失败则禁用面板热键并提示用户
+        自定义。与 _rehook_hotkey 分开：回退目标不是旧键而是固定预设。
+        经 palette_mod 属性查找调用，保持与 _save_settings 同款测试补丁点。
+        """
+        from . import palette as _palette_mod
+        _palette_mod.teardown_paste_hotkey(self)
+        if not text or _palette_mod.setup_paste_hotkey(self):
+            return
+        fallback = "Ctrl+Alt+V"
+        quick_key = str(settings.load().get("clip_quick_hotkey", "") or "").strip().lower()
+        if fallback.lower() != quick_key:
+            settings.save({"clip_paste_hotkey": fallback})
+            self.cmb_paste_hotkey.setCurrentText(fallback)
+            if _palette_mod.setup_paste_hotkey(self):
+                QMessageBox.information(
+                    self, config.DISPLAY_NAME,
+                    f"热键「{text}」已被其他程序占用，面板粘贴已回退为「{fallback}」"
+                    "（可在设置页改为其他组合）。")
+                return
+        settings.save({"clip_paste_hotkey": ""})
+        self.cmb_paste_hotkey.setCurrentText("")
+        QMessageBox.warning(
+            self, config.DISPLAY_NAME,
+            f"热键「{text}」注册失败（可能被其他程序占用），面板粘贴热键已禁用；"
+            "请回设置页自定义其他组合（托盘菜单仍可呼出面板）。")
 
     def _apply_theme(self, dark: bool):
         from PySide6.QtWidgets import QApplication
@@ -1464,8 +1603,8 @@ class MainWindow(QMainWindow):
 
     def quit_app(self):
         self._save_window_state()
-        from .palette import teardown_global_hotkey, teardown_paste_hotkey
         teardown_global_hotkey(self)
+        teardown_quick_paste_hotkey(self)
         teardown_paste_hotkey(self)
         self.mon.stop()
         self.tele.stop()

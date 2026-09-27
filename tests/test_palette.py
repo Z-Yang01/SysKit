@@ -406,8 +406,10 @@ def test_main_window_palette_integration(qtbot, monkeypatch, make_main_window):
     reg_calls.clear()
     win.cmb_hotkey.setCurrentText("不是热键")
     win._save_settings()
+    # 三热键同场重注册：面板(id=1) + 快速粘贴(id=2, Ctrl+Alt+V) + 面板粘贴(id=3, Ctrl+Win+V)
     assert reg_calls == [(hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("P"), 1),
-                         (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("V"), 2)]
+                         (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_ALT, ord("V"), 2),
+                         (hotkey_mod.MOD_CONTROL | hotkey_mod.MOD_WIN, ord("V"), 3)]
     assert settings.load().get("palette_hotkey") == "Ctrl+Alt+P"
 
     # 回归：新热键被占用（注册失败）→ 自动恢复旧热键，全局热键不丢
@@ -425,9 +427,11 @@ def test_main_window_palette_integration(qtbot, monkeypatch, make_main_window):
     assert "占用" in str(warn_calls[0])
 
     # 清理全局热键与原生过滤器，避免悬空回调
-    from syskit.ui.palette import teardown_global_hotkey, teardown_paste_hotkey
+    from syskit.ui.palette import (teardown_global_hotkey, teardown_paste_hotkey,
+                                   teardown_quick_paste_hotkey)
     monkeypatch.setattr(hotkey_mod, "register",
                         lambda mods, vk, hotkey_id=1: True)
     win._save_settings()                                         # 用可注册键收尾
     teardown_global_hotkey(win)
+    teardown_quick_paste_hotkey(win)
     teardown_paste_hotkey(win)

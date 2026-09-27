@@ -9,7 +9,7 @@ SendInput 模拟一次 Ctrl+V（syskit/paste.py）。任一步失败都降级为
 这也是必须在 popup **之前**记录目标 hwnd 的原因（呼出即抢焦点）。
 回填内容经 clipboard.suppress_next 抑制，不会被自己的监听器记成新复制。
 """
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, QMimeData, Qt, QTimer, QUrl
 from PySide6.QtGui import QCursor, QImage
 from PySide6.QtWidgets import (QApplication, QDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QVBoxLayout)
@@ -28,8 +28,97 @@ _KIND_EMOJI = {"image": "🖼 ", "file": "📁 ", "html": "🌐 "}
 _KIND_WORD = {"image": "图片", "file": "文件", "html": "富文本"}
 
 
-def _copied(it: dict) -> str:
-    return _KIND_WORD.get(it.get("kind", "text"), "") + "已复制"
+def write_back_entry(it: dict) -> bool:
+    """条目内容写回系统剪贴板（面板与快速粘贴单源，硬约束⑦⑧）。
+
+    - text：setText + suppress_next（自家监听不记回填）+ 系统排除格式；
+    - file：QMimeData.setUrls(QUrl.fromLocalFile(每行路径))——真粘文件本体，
+      禁止 setText(路径文本)；
+    - html：setHtml(原始 HTML) + setText(纯文本兜底)，Word/浏览器富文本保真；
+    - image：QImage 读 PNG → setImage（无文件/损坏返回 False，不触碰剪贴板
+      ——内容不清空语义）。
+    """
+    clip = QApplication.instance().clipboard()
+    if clip is None:
+        return False
+    kind = it.get("kind", "text")
+    text = it.get("text", "")
+    if kind == "image":
+        path = clipboard_mod.image_path(it.get("data", ""))
+        img = QImage(path) if path else QImage()
+        if img.isNull():
+            return False
+        clip.setImage(img)
+        clipboard_mod.exclude_os_history()
+        return True
+    if kind == "file" and text.strip():
+        mime = QMimeData()
+        paths = [QUrl.fromLocalFile(p.strip()) for p in text.splitlines() if p.strip()]
+        if not paths:
+            return False
+        mime.setUrls(paths)
+        clip.setMimeData(mime)
+        clipboard_mod.suppress_next(text)     # 路径列表文本仍是监听器的记录键
+        clipboard_mod.exclude_os_history()
+        return True
+    if kind == "html" and it.get("data"):
+        mime = QMimeData()
+        mime.setHtml(it["data"])
+        mime.setText(text)                    # 纯文本兜底（硬约束⑧）
+        clip.setMimeData(mime)
+        clipboard_mod.suppress_next(text)
+        clipboard_mod.exclude_os_history()
+        return True
+    clip.setText(text)
+    clipboard_mod.suppress_next(text)
+    clipboard_mod.exclude_os_history()
+    return True
+
+
+def _own_foreground() -> bool:
+    """当前前台是否属于 SysKit 自身进程（面板刚隐藏/主窗口持焦等过渡态）。"""
+    return clipboard_mod.foreground_process_name() == "syskit"
+
+
+def inject_ctrl_v_guarded(target_hwnd: int, it: dict, notify, seq_check=None):
+    """焦点守卫注键（硬约束⑩单源；面板链与快速链共用）。
+
+    延一拍后按前台分派——绝不无条件抢焦点：
+    - target 为 0（托盘呼出未记录目标）→ 提示手动粘贴；
+    - 前台 == target → release_modifiers + SendInput Ctrl+V（④⑤⑥：修饰键
+      释放先于注键、dwExtraInfo 带 magic、计数断言失败降级）；
+    - 前台为空 / 属 SysKit 自身 → focus_window(target) 后**复核**前台仍是
+      target 才注，复核不过按第三方处理；
+    - 前台为第三方应用 → 放弃注键，notify「目标窗口已切换，已取消自动粘贴」。
+    降级文案按条目类型点名（_KIND_WORD）。seq_check 返回 False 时静默放弃
+    （连击/重呼出作废旧链）。
+    """
+    prefix = _KIND_WORD.get(it.get("kind", "text"), "")
+
+    def _fire():
+        if not (paste_mod.release_modifiers() and paste_mod.send_ctrl_v()):
+            notify(f"{prefix}已复制；自动粘贴未送达，请按 Ctrl+V")
+        else:
+            notify("已粘贴到原窗口")
+
+    def guarded():
+        if seq_check is not None and not seq_check():
+            return
+        if not target_hwnd:
+            notify(f"{prefix}已复制；切换窗口后按 Ctrl+V 粘贴")
+            return
+        fg = paste_mod.foreground_window()
+        if fg and fg != target_hwnd and not _own_foreground():
+            notify("目标窗口已切换，已取消自动粘贴（内容已在剪贴板）")
+            return
+        if not fg or _own_foreground():
+            paste_mod.focus_window(target_hwnd)   # 还焦后由下方复核把关
+        if paste_mod.foreground_window() == target_hwnd:
+            _fire()
+        else:
+            notify("目标窗口已切换，已取消自动粘贴（内容已在剪贴板）")
+
+    QTimer.singleShot(50, guarded)
 
 
 def hotkey_hint() -> str:
@@ -252,45 +341,22 @@ class ClipPastePanel(QDialog):
         QTimer.singleShot(120, lambda: self._do_paste(it, hwnd, seq))
 
     def _write_back(self, it: dict) -> bool:
-        """条目内容写回系统剪贴板；文本类回填同时抑制监听器重复记录。"""
-        clip = QApplication.instance().clipboard()
-        kind = it.get("kind", "text")
-        text = it.get("text", "")
-        if kind == "image":
-            path = clipboard_mod.image_path(it.get("data", ""))
-            img = QImage(path) if path else QImage()
-            if img.isNull():
-                return False
-            clip.setImage(img)
-            clipboard_mod.exclude_os_history()
-            return True
-        clip.setText(text)
-        clipboard_mod.suppress_next(text)
-        # 自动回填不是"用户新复制"：自家历史用 suppress_next，系统侧
-        # （Win+V/云剪贴板）用排除格式——密码库/WLAN 复制同口径
-        clipboard_mod.exclude_os_history()
-        return True
+        """条目内容写回系统剪贴板（单源见模块级 write_back_entry）。"""
+        return write_back_entry(it)
 
-    def _do_paste(self, it: dict, hwnd: int, seq: int):
+    def _do_paste(self, it: dict, hwnd: int, seq: int, _retried: bool = False):
         if seq != self._paste_seq:
             return                      # 已被更新的粘贴/重新呼出取代
         if not self._write_back(it):
+            # 图片读取失败（AV/索引器短暂锁定文件等）异步重试一次——UI 线程
+            # 禁止 sleep（硬约束⑨）；seq 守卫防重试串进新链
+            if it.get("kind", "text") == "image" and not _retried:
+                QTimer.singleShot(50, lambda: self._do_paste(it, hwnd, seq, True))
+                return
             self._notify("粘贴失败：内容不可用（图片文件可能已被清理）")
             return
-        if not (hwnd and paste_mod.focus_window(hwnd)):
-            self._notify(f"{_copied(it)}；切换窗口后按 Ctrl+V 粘贴")
-            return
-        # 焦点切换的 WM_ACTIVATE 要经本进程事件循环派发后才能注按键：
-        # 同步 sleep 会卡住派发、首拍 Ctrl+V 可能被丢（真机冒烟实测）
-        QTimer.singleShot(150, lambda: self._send_paste_keystroke(it, seq))
-
-    def _send_paste_keystroke(self, it: dict, seq: int):
-        if seq != self._paste_seq:
-            return                      # 等待激活的 150ms 里用户已另起一次粘贴
-        if paste_mod.send_ctrl_v():
-            self._notify("已粘贴到原窗口")
-        else:
-            self._notify(f"{_copied(it)}；自动粘贴未送达，请按 Ctrl+V")
+        inject_ctrl_v_guarded(hwnd, it, self._notify,
+                              seq_check=lambda: seq == self._paste_seq)
 
     def _notify(self, msg: str):
         tray = getattr(self._window, "tray", None)

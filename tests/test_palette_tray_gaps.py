@@ -186,7 +186,9 @@ class TestHotkeyGaps:
         assert hotkey.register(hotkey.MOD_CONTROL | hotkey.MOD_ALT, 0x4B,
                                hotkey_id=7) is True
         assert hotkey.unregister(7) is True
-        assert calls[0] == ("reg", None, 7, hotkey.MOD_CONTROL | hotkey.MOD_ALT, 0x4B)
+        assert calls[0] == ("reg", None, 7,
+                            hotkey.MOD_CONTROL | hotkey.MOD_ALT | hotkey.MOD_NOREPEAT,
+                            0x4B)   # 注册恒置 NOREPEAT（长按不重复触发）
         assert calls[1] == ("unreg", None, 7)
 
     def test_register_unregister_ctypes_exception_returns_false(self, monkeypatch):

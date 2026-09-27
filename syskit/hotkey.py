@@ -9,6 +9,7 @@ MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
+MOD_NOREPEAT = 0x4000   # 按住不重复触发（Win7+；长按热键只发一次 WM_HOTKEY）
 
 _NAMED_KEYS = {
     "space": 0x20, "esc": 0x1B, "escape": 0x1B, "tab": 0x09, "enter": 0x0D,
@@ -110,12 +111,16 @@ def hotkey_display(text: str) -> str:
 
 
 def register(mods: int, vk: int, hotkey_id: int = 1) -> bool:
-    """注册全局热键（主线程调用）。失败返回 False（调用方应静默降级）。"""
+    """注册全局热键（主线程调用）。失败返回 False（调用方应静默降级）。
+
+    恒置 MOD_NOREPEAT：长按不重复触发（规格书硬约束；Win7+ 支持该位）。
+    """
     if sys.platform != "win32":
         return False
     try:
         import ctypes
-        return bool(ctypes.windll.user32.RegisterHotKey(None, hotkey_id, mods, vk))
+        return bool(ctypes.windll.user32.RegisterHotKey(
+            None, hotkey_id, mods | MOD_NOREPEAT, vk))
     except Exception:
         return False
 
