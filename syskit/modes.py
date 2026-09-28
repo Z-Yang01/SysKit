@@ -122,12 +122,19 @@ def set_mute(mute: bool) -> dict:
         detail = "已静音" if ok else (r.stderr or r.stdout)[-120:]
         return _step("系统静音", ok, detail)
     prev = settings.load().get("modes_prev_volume")
-    vol = prev if isinstance(prev, int) and 0 <= prev <= 0xFFFFFFFF else 0xFFFFFFFF
+    # 记录的「可用性」必须同时约束音量值与提示语：0（记录的本来就是静音态）、
+    # bool（JSON 手改 true → isinstance(True,int) 恒真）、非 int / 越界（脏数据）
+    # 一律视为没有可用记录——按「未找到，设为最大」处理并如实说明。旧实现
+    # `0 <= prev` 含 0 且提示只看 `prev is not None`：手改/旧版写坏的记录会
+    # 恢复成 vol=0（仍无声）或最大音量，却谎报「已恢复原音量」。
+    usable = (isinstance(prev, int) and not isinstance(prev, bool)
+              and 0 < prev <= 0xFFFFFFFF)
+    vol = prev if usable else 0xFFFFFFFF
     r = proc.run_ps(_PS_AUDIO_PREAMBLE +
                     f"[SysKitAudio.Wv]::waveOutSetVolume([IntPtr]::Zero, [uint32]{vol})\n",
                     timeout=15)
     ok = bool(r.ok)
-    note = "已恢复原音量" if ok and prev is not None else \
+    note = "已恢复原音量" if ok and usable else \
            ("已取消静音（未找到进模式前的音量，已设为最大）" if ok else
             (r.stderr or r.stdout)[-120:])
     return _step("系统静音", ok, note)
