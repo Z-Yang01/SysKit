@@ -105,7 +105,8 @@ class MainWindow(QMainWindow):
         # 侧边栏 + 页面栈
         self.stack = QStackedWidget()
         self.page_status = self._build_status_tab()
-        self.page_dash = DashboardPage(self.eventstore, traffic=self.tele.traffic)
+        self.page_dash = DashboardPage(self.eventstore, traffic=self.tele.traffic,
+                                       rate_stats=self.tele.rate_stats)
         self.page_diag = self._build_diag_tab()
         self.page_repair = self._build_repair_tab()
         self.page_toolbox = ToolboxPage()

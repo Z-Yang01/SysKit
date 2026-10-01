@@ -1,14 +1,14 @@
-"""网络监控仪表盘：统计卡 + 延迟/速率曲线 + 断网事件时间线 + 网络质量日报。"""
+"""网络监控仪表盘：统计卡 + 延迟/速率曲线 + 断网事件时间线 + 网络质量日报 + 流量统计。"""
 import time
 
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QFrame, QGroupBox,
+from PySide6.QtWidgets import (QComboBox, QFrame, QGroupBox,
                                QHBoxLayout, QHeaderView, QLabel, QListWidget,
                                QListWidgetItem, QPushButton,
                                QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from . import theme
-from .charts import LineChart, human_bytes
+from .charts import BarChart, LineChart, human_bytes
 from .. import netstats
 
 STATE_TEXT = {"ok": "恢复在线", "no_net": "连接中断", "ncsi_false": "NCSI 误报",
@@ -55,10 +55,16 @@ def _stat_card(title):
 
 
 class DashboardPage(QWidget):
-    def __init__(self, eventstore, parent=None, traffic=None):
+    _GRANS = [("分钟（近 60 分）", "minute"), ("小时（近 48 时）", "hour"),
+              ("天（近 30 天）", "day"), ("月（近 12 月）", "month")]
+
+    def __init__(self, eventstore, parent=None, traffic=None, rate_stats=None):
         super().__init__(parent)
         self._eventstore = eventstore
         self._traffic = traffic            # TrafficStore：日报的按天流量列
+        self._rate_stats = rate_stats      # RateStatsStore：流量统计（分钟/时/天/月 × WiFi）
+        self._rate_wifi_items = []         # 当前 WiFi 下拉项（变更才重建，防选中跳动）
+        self._rate_last_refresh = 0.0
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 14, 14, 10)
 
@@ -119,9 +125,109 @@ class DashboardPage(QWidget):
         self.tbl_report.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         rlay.addWidget(self.tbl_report, 1)
         self._hist_tabs.addTab(report_w, "日报")
+        # Tab3：流量统计（秒=实时速率曲线已有；分/时/天/月 × 分 WiFi 归因）
+        self._stats_w = self._build_rate_stats()
+        self._hist_tabs.addTab(self._stats_w, "流量统计")
         glay.addWidget(self._hist_tabs)
         lay.addWidget(grp, 1)
         self.reload_events()
+
+    def _build_rate_stats(self) -> QWidget:
+        w = QWidget()
+        slay = QVBoxLayout(w)
+        srow = QHBoxLayout()
+        self.cmb_rate_gran = QComboBox()
+        self.cmb_rate_gran.addItems([label for label, _ in self._GRANS])
+        self.cmb_rate_gran.setCurrentIndex(2)          # 默认「天」
+        self.cmb_rate_gran.currentIndexChanged.connect(lambda *_: self._reload_rate_stats())
+        self.cmb_rate_wifi = QComboBox()
+        self.cmb_rate_wifi.currentIndexChanged.connect(lambda *_: self._reload_rate_stats())
+        self.lbl_rate_total = QLabel("—")
+        self.lbl_rate_total.setObjectName("hint")
+        srow.addWidget(QLabel("粒度"))
+        srow.addWidget(self.cmb_rate_gran)
+        srow.addWidget(QLabel("网络"))
+        srow.addWidget(self.cmb_rate_wifi, 1)
+        srow.addWidget(self.lbl_rate_total)
+        slay.addLayout(srow)
+        self.chart_rate = BarChart("区间下载量（柱）· 上行/下行总量见右侧", fmt=human_bytes)
+        slay.addWidget(self.chart_rate, 1)
+        self.tbl_rate_wifi = theme.make_table(["网络（区间占用）", "下载", "上传"],
+                                              select_rows=True)
+        self.tbl_rate_wifi.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tbl_rate_wifi.setMaximumHeight(150)
+        slay.addWidget(self.tbl_rate_wifi)
+        return w
+
+    def _reload_rate_stats(self):
+        """按粒度/网络筛选重绘流量统计；数据源缺失或异常时如实显示「—」。"""
+        if self._rate_stats is None:
+            return
+        try:
+            gran = self._GRANS[self.cmb_rate_gran.currentIndex()][1]
+            snap = self._rate_stats.snapshot()
+            ssid = self.cmb_rate_wifi.currentText()
+            ssid = None if (ssid == "全部网络" or not ssid) else ssid
+            res = netstats.range_series(gran, snap, ssid=ssid)
+            self.chart_rate.set_bars(
+                [(r["key"], r["recv"], "@accent" if r["recv"] < 0.5 * max(
+                    (x["recv"] for x in res["rows"]), default=1) else "@err")
+                 for r in res["rows"]])
+            self.lbl_rate_total.setText(
+                f"区间 ↓ {human_bytes(res['recv'])} · ↑ {human_bytes(res['sent'])}")
+            self._reload_rate_wifi_table(snap, ssid)
+            self._sync_rate_wifi_combo(snap)
+            self._rate_last_refresh = time.time()
+        except Exception:
+            self.lbl_rate_total.setText("—")
+
+    def _reload_rate_wifi_table(self, snap: dict, ssid):
+        """各网络在所选粒度对应时间窗内的占用合计（不受 WiFi 筛选影响）。"""
+        gran = self._GRANS[self.cmb_rate_gran.currentIndex()][1]
+        totals = {}
+        table = {"minute": snap["minutes"], "hour": snap["hours"]}.get(
+            gran, snap["days"])
+        win = netstats._GRAN_WINDOW[gran]
+        if gran == "month":
+            for key in sorted(table)[-win:]:
+                mon = key[:7]
+                agg = totals.setdefault("月汇总 " + mon, {"recv": 0, "sent": 0})
+                for n, w in table[key].get("wifi", {}).items():
+                    agg["recv"] += w.get("recv", 0)
+                    agg["sent"] += w.get("sent", 0)
+        else:
+            for key in sorted(table)[-win:]:
+                for n, w in table[key].get("wifi", {}).items():
+                    agg = totals.setdefault(n, {"recv": 0, "sent": 0})
+                    agg["recv"] += w.get("recv", 0)
+                    agg["sent"] += w.get("sent", 0)
+        rows = sorted(totals.items(), key=lambda kv: -kv[1]["recv"])
+        self.tbl_rate_wifi.setRowCount(len(rows))
+        for i, (name, agg) in enumerate(rows):
+            self.tbl_rate_wifi.setItem(i, 0, QTableWidgetItem(name))
+            self.tbl_rate_wifi.setItem(i, 1, QTableWidgetItem(human_bytes(agg["recv"])))
+            self.tbl_rate_wifi.setItem(i, 2, QTableWidgetItem(human_bytes(agg["sent"])))
+
+    def _sync_rate_wifi_combo(self, snap: dict):
+        """WiFi 下拉随数据出现自动补充（保持当前选中；变更才重建防跳动）。"""
+        names = ["全部网络"] + netstats.known_ssids(snap)
+        if names == self._rate_wifi_items:
+            return
+        cur = self.cmb_rate_wifi.currentText()
+        self.cmb_rate_wifi.blockSignals(True)
+        self.cmb_rate_wifi.clear()
+        self.cmb_rate_wifi.addItems(names)
+        if cur in names:
+            self.cmb_rate_wifi.setCurrentText(cur)
+        self.cmb_rate_wifi.blockSignals(False)
+        self._rate_wifi_items = names
+
+    def refresh_rate_stats_if_visible(self):
+        """统计 Tab 可见时按 ≥10s 节流刷新（update_tick 高频调用入口）。"""
+        if (self._rate_stats is not None
+                and self._hist_tabs.currentWidget() is self._stats_w
+                and time.time() - self._rate_last_refresh >= 10):
+            self._reload_rate_stats()
 
     def _set_report_days(self, days: int):
         self._report_days = days
@@ -181,6 +287,7 @@ class DashboardPage(QWidget):
 
     def update_tick(self, d: dict):
         self._last_tick = time.time()
+        self.refresh_rate_stats_if_visible()     # 统计 Tab 可见时 ≥10s 节流刷新
         if "lat_gw" in d:
             # gateway 与 lat_gw 同 tick 成组出现（telemetry 保证）：
             # 无网关时 lat_gw=None 是"没得 ping"，不该显示成"超时/丢包"

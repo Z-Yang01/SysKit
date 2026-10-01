@@ -86,3 +86,67 @@ def daily_report(events: list, days: int = 7, traffic: dict = None) -> list:
             down_start = None
         prev_down = now_down
     return out
+
+
+# ---------------- 多粒度流量查询（RateStatsStore 快照 → 柱状序列） ----------------
+
+_GRAN_WINDOW = {"minute": 60, "hour": 48, "day": 30, "month": 12}
+
+
+def known_ssids(stats: dict) -> list:
+    """快照中出现过的网络名（含「以太网/未知」），名称排序。"""
+    names = set()
+    for table in (stats.get("minutes", {}), stats.get("hours", {}),
+                  stats.get("days", {})):
+        for rec in table.values():
+            names.update(str(n) for n in rec.get("wifi", {}))
+    return sorted(names)
+
+
+def range_series(granularity: str, stats: dict, ssid=None) -> dict:
+    """粒度区间序列（时间正序）+ 区间总量；ssid=None 全部，否则只取该网络。
+
+    granularity：minute(近60分) / hour(近48时) / day(近30天) / month(近12月，
+    由天桶按 YYYY-MM 派生，不另存)。返回
+    {"rows": [{"key","sent","recv"}], "sent": 总上行, "recv": 总下行}。
+    """
+    if granularity not in _GRAN_WINDOW:
+        raise ValueError(f"未知粒度: {granularity}")
+    win = _GRAN_WINDOW[granularity]
+    if granularity == "minute":
+        table = stats.get("minutes", {})
+    elif granularity == "hour":
+        table = stats.get("hours", {})
+    else:                                       # day / month（月由天桶派生）
+        table = stats.get("days", {})
+
+    def _pick(rec: dict):
+        if ssid is None:
+            return max(0, int(rec.get("sent", 0))), max(0, int(rec.get("recv", 0)))
+        w = rec.get("wifi", {}).get(str(ssid)) or {}
+        return max(0, int(w.get("sent", 0))), max(0, int(w.get("recv", 0)))
+
+    if granularity == "month":
+        grouped = {}
+        for key in sorted(table):
+            s, r = _pick(table[key])
+            agg = grouped.setdefault(key[:7], {"sent": 0, "recv": 0})
+            agg["sent"] += s
+            agg["recv"] += r
+        rows = [{"key": k, "sent": grouped[k]["sent"], "recv": grouped[k]["recv"]}
+                for k in sorted(grouped)[-win:]]
+    else:
+        # 柱标签：分钟取 "HH:MM"、小时取 "HH时"、天取 "MM-DD"（月已含年月）
+        def _label(key: str) -> str:
+            if granularity == "minute":
+                return key[-5:]
+            if granularity == "hour":
+                return key[11:] + "时"
+            return key[5:]
+
+        rows = [{"key": _label(key), "sent": s, "recv": r}
+                for key in sorted(table)[-win:]
+                for s, r in [_pick(table[key])]]
+    total_s = sum(r["sent"] for r in rows)
+    total_r = sum(r["recv"] for r in rows)
+    return {"rows": rows, "sent": total_s, "recv": total_r}

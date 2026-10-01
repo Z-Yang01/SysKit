@@ -9,7 +9,7 @@ import psutil
 from PySide6.QtCore import QThread, Signal
 
 from . import icmp, proc
-from .stores import TrafficStore
+from .stores import RateStatsStore, TrafficStore
 from .logger import LOGGER
 
 _PHYSICAL_EXCLUDE = ("loopback", "vmnet", "vmware", "vethernet", "bluetooth", "wan miniport",
@@ -58,6 +58,8 @@ class TelemetryWorker(QThread):
         self._need = set(HEAVY_GROUPS)
         self._gw_ts = 0           # 上次刷新网关时的 tick（刷新走 PowerShell，见 _sample）
         self.traffic = TrafficStore()
+        self.rate_stats = RateStatsStore()   # 多粒度流量（分钟/小时/天 × 分 WiFi）
+        self._wifi_ssid = ""
         psutil.cpu_percent(interval=None)   # 预热第一次调用
 
     def stop(self):
@@ -87,6 +89,7 @@ class TelemetryWorker(QThread):
             save_counter += 1
             if save_counter >= 60:
                 self.traffic.save_if_dirty()
+                self.rate_stats.save_if_dirty()
                 save_counter = 0
             self._stop_evt.wait(1)
 
@@ -98,6 +101,7 @@ class TelemetryWorker(QThread):
         if self._last_net is not None:
             down, up = _fmt_nic_rates(self._last_net, now)
             self.traffic.add(up, down)
+            self.rate_stats.add(up, down, self._wifi_ssid)
             payload["down"] = down
             payload["up"] = up
         self._last_net = now
@@ -124,9 +128,15 @@ class TelemetryWorker(QThread):
             payload["lat_gw"] = icmp.ping(self._gateway) if self._gateway else None
             payload["lat_pub"] = icmp.ping("223.5.5.5")
             payload["gateway"] = self._gateway
-        if self._tickno % 5 == 0 and "wifi" in self._need:    # 5 秒一轮 WiFi 信号
-            self._wifi_signal = self._read_wifi_signal()
-            payload["wifi_signal"] = self._wifi_signal
+        if (self._tickno % 5 == 0 and "wifi" in self._need) or self._tickno % 60 == 0:
+            # 5 秒一轮（页面可见）或托盘驻留期每分钟一次：同一段 netsh 输出
+            # 既取信号也取 SSID（流量归属名，零额外进程开销）
+            sig, ssid = self._read_wifi()
+            self._wifi_signal = sig
+            self._wifi_ssid = ssid
+            self.rate_stats.set_ssid(ssid)
+            if "wifi" in self._need:
+                payload["wifi_signal"] = self._wifi_signal
         if self._tickno % 2 == 0 and "procs" in self._need:   # 2 秒一轮 Top 进程
             payload["top_procs"] = self._top_procs()
         sent, recv = self.traffic.today()
@@ -134,13 +144,21 @@ class TelemetryWorker(QThread):
         payload["today_recv"] = recv
         return payload
 
-    def _read_wifi_signal(self):
-        """当前 WiFi 信号百分比；未连接返回 None。netsh 约 100ms，5 秒一次可接受。"""
+    def _read_wifi(self):
+        """(信号%, SSID)；未连接返回 (None, "")。netsh 约 100ms，5s/60s 周期可接受。
+
+        SSID 取接口级 `SSID` 行（BSSID 行以 B 开头不会被行首锚定命中）；
+        解析失败落空串 → 流量归「以太网/未知」桶，不丢数据。
+        """
         r = proc.run(["netsh", "wlan", "show", "interfaces"], timeout=8)
-        if "已断开" in r.stdout or "disconnected" in r.stdout.lower():
-            return None
-        m = re.search(r"(?:信号|Signal)\s*[:：]\s*(\d+)%", r.stdout)
-        return int(m.group(1)) if m else None
+        out = r.stdout or ""
+        if "已断开" in out or "disconnected" in out.lower():
+            return None, ""
+        m = re.search(r"(?:信号|Signal)\s*[:：]\s*(\d+)%", out)
+        signal = int(m.group(1)) if m else None
+        sm = re.search(r"^\s*SSID\s*[:：]\s*(\S.*)$", out, re.M)
+        ssid = sm.group(1).strip() if sm else ""
+        return signal, ssid
 
     def _top_procs(self, n=8):
         """Top 进程。复用 psutil.Process 实例：cpu_percent 需要跨调用基线，

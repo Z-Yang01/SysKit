@@ -135,17 +135,19 @@ class TestRefreshGateway:
 
 class TestWifiSignal:
     @pytest.mark.parametrize("stdout,expected", [
-        ("已断开状态连接", None),
-        ("State : disconnected", None),
-        ("信号 : 84%", 84),
-        ("Signal : 65%", 65),
-        ("没有任何信号信息", None),
+        ("已断开状态连接", (None, "")),
+        ("State : disconnected", (None, "")),
+        ("信号 : 84%", (84, "")),
+        ("Signal : 65%", (65, "")),
+        ("没有任何信号信息", (None, "")),
+        ("   SSID                   : HomeWiFi\n   信号 : 84%", (84, "HomeWiFi")),
+        ("SSID : MyNet\nBSSID 1         : aa:bb\nSignal : 65%", (65, "MyNet")),
     ])
     def test_read_wifi_signal(self, monkeypatch, stdout, expected):
         monkeypatch.setattr(tel_mod.proc, "run",
                             lambda cmd, timeout=20: CmdResult(0, stdout, ""))
         w = tel_mod.TelemetryWorker()
-        assert w._read_wifi_signal() == expected
+        assert w._read_wifi() == expected
 
 
 class TestTopProcs:

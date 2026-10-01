@@ -118,6 +118,9 @@ def _bare_worker(monkeypatch):
     w._need = set(HEAVY_GROUPS)
     w._gw_ts = 0
     w.traffic = types.SimpleNamespace(add=lambda u, d: None, today=lambda: (1, 2))
+    w.rate_stats = types.SimpleNamespace(add=lambda u, d, s=None: None,
+                                         set_ssid=lambda s: None)
+    w._wifi_ssid = ""
 
     calls = {"ping": [], "netsh": []}
     nic = types.SimpleNamespace(bytes_recv=1000, bytes_sent=500)

@@ -29,7 +29,8 @@ def test_dashboard_report_tab_aggregates_events_and_traffic(qtbot, monkeypatch):
 
     page = DashboardPage(store, traffic=traffic)
     qtbot.addWidget(page)
-    assert page._hist_tabs.count() == 2                 # 时间线 / 日报
+    assert page._hist_tabs.count() == 3                 # 时间线 / 日报 / 流量统计
+    assert page._hist_tabs.tabText(2) == "流量统计"
     assert page.list_events.count() == 2                # 原 Tab 属性名不变（ok+no_net）
     rows = page.tbl_report.rowCount()
     assert rows >= 1
