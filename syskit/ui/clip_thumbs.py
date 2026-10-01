@@ -13,6 +13,15 @@ from PySide6.QtGui import QIcon, QPixmap
 from .. import clipboard as clipboard_mod
 
 _cache = {}     # {(文件名, 高度px): QIcon | False}——False = 已确认不可加载
+_CACHE_CAP = 256    # 托盘长驻数天、截图载荷各异时防无界增长（每次弹出面板都进缓存）
+
+def _cache_put(key, value):
+    """插入并按插入序淘汰最旧条目（载荷按 md5 内容寻址，淘汰仅损缓存命中率，
+    不损正确性——下次命中重新读盘重建）。"""
+    if len(_cache) >= _CACHE_CAP:
+        for k in list(_cache)[: len(_cache) - _CACHE_CAP + 1]:
+            _cache.pop(k, None)
+    _cache[key] = value
 
 
 def icon_for(name: str, px: int = 28):
@@ -26,8 +35,8 @@ def icon_for(name: str, px: int = 28):
     path = clipboard_mod.image_path(name)
     pix = QPixmap(path) if path and os.path.exists(path) else QPixmap()
     if pix.isNull():
-        _cache[key] = False
+        _cache_put(key, False)
         return None
     icon = QIcon(pix.scaledToHeight(px, Qt.SmoothTransformation))
-    _cache[key] = icon
+    _cache_put(key, icon)
     return icon

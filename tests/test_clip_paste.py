@@ -609,12 +609,32 @@ class TestClipPastePanel:
 
     def test_icon_for_single_source_and_cache(self):
         """单源助手：同载荷返回同一 QIcon（缓存命中），丢失/空载荷稳定 None。"""
-        from syskit.ui.clip_thumbs import icon_for
+        from syskit.ui import clip_thumbs
+        clip_thumbs._cache.clear()
         name = self._png_entry()
-        a = icon_for(name)
-        assert a is not None and a is icon_for(name)
-        assert icon_for("missing.png") is None
-        assert icon_for("") is None
+        a = clip_thumbs.icon_for(name)
+        assert a is not None and a is clip_thumbs.icon_for(name)
+        assert clip_thumbs.icon_for("missing.png") is None
+        assert clip_thumbs.icon_for("") is None
+
+    def test_icon_cache_bounded(self):
+        """托盘长驻内存治理：缓存超上限按插入序淘汰最旧条目，上限不被突破。"""
+        from syskit.ui import clip_thumbs
+        clip_thumbs._cache.clear()
+        cap = clip_thumbs._CACHE_CAP
+        names = [self._png_entry(argb=0xFF000000 | (0x123456 + i)) for i in range(6)]
+        for n in names[:5]:
+            clip_thumbs.icon_for(n)
+        assert len(clip_thumbs._cache) == 5
+        clip_thumbs.icon_for("missing.png")            # 失败项也计入缓存
+        assert len(clip_thumbs._cache) == 6
+        # 模拟逼近上限：塞满后新条目触发淘汰，长度回落到 cap 以内
+        clip_thumbs._cache.update({(f"pad{i}", 28): False for i in range(cap - 6)})
+        clip_thumbs.icon_for(names[5])                  # 第 cap 个之后的新插入
+        assert len(clip_thumbs._cache) <= cap
+        # 最早插入的条目被淘汰（不保证具体哪几个，但首个必走）
+        assert (names[0], 28) not in clip_thumbs._cache
+        clip_thumbs._cache.clear()
 
     def test_arrow_keys_skip_hidden_rows(self, qtbot):
         """⑤：过滤后 ↑↓ 只在可见行间移动（中间隐藏行不消耗按键）。"""
