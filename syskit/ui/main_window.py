@@ -266,11 +266,17 @@ class MainWindow(QMainWindow):
         try:
             from .. import clipboard as clipboard_mod
             from .. import paste as paste_mod
-            from .clip_paste import inject_ctrl_v_guarded, write_back_entry
+            from .clip_paste import (inject_ctrl_v_guarded, live_clip_history,
+                                     write_back_entry)
             hwnd = paste_mod.foreground_window()
-            clipboard_mod.flush_pending()
-            items = clipboard_mod.ClipboardHistory(
-                max_items=int(settings.load().get("clipboard_max", 50))).items()
+            # 活实例直读（权威源、零盘往返）；假窗/页面未建时回退盘读
+            hist = live_clip_history(self)
+            if hist is not None:
+                items = hist.items()
+            else:
+                clipboard_mod.flush_pending()
+                items = clipboard_mod.ClipboardHistory(
+                    max_items=int(settings.load().get("clipboard_max", 50))).items()
             if not items:
                 self._paste_notify("快速粘贴", "剪贴板历史为空，无可粘贴内容")
                 return

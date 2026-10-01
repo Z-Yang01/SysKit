@@ -1380,7 +1380,8 @@ class SystemPage(QWidget):
         tabs.addTab(self.battery, "电池健康")
         tabs.addTab(CleanupTab(), "垃圾清理")
         tabs.addTab(DiskTab(), "磁盘空间")
-        tabs.addTab(ClipboardTab(), "剪贴板历史")
+        self.clip_tab = ClipboardTab()  # 存活实例引用：快捷粘贴/面板直读内存历史（免盘往返）
+        tabs.addTab(self.clip_tab, "剪贴板历史")
         tabs.addTab(ModesTab(), "场景模式")
         lay.addWidget(tabs)
 

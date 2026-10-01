@@ -131,6 +131,19 @@ def hotkey_hint() -> str:
     return hotkey_mod.hotkey_display(text)
 
 
+def live_clip_history(window):
+    """主窗口剪贴板页的活 ClipboardHistory 实例（监听入库的权威源）。
+
+    直读内存：热键/面板路径免「脏刷盘（DPAPI 加密写）+ 回读（DPAPI 解密）」
+    的整轮盘往返——复制完立刻快捷粘贴（最典型场景）恰好撞上脏刷盘。
+    取不到（测试假窗 / 页面未建）返回 None，调用方回退盘读路径。
+    """
+    page = getattr(window, "page_system", None)
+    tab = getattr(page, "clip_tab", None)
+    hist = getattr(tab, "hist", None)
+    return hist if hist is not None and hasattr(hist, "items") else None
+
+
 class _SearchEdit(QLineEdit):
     """搜索框键盘增强：↑↓ 移动选择、1-9 直选当前可见行（Ditto 同语义）。"""
 
@@ -228,7 +241,12 @@ class ClipPastePanel(QDialog):
     # ---------------- 过滤与选择 ----------------
 
     def _load_items(self) -> list:
-        clipboard_mod.flush_pending()   # 先刷盘：防抖窗口内的最新复制可见
+        # 优先直读主窗口活实例（监听入库权威源，零盘往返）；盘读路径保留给
+        # 测试假窗/页面未建场景（flush：防抖窗口内的最新复制对盘读方可见）
+        hist = live_clip_history(self._window)
+        if hist is not None:
+            return hist.items()
+        clipboard_mod.flush_pending()
         max_items = int(settings.load().get("clipboard_max", 50))
         return clipboard_mod.ClipboardHistory(max_items=max_items).items()
 

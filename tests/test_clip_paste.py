@@ -1021,6 +1021,35 @@ def _prep_settings(panel=None, quick=None, migrated=True):
 
 
 class TestQuickPasteLatest:
+    def test_prefers_live_history_no_disk_roundtrip(self, make_main_window, monkeypatch):
+        """热路径去盘化：窗口有活实例时直读内存，不构造盘读 ClipboardHistory
+        （脏刷盘 DPAPI 加密 + 回读解密实测 ~14ms，直读 0.007ms）。"""
+        _stub_system(monkeypatch)
+        win = make_main_window()
+        live = win.page_system.clip_tab.hist
+        live.clear()
+        live.add("live-newest")            # 只在内存：盘读需先 flush 才能看到
+        constructions = []
+        real = clipboard_mod.ClipboardHistory
+
+        class _Counting(real):
+            def __init__(self, *a, **k):
+                constructions.append(1)
+                super().__init__(*a, **k)
+
+        monkeypatch.setattr(clipboard_mod, "ClipboardHistory", _Counting)
+        notes = []
+        monkeypatch.setattr(win.tray, "notify",
+                            lambda title, msg, level="ok": notes.append(msg))
+        monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0x777)
+        monkeypatch.setattr(clipboard_mod, "foreground_process_name",
+                            lambda: "notepad")
+        monkeypatch.setattr(paste_mod, "release_modifiers", lambda: True)
+        monkeypatch.setattr(paste_mod, "send_ctrl_v", lambda: True)
+        win.quick_paste_latest()
+        assert QApplication.clipboard().text() == "live-newest"
+        assert constructions == []         # 零盘读构造（flush 也不再必要）
+
     def test_pastes_newest_entry_with_modifier_order(self, qtbot, make_main_window, monkeypatch):
         _stub_system(monkeypatch)
         win = make_main_window()
@@ -1031,6 +1060,11 @@ class TestQuickPasteLatest:
         hist.add("older")
         hist.add("newest")
         hist.save()
+        # 运行态权威源是活实例（监听入库）：把种子同步进窗口活历史
+        live = win.page_system.clip_tab.hist
+        live.clear()
+        live.add("older")
+        live.add("newest")
         monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0x777)
         monkeypatch.setattr(clipboard_mod, "foreground_process_name",
                             lambda: "notepad")
@@ -1067,9 +1101,9 @@ class TestQuickPasteLatest:
         notes = []
         monkeypatch.setattr(win.tray, "notify",
                             lambda title, msg, level="ok": notes.append(msg))
-        hist = clipboard_mod.ClipboardHistory()
-        hist.add("something")
-        hist.save()
+        live = win.page_system.clip_tab.hist
+        live.clear()
+        live.add("something")                 # 运行态：历史在活实例里
         import syskit.ui.clip_paste as cp
         monkeypatch.setattr(cp, "write_back_entry", lambda it: False)
         monkeypatch.setattr(paste_mod, "foreground_window", lambda: 0x777)
