@@ -1,0 +1,23 @@
+:root {
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+body {
+  margin: 0;
+  background: var(--sk-bg);
+  color: var(--sk-text);
+}
+
+/* 卡片基形：白底圆角 + 边框（对应 Qt statCard/QGroupBox 形态） */
+.sk-card {
+  background: var(--sk-card);
+  border: 1px solid var(--sk-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.sk-hint {
+  color: var(--sk-sub);
+  font-size: 12px;
+}

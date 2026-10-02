@@ -57,3 +57,9 @@ data/
 
 # ===== 本地工具状态 =====
 .workbuddy/
+
+# ===== Rust + Tauri（app-rs/ 重写分支）=====
+app-rs/node_modules/
+app-rs/dist/
+app-rs/src-tauri/target/
+app-rs/src-tauri/gen/schemas/
