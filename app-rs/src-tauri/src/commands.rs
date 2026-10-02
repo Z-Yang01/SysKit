@@ -426,6 +426,113 @@ pub async fn sk_diag_one(id: String) -> Result<crate::netcheck::CheckResult, Str
     .map_err(|e| format!("诊断线程失败: {e}"))?
 }
 
+// ---------------- M4 工具箱：Hosts 编辑 ----------------
+
+/// hosts 文件路径与可写性（前端展示用）。
+#[tauri::command]
+pub fn sk_hosts_info() -> serde_json::Value {
+    let path = std::path::Path::new(crate::hostsed::HOSTS_PATH);
+    let exists = path.exists();
+    let writable = std::fs::metadata(path)
+        .map(|m| !m.permissions().readonly())
+        .unwrap_or(false);
+    serde_json::json!({
+        "path": crate::hostsed::HOSTS_PATH,
+        "exists": exists,
+        "writable": writable,
+        "is_admin": crate::w32::is_elevated(),
+    })
+}
+
+/// 读取并解析 hosts。
+#[tauri::command]
+pub async fn sk_hosts_read() -> Vec<crate::hostsed::HostEntry> {
+    tauri::async_runtime::spawn_blocking(|| crate::hostsed::read_entries(None))
+        .await
+        .unwrap_or_default()
+}
+
+/// 追加一条映射（仅内存，返回全量列表供前端刷新）。
+#[tauri::command]
+pub async fn sk_hosts_add(
+    ip: String,
+    host: String,
+    comment: Option<String>,
+    aliases: Option<Vec<String>>,
+) -> Vec<crate::hostsed::HostEntry> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut entries = crate::hostsed::read_entries(None);
+        crate::hostsed::add_entry(
+            &mut entries,
+            &ip,
+            &host,
+            comment.as_deref().unwrap_or(""),
+            &aliases.unwrap_or_default(),
+        );
+        entries
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// 删除第 index 条（仅内存）。
+#[tauri::command]
+pub async fn sk_hosts_remove(index: usize) -> Vec<crate::hostsed::HostEntry> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut entries = crate::hostsed::read_entries(None);
+        crate::hostsed::remove_entry(&mut entries, index);
+        entries
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// 启用/禁用第 index 条（仅内存）。
+#[tauri::command]
+pub async fn sk_hosts_toggle(index: usize) -> Vec<crate::hostsed::HostEntry> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut entries = crate::hostsed::read_entries(None);
+        crate::hostsed::toggle_entry(&mut entries, index);
+        entries
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// 写回 hosts（自动备份；编码可疑时返回 Err 拒绝写入）。
+#[tauri::command]
+pub async fn sk_hosts_write(
+    entries: Vec<crate::hostsed::HostEntry>,
+    backup: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let do_backup = backup.unwrap_or(true);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::hostsed::write_entries(&entries, None, do_backup).map(|backup_path| {
+            serde_json::json!({
+                "ok": true,
+                "backup": backup_path,
+                "message": if backup_path.is_empty() {
+                    "已写入（原文件不存在，无备份）".to_string()
+                } else {
+                    format!("已写入；备份: {backup_path}")
+                },
+            })
+        })
+    })
+    .await
+    .map_err(|e| format!("写入线程失败: {e}"))?
+}
+
+/// 只做备份（手动「备份一次」按钮）。
+#[tauri::command]
+pub async fn sk_hosts_backup() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        crate::hostsed::backup_hosts(None).map(|p| p.unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("备份线程失败: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

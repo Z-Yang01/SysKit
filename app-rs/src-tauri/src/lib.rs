@@ -22,6 +22,7 @@ mod clipboard_history;
 mod clipboard_write;
 mod commands;
 mod dnsclient;
+mod hostsed;
 mod hotkey;
 mod input;
 mod input_panel;
@@ -156,6 +157,13 @@ pub fn run() {
             commands::sk_log_event,
             commands::sk_diag_run,
             commands::sk_diag_one,
+            commands::sk_hosts_info,
+            commands::sk_hosts_read,
+            commands::sk_hosts_add,
+            commands::sk_hosts_remove,
+            commands::sk_hosts_toggle,
+            commands::sk_hosts_write,
+            commands::sk_hosts_backup,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

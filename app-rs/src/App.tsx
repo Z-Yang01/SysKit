@@ -24,6 +24,7 @@ import {
 } from "antd";
 import { Dashboard } from "./Overview";
 import { Diagnose } from "./Diagnose";
+import { ToolboxHosts } from "./ToolboxHosts";
 import { applyTheme, palette, type Palette } from "./theme";
 
 interface ClipRow {
@@ -206,13 +207,7 @@ export function App() {
     overview: <Dashboard />,
     clipboard: <ClipboardPage />,
     diagnose: <Diagnose />,
-    toolbox: (
-      <Pending
-        title="工具箱"
-        milestone="M4"
-        detail="测速 / 端口占用 / Hosts / DNS 计算 / ping 路由 / 局域网发现。"
-      />
-    ),
+    toolbox: <ToolboxHosts />,
     system: (
       <Pending
         title="系统助手"
