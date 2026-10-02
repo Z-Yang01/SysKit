@@ -7,18 +7,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Card, Col, Descriptions, Empty, Row, Space, Statistic, Tag, Typography } from "antd";
+import { Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tag, Typography } from "antd";
 
 import {
   SERIES_LEN,
   formatRate,
   humanBytes,
   isStale,
+  procsSummary,
+  procRows,
   pushSample,
   signalToken,
   usageToken,
   wifiSummary,
   type PerfTick,
+  type TopProcs,
   type WifiInfo,
 } from "./system";
 
@@ -71,6 +74,7 @@ export function SystemPage() {
   const [diskR, setDiskR] = useState<number[]>([]);
   const [diskW, setDiskW] = useState<number[]>([]);
   const [wifi, setWifi] = useState<WifiInfo | null>(null);
+  const [procs, setProcs] = useState<TopProcs | null>(null);
   const [last, setLast] = useState<PerfTick | null>(null);
   const lastTickAt = useRef<number | null>(null);
 
@@ -100,7 +104,7 @@ export function SystemPage() {
     return () => un?.();
   }, []);
 
-  // WiFi 单独读一次（微秒级 API；不必挤进 tick 事件里）
+  // WiFi 与 Top 进程各自轮询：都是"昂贵"读数，不该挤进 1 秒的 tick 里
   useEffect(() => {
     const load = () =>
       void invoke<WifiInfo>("sk_wifi_info")
@@ -111,8 +115,18 @@ export function SystemPage() {
     return () => window.clearInterval(t);
   }, []);
 
-  const latestCpu = cpu.length ? cpu[cpu.length - 1] : 0;
-  const latestMem = mem.length ? mem[mem.length - 1] : 0;
+  useEffect(() => {
+    const load = () =>
+      void invoke<TopProcs>("sk_top_procs", { limit: 15 })
+        .then(setProcs)
+        .catch(() => setProcs(null));
+    load();
+    // 后端有 2 秒缓存，这里 3 秒轮询即可（tasklist 一次约 0.5 秒）
+    const t = window.setInterval(load, 3000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const latestCpu = cpu.length ? cpu[cpu.length - 1] : 0;  const latestMem = mem.length ? mem[mem.length - 1] : 0;
   const diskPeak = useMemo(
     () => Math.max(...diskR, ...diskW, 1),
     [diskR, diskW],
@@ -196,6 +210,56 @@ export function SystemPage() {
             description={wifi ? "未连接 WiFi（或本机无无线网卡）" : "正在读取 WiFi 状态…"}
           />
         )}
+      </Card>
+
+      <Card
+        size="small"
+        className="sk-card"
+        title="内存占用最高的进程"
+        extra={<span className="sk-hint">{procsSummary(procs)}</span>}
+      >
+        {procs && procs.rows.length > 0 ? (
+          <Table
+            size="small"
+            rowKey="pid"
+            pagination={false}
+            dataSource={procRows(procs)}
+            columns={[
+              {
+                title: "进程",
+                dataIndex: "name",
+                render: (v: string, r: { pid: number }) => (
+                  <Space size={6}>
+                    <span>{v}</span>
+                    <span className="sk-hint">PID {r.pid}</span>
+                  </Space>
+                ),
+              },
+              {
+                title: "内存",
+                dataIndex: "bytes",
+                width: 130,
+                render: (v: number) => humanBytes(v).replace("/s", ""),
+              },
+              {
+                title: "占进程合计",
+                dataIndex: "share",
+                width: 150,
+                render: (v: number) => (
+                  <>
+                    <Tag color={v >= 10 ? "orange" : "default"}>{v.toFixed(1)}%</Tag>
+                  </>
+                ),
+              },
+            ]}
+          />
+        ) : (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在采集进程列表…" />
+        )}
+        <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginTop: 8, marginBottom: 0 }}>
+          数据源为 <code>tasklist /fo csv</code>（约 0.5 秒/次，后端 2 秒缓存）。
+          占比分母是**进程内存合计**而不是物理内存——tasklist 报的是工作集，合计会大于物理内存。
+        </Typography.Paragraph>
       </Card>
 
       <Card size="small" className="sk-card" title="采样窗口">

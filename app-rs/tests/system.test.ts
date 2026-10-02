@@ -12,10 +12,14 @@ import {
   formatRate,
   humanBytes,
   isStale,
+  procsSummary,
+  procRows,
+  procShare,
   pushSample,
   signalToken,
   usageToken,
   wifiSummary,
+  type TopProcs,
   type WifiInfo,
 } from "../src/system";
 
@@ -147,6 +151,51 @@ describe("wifiSummary", () => {
     const s = wifiSummary(wifi({ signal: null, dbm: null }));
     expect(s).toContain("信号 —");
     expect(s).not.toContain("0%");
+  });
+});
+
+describe("Top 进程", () => {
+  const data: TopProcs = {
+    rows: [
+      { pid: 75836, name: "chrome.exe", bytes: 900 },
+      { pid: 3892, name: "Memory Compression", bytes: 100 },
+    ],
+    count: 120,
+    total_bytes: 1000,
+    limit: 15,
+  };
+
+  it("procShare 按进程合计算占比", () => {
+    expect(procShare(900, 1000)).toBeCloseTo(90);
+    expect(procShare(100, 1000)).toBeCloseTo(10);
+  });
+
+  it("合计为 0 时不除零", () => {
+    expect(procShare(100, 0)).toBe(0);
+    expect(procShare(0, 0)).toBe(0);
+  });
+
+  it("procRows 附加占比且不改原对象", () => {
+    const rows = procRows(data);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].share).toBeCloseTo(90);
+    expect(rows[0].name).toBe("chrome.exe");
+    expect(data.rows[0]).not.toHaveProperty("share");
+  });
+
+  it("null 输入返回空数组", () => {
+    expect(procRows(null)).toEqual([]);
+  });
+
+  it("摘要含进程数/合计/显示条数", () => {
+    const s = procsSummary(data);
+    expect(s).toContain("120");
+    expect(s).toContain("2");
+    expect(s).toContain("显示前");
+  });
+
+  it("未采集时明确提示", () => {
+    expect(procsSummary(null)).toBe("尚未采集");
   });
 });
 

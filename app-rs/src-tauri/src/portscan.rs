@@ -580,6 +580,85 @@ mod tests {
     }
 }
 
+/// 解析带千分位与单位的 KiB 字段：`"919,488 K"` → 字节数。
+///
+/// tasklist 的内存列表头随系统语言变化（`内存使用` / `Mem Usage`），但**格式稳定**：
+/// 数字带千分位逗号 + 空格 + `K`。单位不是固定的（K/M 都可能出现），所以按后缀换算
+/// 而不是写死乘 1024——写死会在某些系统上把 MB 当 KB，数值差 1024 倍。
+pub fn parse_mem_kb(field: &str) -> Option<u64> {
+    let t = field.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let (num_part, unit) = match t.rsplit_once(' ') {
+        Some((n, u)) => (n.trim(), u.trim()),
+        None => (t, ""),
+    };
+    let digits: String = num_part.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let n: u64 = digits.parse().ok()?;
+    let mult = match unit.to_ascii_uppercase().as_str() {
+        "K" | "KB" => 1024,
+        "M" | "MB" => 1024 * 1024,
+        "G" | "GB" => 1024 * 1024 * 1024,
+        // 无单位时按字节算（不该出现，但别猜成 KB）
+        _ => 1,
+    };
+    Some(n * mult)
+}
+
+/// 一个进程的内存占用。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ProcMem {
+    pub pid: u32,
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// 解析 `tasklist /fo csv /nh` → 每个 PID 的名称与内存。
+///
+/// 复用 [`split_csv_quoted`]（同一份 CSV 规则，进程名可能含逗号）；
+/// 内存列取第 5 列（`"名称","PID","会话名","会话#","内存使用"`）。
+pub fn parse_tasklist_mem(text: &str) -> Vec<ProcMem> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let f = split_csv_quoted(line);
+        if f.len() < 5 {
+            continue;
+        }
+        let Ok(pid) = f[1].trim().parse::<u32>() else {
+            continue;
+        };
+        let Some(bytes) = parse_mem_kb(&f[4]) else {
+            continue;
+        };
+        let name = f[0].trim();
+        if name.is_empty() {
+            continue;
+        }
+        out.push(ProcMem {
+            pid,
+            name: name.to_string(),
+            bytes,
+        });
+    }
+    out
+}
+
+/// 按内存降序取前 n 个（并列时按 PID 升序，保证顺序稳定可断言）。
+pub fn top_by_mem(mut procs: Vec<ProcMem>, n: usize) -> Vec<ProcMem> {
+    procs.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.pid.cmp(&b.pid)));
+    procs.truncate(n);
+    procs
+}
+
+/// 汇总：进程总数与内存合计。
+pub fn procs_summary(procs: &[ProcMem]) -> (usize, u64) {
+    (procs.len(), procs.iter().map(|p| p.bytes).sum())
+}
+
 #[cfg(test)]
 mod trace_tests {
     use super::*;
@@ -649,5 +728,147 @@ mod trace_tests {
         assert_eq!(normalize_trace_host("  "), "");
         assert_eq!(normalize_trace_host("192.168.1.1"), "192.168.1.1");
         assert_eq!(normalize_trace_host(" a.com [1.2.3.4] "), "a.com [1.2.3.4]");
+    }
+}
+
+#[cfg(test)]
+mod proc_tests {
+    use super::*;
+
+    const SAMPLE: &str = "\"System Idle Process\",\"0\",\"Services\",\"0\",\"8 K\"\n\"chrome.exe\",\"75836\",\"Console\",\"2\",\"919,488 K\"\n\"svchost.exe\",\"1496\",\"Services\",\"0\",\"34,592 K\"\n\"pwsh.exe\",\"84552\",\"Console\",\"2\",\"94,212 K\"\n";
+
+    #[test]
+    fn parse_mem_kb_handles_thousands_separator() {
+        assert_eq!(parse_mem_kb("919,488 K"), Some(919_488 * 1024));
+        assert_eq!(parse_mem_kb("8 K"), Some(8 * 1024));
+        assert_eq!(parse_mem_kb("34,592 K"), Some(34_592 * 1024));
+        assert_eq!(parse_mem_kb("0 K"), Some(0));
+    }
+
+    #[test]
+    fn parse_mem_kb_does_not_hardcode_kilobytes() {
+        // 单位不是固定的：写死乘 1024 会在给出 M/G 的系统上差 1024/1048576 倍
+        assert_eq!(parse_mem_kb("2 M"), Some(2 * 1024 * 1024));
+        assert_eq!(parse_mem_kb("1 G"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_mem_kb("500 KB"), Some(500 * 1024));
+        assert_eq!(parse_mem_kb("500 MB"), Some(500 * 1024 * 1024));
+        // 无单位时按字节，不猜成 KB
+        assert_eq!(parse_mem_kb("512"), Some(512));
+    }
+
+    #[test]
+    fn parse_mem_kb_rejects_garbage() {
+        assert_eq!(parse_mem_kb(""), None);
+        assert_eq!(parse_mem_kb("   "), None);
+        assert_eq!(parse_mem_kb("N/A"), None);
+        assert_eq!(parse_mem_kb("K"), None, "只有单位没有数字");
+    }
+
+    #[test]
+    fn parse_tasklist_mem_reads_pid_name_memory() {
+        let v = parse_tasklist_mem(SAMPLE);
+        assert_eq!(v.len(), 4);
+        let chrome = v.iter().find(|p| p.pid == 75836).unwrap();
+        assert_eq!(chrome.name, "chrome.exe");
+        assert_eq!(chrome.bytes, 919_488 * 1024);
+        let idle = v.iter().find(|p| p.pid == 0).unwrap();
+        assert_eq!(idle.name, "System Idle Process");
+    }
+
+    #[test]
+    fn parse_tasklist_mem_skips_malformed_rows() {
+        let text = "\"a.exe\",\"not-a-pid\",\"Console\",\"1\",\"1 K\"\n\
+                    \"b.exe\",\"10\",\"Console\",\"1\"\n\
+                    短行\n\
+                    \n";
+        assert!(parse_tasklist_mem(text).is_empty(), "畸形行应全部跳过");
+    }
+
+    #[test]
+    fn parse_tasklist_mem_handles_commas_in_name() {
+        // 复用同一份 CSV 引号规则：名字里带逗号不会切断字段
+        let text = "\"weird,name.exe\",\"55\",\"Console\",\"1\",\"1,024 K\"\n";
+        let v = parse_tasklist_mem(text);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].name, "weird,name.exe");
+        assert_eq!(v[0].bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn top_by_mem_sorts_desc_and_is_stable_on_ties() {
+        let v = vec![
+            ProcMem {
+                pid: 3,
+                name: "c".into(),
+                bytes: 100,
+            },
+            ProcMem {
+                pid: 1,
+                name: "a".into(),
+                bytes: 300,
+            },
+            ProcMem {
+                pid: 2,
+                name: "b".into(),
+                bytes: 100,
+            },
+        ];
+        let top = top_by_mem(v.clone(), 2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].pid, 1, "最大的在前");
+        assert_eq!(top[1].pid, 2, "并列时按 PID 升序（稳定顺序才可断言）");
+        // n 大于总数时不 panic
+        assert_eq!(top_by_mem(v, 99).len(), 3);
+    }
+
+    #[test]
+    fn procs_summary_totals() {
+        let v = vec![
+            ProcMem {
+                pid: 1,
+                name: "a".into(),
+                bytes: 100,
+            },
+            ProcMem {
+                pid: 2,
+                name: "b".into(),
+                bytes: 250,
+            },
+        ];
+        assert_eq!(procs_summary(&v), (2, 350));
+        assert_eq!(procs_summary(&[]), (0, 0));
+    }
+
+    #[test]
+    fn live_tasklist_parses_with_plausible_values() {
+        // 真机：进程表必须能解析出非空结果，且内存不为 0（System Idle 除外）
+        let out = crate::w32::run_capture(
+            &[
+                "tasklist".to_string(),
+                "/fo".into(),
+                "csv".into(),
+                "/nh".into(),
+            ],
+            30,
+        );
+        let Ok(out) = out else { return };
+        let procs = parse_tasklist_mem(&out.stdout);
+        assert!(
+            procs.len() > 5,
+            "真机进程数应远多于 5，实际 {}",
+            procs.len()
+        );
+        let top = top_by_mem(procs.clone(), 5);
+        assert_eq!(top.len(), 5);
+        assert!(top[0].bytes > 0, "内存占用最高的进程不该是 0");
+        // 降序自洽
+        for w in top.windows(2) {
+            assert!(w[0].bytes >= w[1].bytes);
+        }
+        // 名称非空且不含引号残留
+        for p in &top {
+            assert!(!p.name.is_empty());
+            assert!(!p.name.contains('"'), "CSV 引号应已剥掉: {}", p.name);
+        }
     }
 }

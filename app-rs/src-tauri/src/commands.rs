@@ -985,6 +985,63 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M5 系统助手：Top 进程 ----------------
+
+/// Top 进程缓存（tasklist 一次约 0.5 秒，2 秒窗口内复用同一份）。
+static TOP_PROCS_CACHE: std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>> =
+    std::sync::Mutex::new(None);
+
+/// 内存占用最高的 N 个进程。
+///
+/// 数据源用 `tasklist /fo csv`（约 0.5 秒）而不是 `Get-CimInstance
+/// Win32_PerfFormattedData_PerfProc_Process`（实测 3.3 秒，且 Name 是
+/// `chrome#20` 这种性能计数器实例名而非真实进程名），也不是 `Get-Process`
+/// （0.3 秒但要多一个解析分支）。选 tasklist 的决定性理由：**端口页已经在解析
+/// 同一份 CSV**，复用同一份规则就没有第二处解析可能出错。
+#[tauri::command]
+pub async fn sk_top_procs(limit: Option<usize>) -> Result<serde_json::Value, String> {
+    let n = limit.unwrap_or(15).clamp(1, 100);
+    tauri::async_runtime::spawn_blocking(move || {
+        const TTL_MS: u128 = 2000;
+        {
+            let g = TOP_PROCS_CACHE.lock().expect("进程缓存锁中毒");
+            if let Some((at, v)) = g.as_ref() {
+                if at.elapsed().as_millis() < TTL_MS {
+                    return Ok(v.clone());
+                }
+            }
+        }
+        let out = crate::w32::run_capture(&args(&["tasklist", "/fo", "csv", "/nh"]), 30)
+            .map_err(|e| format!("tasklist 无法执行: {e}"))?;
+        let procs = crate::portscan::parse_tasklist_mem(&out.stdout);
+        if procs.is_empty() {
+            return Err("未能解析出任何进程（tasklist 输出格式可能有变）".to_string());
+        }
+        let (count, total) = crate::portscan::procs_summary(&procs);
+        let top: Vec<serde_json::Value> = crate::portscan::top_by_mem(procs, n)
+            .into_iter()
+            .map(|p| {
+                serde_json::json!({
+                    "pid": p.pid,
+                    "name": p.name,
+                    "bytes": p.bytes,
+                })
+            })
+            .collect();
+        let value = serde_json::json!({
+            "rows": top,
+            "count": count,
+            "total_bytes": total,
+            "limit": n,
+        });
+        *TOP_PROCS_CACHE.lock().expect("进程缓存锁中毒") =
+            Some((std::time::Instant::now(), value.clone()));
+        Ok(value)
+    })
+    .await
+    .map_err(|e| format!("采样线程失败: {e}"))?
+}
+
 // ---------------- M5 系统助手：WiFi 状态 ----------------
 
 /// 读取 WiFi 状态（`wlanapi.dll`，微秒级）。

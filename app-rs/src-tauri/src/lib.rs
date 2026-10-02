@@ -184,6 +184,7 @@ pub fn run() {
             commands::sk_appnet_validate,
             commands::sk_appnet_pick_exe,
             commands::sk_wifi_info,
+            commands::sk_top_procs,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

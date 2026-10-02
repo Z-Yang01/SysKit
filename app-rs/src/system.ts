@@ -86,6 +86,44 @@ export function formatRate(kbps: number): string {
   return `${(kbps / 1000).toFixed(0)} Mbps`;
 }
 
+/** 后端 `sk_top_procs` 的一行。 */
+export interface ProcRow {
+  pid: number;
+  name: string;
+  bytes: number;
+}
+
+export interface TopProcs {
+  rows: ProcRow[];
+  count: number;
+  total_bytes: number;
+  limit: number;
+}
+
+/**
+ * Top 进程占总内存的百分比。
+ *
+ * 用**进程内存合计**作分母而不是物理内存：两者含义不同（合计会重复计共享页），
+ * 但用户看这一列是为了比较"谁占得多"，用合计作分母自洽且不需要额外的物理内存读数。
+ * `tasklist` 报的是工作集，合计也确实会大于物理内存——所以文案里写明是"占进程合计"。
+ */
+export function procShare(bytes: number, totalBytes: number): number {
+  if (totalBytes <= 0) return 0;
+  return (bytes / totalBytes) * 100;
+}
+
+/** Top 进程列表 → 用于表格的展示行（带占比）。 */
+export function procRows(data: TopProcs | null): (ProcRow & { share: number })[] {
+  if (!data) return [];
+  return data.rows.map((r) => ({ ...r, share: procShare(r.bytes, data.total_bytes) }));
+}
+
+/** 进程采集摘要文案。 */
+export function procsSummary(data: TopProcs | null): string {
+  if (!data) return "尚未采集";
+  return `共 ${data.count} 个进程 · 合计 ${humanBytes(data.total_bytes)} · 显示前 ${data.rows.length}`;
+}
+
 /** 磁盘读写速率（字节/秒 → 人类可读）。 */
 export function humanBytes(bps: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
