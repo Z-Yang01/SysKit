@@ -14,17 +14,17 @@ Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决�
 | M4 | 工具箱（测速/端口/Hosts/DNS 计算/ping 路由/局域网/DNS 测速/应用联网） | ✅ **全部 8 项已交付**（下载测速待 TLS，已如实标注） |
 | M5 | 系统助手（性能/启动项/电池/清理/磁盘/剪贴板/场景） | ✅ **全部 8 个分页已交付** |
 | M6 | 密码库 | 🚧 **加密层（双向跨语言验证）+ 界面骨架**；**数据层按决定不实现** |
-| M7 | 收尾（设置/日志/命令面板/打包） | 🚧 **设置页 + 日志 + 命令面板 provider**已交付；打包待做 |
+| M7 | 收尾（设置/日志/命令面板/打包） | ✅ **全部交付**（设置页 + 日志 + 命令面板 + NSIS 安装包） |
 
 门禁全绿（**569 例 Rust + 396 例前端**）。M1/M2 的**真机清单尚未执行**——
 按 `UNATTENDED.md` §3，托盘里可能跑着用户实例、且测试红线禁止真实 Win32 注入，
 因此 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」与
 「M2 真机复核清单」。
 
-### M7 交付状态（进行中）
+### M7 交付状态
 
-**设置页 + 日志 + 命令面板 provider**已交付（`settings.rs` 元数据层 / `palette.rs` +
-`SettingsView.tsx`）。
+**设置页 + 日志 + 命令面板 provider + 打包**已交付（`settings.rs` 元数据层 /
+`palette.rs` + `SettingsView.tsx`）。
 
 **命令面板（`palette.rs`）**：算式直算、模糊匹配、动作排序、自定义命令解析。
 匹配与排序在 Rust 侧（与 Python 逐项同口径），前端只渲染——两版同一个查询排出
@@ -45,8 +45,6 @@ Rust 没有等价的安全子集求值，所以写了一个**只认数字与四�
 但 `10**100` 这种超出 i128 的仍然会**明确报"超出整数范围"**而不是静默给出错误数字
 ——Python 的 int 是任意精度，这里做不到，宁可知情地失败。静默算错比报错危险得多。
 
-### M6 交付状态
-
 **元数据是装饰层，键清单的唯一来源仍是 `defaults()`**：`describe_all()` 遍历
 `defaults()`，缺元数据的键退回键名而**不会从界面消失**。有专门的看门测试
 （`decoration_covers_all_keys_...`）在新增键却忘写标签时失败，而不是等用户看到
@@ -65,6 +63,24 @@ Rust 没有等价的安全子集求值，所以写了一个**只认数字与四�
 TS1149/TS1261——这个坑本项目已踩三次（`Hosts`/`hosts`、`Dashboard`/`dashboard`、
 `SettingsPage`/`settingsPage`）。与其每次踩了再改，不如写成可执行断言：
 组件 `Xxx.tsx`、逻辑模块 `xxx.ts`，**二者不得只差大小写**。
+
+**打包（`tauri build` → NSIS）**：项目此前**根本没有接 Tauri CLI**（`@tauri-apps/cli`
+未安装、`cargo tauri` 也不存在），所以打包这一步从未真正跑通过。现已补上：
+CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主次版本一致）。
+产物与实测：
+
+| 产物 | 路径 | 实测大小 |
+|---|---|---|
+| 可执行文件 | `src-tauri/target/release/syskit-rs.exe` | 4.94 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.2.0_x64-setup.exe` | 2.15 MB |
+
+**release 二进制冒烟测试通过**：启动后进程存活、内存约 30 MB、正常初始化数据目录。
+（冒烟测试**不污染用户数据**——实测 `%APPDATA%\SysKit` 下无任何文件被本次测试改动；
+该目录里的 `*.migrated` 是 Python 版自己早期迁移留下的（09-17/09-19），与本次无关。）
+
+首次 release 构建约 **6 分钟**：`[profile.release]` 开了 `lto = true` +
+`codegen-units = 1` + `strip = true`，体积与启动速度优先。`panic = "abort"` 意味着
+发布版里任何 panic 都直接终止进程——所以修错路径一律返回 `Result` 而不是 `unwrap`。
 
 ### M6 交付状态
 
@@ -367,8 +383,38 @@ CIDR 换算）；持久路由走注册表 `Tcpip\Parameters\PersistentRoutes`（
 - **Top 进程（系统页）未做**：属 M5 范围，留到系统助手页一起接。
   ✅ **SSID 归因已补齐**（M5 起走 `wlanapi.dll`，见上「M5 交付状态」）。
 
-## 门禁（每里程碑必过）
+## 打包（M7）
 
+前置：`npm install`（含 `@tauri-apps/cli`，devDependency）。**CLI 版本必须与 Rust 侧
+`tauri` 同版本**——两处都锁在 2.12.x，主次版本不一致时 Tauri 会直接拒绝构建。
+
+```powershell
+cd app-rs
+npm run app        # 开发模式（tauri dev）
+npm run package    # 出安装包（tauri build → NSIS）
+```
+
+产物位置：
+
+| 产物 | 路径 |
+|---|---|
+| 可执行文件 | `src-tauri/target/release/syskit-rs.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.2.0_x64-setup.exe` |
+
+配置要点（`src-tauri/tauri.conf.json`）：
+- `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
+- `beforeBuildCommand = "npm run build"`（已含 `tsc --noEmit`，前端类型不过不会出包）；
+- `identifier = com.syskit.desktop`——**安装包的升级识别靠它**，改动会让新包被
+  当成另一个应用（用户装出两份）。
+
+两个注意点：
+- `[profile.release]` 开了 `lto = true` + `codegen-units = 1` + `strip = true`，
+  **首次 release 构建很慢**（分钟级），这是有意的：体积与启动速度优先；
+- `panic = "abort"`：发布版里 panic 直接终止进程而不展开。这是桌面工具的合理选择
+  （出问题时干净退出好过留下半死状态），但意味着**任何 panic 都不可恢复**，
+  所以修错路径必须返回 `Result` 而不是 `unwrap`。
+
+## 门禁（每里程碑必过）
 ```powershell
 powershell -ExecutionPolicy Bypass -File check.ps1
 # = cargo fmt --check + clippy -D warnings + cargo test + tsc --noEmit + vitest run
