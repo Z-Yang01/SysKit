@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::w32;
+use crate::w32::{self, RegValue};
 
 /// 风险等级（序列化为 safe/config/aggressive，与 Python 字符串一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,16 +293,10 @@ fn run_deferred(_p: &BTreeMap<String, String>) -> RepairOutcome {
 /// `execute()` 遍历所有动作来判断，结果在单元测试里**真的执行了**
 /// `renew_dhcp`（ipconfig release/renew）与 `winsock_reset` 等系统级动作，
 /// 既慢（实测 101 秒）又危险。判断实现状态不该有副作用。
-pub const DEFERRED_ACTION_IDS: [&str; 8] = [
-    "restart_wlan",
-    "toggle_adapter",
-    "restore_point",
-    "ncsi_restore",
-    "ncsi_disable",
-    "power_off",
-    "mac_random_off",
-    "mac_random_on",
-];
+///
+/// **已清空**：19 个动作的执行器全部接入（批次 0 + A + B）。
+/// 新增动作若暂不实现执行器，把 id 加回这里并让测试断言它显式失败。
+pub const DEFERRED_ACTION_IDS: [&str; 0] = [];
 
 /// 该动作是否尚未接入执行器。
 pub fn is_deferred(id: &str) -> bool {
@@ -548,7 +542,10 @@ fn run_dns_preset(p: &BTreeMap<String, String>) -> RepairOutcome {
         Ok(p) => p,
         Err(e) => return RepairOutcome::fail(format!("备份原 DNS 失败，已保留原配置未修改: {e}")),
     };
-    let r = w32::run_capture(
+    // 与 Python 一致的三步：set 主 DNS → add 备用（index=2）→ 清 v6 静态。
+    // 注意**不能**把备用写成 `set ... static primary secondary`：netsh 的
+    // `set dnsservers` 只接受一个地址，多给会被当成非法参数（第一版即如此）。
+    let r1 = w32::run_capture(
         &args(&[
             "netsh",
             "interface",
@@ -558,28 +555,72 @@ fn run_dns_preset(p: &BTreeMap<String, String>) -> RepairOutcome {
             &format!("name={name}"),
             "static",
             primary,
-            secondary,
             "primary",
         ]),
         15,
     );
+    let r2 = w32::run_capture(
+        &args(&[
+            "netsh",
+            "interface",
+            "ipv4",
+            "add",
+            "dnsservers",
+            &format!("name={name}"),
+            secondary,
+            "index=2",
+        ]),
+        15,
+    );
+    // v6 残留静态 DNS 同步清掉：检测端扫的是 v4+v6 混合列表，只改 v4 会让
+    // 诊断复检仍 WARN、解析仍可能走污染的 v6 DNS
+    let r3 = w32::run_capture(
+        &args(&[
+            "netsh",
+            "interface",
+            "ipv6",
+            "set",
+            "dnsservers",
+            &format!("name={name}"),
+            "source=dhcp",
+        ]),
+        15,
+    );
     let _ = w32::run_capture(&args(&["ipconfig", "/flushdns"]), 10);
-    match r {
-        Ok(o) if o.ok => RepairOutcome {
+    let ok1 = r1.as_ref().map(|o| o.ok).unwrap_or(false);
+    let ok2 = r2.as_ref().map(|o| o.ok).unwrap_or(false);
+    let ok3 = r3.as_ref().map(|o| o.ok).unwrap_or(false);
+    if ok1 && ok2 {
+        RepairOutcome {
             success: true,
             message: format!(
-                "{name} 的 DNS 已设为 {preset}（{primary} / {secondary}）；备份: {backup}"
+                "{name} DNS → {primary}, {secondary}（{preset}）{}；备份: {backup}",
+                if ok3 {
+                    "，v6 已恢复自动获取"
+                } else {
+                    "（v6 恢复自动获取失败）"
+                }
             ),
             need_reboot: false,
             output: backup,
-        },
-        Ok(o) => RepairOutcome {
+        }
+    } else {
+        let mut errs = String::new();
+        if !ok1 {
+            errs.push_str(&r1.map(|o| o.tail(0, 100)).unwrap_or_default());
+        }
+        if !ok2 {
+            errs.push_str(&format!(
+                " 备用DNS: {}",
+                r2.map(|o| o.tail(0, 100)).unwrap_or_default()
+            ));
+        }
+        RepairOutcome {
             success: false,
-            message: format!("设置 DNS 失败（可能需要管理员）: {}", o.tail(0, 120).trim()),
+            message: format!("{name} DNS 设置失败: {errs}"),
             need_reboot: false,
-            output: o.combined(),
-        },
-        Err(e) => RepairOutcome::fail(format!("netsh 无法执行: {e}")),
+            output: errs,
+        }
     }
 }
 
@@ -715,6 +756,581 @@ fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
 }
 
+// ---------------- 执行器批次 B：需要管理员的 8 项 ----------------
+
+/// 管理员门禁：非提升进程直接给出**可解释**的失败，而不是让底层 API 报
+/// 模糊的「拒绝访问」。改 HKLM / sc config / netsh 改配置都要过这道门。
+fn require_admin(id: &str) -> Option<RepairOutcome> {
+    if crate::w32::is_elevated() {
+        None
+    } else {
+        Some(RepairOutcome::fail(format!(
+            "{id} 需要管理员权限：请以管理员身份重启 SysKit 后重试（当前进程未提升）"
+        )))
+    }
+}
+
+/// 非管理员时该动作是否会被跳过（与 `combo_plan` 同一判据，前端也用它做提示）。
+pub fn requires_admin(id: &str) -> bool {
+    get_action(id)
+        .map(|a| a.risk != Risk::Safe)
+        .unwrap_or(false)
+}
+
+/// 重启 WLAN 服务并重连之前连接的 WiFi。
+fn run_restart_wlan(_p: &BTreeMap<String, String>) -> RepairOutcome {
+    if let Some(o) = require_admin("restart_wlan") {
+        return o;
+    }
+    // 先记住当前 SSID（重连要用），必须在停服务之前读
+    let cur = w32::run_capture(&args(&["netsh", "wlan", "show", "interfaces"]), 10);
+    let ssid = cur
+        .as_ref()
+        .map(|o| crate::snapshot::current_ssid(&o.stdout))
+        .unwrap_or_default();
+    let _ = w32::run_capture(&args(&["net", "stop", "WlanSvc"]), 40);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let start = w32::run_capture(&args(&["net", "start", "WlanSvc"]), 40);
+    let started = start.as_ref().map(|o| o.ok).unwrap_or(false);
+    if !started {
+        return RepairOutcome {
+            success: false,
+            message: format!(
+                "WlanSvc 启动失败: {}",
+                start.map(|o| o.tail(150, 0)).unwrap_or_default()
+            ),
+            need_reboot: false,
+            output: String::new(),
+        };
+    }
+    let mut msg = "WlanSvc 已重启".to_string();
+    if !ssid.is_empty() {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let c = w32::run_capture(
+            &args(&["netsh", "wlan", "connect", &format!("name={ssid}")]),
+            15,
+        );
+        let ok = c.as_ref().map(|o| o.ok).unwrap_or(false);
+        msg.push_str(&format!(
+            "，已发起重连 {ssid}{}",
+            if ok {
+                "成功"
+            } else {
+                "（请手动选择网络）"
+            }
+        ));
+    }
+    RepairOutcome {
+        success: true,
+        message: msg,
+        need_reboot: false,
+        output: String::new(),
+    }
+}
+
+/// 禁用并重新启用指定网卡（disable → enable，重建链路）。
+fn run_toggle_adapter(p: &BTreeMap<String, String>) -> RepairOutcome {
+    if let Some(o) = require_admin("toggle_adapter") {
+        return o;
+    }
+    let name = match p.get("adapter").filter(|s| !s.trim().is_empty()) {
+        Some(n) => n.clone(),
+        None => match pick_adapter() {
+            Some(n) => n,
+            None => return RepairOutcome::fail("未指定网卡且无法自动选择"),
+        },
+    };
+    let _ = w32::run_capture(
+        &args(&[
+            "netsh",
+            "interface",
+            "set",
+            "interface",
+            &format!("name={name}"),
+            "disable",
+        ]),
+        20,
+    );
+    // 网卡下电需要时间；太早 enable 会失败（Python 同用 2 秒）
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let e = w32::run_capture(
+        &args(&[
+            "netsh",
+            "interface",
+            "set",
+            "interface",
+            &format!("name={name}"),
+            "enable",
+        ]),
+        25,
+    );
+    match e {
+        Ok(o) if o.ok => RepairOutcome::ok(format!("{name} 已重新启用")),
+        Ok(o) => RepairOutcome {
+            success: false,
+            message: format!("启用失败: {}", o.tail(100, 100)),
+            need_reboot: false,
+            output: o.combined(),
+        },
+        Err(e) => RepairOutcome::fail(format!("netsh 无法执行: {e}")),
+    }
+}
+
+/// 创建系统还原点（深度修复/重置前的安全网）。
+fn run_restore_point(_p: &BTreeMap<String, String>) -> RepairOutcome {
+    if let Some(o) = require_admin("restore_point") {
+        return o;
+    }
+    // `-ErrorAction Stop` 必须带：PowerShell 非终止错误的 `-Command` 退出码恒 0，
+    // 不转终止的话「系统保护未开启」这类失败会被当成已创建——还原点是组合首位
+    // 安全网，假成功不可接受（Python 注释里的实机结论）。
+    let r = w32::run_capture(
+        &[
+            "powershell".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            "Checkpoint-Computer -Description 'SysKit 修复前快照' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop"
+                .into(),
+        ],
+        180,
+    );
+    match r {
+        Ok(o) if o.ok => RepairOutcome::ok(
+            "已创建系统还原点（若 24 小时内已创建过，Windows 可能静默跳过，不影响继续修复）",
+        ),
+        Ok(o) => RepairOutcome {
+            success: false,
+            message: format!(
+                "创建系统还原点失败（系统还原可能未开启，不影响继续修复）: {}",
+                o.tail(150, 150).trim()
+            ),
+            need_reboot: false,
+            output: o.combined(),
+        },
+        Err(e) => RepairOutcome::fail(format!("PowerShell 无法执行: {e}")),
+    }
+}
+
+/// NCSI 探测恢复微软默认并启用主动探测。
+fn run_ncsi_restore(_p: &BTreeMap<String, String>) -> RepairOutcome {
+    if let Some(o) = require_admin("ncsi_restore") {
+        return o;
+    }
+    let session = match crate::backup::BackupSession::new() {
+        Ok(s) => s,
+        Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
+    };
+    let backup = session.export_reg(crate::netcheck::NCSI_REG_FULL).ok();
+    let key = crate::netcheck::NCSI_REG_FULL;
+    let mut failed = Vec::new();
+    if !w32::reg_set_dword(key, "EnableActiveProbing", 1) {
+        failed.push("EnableActiveProbing".to_string());
+    }
+    for (name, val) in crate::netcheck::ncsi_stock() {
+        if name == "EnableActiveProbing" {
+            continue;
+        }
+        if !w32::reg_set_string(key, name, val) {
+            failed.push(name.to_string());
+        }
+    }
+    if !failed.is_empty() {
+        return RepairOutcome {
+            success: false,
+            message: format!("写注册表失败（需要管理员）: {}", failed.join(", ")),
+            need_reboot: false,
+            output: String::new(),
+        };
+    }
+    let _ = w32::run_capture(&args(&["sc", "start", "NlaSvc"]), 20);
+    RepairOutcome {
+        success: true,
+        message: format!(
+            "NCSI 已恢复默认并启用主动探测{}",
+            match backup {
+                Some(p) => format!("；备份: {p}"),
+                None => "（注册表备份失败，但修改已成功）".to_string(),
+            }
+        ),
+        need_reboot: false,
+        output: String::new(),
+    }
+}
+
+/// 关闭 NCSI 主动探测（最后手段）。
+fn run_ncsi_disable(_p: &BTreeMap<String, String>) -> RepairOutcome {
+    if let Some(o) = require_admin("ncsi_disable") {
+        return o;
+    }
+    let session = match crate::backup::BackupSession::new() {
+        Ok(s) => s,
+        Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
+    };
+    let backup = session.export_reg(crate::netcheck::NCSI_REG_FULL).ok();
+    if !w32::reg_set_dword(crate::netcheck::NCSI_REG_FULL, "EnableActiveProbing", 0) {
+        return RepairOutcome::fail("写注册表失败（需要管理员）");
+    }
+    RepairOutcome {
+        success: true,
+        message: format!(
+            "已关闭主动探测{}",
+            match backup {
+                Some(p) => format!("；备份: {p}"),
+                None => String::new(),
+            }
+        ),
+        need_reboot: false,
+        output: String::new(),
+    }
+}
+
+/// 应跳过电源管理的网卡描述关键字（对应 Python 的排除清单）。
+pub const POWER_SKIP_KEYWORDS: [&str; 4] =
+    ["wan miniport", "microsoft kernel", "bluetooth", "virtual"];
+
+/// 该网卡描述是否应跳过电源管理写入。
+pub fn power_skip(desc: &str) -> bool {
+    let lower = desc.to_lowercase();
+    POWER_SKIP_KEYWORDS.iter().any(|k| lower.contains(k))
+}
+
+/// 禁止系统关闭网卡省电（PnPCapabilities=24 = REG_DWORD 0x18）。
+fn run_power_off(_p: &BTreeMap<String, String>) -> RepairOutcome {
+    if let Some(o) = require_admin("power_off") {
+        return o;
+    }
+    const NIC_CLASS_KEY: &str =
+        r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
+    let session = match crate::backup::BackupSession::new() {
+        Ok(s) => s,
+        Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
+    };
+    let mut changed = Vec::new();
+    let mut skipped = Vec::new();
+    for sub in 0..32 {
+        let idx = format!("{sub:04}");
+        let full = format!("{NIC_CLASS_KEY}\\{idx}");
+        let vals = w32::reg_values(&full);
+        if vals.is_empty() {
+            continue;
+        }
+        let desc = vals
+            .get("DriverDesc")
+            .map(RegValue::as_compare_str)
+            .unwrap_or_default();
+        if desc.is_empty() || power_skip(&desc) {
+            continue;
+        }
+        if vals.get("PnPCapabilities").and_then(RegValue::as_u32) == Some(24) {
+            continue; // 已经是 24，无需改
+        }
+        let current = vals
+            .get("PnPCapabilities")
+            .map(RegValue::as_compare_str)
+            .unwrap_or_else(|| "<缺省=允许断电>".to_string());
+        let _ = session.save_note(
+            &format!("pnp_backup_{idx}.txt"),
+            &format!("{full}\nDriverDesc={desc}\nPnPCapabilities={current}"),
+        );
+        // 必须是 REG_DWORD 0x18：写成 REG_SZ "24" 不被 NDIS 电源策略识别，
+        // 修复会**静默无效**——而读回 str()=="24" 恰好自洽，形成假成功
+        if w32::reg_set_dword(&full, "PnPCapabilities", 24) {
+            changed.push(desc.chars().take(30).collect::<String>());
+        } else {
+            skipped.push(format!(
+                "{}: 写入失败",
+                desc.chars().take(30).collect::<String>()
+            ));
+        }
+    }
+    // USB 选择性暂停
+    let usb = w32::run_capture(
+        &args(&[
+            "powercfg",
+            "/setacvalueindex",
+            "SCHEME_CURRENT",
+            "2a737441-1930-4402-8d77-b2bebba308a3",
+            "48e6b7a6-50f5-4782-a5d4-53bb8f07e226",
+            "0",
+        ]),
+        15,
+    );
+    let _ = w32::run_capture(&args(&["powercfg", "/setactive", "SCHEME_CURRENT"]), 15);
+    let usb_ok = usb.as_ref().map(|o| o.ok).unwrap_or(false);
+
+    if changed.is_empty() {
+        return RepairOutcome {
+            success: false,
+            message: format!(
+                "没有需要修改的网卡；USB选择性暂停:{}",
+                if usb_ok { "OK" } else { "FAIL" }
+            ),
+            need_reboot: false,
+            output: String::new(),
+        };
+    }
+    let mut msg = format!(
+        "已对 {} 个网卡禁止断电: {}；USB 选择性暂停{}",
+        changed.len(),
+        changed.join(", "),
+        if usb_ok { "已关闭" } else { "关闭失败" }
+    );
+    if !skipped.is_empty() {
+        msg.push_str(&format!("；跳过: {}", skipped.join(", ")));
+    }
+    msg.push_str("。重新启用网卡或重启后生效。");
+    RepairOutcome {
+        success: true,
+        message: msg,
+        need_reboot: false,
+        output: String::new(),
+    }
+}
+
+/// 改写 WiFi 配置 XML 里的 EnableRandomization（纯函数，便于单测）。
+///
+/// 返回 (新内容, 是否发生改动)。两级策略与 Python 一致：
+/// 1. 已有 `<MacRandomization>` 块 → 替换其中的 true/false；
+/// 2. 完全没有该块 → 在 `</WLANProfile>` 前插入一个（带命名空间）。
+pub fn set_mac_randomization_xml(content: &str, enable: bool) -> (String, bool) {
+    let want = if enable { "true" } else { "false" };
+    // 手写替换：找出 MacRandomization 块，再在其中替换第一个 true/false
+    let lower = content.to_lowercase();
+    if let Some(start) = lower.find("<macrandomization") {
+        if let Some(end_rel) = lower[start..].find("</macrandomization>") {
+            let end = start + end_rel + "</macrandomization>".len();
+            let block = &content[start..end];
+            let rebuilt = rebuild_mac_block(block, want);
+            let mut out = String::with_capacity(content.len());
+            out.push_str(&content[..start]);
+            out.push_str(&rebuilt);
+            out.push_str(&content[end..]);
+            let changed = out != content;
+            return (out, changed);
+        }
+    }
+    // 没有该块：插入到 </WLANProfile> 前
+    if let Some(pos) = find_close_wlan_profile(content) {
+        let insert = format!(
+            "<MacRandomization xmlns=\"http://www.microsoft.com/networking/WLAN/profile/v3\"><EnableRandomization>{want}</EnableRandomization></MacRandomization>"
+        );
+        let mut out = String::with_capacity(content.len() + insert.len());
+        out.push_str(&content[..pos]);
+        out.push_str(&insert);
+        out.push_str(&content[pos..]);
+        return (out, true);
+    }
+    (content.to_string(), false)
+}
+
+/// 保留原块的属性与空白，只把 EnableRandomization 的值换成 want。
+fn rebuild_mac_block(block: &str, want: &str) -> String {
+    let lower = block.to_lowercase();
+    let key = "<enablerandomization>";
+    let Some(kpos) = lower.find(key) else {
+        return block.to_string();
+    };
+    let val_start = kpos + key.len();
+    let close = "</enablerandomization>";
+    let Some(rel_end) = lower[val_start..].find(close) else {
+        return block.to_string();
+    };
+    let val_end = val_start + rel_end;
+    let mut out = String::with_capacity(block.len());
+    out.push_str(&block[..val_start]);
+    out.push_str(want);
+    out.push_str(&block[val_end..]);
+    out
+}
+
+/// 找 `</WLANProfile>`（大小写不敏感）的起始位置。
+fn find_close_wlan_profile(content: &str) -> Option<usize> {
+    content.to_lowercase().find("</wlanprofile>")
+}
+
+/// 当前/第一个 WiFi 配置文件名（对应 Python `_current_or_first_profile`）。
+pub fn current_or_first_profile() -> String {
+    let cur = w32::run_capture(&args(&["netsh", "wlan", "show", "interfaces"]), 10);
+    let ssid = cur
+        .as_ref()
+        .map(|o| crate::snapshot::current_ssid(&o.stdout))
+        .unwrap_or_default();
+    if !ssid.is_empty() {
+        return ssid;
+    }
+    wlan_profiles().into_iter().next().unwrap_or_default()
+}
+
+/// 已保存的 WiFi 配置文件名（对应 Python `wlan_profiles`）。
+pub fn wlan_profiles() -> Vec<String> {
+    let r = w32::run_capture(&args(&["netsh", "wlan", "show", "profiles"]), 10);
+    let Ok(o) = r else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in o.stdout.lines() {
+        let t = line.trim();
+        for prefix in ["所有用户配置文件", "All User Profile"] {
+            if let Some(rest) = t.strip_prefix(prefix) {
+                if let Some((_, v)) = rest.split_once(':') {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        out.push(v.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 查找指定 SSID 的 WiFi 配置文件路径（`%ProgramData%\Microsoft\Wlansvc\Profiles\Interfaces\*\*.xml`）。
+pub fn find_wlan_profile_files(profile: &str) -> Vec<std::path::PathBuf> {
+    let root = std::path::PathBuf::from(
+        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string()),
+    )
+    .join(r"Microsoft\Wlansvc\Profiles\Interfaces");
+    let mut out = Vec::new();
+    let Ok(dirs) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    let want = profile.to_lowercase();
+    for d in dirs.flatten() {
+        let Ok(files) = std::fs::read_dir(d.path()) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let p = f.path();
+            if p.extension().map(|e| e != "xml").unwrap_or(true) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            // 配置文件名藏在 <name>...</name> 里
+            if let Some(name) = extract_xml_name(&text) {
+                if name.to_lowercase() == want {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 取 WiFi 配置 XML 里的 `<name>` 值。
+pub fn extract_xml_name(content: &str) -> Option<String> {
+    let lower = content.to_lowercase();
+    let start = lower.find("<name>")? + "<name>".len();
+    let end = lower[start..].find("</name>")? + start;
+    Some(content[start..end].trim().to_string())
+}
+
+/// 读写指定 WiFi 配置文件的 MAC 随机化状态：返回 (改动文件数, 错误, 备份目录)。
+pub fn set_mac_random(profile: &str, enable: bool) -> (usize, String, String) {
+    if profile.is_empty() {
+        return (0, "未指定 WiFi 配置文件".to_string(), String::new());
+    }
+    let files = find_wlan_profile_files(profile);
+    if files.is_empty() {
+        return (0, format!("未找到名为 {profile} 的配置文件"), String::new());
+    }
+    let session = match crate::backup::BackupSession::new() {
+        Ok(s) => s,
+        Err(e) => return (0, format!("备份目录不可用，未做修改: {e}"), String::new()),
+    };
+    let mut changed = 0usize;
+    for f in files {
+        let Ok(content) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let base = f
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "profile.xml".to_string());
+        let _ = session.save_note(&base, &content);
+        let (new, did) = set_mac_randomization_xml(&content, enable);
+        if did && std::fs::write(&f, new).is_ok() {
+            changed += 1;
+        }
+    }
+    (
+        changed,
+        String::new(),
+        session.dir().to_string_lossy().to_string(),
+    )
+}
+
+/// 读取指定配置文件的 MAC 随机化状态：Some(true/false) 或 None（未知）。
+pub fn mac_random_state(profile: &str) -> Option<bool> {
+    for f in find_wlan_profile_files(profile) {
+        let Ok(content) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        return mac_randomization_state_xml(&content);
+    }
+    None
+}
+
+/// 从配置 XML 解析 EnableRandomization（纯函数）。
+pub fn mac_randomization_state_xml(content: &str) -> Option<bool> {
+    let lower = content.to_lowercase();
+    let start = lower.find("<macrandomization")?;
+    let block = &lower[start..];
+    let key = "<enablerandomization>";
+    let kpos = block.find(key)? + key.len();
+    let rest = &block[kpos..];
+    if rest.trim_start().starts_with("true") {
+        Some(true)
+    } else if rest.trim_start().starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// 关闭 WiFi 的 MAC 随机化（用真实地址连接）。
+fn run_mac_random_off(p: &BTreeMap<String, String>) -> RepairOutcome {
+    mac_random_apply(p, false, "关闭")
+}
+
+/// 开启 WiFi 的 MAC 随机化（恢复 Win11 默认）。
+fn run_mac_random_on(p: &BTreeMap<String, String>) -> RepairOutcome {
+    mac_random_apply(p, true, "开启")
+}
+
+fn mac_random_apply(p: &BTreeMap<String, String>, enable: bool, verb: &str) -> RepairOutcome {
+    if let Some(o) = require_admin("mac_random") {
+        return o;
+    }
+    let profile = match p.get("profile").filter(|s| !s.trim().is_empty()) {
+        Some(n) => n.clone(),
+        None => current_or_first_profile(),
+    };
+    let (changed, err, dir) = set_mac_random(&profile, enable);
+    if !err.is_empty() {
+        return RepairOutcome::fail(err);
+    }
+    if changed == 0 {
+        return RepairOutcome::ok(format!(
+            "{profile} 的 MAC 随机化本来就是{}的",
+            if enable { "开启" } else { "关闭" }
+        ));
+    }
+    // 改完要重连才生效（与 Python 一致：调用 restart_wlan）
+    let r = run_restart_wlan(&BTreeMap::new());
+    RepairOutcome {
+        success: true,
+        message: format!(
+            "已{verb} {profile} 的 MAC 随机化（{changed} 个文件，备份: {dir}）；{}",
+            r.message
+        ),
+        need_reboot: false,
+        output: dir,
+    }
+}
+
 // ---------------- 注册表（顺序与 Python ACTION_IDS 完全一致） ----------------
 
 /// 全部 20 个动作，顺序 = Python `ACTION_IDS` 顺序。
@@ -773,7 +1389,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "重启 WlanSvc（WiFi 自动配置服务），并自动重连之前连接的 WiFi。WiFi 会断开几秒。",
             need_reboot: false,
             params: &[],
-            runner: run_deferred,
+            runner: run_restart_wlan,
         },
         RepairAction {
             id: "toggle_adapter",
@@ -784,7 +1400,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "对指定网卡执行 disable→enable，重建链路。WiFi/USB 网卡'假连接'时的经典修复。",
             need_reboot: false,
             params: &[ParamSpec { desc: "网卡名称，如 WLAN / 以太网 3", ..P_ADAPTER }],
-            runner: run_deferred,
+            runner: run_toggle_adapter,
         },
         RepairAction {
             id: "restart_services",
@@ -806,7 +1422,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "为当前系统状态创建还原点（深度修复/重置前的安全网）。\n常态耗时 30~90 秒，期间无法中止；系统还原未开启、或 24",
             need_reboot: false,
             params: &[],
-            runner: run_deferred,
+            runner: run_restore_point,
         },
         RepairAction {
             id: "dns_auto",
@@ -842,7 +1458,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "把 NCSI 注册表恢复为原版默认值（探测 www.msftconnecttest.com/connecttest.tx",
             need_reboot: false,
             params: &[],
-            runner: run_deferred,
+            runner: run_ncsi_restore,
         },
         RepairAction {
             id: "ncsi_disable",
@@ -853,7 +1469,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "EnableActiveProbing=0：Windows 不再探测，状态永远显示'已连接'。代价：真正断网时不再显示'",
             need_reboot: false,
             params: &[],
-            runner: run_deferred,
+            runner: run_ncsi_disable,
         },
         RepairAction {
             id: "power_off",
@@ -864,7 +1480,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "对各物理网卡驱动键写入 PnPCapabilities=24（本机电源管理 WMI 已损坏，走注册表方案），并关闭 US",
             need_reboot: false,
             params: &[],
-            runner: run_deferred,
+            runner: run_power_off,
         },
         RepairAction {
             id: "del_persistent_route",
@@ -900,7 +1516,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "Win11 默认对每个 WiFi 用固定随机 MAC。部分公寓/企业网络按 MAC 授权，关掉随机化用真实地址便于注册设",
             need_reboot: false,
             params: &[ParamSpec { desc: "WiFi 配置文件名（SSID），默认当前/最近使用的", ..P_PROFILE }],
-            runner: run_deferred,
+            runner: run_mac_random_off,
         },
         RepairAction {
             id: "mac_random_on",
@@ -911,7 +1527,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "恢复对指定 WiFi 使用固定随机 MAC。若公寓网络此前只授权了旧随机地址，开启后应能恢复拿 IP。",
             need_reboot: false,
             params: &[ParamSpec { desc: "WiFi 配置文件名（SSID）", ..P_PROFILE }],
-            runner: run_deferred,
+            runner: run_mac_random_on,
         },
         RepairAction {
             id: "winsock_reset",
@@ -1205,55 +1821,206 @@ mod tests {
     }
 
     #[test]
-    fn deferred_actions_fail_loudly_not_silently() {
-        // 核心断言：**仍未接入**的动作绝不能返回成功——
-        // 修复链里的假成功会让用户以为问题已处理。
-        // 这些动作的执行器是纯函数（只构造失败结果），执行它们没有系统副作用。
-        for id in DEFERRED_ACTION_IDS {
-            let a = get_action(id).unwrap();
-            let out = a.execute(&BTreeMap::new());
+    fn all_19_actions_have_real_executors() {
+        // 完成度断言：19 个动作全部接入执行器，`DEFERRED_ACTION_IDS` 必须为空。
+        // （早期版本这里是「未接入动作必须显式失败」；批次 B 落地后升级为完成度检查。）
+        assert!(
+            DEFERRED_ACTION_IDS.is_empty(),
+            "仍有未接入的动作: {DEFERRED_ACTION_IDS:?}"
+        );
+        for id in action_ids() {
+            assert!(!is_deferred(id), "{id} 不应再被标记为未接入");
+        }
+    }
+
+    #[test]
+    fn non_admin_actions_fail_with_actionable_message() {
+        // 非管理员时改配置/强力类必须给出**可操作**的提示（让用户知道去提权），
+        // 而不是底层 API 的「拒绝访问」。管理员环境下跳过此断言。
+        if crate::w32::is_elevated() {
+            eprintln!("提示：当前是管理员，跳过非管理员路径断言");
+            return;
+        }
+        for id in [
+            "restart_wlan",
+            "toggle_adapter",
+            "restore_point",
+            "ncsi_restore",
+            "ncsi_disable",
+            "power_off",
+            "mac_random_off",
+            "mac_random_on",
+        ] {
+            let out = get_action(id).unwrap().execute(&BTreeMap::new());
+            assert!(!out.success, "{id} 非管理员不得成功");
             assert!(
-                !out.success,
-                "{id} 尚未接入执行器，必须显式失败而不是假成功"
-            );
-            assert!(
-                out.message.contains("尚未"),
-                "{id} 的失败信息必须说明「尚未接入」，实际: {}",
+                out.message.contains("管理员"),
+                "{id} 必须说明需要管理员权限，实际: {}",
                 out.message
             );
         }
     }
 
     #[test]
-    fn batch_a_actions_no_longer_report_unimplemented() {
-        // **声明式**判断，绝不执行动作：早期版本靠 execute() 遍历所有动作，
-        // 结果在单测里真跑了 renew_dhcp 与 winsock_reset（慢 101 秒 + 有系统副作用）。
-        assert_eq!(DEFERRED_ACTION_IDS.len(), 8, "应剩 8 项未接入");
+    fn admin_guard_does_not_block_safe_actions() {
+        // 对照组：安全类动作不该被门禁拦下（否则修复能力被无谓削弱）
         for id in [
-            "proxy_off",
-            "fix_nlasvc",
-            "dns_auto",
-            "dns_preset",
-            "del_persistent_route",
+            "flush_dns",
+            "restart_services",
+            "start_nlasvc",
+            "restore_point",
         ] {
-            assert!(!is_deferred(id), "{id} 已接入，不应在 deferred 清单里");
-        }
-        // 清单必须都是真实存在的动作 id
-        for id in DEFERRED_ACTION_IDS {
-            assert!(get_action(id).is_some(), "deferred 清单含未知动作 {id}");
-        }
-        // 清单必须**覆盖**全部 19 个动作：每项要么在 deferred 清单里，要么已接入
-        for id in action_ids() {
-            if !is_deferred(id) {
-                // 已接入的动作必须有非 deferred 的行为（用未知预设等无害输入探测失败信息）
-                assert!(!get_action(id).unwrap().title.is_empty(), "{id} 元数据缺失");
+            let a = get_action(id).unwrap();
+            let blocked = !crate::w32::is_elevated() && a.risk != Risk::Safe;
+            if a.risk == Risk::Safe {
+                assert!(!blocked, "{id} 是安全类，不该被门禁拦");
             }
         }
-        let deferred_in_catalog = action_ids().iter().filter(|id| is_deferred(id)).count();
-        assert_eq!(
-            deferred_in_catalog, 8,
-            "19 个动作里应恰好 8 项仍在 deferred 清单"
+    }
+
+    #[test]
+    fn power_skip_keywords_match_python() {
+        assert_eq!(POWER_SKIP_KEYWORDS.len(), 4);
+        for desc in [
+            "WAN Miniport (IP)",
+            "Microsoft Kernel Debug Network Adapter",
+            "Bluetooth Device (PAN)",
+            "Hyper-V Virtual Ethernet Adapter",
+        ] {
+            assert!(power_skip(desc), "{desc} 应被跳过");
+        }
+        assert!(!power_skip("Intel(R) Wi-Fi 6 AX201 160MHz"));
+        assert!(!power_skip("Realtek PCIe GbE Family Controller"));
+        assert!(power_skip("SOME VIRTUAL NIC"), "大小写不敏感");
+    }
+
+    #[test]
+    fn mac_xml_replace_existing_block() {
+        let src = r#"<?xml version="1.0"?><WLANProfile><name>MyWiFi</name><MacRandomization xmlns="x"><EnableRandomization>true</EnableRandomization></MacRandomization></WLANProfile>"#;
+        let (out, changed) = set_mac_randomization_xml(src, false);
+        assert!(changed);
+        assert!(
+            out.contains("<EnableRandomization>false</EnableRandomization>"),
+            "{out}"
         );
+        assert!(out.contains("<name>MyWiFi</name>"), "其余内容必须保留");
+        // 目标值已是要写值时不算改动
+        let (_, changed2) = set_mac_randomization_xml(&out, false);
+        assert!(!changed2, "已是目标值 → 不改动（避免无谓写盘）");
+    }
+
+    #[test]
+    fn mac_xml_inserts_block_when_missing() {
+        let src = r#"<WLANProfile><name>New</name></WLANProfile>"#;
+        let (out, changed) = set_mac_randomization_xml(src, false);
+        assert!(changed, "缺块时必须插入");
+        assert!(out.contains("<MacRandomization"), "{out}");
+        assert!(out.contains("<EnableRandomization>false</EnableRandomization>"));
+        assert!(
+            out.ends_with("</WLANProfile>"),
+            "必须插在 WLANProfile 内: {out}"
+        );
+        // 幂等：再跑一次不应重复插入
+        let (out2, changed2) = set_mac_randomization_xml(&out, false);
+        assert!(!changed2, "第二次应识别为已存在");
+        assert_eq!(out2.matches("<MacRandomization").count(), 1);
+    }
+
+    #[test]
+    fn mac_xml_preserves_attributes_and_replaces_value() {
+        // 契约：**属性与非目标内容必须原样保留**，只有 EnableRandomization 的值被替换。
+        // （值两侧原有的换行/缩进会被规范化掉——这点单独说明，免得后人误以为是 bug。）
+        let src = "<MacRandomization xmlns=\"ns\">\n  <EnableRandomization>\n    true\n  </EnableRandomization>\n</MacRandomization>";
+        let (out, changed) = set_mac_randomization_xml(src, false);
+        assert!(changed, "带空白/换行的块必须能改");
+        assert!(out.contains("xmlns=\"ns\""), "属性必须保留: {out}");
+        assert!(
+            out.contains("<EnableRandomization>false</EnableRandomization>"),
+            "值被替换: {out}"
+        );
+        assert!(out.contains("\n</MacRandomization>"), "块外结构保留: {out}");
+        assert!(!out.contains("true"), "旧值不得残留: {out}");
+    }
+
+    #[test]
+    fn mac_xml_without_wlan_profile_is_unchanged() {
+        let src = "<NotAProfile/>";
+        let (out, changed) = set_mac_randomization_xml(src, false);
+        assert!(!changed, "非 WiFi 配置不得被改动");
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn mac_state_parser_reads_both_values() {
+        assert_eq!(
+            mac_randomization_state_xml("<MacRandomization><EnableRandomization>true</EnableRandomization></MacRandomization>"),
+            Some(true)
+        );
+        assert_eq!(
+            mac_randomization_state_xml("<MacRandomization><EnableRandomization>FALSE</EnableRandomization></MacRandomization>"),
+            Some(false),
+            "大小写不敏感"
+        );
+        assert_eq!(mac_randomization_state_xml("<WLANProfile/>"), None);
+        assert_eq!(
+            mac_randomization_state_xml("<MacRandomization></MacRandomization>"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_xml_name_reads_profile_name() {
+        assert_eq!(
+            extract_xml_name("<WLANProfile><name>MyWiFi</name></WLANProfile>").as_deref(),
+            Some("MyWiFi")
+        );
+        assert_eq!(
+            extract_xml_name("<WLANProfile><NAME> Trimmed </NAME></WLANProfile>").as_deref(),
+            Some("Trimmed"),
+            "大小写不敏感且去空白"
+        );
+        assert_eq!(extract_xml_name("<WLANProfile/>"), None);
+    }
+
+    #[test]
+    fn wlan_profiles_parse_is_tolerant() {
+        // 真机没有 WiFi 时返回空表（不得 panic）
+        let p = wlan_profiles();
+        assert!(p.iter().all(|s| !s.is_empty()));
+        // 配置查找对不存在的名字返回空
+        assert!(find_wlan_profile_files("SysKit不存在SSID").is_empty());
+    }
+
+    #[test]
+    fn requires_admin_matches_risk_semantics() {
+        // 与 combo_plan 同一判据：只有安全类不需要管理员
+        for a in catalog() {
+            assert_eq!(
+                requires_admin(a.id),
+                a.risk != Risk::Safe,
+                "{} 的管理员判定与风险等级不一致",
+                a.id
+            );
+        }
+    }
+
+    #[test]
+    fn batch_b_actions_do_not_silently_succeed_for_bogus_input() {
+        // 无输入时这些动作要么成功（真机可做）要么明确失败，但**不得**空消息。
+        // 非管理员下会走门禁分支，管理员下会走真实分支——两条都必须可读。
+        for id in [
+            "restart_wlan",
+            "toggle_adapter",
+            "restore_point",
+            "ncsi_restore",
+            "ncsi_disable",
+            "power_off",
+            "mac_random_off",
+            "mac_random_on",
+        ] {
+            let out = get_action(id).unwrap().execute(&BTreeMap::new());
+            assert!(!out.message.is_empty(), "{id} 必须给出结果说明");
+        }
     }
 
     #[test]

@@ -11,33 +11,31 @@ Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决�
 | M0 | 脚手架 + 主题 token 奇偶校验 + 门禁 | ✅ |
 | M1 | 托盘 + 三热键 + 快捷粘贴闭环（GO/NO-GO 决策点） | ✅ 代码完成 / ⏳ **需真机复核** |
 | M2 | 遥测采样 + 概览/网络监控 + 多粒度流量/日报 | ✅ 数据层+界面完成 / ⏳ 待真机看曲线 |
-| M3 | 诊断与修复（netcheck 15 项 + 修复动作库） | ✅ 15/15 项检查 + **24/19 动作执行器**（剩 8 项待接） |
+| M3 | 诊断与修复（netcheck 15 项 + 修复动作库） | ✅ **15/15 项检查 + 19/19 动作执行器** |
 
-门禁全绿（**249 例 Rust + 84 例前端**，全程 15s）。M1/M2 的**真机清单尚未执行**——
+门禁全绿（**260 例 Rust + 84 例前端**，全程 ~16s）。M1/M2 的**真机清单尚未执行**——
 按 `UNATTENDED.md` §3，托盘里可能跑着用户实例、且测试红线禁止真实 Win32 注入，
 因此 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」与
 「M2 真机复核清单」。
 
-### M3 交付状态（诚实边界）
+### M3 交付状态
 
 **修复动作库**：19 项（元数据与 Python `ACTION_IDS` 逐项对齐）+ 3 个组合 +
-管理员门禁 + 前端分级界面。
+管理员门禁 + 前端分级界面，**执行器全部接入**（批次 0 安全类 6 项、批次 A 无需
+管理员 5 项、批次 B 需管理员 8 项）。`DEFERRED_ACTION_IDS` 已清空。
 
-**执行器已接入 11 项**：`flush_dns`、`renew_dhcp`、`start_nlasvc`、`restart_services`、
-`winsock_reset`、`ipstack_reset`（批 0，安全类）+ **`proxy_off`、`fix_nlasvc`、
-`dns_auto`、`dns_preset`、`del_persistent_route`**（批 A，无需管理员）。
-
-- `proxy_off`：改前备份原值 → `ProxyEnable=0` + 清 PAC + `InternetSetOption` 刷新
-  （不刷新的话已运行的应用仍用旧配置，用户会以为「改了没生效」）。
-- `fix_nlasvc`：`sc config NlaSvc start= auto`（`start=` 与 `auto` 必须是**两个裸参数**）。
-- `dns_auto` / `dns_preset`：**备份失败就不改**——改前备份是动作描述对用户的承诺，
-  且 v4+v6 两段都备（只备 v4 会让 v6 静态值被永久清除且不可恢复）。
-- `del_persistent_route`：删除前把完整路由表与还原命令存档。
-
-**仍未接入 8 项**（需管理员/注册表/网卡配置）：`restart_wlan`、`toggle_adapter`、
-`restore_point`、`ncsi_restore`、`ncsi_disable`、`power_off`、`mac_random_off`、
-`mac_random_on`。它们返回「尚未在 Rust 版接入（原因）」，前端标 warning 而非 error。
-状态由**声明式清单** `DEFERRED_ACTION_IDS` 表达，测试不执行动作即可断言进度。
+批次 B 的要点：
+- **管理员门禁前置**：非提升进程直接给出「请以管理员身份重启 SysKit」而不是
+  底层 API 的「拒绝访问」——后者用户不知道该怎么办。
+- `restore_point`：`Checkpoint-Computer -ErrorAction Stop` 必须带——PowerShell
+  非终止错误的 `-Command` 退出码恒 0，不转终止的话「系统保护未开启」会被当成
+  已创建，而还原点是组合首位安全网。
+- `power_off`：PnPCapabilities 必须写 **REG_DWORD 0x18**；写 REG_SZ "24" 不被
+  NDIS 电源策略识别、修复静默无效，而读回 `str()=="24"` 恰好自洽形成假成功。
+- `mac_random_*`：改 WiFi 配置 XML 的 `EnableRandomization`（纯函数 + 单测），
+  改完调 `restart_wlan` 重连生效；无该块时插到 `</WLANProfile>` 前。
+- `dns_preset` 修正为 Python 的三步：`set` 主 DNS → `add` 备用（index=2）→ 清 v6
+  静态。原先写成 `set ... static 主 备` 是错的（netsh 只接受一个地址）。
 
 **网络诊断 15 项：全部实现**（`ALL_CHECKS` 顺序、名称、quick 跳过集合与
 Python 逐项对齐）。为支持依赖网卡/路由的 5 项，新增 `snapshot.rs` 采集层：
