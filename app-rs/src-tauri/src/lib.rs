@@ -19,9 +19,11 @@
 
 mod appnet;
 mod backup;
+mod cleanup;
 mod clipboard_history;
 mod clipboard_write;
 mod commands;
+mod disk;
 mod dnsclient;
 mod dnsspeed;
 mod hostsed;
@@ -188,6 +190,10 @@ pub fn run() {
             commands::sk_top_procs,
             commands::sk_startup_list,
             commands::sk_startup_set,
+            commands::sk_disk_list,
+            commands::sk_clean_targets,
+            commands::sk_clean_scan,
+            commands::sk_clean_run,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

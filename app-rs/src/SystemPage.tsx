@@ -10,6 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
 
 import { ToolboxStartup } from "./ToolboxStartup";
+import { CleanupPanel, DiskPanel } from "./ToolboxDisk";
 
 import {
   SERIES_LEN,
@@ -77,13 +78,15 @@ export function SystemPage() {
         items={[
           { key: "perf", label: "性能监控", children: <PerfPanel /> },
           { key: "startup", label: "启动项管理", children: <ToolboxStartup /> },
+          { key: "disk", label: "磁盘空间", children: <DiskPanel /> },
+          { key: "clean", label: "垃圾清理", children: <CleanupPanel /> },
           {
             key: "soon",
             label: "待接入",
             children: (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="电池健康 / 垃圾清理 / 磁盘空间 / 剪贴板历史 / 场景模式 —— 逐轮接入（M5）"
+                description="电池健康 / 剪贴板历史 / 场景模式 —— 逐轮接入（M5）"
               />
             ),
           },

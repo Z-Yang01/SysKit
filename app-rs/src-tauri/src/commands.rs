@@ -985,6 +985,146 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M5 系统助手：磁盘空间 / 垃圾清理 ----------------
+
+/// 列出本地卷的容量与使用率。
+#[tauri::command]
+pub async fn sk_disk_list() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let drives = crate::disk::sort_by_pressure(crate::disk::list_drives());
+        let rows: Vec<serde_json::Value> = drives
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "letter": d.letter,
+                    "label": d.label,
+                    "fs": d.fs,
+                    "total": d.total,
+                    "used": d.used(),
+                    "free_total": d.free_total,
+                    "free_to_caller": d.free_to_caller,
+                    "used_percent": d.used_percent(),
+                    "removable": d.removable,
+                    "token": crate::disk::usage_token(d.used_percent()),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "rows": rows, "count": rows.len() }))
+    })
+    .await
+    .map_err(|e| format!("枚举线程失败: {e}"))?
+}
+
+/// 清理目标清单（供前端渲染勾选项）。
+#[tauri::command]
+pub fn sk_clean_targets() -> serde_json::Value {
+    serde_json::json!({
+        "targets": crate::cleanup::CLEAN_TARGETS
+            .iter()
+            .map(|(t, title)| serde_json::json!({
+                "key": t.key(),
+                "title": title,
+                "root": t.root().map(|p| p.to_string_lossy().to_string()),
+            }))
+            .collect::<Vec<_>>()
+    })
+}
+
+/// 扫描各清理目标的大小（**只读，不删任何东西**）。
+///
+/// 真机 TEMP 目录可能有很多文件，这一步会慢（秒级），所以走阻塞线程池。
+#[tauri::command]
+pub async fn sk_clean_scan() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut total = 0u64;
+        let rows: Vec<serde_json::Value> = crate::cleanup::CLEAN_TARGETS
+            .iter()
+            .map(|(t, title)| {
+                let bytes = crate::cleanup::scan_target(*t);
+                total += bytes;
+                serde_json::json!({
+                    "key": t.key(),
+                    "title": title,
+                    "bytes": bytes,
+                    "human": crate::disk::human_size(bytes),
+                    "root": t.root().map(|p| p.to_string_lossy().to_string()),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "rows": rows,
+            "total_bytes": total,
+            "total_human": crate::disk::human_size(total),
+        }))
+    })
+    .await
+    .map_err(|e| format!("扫描线程失败: {e}"))?
+}
+
+/// 清理选中的目标（只删文件，跳过正在使用的）。
+#[tauri::command]
+pub async fn sk_clean_run(keys: Vec<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if keys.is_empty() {
+            return Err("请先选择要清理的项目".to_string());
+        }
+        let mut total = crate::cleanup::CleanOutcome::empty();
+        let mut per_target = Vec::new();
+        for key in &keys {
+            let Some(t) = crate::cleanup::CleanTarget::from_key(key) else {
+                continue; // 未知 key 直接忽略，不做任何猜测
+            };
+            match t {
+                crate::cleanup::CleanTarget::Recycle => {
+                    // 回收站走 Shell COM（没有可遍历的目录路径）
+                    let out = crate::w32::run_capture(
+                        &[
+                            "powershell".into(),
+                            "-NoProfile".into(),
+                            "-NonInteractive".into(),
+                            "-Command".into(),
+                            "Clear-RecycleBin -Force -ErrorAction SilentlyContinue".into(),
+                        ],
+                        60,
+                    );
+                    let ok = out.as_ref().map(|o| o.ok).unwrap_or(false);
+                    per_target.push(serde_json::json!({
+                        "key": t.key(),
+                        "title": t.title(),
+                        "ok": ok,
+                        "message": if ok {
+                            "回收站已清空（无法统计释放大小）"
+                        } else {
+                            "清空回收站失败或本来就是空的"
+                        },
+                    }));
+                }
+                _ => {
+                    let Some(root) = t.root() else { continue };
+                    let out = crate::cleanup::clean_dir(t, &root);
+                    per_target.push(serde_json::json!({
+                        "key": t.key(),
+                        "title": t.title(),
+                        "ok": true,
+                        "deleted": out.deleted,
+                        "freed": out.freed,
+                        "failed": out.failed,
+                        "message": out.summary(),
+                    }));
+                    total = total.merge(out);
+                }
+            }
+        }
+        Ok(serde_json::json!({
+            "outcome": total,
+            "summary": total.summary(),
+            "per_target": per_target,
+        }))
+    })
+    .await
+    .map_err(|e| format!("清理线程失败: {e}"))?
+}
+
 // ---------------- M5 系统助手：启动项管理 ----------------
 
 /// 枚举启动项（HKCU/HKLM 的 Run 键 + 启动文件夹 + SysKit 的禁用记录）。
