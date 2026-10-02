@@ -50,6 +50,7 @@ mod telemetry_hub;
 mod test_support;
 mod timefmt;
 mod tray;
+mod vault_crypto;
 mod w32;
 mod wifi;
 

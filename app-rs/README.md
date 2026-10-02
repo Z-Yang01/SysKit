@@ -13,12 +13,47 @@ Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决�
 | M3 | 诊断与修复（netcheck 15 项 + 修复动作库） | ✅ **15/15 项检查 + 19/19 动作执行器** |
 | M4 | 工具箱（测速/端口/Hosts/DNS 计算/ping 路由/局域网/DNS 测速/应用联网） | ✅ **全部 8 项已交付**（下载测速待 TLS，已如实标注） |
 | M5 | 系统助手（性能/启动项/电池/清理/磁盘/剪贴板/场景） | ✅ **全部 8 个分页已交付** |
-| M6-M7 | 密码库/收尾 | 待做 |
+| M6 | 密码库（rusqlite + aes-gcm + DPAPI 密钥包裹） | 🚧 **加密层已交付并双向跨语言验证**；DB 层与界面待做 |
+| M7 | 收尾（设置/日志/命令面板/打包） | 待做 |
 
-门禁全绿（**487 例 Rust + 312 例前端**）。M1/M2 的**真机清单尚未执行**——
+门禁全绿（**522 例 Rust + 312 例前端**）。M1/M2 的**真机清单尚未执行**——
 按 `UNATTENDED.md` §3，托盘里可能跑着用户实例、且测试红线禁止真实 Win32 注入，
 因此 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」与
 「M2 真机复核清单」。
+
+### M6 交付状态（进行中）
+
+**加密层（`vault_crypto.rs`）已交付，并已双向跨语言验证。** DB 层（rusqlite）与界面待做。
+
+**`vault.key` 的字节级格式**（两个版本必须互相能读）：
+```text
+密码模式：{"mode":"password","kdf":{"salt":<b64 16B>,"iter":600000},
+           "wrapped_key":<b64(nonce12 + gcm_ct||tag)>,   aad="vault-key"
+           "verifier":  <b64(nonce12 + gcm_ct||tag)>}   aad="vault-verify"
+免密模式：{"mode":"dpapi","wrapped_key":<b64 DPAPI blob>}
+```
+数据密钥 32 字节；PBKDF2-HMAC-SHA256（600k 迭代）；verifier 明文 `syskit-vault-ok`；
+字段加密 aad=`"field"`；DPAPI 描述串 `SysKit vault key`。
+
+**用 BCrypt 而不是新引依赖**：AES-256-GCM 与 PBKDF2 都在 `windows` crate 里
+（`BCryptEncrypt`/`BCryptDeriveKeyPBKDF2`），DPAPI 本来就用 `CryptProtectData`。
+不引新依赖就少一处供应链风险；BCrypt 与 Python 的 OpenSSL 在同标准下字节级兼容。
+
+**双向验证**（这是 M6 最关键的一条）：
+- 正向：`tools/gen_vault_fixture.py` 用 Python 生成 `vault.key`（**故意用 2000 次迭代
+  而不是常量 600000**）+ 一份 aad=`field` 的密文，Rust 单测读它并解出同样的明文；
+- 反向：Rust 生成 `vault.key` + 密文，`tools/verify_vault_rust_to_python.py` 交给
+  Python 读并解密。
+**两个方向都通过**——用户无论从哪一版切到另一版都不会看到"主密码错误"。
+
+三个必须保留的语义：
+1. **迭代次数从文件里读**（`kdf.iter`），不是每次都用当前常量。将来上调 `KDF_ITER`
+   时，存量库若按新常量派生会解不开 verifier，用户会看到"主密码错误"并可能**误删整个库**；
+2. **解锁失败返回原因而不是抛异常**：`vault.key` 损坏（掉电截断）时报 `Corrupt`，
+   与"主密码错误"严格区分——否则用户会反复试密码，甚至以为库没了而删掉；
+3. **`BCryptSetProperty` 设 GCM 链模式时值必须带结尾 NUL**：该属性是宽字符串常量，
+   BCrypt 做 NUL 结尾比较，少一个 NUL 就返回 `STATUS_INVALID_PARAMETER`
+   （本机实测就是这样失败的）。不设的话默认链模式是 CBC，完全不是 GCM。
 
 ### M5 交付状态（进行中）
 
