@@ -204,6 +204,30 @@ pub fn get_str(key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 动态键取整数：**不做默认值回退**，缺失就是 None。
+///
+/// 与 `get_int` 的区别在于用途：`get_int` 服务已知设置键（有默认值表）；
+/// 这个用于 `modes_prev_volume` 这类**动态键**，调用方需要区分"没有记录"与
+/// "记录是 0"——前者要设为最大音量，后者要重新存档。
+pub fn get_i64(key: &str) -> Option<i64> {
+    load().get(key).and_then(|v| v.as_i64())
+}
+
+/// 动态键写整数（合并写入，其它键不动）。
+pub fn set_i64(key: &str, value: i64) -> std::io::Result<()> {
+    let mut m = Map::new();
+    m.insert(key.to_string(), Value::from(value));
+    save(&m)
+}
+
+/// 当前设置的完整快照（已按 DEFAULTS 收敛类型）。
+///
+/// 场景模式的"备份配置"在没有历史文件时用它落一份非空备份——空备份目录对用户
+/// 毫无意义，还会让"备份成功"的提示变成误导。
+pub fn snapshot_json() -> Map<String, Value> {
+    load()
+}
+
 /// 合并写入（补丁同样过类型收敛）；先更新缓存，写盘失败向上抛错。
 pub fn save(patch: &Map<String, Value>) -> std::io::Result<()> {
     save_to(&paths::settings_file(), patch)

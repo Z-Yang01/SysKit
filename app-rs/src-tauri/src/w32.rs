@@ -1018,6 +1018,40 @@ pub fn pick_file_dialog(title: &str, filter: &str) -> Result<String, String> {
     Ok(String::from_utf16_lossy(&buf[..len]))
 }
 
+// ---------------- 用系统关联打开文件/协议 ----------------
+
+/// 用系统默认关联打开目标（`ShellExecuteW`）。
+///
+/// 用 `ShellExecuteW` 而不是 `std::process::Command`：它能处理 `ms-settings:` 这类
+/// **协议**与文件夹，`Command` 只能起可执行文件。Python 版用 `os.startfile`，
+/// 底层就是这个 API。
+pub fn shell_open(target: &str) -> Result<(), String> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let file: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: 两个宽字符串都在本调用内有效且以 NUL 结尾
+    let ret = unsafe {
+        ShellExecuteW(
+            None,
+            windows::core::PCWSTR(verb.as_ptr()),
+            windows::core::PCWSTR(file.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW 的返回值 >32 表示成功、<=32 是错误码——这是该 API 的历史约定，
+    // 它**不是**可用句柄（拿它当句柄会让错误码被当成有效值）。
+    let code = ret.0 as isize;
+    if code > 32 {
+        Ok(())
+    } else {
+        Err(format!("ShellExecute 失败（错误码 {code}）"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

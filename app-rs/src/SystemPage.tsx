@@ -12,6 +12,7 @@ import { Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tabs, Tag
 import { ToolboxStartup } from "./ToolboxStartup";
 import { CleanupPanel, DiskPanel } from "./ToolboxDisk";
 import { BatteryPanel } from "./ToolboxBattery";
+import { ModesPanel } from "./ToolboxModes";
 
 import {
   SERIES_LEN,
@@ -82,16 +83,7 @@ export function SystemPage() {
           { key: "disk", label: "磁盘空间", children: <DiskPanel /> },
           { key: "clean", label: "垃圾清理", children: <CleanupPanel /> },
           { key: "battery", label: "电池健康", children: <BatteryPanel /> },
-          {
-            key: "soon",
-            label: "待接入",
-            children: (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="剪贴板历史 / 场景模式 —— 逐轮接入（M5）"
-              />
-            ),
-          },
+          { key: "modes", label: "场景模式", children: <ModesPanel /> },
         ]}
       />
     </Card>

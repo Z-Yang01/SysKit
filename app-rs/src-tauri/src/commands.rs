@@ -985,6 +985,67 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M5 系统助手：场景模式 ----------------
+
+/// 场景模式清单（供前端渲染按钮与说明）。
+#[tauri::command]
+pub fn sk_modes_info() -> serde_json::Value {
+    serde_json::json!({
+        "common_apps": crate::modes::COMMON_APPS
+            .iter()
+            .map(|(n, t)| serde_json::json!({ "name": n, "target": t }))
+            .collect::<Vec<_>>(),
+        "office_default_apps": crate::modes::OFFICE_DEFAULT_APPS,
+        "whitelist": crate::modes::BACKGROUND_CLOSE_WHITELIST,
+        "is_admin": crate::w32::is_elevated(),
+        "notes": {
+            "office": "勿扰（关通知）+ 静音 + 打开常用软件 + 备份当前配置。退出模式会恢复通知并取消静音。",
+            "game": "关通知 + 高性能电源 + 暂停 Windows 更新 + 清理白名单后台。退出模式会恢复通知、平衡电源与更新策略。",
+            "update_policy": "「暂停更新」通过 NoAutoUpdate 策略实现，是持久生效的（不是暂停 N 天），需退出游戏模式或手动恢复。",
+            "admin": "暂停更新与部分电源操作需要管理员权限；失败步骤会如实列出，不影响其它步骤。"
+        }
+    })
+}
+
+/// 进入/退出场景模式（每步结果一并返回，单步失败不中断）。
+#[tauri::command]
+pub async fn sk_modes_run(
+    mode: String,
+    open_apps: Option<bool>,
+    clear_bg: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let outcome = match mode.as_str() {
+            "office" => crate::modes::run_office_mode(open_apps.unwrap_or(true)),
+            "office_exit" => crate::modes::restore_office_defaults(),
+            "game" => crate::modes::run_game_mode(clear_bg.unwrap_or(true)),
+            "game_exit" => crate::modes::restore_game_defaults(),
+            other => return Err(format!("未知模式: {other}")),
+        };
+        let summary = outcome.summary();
+        Ok(serde_json::json!({
+            "outcome": outcome,
+            "summary": summary,
+        }))
+    })
+    .await
+    .map_err(|e| format!("模式线程失败: {e}"))?
+}
+
+/// 列出可清理的后台候选（白名单内正在运行的）。
+#[tauri::command]
+pub async fn sk_modes_bg_candidates() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let list: Vec<serde_json::Value> = crate::modes::background_candidates()
+            .into_iter()
+            .map(|(pid, name)| serde_json::json!({ "pid": pid, "name": name }))
+            .collect();
+        Ok(serde_json::json!({ "rows": list, "count": list.len() }))
+    })
+    .await
+    .map_err(|e| format!("扫描线程失败: {e}"))?
+}
+
 // ---------------- M5 系统助手：电池 ----------------
 
 /// 实时电源状态（`GetSystemPowerStatus`，微秒级，可频繁调用）。

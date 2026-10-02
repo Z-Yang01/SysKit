@@ -31,6 +31,7 @@ mod hostsed;
 mod hotkey;
 mod input;
 mod input_panel;
+mod modes;
 mod netcheck;
 mod netstats;
 mod paths;
@@ -197,6 +198,9 @@ pub fn run() {
             commands::sk_clean_run,
             commands::sk_power_status,
             commands::sk_battery_health,
+            commands::sk_modes_info,
+            commands::sk_modes_run,
+            commands::sk_modes_bg_candidates,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");
