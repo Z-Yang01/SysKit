@@ -985,6 +985,80 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M7 命令面板 provider ----------------
+
+/// 面板动作全集：内置页面跳转 + 自定义命令，按查询排序。
+///
+/// 匹配与排序在 Rust 侧做（与 Python 同口径），前端只渲染结果——这样两版的
+/// **同一个查询排出同样的顺序**，用户不会觉得"搜索结果变了"。
+#[tauri::command]
+pub fn sk_palette_actions(query: Option<String>) -> serde_json::Value {
+    let q = query.unwrap_or_default();
+    let mut actions = builtin_actions();
+    let raw = crate::settings::get_str("palette_commands");
+    let cmds = crate::palette::parse_custom_commands(&raw);
+    actions.extend(crate::palette::custom_to_actions(&cmds));
+    let ranked = crate::palette::rank_actions(&q, &actions);
+    serde_json::json!({
+        "rows": ranked,
+        "count": ranked.len(),
+        "total": actions.len(),
+        "custom_count": cmds.len(),
+    })
+}
+
+/// 算式直算（面板里输入 `1+1` 直接出结果）。
+///
+/// 返回 `{is_math, ok, display, error}`：`is_math=false` 表示这不像算式，
+/// 前端据此忽略而不是弹错误。
+#[tauri::command]
+pub fn sk_palette_calc(input: String) -> serde_json::Value {
+    if !crate::palette::looks_like_math(&input) {
+        return serde_json::json!({ "is_math": false, "ok": false, "display": "", "error": "" });
+    }
+    // safe_calc 有意在**主线程同步**执行（面板求值本来就是同步的）：
+    // 规模护栏已保证它不会长时间占用 CPU——见 palette 模块文档的两道护栏
+    match crate::palette::safe_calc(&input) {
+        Ok(v) => serde_json::json!({
+            "is_math": true, "ok": true, "display": v.display(), "error": ""
+        }),
+        Err(e) => serde_json::json!({
+            "is_math": true, "ok": false, "display": "", "error": e
+        }),
+    }
+}
+
+/// 内置动作（页面跳转）。页内 Tab 由前端按当前页面结构补充。
+fn builtin_actions() -> Vec<crate::palette::PaletteAction> {
+    const PAGES: [(&str, &str, &str); 10] = [
+        ("nav:overview", "打开 概览", "overview"),
+        ("nav:clipboard", "打开 剪贴板", "clipboard"),
+        ("nav:diagnose", "打开 诊断与修复", "diagnose"),
+        ("nav:toolbox", "打开 工具箱", "toolbox"),
+        ("nav:system", "打开 系统助手", "system"),
+        ("nav:vault", "打开 密码库", "vault"),
+        ("nav:settings", "打开 设置 / 日志", "settings"),
+        ("nav:hosts", "打开 Hosts 编辑", "toolbox"),
+        ("nav:ports", "打开 端口 / 局域网", "toolbox"),
+        ("nav:dns", "打开 DNS / 子网 / ping", "toolbox"),
+    ];
+    PAGES
+        .iter()
+        .map(|(id, label, page)| crate::palette::PaletteAction {
+            id: (*id).to_string(),
+            label: (*label).to_string(),
+            hint: "页面跳转".to_string(),
+            keywords: vec![
+                "goto".to_string(),
+                "页面".to_string(),
+                "打开".to_string(),
+                (*page).to_string(),
+            ],
+            source: "内置".to_string(),
+        })
+        .collect()
+}
+
 // ---------------- M7 设置 / 日志 ----------------
 
 /// 全部设置的当前值与界面元数据。

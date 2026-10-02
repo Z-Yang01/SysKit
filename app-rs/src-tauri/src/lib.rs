@@ -34,6 +34,7 @@ mod input_panel;
 mod modes;
 mod netcheck;
 mod netstats;
+mod palette;
 mod paths;
 mod portscan;
 mod rate_stats;
@@ -216,6 +217,8 @@ pub fn run() {
             commands::sk_settings_reset,
             commands::sk_log_list,
             commands::sk_log_tail,
+            commands::sk_palette_actions,
+            commands::sk_palette_calc,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");
