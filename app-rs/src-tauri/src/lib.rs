@@ -203,6 +203,14 @@ pub fn run() {
             commands::sk_modes_run,
             commands::sk_modes_bg_candidates,
             commands::sk_clip_save_as,
+            commands::sk_vault_status,
+            commands::sk_vault_setup,
+            commands::sk_vault_unlock,
+            commands::sk_vault_lock,
+            commands::sk_vault_set_password,
+            commands::sk_vault_verify_password,
+            commands::sk_vault_remove_password,
+            commands::sk_vault_store_unavailable,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

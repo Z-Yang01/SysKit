@@ -31,6 +31,7 @@ import { ToolboxDns } from "./ToolboxDns";
 import { ToolboxSpeed } from "./ToolboxSpeed";
 import { ToolboxAppNet } from "./ToolboxAppNet";
 import { SystemPage } from "./SystemPage";
+import { VaultPage } from "./VaultPage";
 import { applyTheme, palette, type Palette } from "./theme";
 
 interface ClipRow {
@@ -225,13 +226,7 @@ export function App() {
       />
     ),
     system: <SystemPage />,
-    vault: (
-      <Pending
-        title="密码库"
-        milestone="M6"
-        detail="rusqlite + aes-gcm + DPAPI 密钥包裹；vault.key 格式兼容是风险项。"
-      />
-    ),
+    vault: <VaultPage />,
     settings: (
       <Pending
         title="设置 / 日志"

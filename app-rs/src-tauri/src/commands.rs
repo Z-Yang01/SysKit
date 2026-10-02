@@ -985,6 +985,133 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M6 密码库（本阶段：加密层 + 界面骨架） ----------------
+
+/// 密码库状态（含各能力的可用性，供界面如实展示）。
+#[tauri::command]
+pub fn sk_vault_status() -> serde_json::Value {
+    let mut c = crate::vault_crypto::VaultCrypto::new();
+    let path = c.path().to_string_lossy().to_string();
+    let provisioned = c.is_provisioned();
+    let meta = c.read_meta();
+    let has_pw = provisioned && meta.mode == "password";
+    // 免密模式可以自动解锁（DPAPI 绑定当前用户，无需输入）
+    if provisioned && meta.mode == "dpapi" {
+        let _ = c.unlock(None);
+    }
+    serde_json::json!({
+        "path": path,
+        "provisioned": provisioned,
+        "unlocked": c.is_unlocked(),
+        "has_master_password": has_pw,
+        "mode": meta.mode,
+        // 各能力可用性：界面据此决定按钮能不能点、要不要显示说明
+        "capabilities": {
+            "key_management": true,
+            "password_storage": false,
+            "password_storage_reason":
+                "数据层（vault.db / SQLite）按你的决定暂不实现，因此目前无法存取密码条目。\
+                 加密层已完成并通过双向跨语言验证：vault.key 与 Python 版互通。\
+                 后续要启用存取功能，需引入 SQLite 依赖（如 rusqlite）。",
+        },
+    })
+}
+
+/// 初始化密码库（首次创建 `vault.key`）。`password` 为空则用 DPAPI 免密模式。
+#[tauri::command]
+pub async fn sk_vault_setup(password: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut c = crate::vault_crypto::VaultCrypto::new();
+        if c.is_provisioned() {
+            return Err("密码库已初始化".to_string());
+        }
+        let pw = password.filter(|p| !p.is_empty());
+        // 600k 次 PBKDF2 在主线程会明显卡顿，所以走阻塞线程池
+        c.setup(pw.as_deref())?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "mode": if pw.is_some() { "password" } else { "dpapi" },
+            "message": if pw.is_some() {
+                "已创建密码库（主密码模式）"
+            } else {
+                "已创建密码库（免密模式：密钥由 Windows DPAPI 绑定当前用户保护）"
+            },
+        }))
+    })
+    .await
+    .map_err(|e| format!("初始化线程失败: {e}"))?
+}
+
+/// 解锁。失败返回可读原因（区分密码错误与文件损坏）。
+#[tauri::command]
+pub async fn sk_vault_unlock(password: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut c = crate::vault_crypto::VaultCrypto::new();
+        match c.unlock(password.as_deref()) {
+            Ok(true) => Ok(serde_json::json!({ "ok": true, "message": "已解锁" })),
+            Ok(false) => Err("解锁失败".to_string()),
+            Err(e) => Err(e.message()),
+        }
+    })
+    .await
+    .map_err(|e| format!("解锁线程失败: {e}"))?
+}
+
+/// 锁定（清空内存中的密钥）。
+#[tauri::command]
+pub fn sk_vault_lock() -> serde_json::Value {
+    let mut c = crate::vault_crypto::VaultCrypto::new();
+    c.lock();
+    serde_json::json!({ "ok": true, "message": "已锁定" })
+}
+
+/// 设置主密码（免密 → 密码模式；数据密钥不变）。
+#[tauri::command]
+pub async fn sk_vault_set_password(password: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut c = crate::vault_crypto::VaultCrypto::new();
+        // 免密模式下先自动解锁（DPAPI），否则无法重包裹数据密钥
+        if !c.is_unlocked() {
+            let _ = c.unlock(None);
+        }
+        c.set_master_password(&password)?;
+        Ok("已设置主密码（数据密钥未变，已有密文仍可解开）".to_string())
+    })
+    .await
+    .map_err(|e| format!("设置线程失败: {e}"))?
+}
+
+/// 校验主密码（不改变解锁状态）。
+#[tauri::command]
+pub async fn sk_vault_verify_password(password: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let c = crate::vault_crypto::VaultCrypto::new();
+        Ok(c.verify_password(&password))
+    })
+    .await
+    .map_err(|e| format!("校验线程失败: {e}"))?
+}
+
+/// 移除主密码（回到免密模式）。当前密码错误返回 Ok(false)。
+#[tauri::command]
+pub async fn sk_vault_remove_password(current: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut c = crate::vault_crypto::VaultCrypto::new();
+        if !c.is_unlocked() {
+            let _ = c.unlock(Some(&current));
+        }
+        c.remove_master_password(&current)
+    })
+    .await
+    .map_err(|e| format!("移除线程失败: {e}"))?
+}
+
+/// 明文存取入口在数据层实现前**必须明确失败**，绝不假装成功。
+#[tauri::command]
+pub fn sk_vault_store_unavailable() -> Result<(), String> {
+    Err(crate::vault_crypto::STORAGE_UNAVAILABLE.to_string())
+}
+
 // ---------------- M5 系统助手：剪贴板历史（管理动作） ----------------
 
 /// 把一条历史保存为文件（图片 → PNG，其它 → 文本）。
