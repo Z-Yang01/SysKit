@@ -529,6 +529,126 @@ pub fn reg_value(path: &str, name: &str) -> Option<RegValue> {
 }
 
 /// 枚举一个键下的全部值（对应 Python `winregread.values(path)`）；失败返回空表。
+/// 写 DWORD 值（对应 Python `winreg.SetValueEx(..., REG_DWORD, v)`）。
+///
+/// 需要 `KEY_SET_VALUE`：HKCU 通常无需提升，HKLM 需管理员——调用方负责判定，
+/// 本层只返回成败，绝不静默吞掉失败。
+pub fn reg_set_dword(path: &str, name: &str, value: u32) -> bool {
+    let Some(hkey) = reg_open_write(path) else {
+        return false;
+    };
+    let data = value.to_le_bytes();
+    let rc = unsafe {
+        windows::Win32::System::Registry::RegSetValueExW(
+            hkey,
+            &HSTRING::from(name),
+            None,
+            windows::Win32::System::Registry::REG_DWORD,
+            Some(&data),
+        )
+    };
+    unsafe {
+        let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+    }
+    rc == windows::Win32::Foundation::WIN32_ERROR(0)
+}
+
+/// 写字符串值（REG_SZ）。
+pub fn reg_set_string(path: &str, name: &str, value: &str) -> bool {
+    let Some(hkey) = reg_open_write(path) else {
+        return false;
+    };
+    let mut wide: Vec<u16> = value.encode_utf16().collect();
+    wide.push(0);
+    let data: Vec<u8> = wide.iter().flat_map(|u| u.to_le_bytes()).collect();
+    let rc = unsafe {
+        windows::Win32::System::Registry::RegSetValueExW(
+            hkey,
+            &HSTRING::from(name),
+            None,
+            windows::Win32::System::Registry::REG_SZ,
+            Some(&data),
+        )
+    };
+    unsafe {
+        let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+    }
+    rc == windows::Win32::Foundation::WIN32_ERROR(0)
+}
+
+/// 写「以值名为规格」的注册表项（持久路由用：值名就是 `目标,掩码,网关,跃点`）。
+///
+/// 与 `reg_set_string` 的区别在于**先删同名旧值再写**：改路由时规格串本身是键名，
+/// 不先删会留下旧路由（两条并存 → 依然劫持流量）。
+pub fn reg_write_named_value(path: &str, name: &str, data: &str) -> bool {
+    let _ = reg_delete_value(path, name);
+    reg_set_string(path, name, data)
+}
+
+/// 通知 WinINET 代理设置已变更（对应 Python `wininet.InternetSetOptionW`）。
+///
+/// 39 = INTERNET_OPTION_SETTINGS_CHANGED，37 = INTERNET_OPTION_REFRESH。
+/// 不刷新的话，已运行的应用仍用旧代理配置——用户会以为"改了没生效"。
+pub fn notify_internet_settings_changed() -> bool {
+    use windows::Win32::Networking::WinInet::InternetSetOptionW;
+    unsafe {
+        let a = InternetSetOptionW(None, 39, None, 0).is_ok();
+        let b = InternetSetOptionW(None, 37, None, 0).is_ok();
+        a && b
+    }
+}
+
+/// 删除值。Ok(true) = 已删除，Ok(false) = 值本来就不存在，Err = 真失败。
+///
+/// **区分这三者很重要**：清 PAC 时「本来就没有」不是失败，而权限不足是失败。
+pub fn reg_delete_value(path: &str, name: &str) -> Result<bool, String> {
+    use windows::Win32::Foundation::WIN32_ERROR;
+    const ERROR_FILE_NOT_FOUND: WIN32_ERROR = WIN32_ERROR(2);
+    const ERROR_PATH_NOT_FOUND: WIN32_ERROR = WIN32_ERROR(3);
+    let Some(hkey) = reg_open_write(path) else {
+        return Err(format!("无法以写权限打开注册表键: {path}"));
+    };
+    let rc =
+        unsafe { windows::Win32::System::Registry::RegDeleteValueW(hkey, &HSTRING::from(name)) };
+    unsafe {
+        let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+    }
+    if rc == WIN32_ERROR(0) {
+        Ok(true)
+    } else if rc == ERROR_FILE_NOT_FOUND || rc == ERROR_PATH_NOT_FOUND {
+        Ok(false)
+    } else {
+        Err(format!(
+            "删除注册表值失败 {path}\\{name}（错误码 {}）",
+            rc.0
+        ))
+    }
+}
+
+/// 以写权限打开键（读用 `reg_open`）。
+fn reg_open_write(path: &str) -> Option<windows::Win32::System::Registry::HKEY> {
+    use windows::Win32::System::Registry::{
+        RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, KEY_WOW64_64KEY,
+    };
+    let (root, sub) = split_reg_path(path)?;
+    let hkey = match root {
+        "HKLM" | "HKEY_LOCAL_MACHINE" => HKEY_LOCAL_MACHINE,
+        "HKCU" | "HKEY_CURRENT_USER" => HKEY_CURRENT_USER,
+        _ => return None,
+    };
+    let mut out = HKEY(std::ptr::null_mut());
+    let rc = unsafe {
+        RegOpenKeyExW(
+            hkey,
+            &HSTRING::from(sub),
+            Some(0),
+            KEY_SET_VALUE | KEY_WOW64_64KEY,
+            &mut out,
+        )
+    };
+    (rc == windows::Win32::Foundation::WIN32_ERROR(0)).then_some(out)
+}
+
 pub fn reg_values(path: &str) -> BTreeMap<String, RegValue> {
     use windows::Win32::System::Registry::{RegEnumValueW, RegQueryInfoKeyW};
     let mut out = BTreeMap::new();

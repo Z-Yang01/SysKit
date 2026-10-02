@@ -17,6 +17,7 @@
 // 每个 M 接入调用方后逐条删除此豁免（见 README 里程碑表的待办）。
 #![allow(dead_code)]
 
+mod backup;
 mod clipboard_history;
 mod clipboard_write;
 mod commands;

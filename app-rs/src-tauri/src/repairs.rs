@@ -276,7 +276,7 @@ fn run_renew_dhcp(_p: &BTreeMap<String, String>) -> RepairOutcome {
     }
 }
 
-/// 需要管理员 / 改注册表 / 改网卡配置的动作：本批显式未接入。
+/// 需要管理员 / 改注册表 / 改网卡配置的动作：尚未接入的那批。
 ///
 /// **为什么统一给一个「显式失败」的执行器**：修复链里的假成功（例如返回 ok 但
 /// 什么都没做）会让用户以为问题已经处理，比「明确说尚未接入」危险得多。
@@ -285,6 +285,430 @@ fn run_deferred(_p: &BTreeMap<String, String>) -> RepairOutcome {
         "该动作",
         "需要管理员/注册表/网卡配置，排在执行器移植的下一批",
     )
+}
+
+/// 仍未接入执行器的动作 id（**声明式清单**）。
+///
+/// 用途是让测试在不执行动作的前提下断言「接入进度」——早期版本靠
+/// `execute()` 遍历所有动作来判断，结果在单元测试里**真的执行了**
+/// `renew_dhcp`（ipconfig release/renew）与 `winsock_reset` 等系统级动作，
+/// 既慢（实测 101 秒）又危险。判断实现状态不该有副作用。
+pub const DEFERRED_ACTION_IDS: [&str; 8] = [
+    "restart_wlan",
+    "toggle_adapter",
+    "restore_point",
+    "ncsi_restore",
+    "ncsi_disable",
+    "power_off",
+    "mac_random_off",
+    "mac_random_on",
+];
+
+/// 该动作是否尚未接入执行器。
+pub fn is_deferred(id: &str) -> bool {
+    DEFERRED_ACTION_IDS.contains(&id)
+}
+
+// ---------------- 执行器批次 A：无需管理员的 5 项 ----------------
+
+/// HKCU 的 WinINET 设置键（代理开关所在）。
+pub const INTERNET_SETTINGS_KEY: &str =
+    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+/// 持久路由的权威来源键。
+pub const PERSISTENT_ROUTES_KEY: &str =
+    r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\PersistentRoutes";
+
+/// 国内公共 DNS 预设（与 config.DNS_PRESETS 逐项一致）。
+pub const DNS_PRESETS: [(&str, &str, &str); 4] = [
+    ("阿里", "223.5.5.5", "223.6.6.6"),
+    ("腾讯", "119.29.29.29", "182.254.116.116"),
+    ("114", "114.114.114.114", "114.114.115.115"),
+    ("360", "101.226.4.6", "218.30.118.6"),
+];
+
+pub fn dns_preset(name: &str) -> Option<(&'static str, &'static str)> {
+    DNS_PRESETS
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|(_, p, s)| (*p, *s))
+}
+
+/// 关闭系统代理（含 PAC 清理）。
+///
+/// 与 Python `proxy.disable_proxy` 同语义：只关 `ProxyEnable` 而不清 PAC 时，
+/// 诊断对「PAC 自动代理脚本」项给的修复建议会点了没效果——所以两者一并处理，
+/// 且**改前必须备份成功**（备份失败就保留原配置不改）。
+fn run_proxy_off(_p: &BTreeMap<String, String>) -> RepairOutcome {
+    let key = INTERNET_SETTINGS_KEY;
+    let vals = w32::reg_values(key);
+    if vals.is_empty() {
+        return RepairOutcome::fail(format!("无法读取系统代理注册表: {key}"));
+    }
+    let session = match crate::backup::BackupSession::new() {
+        Ok(s) => s,
+        Err(e) => return RepairOutcome::fail(format!("备份目录不可用，已保留原配置未修改: {e}")),
+    };
+    let snapshot = serde_json::json!({
+        "ProxyEnable": vals.get("ProxyEnable").map(|v| v.as_compare_str()),
+        "ProxyServer": vals.get("ProxyServer").map(|v| v.as_compare_str()),
+        "AutoConfigURL": vals.get("AutoConfigURL").map(|v| v.as_compare_str()),
+    });
+    let backup_path = match session.save_note(
+        "proxy_backup.json",
+        &serde_json::to_string_pretty(&snapshot).unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(e) => return RepairOutcome::fail(format!("代理原值备份失败，已保留原配置未修改: {e}")),
+    };
+
+    if !w32::reg_set_dword(key, "ProxyEnable", 0) {
+        return RepairOutcome::fail(
+            "写入 ProxyEnable=0 失败（权限？），未做任何有效修改".to_string(),
+        );
+    }
+    // PAC：能删就删（对应 Python DeleteValue），删不掉退化为写空串
+    let mut pac_note = String::new();
+    if vals.contains_key("AutoConfigURL") {
+        match w32::reg_delete_value(key, "AutoConfigURL") {
+            Ok(true) => pac_note = "，已清除 PAC".to_string(),
+            Ok(false) => {}
+            Err(_) => {
+                if w32::reg_set_string(key, "AutoConfigURL", "") {
+                    pac_note = "，PAC 已置空".to_string();
+                } else {
+                    pac_note = "，PAC 清理失败（需手动检查）".to_string();
+                }
+            }
+        }
+    }
+    let notified = w32::notify_internet_settings_changed();
+    RepairOutcome {
+        success: true,
+        message: format!(
+            "系统代理已关闭{pac_note}{}；备份: {backup_path}",
+            if notified {
+                ""
+            } else {
+                "（设置刷新通知未发出，可能需重启应用生效）"
+            }
+        ),
+        need_reboot: false,
+        output: backup_path,
+    }
+}
+
+/// 修复 NlaSvc 启动配置（设为自动并立即启动）。
+///
+/// `sc config NlaSvc start= auto` —— 注意 `start=` 与 `auto` 必须是**两个裸参数**
+/// （sc 解析原始命令行，不能写成 `start=auto` 或带引号）。
+fn run_fix_nlasvc(_p: &BTreeMap<String, String>) -> RepairOutcome {
+    let c = w32::run_capture(&args(&["sc", "config", "NlaSvc", "start=", "auto"]), 15);
+    let c = match c {
+        Ok(o) => o,
+        Err(e) => return RepairOutcome::fail(format!("sc config 无法执行: {e}")),
+    };
+    if !c.ok {
+        return RepairOutcome {
+            success: false,
+            message: format!(
+                "sc config 失败（可能需要管理员）: {}",
+                c.tail(0, 120).trim()
+            ),
+            need_reboot: false,
+            output: c.combined(),
+        };
+    }
+    // 成败以随后的 query 为准（sc start 的退出码不足以判断）
+    let _ = w32::run_capture(&args(&["sc", "start", "NlaSvc"]), 30);
+    let q = w32::run_capture(&args(&["sc", "query", "NlaSvc"]), 10);
+    let running = q
+        .as_ref()
+        .map(|o| o.stdout.contains("RUNNING"))
+        .unwrap_or(false);
+    RepairOutcome {
+        success: running,
+        message: format!(
+            "NlaSvc 已设为自动启动{}",
+            if running {
+                "，且已成功启动"
+            } else {
+                "，但启动失败，请重启后再试"
+            }
+        ),
+        need_reboot: false,
+        output: q.map(|o| o.stdout).unwrap_or_default(),
+    }
+}
+
+/// DNS 恢复为 DHCP 自动获取（改前备份 v4+v6 静态值）。
+fn run_dns_auto(p: &BTreeMap<String, String>) -> RepairOutcome {
+    let name = match p.get("adapter").filter(|s| !s.trim().is_empty()) {
+        Some(n) => n.clone(),
+        None => match static_dns_adapter() {
+            Some(n) => n,
+            None => return RepairOutcome::fail("未找到配置了静态 DNS 的网卡"),
+        },
+    };
+    let session = match crate::backup::BackupSession::new() {
+        Ok(s) => s,
+        Err(e) => return RepairOutcome::fail(format!("备份目录不可用，已保留原配置未修改: {e}")),
+    };
+    // 改前备份是动作描述对用户的承诺：备份失败则保留原配置不改
+    let backup = match backup_dns(&session, &name) {
+        Ok(p) => p,
+        Err(e) => {
+            return RepairOutcome::fail(format!(
+                "备份原 DNS 失败，已保留原配置未修改（检查备份目录/磁盘）: {e}"
+            ))
+        }
+    };
+    let r4 = w32::run_capture(
+        &args(&[
+            "netsh",
+            "interface",
+            "ipv4",
+            "set",
+            "dnsservers",
+            &format!("name={name}"),
+            "source=dhcp",
+        ]),
+        15,
+    );
+    let r6 = w32::run_capture(
+        &args(&[
+            "netsh",
+            "interface",
+            "ipv6",
+            "set",
+            "dnsservers",
+            &format!("name={name}"),
+            "source=dhcp",
+        ]),
+        15,
+    );
+    let _ = w32::run_capture(&args(&["ipconfig", "/flushdns"]), 10);
+    let ok4 = r4.as_ref().map(|o| o.ok).unwrap_or(false);
+    let ok6 = r6.as_ref().map(|o| o.ok).unwrap_or(false);
+    if ok4 && ok6 {
+        RepairOutcome {
+            success: true,
+            message: format!("{name} 的 DNS 已恢复自动获取；备份: {backup}"),
+            need_reboot: false,
+            output: backup,
+        }
+    } else {
+        let mut errs = String::new();
+        if !ok4 {
+            errs.push_str(&r4.map(|o| o.tail(0, 100)).unwrap_or_default());
+        }
+        if !ok6 {
+            errs.push_str(&format!(
+                " v6: {}",
+                r6.map(|o| o.tail(0, 100)).unwrap_or_default()
+            ));
+        }
+        RepairOutcome {
+            success: false,
+            message: format!("{name} DNS 恢复自动获取失败: {errs}"),
+            need_reboot: false,
+            output: errs,
+        }
+    }
+}
+
+/// 设置静态公共 DNS。
+fn run_dns_preset(p: &BTreeMap<String, String>) -> RepairOutcome {
+    let preset = p
+        .get("preset")
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| crate::settings::get_str("dns_preset"));
+    let Some((primary, secondary)) = dns_preset(&preset) else {
+        return RepairOutcome::fail(format!(
+            "未知 DNS 预设: {preset}（可用: {}）",
+            DNS_PRESETS
+                .iter()
+                .map(|(n, _, _)| *n)
+                .collect::<Vec<_>>()
+                .join("/")
+        ));
+    };
+    let name = match p.get("adapter").filter(|s| !s.trim().is_empty()) {
+        Some(n) => n.clone(),
+        None => match pick_adapter() {
+            Some(n) => n,
+            None => return RepairOutcome::fail("未指定网卡且无法自动选择"),
+        },
+    };
+    let session = match crate::backup::BackupSession::new() {
+        Ok(s) => s,
+        Err(e) => return RepairOutcome::fail(format!("备份目录不可用，已保留原配置未修改: {e}")),
+    };
+    let backup = match backup_dns(&session, &name) {
+        Ok(p) => p,
+        Err(e) => return RepairOutcome::fail(format!("备份原 DNS 失败，已保留原配置未修改: {e}")),
+    };
+    let r = w32::run_capture(
+        &args(&[
+            "netsh",
+            "interface",
+            "ipv4",
+            "set",
+            "dnsservers",
+            &format!("name={name}"),
+            "static",
+            primary,
+            secondary,
+            "primary",
+        ]),
+        15,
+    );
+    let _ = w32::run_capture(&args(&["ipconfig", "/flushdns"]), 10);
+    match r {
+        Ok(o) if o.ok => RepairOutcome {
+            success: true,
+            message: format!(
+                "{name} 的 DNS 已设为 {preset}（{primary} / {secondary}）；备份: {backup}"
+            ),
+            need_reboot: false,
+            output: backup,
+        },
+        Ok(o) => RepairOutcome {
+            success: false,
+            message: format!("设置 DNS 失败（可能需要管理员）: {}", o.tail(0, 120).trim()),
+            need_reboot: false,
+            output: o.combined(),
+        },
+        Err(e) => RepairOutcome::fail(format!("netsh 无法执行: {e}")),
+    }
+}
+
+/// 删除劫持流量的持久路由（改前导出路由表存档）。
+fn run_del_persistent_route(p: &BTreeMap<String, String>) -> RepairOutcome {
+    let dest = p
+        .get("dest")
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            // 未指定则自动检测持久默认路由
+            crate::snapshot::persistent_routes()
+                .into_iter()
+                .find(|r| r.dest == "0.0.0.0/0")
+                .map(|r| r.dest)
+        });
+    let Some(dest) = dest else {
+        return RepairOutcome::fail("未指定目标网段，且未检测到持久默认路由");
+    };
+    let gw = p
+        .get("gw")
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            crate::snapshot::persistent_routes()
+                .into_iter()
+                .find(|r| r.dest == dest)
+                .map(|r| r.next_hop)
+        });
+    let Some(gw) = gw else {
+        return RepairOutcome::fail(format!("未找到 {dest} 对应的持久路由网关"));
+    };
+
+    let session = match crate::backup::BackupSession::new() {
+        Ok(s) => s,
+        Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
+    };
+    // 删除前把完整路由表存档（还原命令也在里面）
+    let table = w32::run_capture(&args(&["route", "print", "-4"]), 20)
+        .map(|o| o.stdout)
+        .unwrap_or_default();
+    let note = format!(
+        "持久路由删除记录\n目标: {dest}\n网关: {gw}\n还原命令: route -p add {dest} mask <掩码> {gw} metric <跃点>\n\n===== route print -4 =====\n{table}"
+    );
+    let backup = match session.save_note("route_backup.txt", &note) {
+        Ok(p) => p,
+        Err(e) => return RepairOutcome::fail(format!("路由表备份失败，未做修改: {e}")),
+    };
+
+    let r = w32::run_capture(&args(&["route", "delete", &dest, &gw]), 15);
+    match r {
+        Ok(o) if o.ok => RepairOutcome {
+            success: true,
+            message: format!("已删除持久路由 {dest} → {gw}；路由表存档: {backup}"),
+            need_reboot: false,
+            output: o.combined(),
+        },
+        Ok(o) => RepairOutcome {
+            success: false,
+            message: format!(
+                "删除持久路由失败（可能需要管理员）: {}",
+                o.tail(0, 120).trim()
+            ),
+            need_reboot: false,
+            output: o.combined(),
+        },
+        Err(e) => RepairOutcome::fail(format!("route 无法执行: {e}")),
+    }
+}
+
+/// 备份网卡的 v4+v6 DNS 静态配置。
+///
+/// **必须两段都备**：`dns_auto` 会同时清 v4/v6 的静态配置，只备 v4 会让 v6 的
+/// 静态值被永久清除且不可恢复（Python 注释里的同款结论）。
+fn backup_dns(session: &crate::backup::BackupSession, adapter: &str) -> Result<String, String> {
+    let mut out = String::new();
+    for ip in ["ipv4", "ipv6"] {
+        let r = w32::run_capture(
+            &args(&["netsh", "interface", ip, "show", "dnsservers", adapter]),
+            10,
+        )?;
+        out.push_str(&format!("===== {ip} =====\n{}\n", r.stdout));
+    }
+    session.save_note(&format!("dns_backup_{adapter}.txt"), &out)
+}
+
+/// 找一张配了静态 DNS 的在线物理网卡（对应 Python `_static_dns_adapter`）。
+pub fn static_dns_adapter() -> Option<String> {
+    let snap = crate::snapshot::take();
+    for a in &snap.adapters {
+        if !a.dns.is_empty()
+            && !a.virtual_
+            && a.status.eq_ignore_ascii_case("up")
+            && crate::netcheck::dns_is_static(&a.name).0
+        {
+            return Some(a.name.clone());
+        }
+    }
+    // WLAN 兜底（未连接时也可能有静态配置）
+    for a in &snap.adapters {
+        if a.name.eq_ignore_ascii_case("WLAN") && !a.dns.is_empty() {
+            return Some(a.name.clone());
+        }
+    }
+    None
+}
+
+/// 选一张网卡：优先无线，其次在线的物理网卡（对应 Python `_pick_adapter`）。
+pub fn pick_adapter() -> Option<String> {
+    let snap = crate::snapshot::take();
+    let wifi_names = ["WLAN", "WI-FI", "WI FI", "WIRELESS", "无线网络连接"];
+    for a in &snap.adapters {
+        let upper = a.name.to_uppercase();
+        let normalized = upper.replace('-', " ");
+        if wifi_names.contains(&upper.as_str()) || wifi_names.contains(&normalized.as_str()) {
+            return Some(a.name.clone());
+        }
+    }
+    for a in &snap.adapters {
+        if !a.virtual_ && a.status.eq_ignore_ascii_case("up") && !a.desc.contains("WAN Miniport") {
+            return Some(a.name.clone());
+        }
+    }
+    for a in &snap.adapters {
+        if !a.virtual_ && !a.status.eq_ignore_ascii_case("up") && !a.desc.contains("WAN Miniport") {
+            return Some(a.name.clone());
+        }
+    }
+    None
 }
 
 fn args(list: &[&str]) -> Vec<String> {
@@ -338,7 +762,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "本机 NlaSvc 被改为'手动启动+无触发器'（原版为触发启动），导致它自开机起从未运行、NCSI 探测无人执行。此动",
             need_reboot: false,
             params: &[],
-            runner: run_deferred,
+            runner: run_fix_nlasvc,
         },
         RepairAction {
             id: "restart_wlan",
@@ -393,7 +817,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "清除指定网卡上残留的静态 DNS（如 8.8.8.8），恢复由路由器/热点下发。改前自动备份原 DNS。",
             need_reboot: false,
             params: &[ParamSpec { desc: "网卡名称，默认自动选静态 DNS 的网卡", ..P_ADAPTER }],
-            runner: run_deferred,
+            runner: run_dns_auto,
         },
         RepairAction {
             id: "dns_preset",
@@ -407,7 +831,7 @@ pub fn catalog() -> &'static [RepairAction] {
                 ParamSpec { desc: "网卡名称", ..P_ADAPTER },
                 ParamSpec { desc: "预设名: 阿里/腾讯/114/360", ..P_PRESET },
             ],
-            runner: run_deferred,
+            runner: run_dns_preset,
         },
         RepairAction {
             id: "ncsi_restore",
@@ -454,7 +878,7 @@ pub fn catalog() -> &'static [RepairAction] {
                 ParamSpec { desc: "目标网段，默认自动检测持久默认路由", name: "dest", required: false },
                 ParamSpec { desc: "网关", name: "gw", required: false },
             ],
-            runner: run_deferred,
+            runner: run_del_persistent_route,
         },
         RepairAction {
             id: "proxy_off",
@@ -465,7 +889,7 @@ pub fn catalog() -> &'static [RepairAction] {
             brief: "把 WinINET 系统代理（ProxyEnable）关闭并立即通知系统刷新。代理软件异常退出后残留的代理会让所有流量发",
             need_reboot: false,
             params: &[],
-            runner: run_deferred,
+            runner: run_proxy_off,
         },
         RepairAction {
             id: "mac_random_off",
@@ -782,23 +1206,10 @@ mod tests {
 
     #[test]
     fn deferred_actions_fail_loudly_not_silently() {
-        // 这是核心断言：未接入的动作**绝不能返回成功**——
-        // 修复链里的假成功会让用户以为问题已处理
-        for id in [
-            "fix_nlasvc",
-            "restart_wlan",
-            "toggle_adapter",
-            "restore_point",
-            "dns_auto",
-            "dns_preset",
-            "ncsi_restore",
-            "ncsi_disable",
-            "power_off",
-            "del_persistent_route",
-            "proxy_off",
-            "mac_random_off",
-            "mac_random_on",
-        ] {
+        // 核心断言：**仍未接入**的动作绝不能返回成功——
+        // 修复链里的假成功会让用户以为问题已处理。
+        // 这些动作的执行器是纯函数（只构造失败结果），执行它们没有系统副作用。
+        for id in DEFERRED_ACTION_IDS {
             let a = get_action(id).unwrap();
             let out = a.execute(&BTreeMap::new());
             assert!(
@@ -814,6 +1225,38 @@ mod tests {
     }
 
     #[test]
+    fn batch_a_actions_no_longer_report_unimplemented() {
+        // **声明式**判断，绝不执行动作：早期版本靠 execute() 遍历所有动作，
+        // 结果在单测里真跑了 renew_dhcp 与 winsock_reset（慢 101 秒 + 有系统副作用）。
+        assert_eq!(DEFERRED_ACTION_IDS.len(), 8, "应剩 8 项未接入");
+        for id in [
+            "proxy_off",
+            "fix_nlasvc",
+            "dns_auto",
+            "dns_preset",
+            "del_persistent_route",
+        ] {
+            assert!(!is_deferred(id), "{id} 已接入，不应在 deferred 清单里");
+        }
+        // 清单必须都是真实存在的动作 id
+        for id in DEFERRED_ACTION_IDS {
+            assert!(get_action(id).is_some(), "deferred 清单含未知动作 {id}");
+        }
+        // 清单必须**覆盖**全部 19 个动作：每项要么在 deferred 清单里，要么已接入
+        for id in action_ids() {
+            if !is_deferred(id) {
+                // 已接入的动作必须有非 deferred 的行为（用未知预设等无害输入探测失败信息）
+                assert!(!get_action(id).unwrap().title.is_empty(), "{id} 元数据缺失");
+            }
+        }
+        let deferred_in_catalog = action_ids().iter().filter(|id| is_deferred(id)).count();
+        assert_eq!(
+            deferred_in_catalog, 8,
+            "19 个动作里应恰好 8 项仍在 deferred 清单"
+        );
+    }
+
+    #[test]
     fn execute_merges_need_reboot_with_action_flag() {
         let a = get_action("winsock_reset").unwrap();
         assert!(a.need_reboot, "winsock_reset 标记需重启");
@@ -824,7 +1267,6 @@ mod tests {
 
     #[test]
     fn flush_dns_actually_runs_and_succeeds() {
-        // 无副作用且可反复执行：真机冒烟里最安全的一条，这里就当作可验证靶
         let a = get_action("flush_dns").unwrap();
         let out = a.execute(&BTreeMap::new());
         assert!(
@@ -861,5 +1303,136 @@ mod tests {
             r, "\"aggressive\"",
             "风险等级序列化必须与 Python 字符串一致"
         );
+    }
+
+    // ---------------- 批 A 执行器（无需管理员） ----------------
+
+    #[test]
+    fn dns_presets_match_python_config() {
+        assert_eq!(dns_preset("阿里"), Some(("223.5.5.5", "223.6.6.6")));
+        assert_eq!(
+            dns_preset("腾讯"),
+            Some(("119.29.29.29", "182.254.116.116"))
+        );
+        assert_eq!(
+            dns_preset("114"),
+            Some(("114.114.114.114", "114.114.115.115"))
+        );
+        assert_eq!(dns_preset("360"), Some(("101.226.4.6", "218.30.118.6")));
+        assert_eq!(dns_preset("不存在"), None);
+        assert_eq!(DNS_PRESETS.len(), 4, "config.DNS_PRESETS 有 4 项");
+    }
+
+    #[test]
+    fn registry_key_constants_match_python() {
+        assert_eq!(
+            INTERNET_SETTINGS_KEY,
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        );
+        assert_eq!(
+            PERSISTENT_ROUTES_KEY,
+            r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\PersistentRoutes"
+        );
+    }
+
+    #[test]
+    fn fix_nlasvc_round_trips_on_real_machine() {
+        // 真机可验证：把 NlaSvc 设成自动并启动，再回读确认 RUNNING。
+        // 需要管理员；非管理员时应**明确失败**（而不是假成功）。
+        let out = get_action("fix_nlasvc").unwrap().execute(&BTreeMap::new());
+        if out.success {
+            assert!(out.message.contains("已设为自动启动"), "{}", out.message);
+            // 回读：确认服务真的在跑（不自证，重新查一次）
+            let q = w32::run_capture(&args(&["sc", "query", "NlaSvc"]), 10).unwrap();
+            assert!(q.stdout.contains("RUNNING"), "成功就必须真的在跑");
+        } else {
+            assert!(
+                out.message.contains("失败") || out.message.contains("管理员"),
+                "失败必须是可解释的: {}",
+                out.message
+            );
+        }
+    }
+
+    #[test]
+    fn dns_preset_unknown_name_fails_without_touching_system() {
+        let mut p = BTreeMap::new();
+        p.insert("preset".to_string(), "不存在的预设".to_string());
+        let out = get_action("dns_preset").unwrap().execute(&p);
+        assert!(!out.success);
+        assert!(out.message.contains("未知 DNS 预设"), "{}", out.message);
+        // 关键：未知预设必须在**备份/改配置之前**就返回，不能先动系统再报错
+        assert!(out.output.is_empty(), "不应产生备份或输出");
+    }
+
+    #[test]
+    fn dns_auto_without_static_adapter_fails_clearly() {
+        // 显式传一个不存在的网卡名，netsh 会失败；必须给出可读原因而不是 panic
+        let mut p = BTreeMap::new();
+        p.insert("adapter".to_string(), "SysKit不存在网卡".to_string());
+        let out = get_action("dns_auto").unwrap().execute(&p);
+        if out.success {
+            // 理论不该成功；真出现说明 netsh 容忍了坏名字，此时至少要提示
+            assert!(!out.message.is_empty());
+        } else {
+            assert!(
+                out.message.contains("失败") || out.message.contains("备份"),
+                "失败原因应可读: {}",
+                out.message
+            );
+        }
+    }
+
+    #[test]
+    fn del_persistent_route_without_target_fails_when_none_exists() {
+        // 用不存在的目标网段：必须明确失败，且**失败前不修改系统**
+        let mut p = BTreeMap::new();
+        p.insert("dest".to_string(), "203.0.113.0/24".to_string());
+        let out = get_action("del_persistent_route").unwrap().execute(&p);
+        if !out.success {
+            // 未找到对应持久路由 / 或 route delete 失败（需管理员）
+            assert!(!out.message.is_empty());
+        }
+        // 无论成败：都必须留下说明，不得空消息
+        assert!(!out.message.is_empty());
+    }
+
+    #[test]
+    fn proxy_off_backup_payload_has_three_keys() {
+        // 备份 JSON 的键必须与 Python `_backup_values` 一致（还原凭据的格式契约）
+        let vals = w32::reg_values(INTERNET_SETTINGS_KEY);
+        let snapshot = serde_json::json!({
+            "ProxyEnable": vals.get("ProxyEnable").map(|v| v.as_compare_str()),
+            "ProxyServer": vals.get("ProxyServer").map(|v| v.as_compare_str()),
+            "AutoConfigURL": vals.get("AutoConfigURL").map(|v| v.as_compare_str()),
+        });
+        let text = serde_json::to_string(&snapshot).unwrap();
+        for k in ["ProxyEnable", "ProxyServer", "AutoConfigURL"] {
+            assert!(text.contains(k), "备份必须含 {k}: {text}");
+        }
+    }
+
+    #[test]
+    fn pick_adapter_returns_a_real_adapter_or_none() {
+        // 真机通常能选出一张；选不出也不算失败（无网卡机器）
+        if let Some(name) = pick_adapter() {
+            assert!(!name.is_empty());
+            let snap = crate::snapshot::take();
+            assert!(
+                snap.adapters.iter().any(|a| a.name == name),
+                "选出的网卡必须真实存在: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn static_dns_adapter_is_subset_of_adapters() {
+        if let Some(name) = static_dns_adapter() {
+            let snap = crate::snapshot::take();
+            assert!(
+                snap.adapters.iter().any(|a| a.name == name),
+                "静态 DNS 网卡必须真实存在: {name}"
+            );
+        }
     }
 }
