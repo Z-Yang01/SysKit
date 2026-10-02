@@ -212,8 +212,7 @@ fn decoration(key: &str) -> Decoration {
             "暂未生效：敏感标记本身已生效（密码库复制不会被记进历史），\
              但「到期自动清空剪贴板」的计时器尚未实现。",
         ),
-        "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径")
-            .unwired("部分生效：图片关闭后确实不记录；但开启时目前只登记占位条目，尚不搬运像素。"),
+        "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径"),
         "vault_autolock_min" => Decoration::int("密码库自动锁定（分）", "0=不自动锁定", 0, 1440)
             .unwired("暂未生效：密码库数据层未实现（见 M6 说明），自动锁定无从谈起。"),
         "vault_trust_min" => Decoration::int(
@@ -762,10 +761,8 @@ mod tests {
     #[test]
     fn wired_keys_are_not_marked_unwired() {
         // 反向：完全接线的项不得带任何提示，否则用户会不敢用。
-        // 两类例外：明确未接线的（UNWIRED），以及"部分生效"的（PARTIAL）。
-        const PARTIAL: [&str; 1] = ["clip_capture_images"];
         for m in describe_all() {
-            if UNWIRED.contains(&m.key.as_str()) || PARTIAL.contains(&m.key.as_str()) {
+            if UNWIRED.contains(&m.key.as_str()) {
                 continue;
             }
             assert!(
@@ -778,16 +775,16 @@ mod tests {
     }
 
     #[test]
-    fn clip_capture_images_is_marked_partial_not_unwired() {
-        // 这一项特殊：关闭确实生效（不记录图片），开启只登记占位条目。
-        // 不能简单归入"未接线"，但也不能让用户以为图片捕获是完整的。
+    fn clip_capture_images_is_now_fully_wired() {
+        // 图片捕获本轮补全（CF_DIB 解析 + PNG 编码），不再是"部分生效"。
+        // 这条用例的存在意义：标注必须随实现更新——过期标签会变成新的谎言。
         let m = describe_all()
             .into_iter()
             .find(|m| m.key == "clip_capture_images")
             .unwrap();
         assert!(
-            m.unwired_reason.contains("部分生效"),
-            "应说明是部分生效：{}",
+            m.unwired_reason.is_empty(),
+            "图片捕获已完整实现，不该再标「暂未生效」或「部分生效」：{}",
             m.unwired_reason
         );
     }

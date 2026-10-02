@@ -1311,6 +1311,79 @@ fn bcrypt_gcm(
     }
 }
 
+// ---------------- 剪贴板位图读取 ----------------
+
+/// 读取剪贴板的原始 `CF_DIB` 字节（含 BITMAPINFOHEADER，无文件头）。
+///
+/// 优先 `CF_DIBV5`（带 alpha），退回 `CF_DIB`。**不做解码**——DIB 的位深/行序/掩码
+/// 差异很大，解码集中在 `dib::parse_dib` 里逐条断言。
+pub fn clipboard_get_dib() -> Option<Vec<u8>> {
+    clipboard_get_dib_format(CF_DIBV5).or_else(|| clipboard_get_dib_format(CF_DIB))
+}
+
+fn clipboard_get_dib_format(format: u32) -> Option<Vec<u8>> {
+    use windows::Win32::System::DataExchange::GetClipboardData;
+    // SAFETY: 剪贴板在 open/close 成对之间访问；句柄由系统持有，不释放
+    unsafe {
+        if OpenClipboard(null_hwnd()).is_err() {
+            return None;
+        }
+        let _guard = ClipboardGuard;
+        let Ok(h) = GetClipboardData(format) else {
+            return None;
+        };
+        if h.is_invalid() {
+            return None;
+        }
+        let p = GlobalLock(HGLOBAL(h.0));
+        if p.is_null() {
+            return None;
+        }
+        // 剪贴板句柄**不携带可靠长度**：必须按 BITMAPINFOHEADER 里的字段精确算。
+        // 前 40 字节一定存在（上面已确认是 CF_DIB），但若内容异常短则本函数
+        // 会在读到非法值后返回 None——不能假设 p 指向 40 字节以上。
+        let hdr = std::slice::from_raw_parts(p as *const u8, 40);
+        let bi_size = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
+        let width = i32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
+        let height = i32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+        let bit_count = u16::from_le_bytes([hdr[14], hdr[15]]) as usize;
+        let compression = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
+        let clr_used = u32::from_le_bytes([hdr[32], hdr[33], hdr[34], hdr[35]]) as usize;
+        let size_image = u32::from_le_bytes([hdr[20], hdr[21], hdr[22], hdr[23]]) as usize;
+        let _ = GlobalUnlock(HGLOBAL(h.0));
+
+        if bi_size < 40 || width <= 0 || height == 0 || bit_count == 0 {
+            return None;
+        }
+        let w = width as usize;
+        let hgt = height.unsigned_abs() as usize;
+        // 掩码 + 调色板长度
+        let mut extra = match compression {
+            3 => 12, // BI_BITFIELDS：3 个 DWORD 掩码
+            6 => 16, // BI_ALPHABITFIELDS：4 个
+            _ => 0,
+        };
+        let entries = if bit_count <= 8 {
+            if clr_used > 0 {
+                clr_used
+            } else {
+                1usize << bit_count
+            }
+        } else {
+            clr_used
+        };
+        extra += entries * 4;
+        let stride = (bit_count * w).div_ceil(32) * 4;
+        let pixel_bytes = size_image.max(stride * hgt);
+        let total = bi_size + extra + pixel_bytes;
+        // 上限保护：错乱的头部可能声明巨大长度
+        if total > 512 * 1024 * 1024 {
+            return None;
+        }
+        Some(std::slice::from_raw_parts(p as *const u8, total).to_vec())
+    }
+}
+
 // ---------------- 盘符类型 ----------------
 
 /// 在资源管理器里打开父目录并**选中**该文件（`explorer /select,<path>`）。

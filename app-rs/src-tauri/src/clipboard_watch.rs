@@ -195,38 +195,61 @@ pub fn spawn() {
                     continue;
                 };
                 last_text = candidate;
-                store(&cap);
+                if cap.kind == "image" {
+                    // 图片走完整搬运路径（DIB → PNG → 落盘）：失败要记日志，
+                    // 不能让图片捕获悄悄失效
+                    match capture_image() {
+                        Ok(Some(label)) => log::debug!("已捕获剪贴板图片 {label}"),
+                        Ok(None) => {}
+                        Err(e) => log::warn!("剪贴板图片捕获失败: {e}"),
+                    }
+                } else {
+                    store(&cap);
+                }
             }
         })
         .expect("剪贴板监听线程启动失败");
 }
 
-/// 入库（图片走 PNG 落盘，文本直接进历史）。
+/// 入库（图片与文本都直接进历史；图片的 PNG 已在调用方落盘）。
 fn store(cap: &Captured) -> bool {
-    match cap.kind.as_str() {
-        "image" => {
-            // 真正的位图搬运未实现（见 decide_capture 的说明）：这里只登记占位条目，
-            // 保证"复制了图片"这件事在历史里可见，而不是静默丢失
-            let added = hist::with(|h| h.add(&cap.text, "image", &cap.data));
-            if added {
-                CAPTURED.fetch_add(1, Ordering::SeqCst);
-            }
-            added
-        }
-        _ => {
-            let added = hist::with(|h| h.add(&cap.text, &cap.kind, &cap.data));
-            if added {
-                CAPTURED.fetch_add(1, Ordering::SeqCst);
-            }
-            added
-        }
+    let added = hist::with(|h| h.add(&cap.text, &cap.kind, &cap.data));
+    if added {
+        CAPTURED.fetch_add(1, Ordering::SeqCst);
     }
+    added
 }
 
-/// 把剪贴板里的位图抓成 PNG 并入库（图片捕获的完整路径）。
+/// 读取剪贴板位图 → 解 DIB → 编码 PNG → 落盘 → 入库。
 ///
-/// 独立成函数是因为它需要 `CF_DIB` 解析（位深/压缩/行序），与文本路径的
-/// 风险不同；当前实现只做 PNG→DIB 反向转换的可用性检查。
+/// 返回 `Ok(Some(标签))` 表示已入库；`Ok(None)` 表示这次没有值得捕获的图片
+/// （剪贴板无位图，或只是图标尺寸）；`Err` 表示**识别出是图片但处理失败**。
+///
+/// 为什么把"没图"与"处理失败"分开：处理失败必须记日志。图片捕获悄悄失效会让
+/// 用户以为图在别处丢了，而这类问题从界面上完全看不出来。
+pub fn capture_image() -> Result<Option<String>, String> {
+    let Some(dib) = w32::clipboard_get_dib() else {
+        return Ok(None);
+    };
+    let bmp = crate::dib::parse_dib(&dib)?;
+    if !bmp.is_worth_capturing() {
+        return Ok(None); // 图标/光标残影，不值得占一条历史
+    }
+    let png = crate::dib::encode_png(&bmp)?;
+    let label = format!("[图片 {}×{}]", bmp.width, bmp.height);
+    let name = crate::clipboard_write::save_image_bytes(&png);
+    if name.is_empty() {
+        return Err("图片落盘失败".to_string());
+    }
+    store(&Captured {
+        text: label.clone(),
+        kind: "image".to_string(),
+        data: name,
+    });
+    Ok(Some(label))
+}
+
+/// 把已有 PNG 字节入库（供"另存/导入"路径复用）。
 pub fn store_png(png: &[u8], label: &str) -> bool {
     if png_to_dib(png).is_none() {
         return false; // 不是可用的 PNG
@@ -235,11 +258,11 @@ pub fn store_png(png: &[u8], label: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    let added = hist::with(|h| h.add(label, "image", &name));
-    if added {
-        CAPTURED.fetch_add(1, Ordering::SeqCst);
-    }
-    added
+    store(&Captured {
+        text: label.to_string(),
+        kind: "image".to_string(),
+        data: name,
+    })
 }
 
 #[cfg(test)]
@@ -428,5 +451,83 @@ mod tests {
         assert_eq!(w32::CF_UNICODETEXT, 13);
         assert_eq!(w32::CF_HDROP, 15);
         assert_eq!(w32::CF_DIBV5, 17);
+    }
+
+    /// 真机端到端：读取**真实剪贴板**里的位图并解码。
+    ///
+    /// 剪贴板内容不可控（CI/无人值守下可能为空），所以无位图时直接跳过而不是
+    /// 断言失败——但要真读到东西时，必须能解出合理尺寸且**不是全透明**。
+    /// 这条用例的价值在于覆盖 `w32::clipboard_get_dib` 的长度推算：
+    /// 剪贴板句柄不带长度，长度算错就会解出一堆垃圾或直接 panic。
+    #[test]
+    fn real_clipboard_bitmap_decodes_when_present() {
+        let Some(dib) = w32::clipboard_get_dib() else {
+            return; // 剪贴板里没有位图：跳过
+        };
+        let bmp = match crate::dib::parse_dib(&dib) {
+            Ok(b) => b,
+            Err(e) => panic!("读到了 {} 字节 DIB 但解析失败: {e}", dib.len()),
+        };
+        assert!(bmp.width > 0 && bmp.height > 0, "尺寸应有效");
+        assert_eq!(
+            bmp.rgba.len(),
+            bmp.width as usize * bmp.height as usize * 4,
+            "RGBA 缓冲长度应与宽高一致"
+        );
+        // 不能整张全透明：那说明我们把某种格式的 alpha 读错了
+        let any_opaque = bmp.rgba.chunks_exact(4).any(|p| p[3] > 0);
+        assert!(any_opaque, "解出的图不应全透明（alpha 解析有误）");
+        // 也不该是全黑（除非真就是黑图，无法断言；只要求尺寸与 alpha 合理）
+    }
+
+    /// 真机：把自己构造的 DIB 走完整搬运路径（解码 → PNG → 落盘 → 入库）。
+    ///
+    /// 不依赖系统剪贴板：直接喂字节，验证"识别到图片就一定搬得动"。
+    #[test]
+    fn capture_pipeline_stores_a_real_bitmap() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        crate::test_support::reset_persistent_files();
+
+        // 构造 40×30 的 24 位 DIB（超过 is_worth_capturing 的 16×16 下限）
+        let (w, h) = (40u32, 30u32);
+        let stride = crate::dib::row_stride(24, w) as usize;
+        let mut v = Vec::new();
+        v.extend_from_slice(&40u32.to_le_bytes());
+        v.extend_from_slice(&(w as i32).to_le_bytes());
+        v.extend_from_slice(&(h as i32).to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&24u16.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+        v.extend_from_slice(&((stride * h as usize) as u32).to_le_bytes());
+        v.extend_from_slice(&2835i32.to_le_bytes());
+        v.extend_from_slice(&2835i32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..h {
+            let mut row = vec![0u8; w as usize * 3];
+            for px in row.chunks_exact_mut(3) {
+                px[0] = 0; // B
+                px[1] = 128; // G
+                px[2] = 255; // R → 橙色
+            }
+            row.resize(stride, 0);
+            v.extend_from_slice(&row);
+        }
+
+        let bmp = crate::dib::parse_dib(&v).unwrap();
+        assert_eq!((bmp.width, bmp.height), (w, h));
+        assert!(bmp.is_worth_capturing());
+        let png = crate::dib::encode_png(&bmp).unwrap();
+        let label = format!("[图片 {}×{}]", w, h);
+        assert!(store_png(&png, &label), "编码后的 PNG 应能入库");
+
+        // 入库后能在历史里查到，且是 image 类型、带 PNG 文件名
+        let found = hist::with(|hh| {
+            hh.items()
+                .iter()
+                .any(|i| i.kind == "image" && i.text == label)
+        });
+        assert!(found, "历史里应出现该图片条目");
     }
 }

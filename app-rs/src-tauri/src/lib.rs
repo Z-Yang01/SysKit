@@ -26,6 +26,7 @@ mod clipboard_watch;
 mod clipboard_write;
 mod cliprules;
 mod commands;
+mod dib;
 mod disk;
 mod dnsclient;
 mod dnsspeed;
