@@ -918,7 +918,25 @@ pub fn run_capture(args: &[String], timeout_secs: u64) -> Result<ProcOutput, Str
         .spawn()
         .map_err(|e| format!("无法启动 {}: {e}", args[0]))?;
 
-    // 超时：std 没有 wait_timeout，自己轮询最省事且不引额外依赖。
+    // 管道必须**边等边抽**（读线程）：子进程输出一旦超过管道缓冲就会阻塞在
+    // write 上——「先等退出再读管道」的顺序会让它永远退不出，只能被超时 kill，
+    // 修复动作被误报成失败。两个管道各挂一个读线程读到 EOF，等待循环只看
+    // 进程状态；超时 kill 后管道关闭、线程自然收尾，无双死锁。
+    // （std 的 wait_with_output 也能并发抽干，但它不带超时——这里需要超时 kill。）
+    let mut stdout_pipe = child.stdout.take().expect("stdout 已声明 piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr 已声明 piped");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout_pipe, &mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stderr_pipe, &mut buf);
+        buf
+    });
+
+    // 超时：std 没有 wait_timeout，轮询 try_wait 最省事且不引额外依赖。
     // 到点先 kill 再收尸，绝不留下孤儿进程（修复动作里有 90 秒级的 ipconfig /renew）。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1));
     let mut timed_out = false;
@@ -938,21 +956,23 @@ pub fn run_capture(args: &[String], timeout_secs: u64) -> Result<ProcOutput, Str
         }
     }
 
-    // 进程已退出后再统一读取管道（顺序反了会在子进程写满缓冲时死锁）
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("读取 {} 输出失败: {e}", args[0]))?;
+    // 读线程在管道 EOF（正常退出或 kill 关句柄）后必然结束；join 只做收集
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    let status = child
+        .wait()
+        .map_err(|e| format!("读取 {} 状态失败: {e}", args[0]))?;
 
-    let code = output.status.code().unwrap_or(-1);
+    let code = status.code().unwrap_or(-1);
     Ok(ProcOutput {
-        ok: !timed_out && output.status.success(),
+        ok: !timed_out && status.success(),
         code: if timed_out {
             u32::MAX
         } else {
             code.max(0) as u32
         },
-        stdout: decode_console_bytes(&output.stdout),
-        stderr: decode_console_bytes(&output.stderr),
+        stdout: decode_console_bytes(&stdout),
+        stderr: decode_console_bytes(&stderr),
     })
 }
 
@@ -1749,6 +1769,35 @@ mod tests {
             out.stdout.contains("hello-syskit"),
             "必须捕获到 stdout: {:?}",
             out.stdout
+        );
+    }
+
+    #[test]
+    fn run_capture_drains_output_beyond_pipe_buffer() {
+        // 回归：子进程输出远超管道缓冲（约 4KB）时，旧实现「先等退出再读管道」
+        // 会让子进程阻塞在 write 上直到被超时 kill——修复动作被误报失败。
+        // 4MB 输出必须在超时内正常退出且完整捕获（结尾标记证明没被截断丢弃）。
+        let script = "$o = 'x' * 200; 1..20000 | ForEach-Object { $o }; 'END-MARKER-SYSKIT'";
+        let out = run_capture(
+            &[
+                "powershell".into(),
+                "-NoProfile".into(),
+                "-Command".into(),
+                script.into(),
+            ],
+            60,
+        )
+        .unwrap_or_else(|e| panic!("powershell 应能启动: {e}"));
+        assert!(out.ok, "大输出子进程必须正常退出（code={})", out.code);
+        assert_eq!(out.code, 0);
+        assert!(
+            out.stdout.contains("END-MARKER-SYSKIT"),
+            "结尾标记必须被捕获（输出被抽干且未截断）"
+        );
+        assert!(
+            out.stdout.len() >= 4_000_000,
+            "输出量应远超管道缓冲（实际 {} 字节）",
+            out.stdout.len()
         );
     }
 

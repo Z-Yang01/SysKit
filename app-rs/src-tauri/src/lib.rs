@@ -284,6 +284,8 @@ pub fn run() {
             commands::sk_vault_secrets_bulk,
             commands::sk_vault_global_search,
             commands::sk_vault_totp_code,
+            commands::sk_vault_copy_secret,
+            commands::sk_clip_copy_plain,
             commands::sk_settings_all,
             commands::sk_settings_set,
             commands::sk_settings_reset,

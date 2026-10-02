@@ -2390,6 +2390,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_tauri_command_is_registered_in_lib() {
+        // 接线守卫：commands.rs 里声明的每个 #[tauri::command] 都必须出现在
+        // lib.rs 的 generate_handler![...] 清单里。漏注册在编译期不报错、
+        // 单测全绿，只在运行时 invoke 失败——sk_vault_copy_secret /
+        // sk_clip_copy_plain 曾经就这样静默失联（前端按钮全废）。
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let cmds_src =
+            std::fs::read_to_string(src_dir.join("commands.rs")).expect("读 commands.rs");
+        let lib_src = std::fs::read_to_string(src_dir.join("lib.rs")).expect("读 lib.rs");
+
+        let declared: Vec<String> = cmds_src
+            .split("#[tauri::command]")
+            .skip(1)
+            .filter_map(|chunk| {
+                let idx = chunk.find("fn ")?;
+                let rest = &chunk[idx + 3..];
+                let name: String = rest
+                    .chars()
+                    .skip_while(|c| c.is_whitespace())
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name)
+                }
+            })
+            .collect();
+        assert!(
+            declared.len() >= 100,
+            "命令声明解析异常（只解析到 {} 个），守卫自身失效",
+            declared.len()
+        );
+
+        let handler_zone = lib_src
+            .split("generate_handler!")
+            .nth(1)
+            .expect("lib.rs 应有 generate_handler! 清单");
+        let zone = &handler_zone[..handler_zone.find(']').expect("generate_handler 清单未闭合")];
+        let registered: std::collections::HashSet<String> = zone
+            .split("commands::")
+            .skip(1)
+            .map(|seg| {
+                seg.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect()
+            })
+            .collect();
+
+        let missing: Vec<&str> = declared
+            .iter()
+            .map(String::as_str)
+            .filter(|d| !registered.contains(*d))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "以下命令未在 lib.rs generate_handler 注册（运行时 invoke 必失败）: {missing:?}"
+        );
+    }
+
+    #[test]
     fn clip_row_preview_and_index() {
         let long =
             "a very long clipboard entry that should be truncated in the list view".repeat(2);

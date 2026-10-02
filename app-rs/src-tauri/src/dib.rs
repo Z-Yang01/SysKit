@@ -79,15 +79,22 @@ fn mask_shift(mask: u32) -> Option<(u32, u32)> {
 }
 
 /// 把掩码字段的值线性拉伸到 0~255。
+///
+/// 掩码来自**剪贴板里的不可信数据**：非连续或超宽掩码下 `value` 可远超
+/// `2^bits - 1`，且 `bits` 可达 32——`1u32 << 32` 与 `value * 255` 在 debug
+/// 构建直接溢出 panic（监听线程/调用线程当场死掉），release 静默错色。
+/// 全程用 u64 计算并把结果夹紧到 0~255。
 fn scale_field(value: u32, bits: u32) -> u8 {
-    if bits == 0 {
+    if bits == 0 || bits > 32 {
         return 0;
     }
-    let max = (1u32 << bits) - 1;
-    if max == 0 {
-        return 0;
-    }
-    ((value * 255 + max / 2) / max) as u8
+    let max: u64 = if bits >= 32 {
+        u32::MAX as u64
+    } else {
+        (1u64 << bits) - 1
+    };
+    let scaled = (u64::from(value) * 255 + max / 2) / max;
+    scaled.min(255) as u8
 }
 
 /// 解析 `CF_DIB` 载荷 → RGBA 位图。
@@ -127,8 +134,10 @@ pub fn parse_dib(data: &[u8]) -> Result<Bitmap, String> {
             return Err("暂不支持 RLE 压缩的位图".to_string());
         }
         BI_JPEG | BI_PNG => {
-            // 这两种是"内嵌整张图"：biSizeImage 指向 PNG/JPEG 字节流
-            return decode_embedded(data, compression);
+            // 这两种是"内嵌整张图"：biSizeImage 指向 PNG/JPEG 字节流，
+            // 流的起点在**头之后**（biSize），不是写死的 40——V4/V5 头是 108/124
+            // 字节，按 40 切会把头部余下字节混进图像流，解码必败
+            return decode_embedded(data, bi_size as usize, compression);
         }
         other => return Err(format!("未知的压缩方式 {other}")),
     }
@@ -290,8 +299,10 @@ fn decode_indexed(src: &[u8], width: u32, bits: u32, palette: &[[u8; 3]], dst: &
 }
 
 /// `BI_JPEG` / `BI_PNG`：头之后就是完整的 JPEG/PNG 字节流。
-fn decode_embedded(data: &[u8], compression: u32) -> Result<Bitmap, String> {
-    let body = data.get(40..).ok_or("内嵌图像数据不足")?;
+fn decode_embedded(data: &[u8], header_size: usize, compression: u32) -> Result<Bitmap, String> {
+    let body = data
+        .get(header_size..)
+        .ok_or("内嵌图像数据不足（头比数据还长）")?;
     let fmt = if compression == BI_PNG {
         image::ImageFormat::Png
     } else {
@@ -729,5 +740,115 @@ mod tests {
         assert_eq!(scale_field(63, 6), 255);
         // 中间值四舍五入
         assert_eq!(scale_field(16, 5), 132);
+        // 回归：bits=32 曾使 `1u32 << 32` 在 debug 构建 panic
+        assert_eq!(scale_field(0xFFFF_FFFF, 32), 255);
+        assert_eq!(scale_field(0, 32), 0);
+        // 回归：非连续掩码下 value 可远超 2^bits，`value * 255` 曾溢出 u32
+        // （debug panic，release 错色）——夹紧到 255 而不是溢出回绕
+        assert_eq!(scale_field(0x8000_0001, 2), 255);
+        // 超宽掩码但值不成比例时按比例产出（25 位掩码、值 ≈ 100/255 满度）
+        assert_eq!(scale_field(13_160_169, 25), 100);
+    }
+
+    /// 造一个带自定义掩码的 32 位 BI_BITFIELDS 头 + 单像素。
+    fn bitfields32_dib(mr: u32, mg: u32, mb: u32, pixel: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&40u32.to_le_bytes());
+        v.extend_from_slice(&1i32.to_le_bytes());
+        v.extend_from_slice(&(-1i32).to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&32u16.to_le_bytes());
+        v.extend_from_slice(&BI_BITFIELDS.to_le_bytes());
+        v.extend_from_slice(&4u32.to_le_bytes());
+        v.extend_from_slice(&2835i32.to_le_bytes());
+        v.extend_from_slice(&2835i32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&mr.to_le_bytes());
+        v.extend_from_slice(&mg.to_le_bytes());
+        v.extend_from_slice(&mb.to_le_bytes());
+        v.extend_from_slice(&pixel.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn bitfields_hostile_masks_do_not_panic() {
+        // 回归：剪贴板里的掩码是不可信输入。全 1 的 R 掩码（bits=32）与
+        // 非连续掩码曾让 scale_field 在 debug 构建溢出 panic——监听线程当场死掉，
+        // 图片捕获静默失效。修复后必须产出夹紧的合法像素。
+        let b = parse_dib(&bitfields32_dib(
+            0xFFFF_FFFF,
+            0x0000_00FF,
+            0x0000_FF00,
+            0xFFFF_FFFF,
+        ))
+        .unwrap();
+        assert_eq!(
+            &b.rgba[0..4],
+            &[255, 255, 255, 255],
+            "32 位全 1 掩码：满值像素应产出满值颜色（不 panic 不回绕）"
+        );
+        let b2 = parse_dib(&bitfields32_dib(
+            0x8000_0001,
+            0x0000_00FF,
+            0x0000_FF00,
+            0x8000_0001,
+        ))
+        .unwrap();
+        assert_eq!(
+            b2.rgba[0], 255,
+            "非连续掩码的高位值应夹紧到满（乘法不回绕成小值）"
+        );
+    }
+
+    #[test]
+    fn embedded_png_starts_at_bisize_not_40() {
+        // 回归：BI_PNG 的图像流起点在 biSize 之后。V4 头（108 字节）下按写死的
+        // 40 切会把头部余下 68 字节混进 PNG 流，解码必败——图片捕获悄悄失效。
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_pixel(2, 1, image::Rgba([1, 2, 3, 255]));
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let header_size = 108usize; // BITMAPV4HEADER
+        let mut v = vec![0u8; header_size];
+        v[0..4].copy_from_slice(&(header_size as u32).to_le_bytes());
+        v[4..8].copy_from_slice(&1i32.to_le_bytes()); // width
+        v[8..12].copy_from_slice(&1i32.to_le_bytes()); // height
+        v[12..14].copy_from_slice(&1u16.to_le_bytes()); // planes
+        v[14..16].copy_from_slice(&32u16.to_le_bytes()); // bitcount
+        v[16..20].copy_from_slice(&BI_PNG.to_le_bytes()); // compression
+        v[20..24].copy_from_slice(&(png.len() as u32).to_le_bytes());
+        v.extend_from_slice(&png);
+        let b = parse_dib(&v).unwrap();
+        assert_eq!((b.width, b.height), (2, 1));
+        assert_eq!(&b.rgba[0..4], &[1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn embedded_png_with_40_header_still_works() {
+        // 经典 40 字节头的 BI_PNG 不能因修复而回退
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([9, 8, 7, 255]));
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let mut v = Vec::new();
+        v.extend_from_slice(&40u32.to_le_bytes());
+        v.extend_from_slice(&1i32.to_le_bytes());
+        v.extend_from_slice(&1i32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&32u16.to_le_bytes());
+        v.extend_from_slice(&BI_PNG.to_le_bytes());
+        v.extend_from_slice(&(png.len() as u32).to_le_bytes());
+        v.extend_from_slice(&2835i32.to_le_bytes());
+        v.extend_from_slice(&2835i32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&png);
+        let b = parse_dib(&v).unwrap();
+        assert_eq!((b.width, b.height), (1, 1));
+        assert_eq!(&b.rgba[0..4], &[9, 8, 7, 255]);
     }
 }

@@ -72,7 +72,6 @@ def main() -> int:
 
     # DB fixture（M6 数据层）：真实 schema + 用同一数据密钥加密的字段，
     # 验证 Rust 侧 vault_store 对同一 vault.db 的互开与 CRUD 读。
-    import os as _os
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from syskit import vault as vault_mod

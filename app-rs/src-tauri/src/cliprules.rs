@@ -67,11 +67,27 @@ pub fn trim_url(u: &str) -> String {
     s
 }
 
+/// 在 `haystack` 里大小写无关地找 ASCII `needle` 的字节偏移。
+///
+/// 必须按**原串**做字节级比较，不能拿 `to_lowercase()` 的偏移去切原串：
+/// 大小写转换会改变 UTF-8 字节长度（`ẞ`→`ß` 3→2 缩短、`İ`→`i̇` 2→3 变长），
+/// 转换串里的偏移会落进原串多字节字符中间（slice 直接 panic）或错位抓错地址。
+/// 而 needle 全为 ASCII（<0x80），UTF-8 续字节均 ≥0x80——命中处必是字符边界，
+/// 字节级搜索天然安全。
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    if haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 /// 在文本里找第一个 URL（`http://` / `https://`，大小写不敏感）。
 pub fn find_url(text: &str) -> Option<String> {
-    let lower = text.to_lowercase();
-    let start = lower.find("http://").or_else(|| lower.find("https://"))?;
-    // 取从 start 开始的所有"URL 合法字符"，但要按**原串**的字符边界取
+    let start = find_ascii_ci(text, "http://").or_else(|| find_ascii_ci(text, "https://"))?;
+    // start 是原串里的字节偏移且必在字符边界上，取"URL 合法字符"安全
     let tail: String = text[start..]
         .chars()
         .take_while(|c| url_char_ok(*c))
@@ -314,6 +330,30 @@ mod tests {
     fn url_is_case_insensitive_on_scheme() {
         assert_eq!(find_url("HTTPS://A.com/X").unwrap(), "HTTPS://A.com/X");
         assert_eq!(find_url("Http://a.com").unwrap(), "Http://a.com");
+    }
+
+    #[test]
+    fn url_survives_lowercase_shrinking_unicode() {
+        // 回归：`ẞ`(U+1E9E, 3 字节) 小写为 `ß`(U+00DF, 2 字节)，转换串变短后
+        // 旧实现的偏移会切进原串多字节字符中间 → slice panic（UI 线程即崩应用）。
+        // https 走的是 or_else 兜底分支，必须一并锁住。
+        let u = find_url("ẞhttps://a.com/x").unwrap();
+        assert_eq!(u, "https://a.com/x");
+    }
+
+    #[test]
+    fn url_survives_lowercase_growing_unicode() {
+        // 回归：`İ`(U+0130, 2 字节) 小写为 `i̇`(1+2 字节)，转换串变长后旧实现
+        // 偏移错位，会把 "https://a.com" 抓成 "ttps://a.com" 这种坏地址。
+        let u = find_url("İhttps://a.com/x").unwrap();
+        assert_eq!(u, "https://a.com/x");
+    }
+
+    #[test]
+    fn url_in_cjk_sentence_with_fullwidth_chars_still_works() {
+        // 混排常见形态：全角标点紧邻 URL（截断正确性不因字节级搜索回退）
+        let u = find_url("看 https://A.com/X。说明").unwrap();
+        assert_eq!(u, "https://A.com/X");
     }
 
     #[test]

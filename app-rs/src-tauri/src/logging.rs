@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn writes_lines_to_syskit_log() {
         let _g = crate::test_support::serial();
-        let dir = crate::test_support::isolate();
+        crate::test_support::isolate(); // 钉住数据目录（日志路径随 override）
         init();
         log::info!("冒烟日志写入探针 smoke-probe-marker");
         log::error!("错误分流探针 smoke-err-marker");
