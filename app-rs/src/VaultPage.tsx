@@ -20,19 +20,20 @@ import {
   Card,
   Descriptions,
   Divider,
-  Empty,
   Input,
   Modal,
   Radio,
   Space,
+  Table,
   Tag,
   Typography,
   message,
 } from "antd";
 
 import {
-  canAddPassword,
+  accountTitle,
   canSetMasterPassword,
+  maskedSecret,
   modeLabel,
   passwordStrength,
   setupConfirmText,
@@ -40,6 +41,8 @@ import {
   storageAvailable,
   storageNotice,
   vaultPhase,
+  type AccountRow,
+  type SiteRow,
   type VaultStatus,
 } from "./vault";
 
@@ -48,6 +51,14 @@ export function VaultPage() {
   const [password, setPassword] = useState("");
   const [newMode, setNewMode] = useState<"dpapi" | "password">("password");
   const [busy, setBusy] = useState(false);
+  // 条目数据（解锁后从后端读）
+  const [sites, setSites] = useState<SiteRow[]>([]);
+  const [sitesLoading, setSitesLoading] = useState(false);
+  const [selectedSite, setSelectedSite] = useState<number | null>(null);
+  const [accounts, setAccounts] = useState<AccountRow[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const phase = vaultPhase(status);
 
   const load = useCallback(async () => {
     try {
@@ -61,9 +72,204 @@ export function VaultPage() {
     void load();
   }, [load]);
 
-  const phase = vaultPhase(status);
+  // ---------------- 条目数据 ----------------
+
+  const loadSites = useCallback(
+    async (q = "") => {
+      setSitesLoading(true);
+      setSearch(q);
+      try {
+        setSites(await invoke<SiteRow[]>("sk_vault_sites", { q }));
+      } catch (e) {
+        // 未解锁等后端原因：不弹错（面板已表达状态），仅清空
+        setSites([]);
+      } finally {
+        setSitesLoading(false);
+      }
+    },
+    [],
+  );
+
+  const loadAccounts = useCallback(async () => {
+    if (selectedSite === null) return;
+    setAccountsLoading(true);
+    try {
+      setAccounts(await invoke<AccountRow[]>("sk_vault_site_accounts", { siteId: selectedSite, q: "" }));
+    } catch {
+      setAccounts([]);
+    } finally {
+      setAccountsLoading(false);
+    }
+  }, [selectedSite]);
+
+  useEffect(() => {
+    // 解锁状态下首次拉站点；锁定/未建库时清空
+    if (phase === "unlocked") void loadSites(search);
+    else {
+      setSites([]);
+      setAccounts([]);
+      setSelectedSite(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  useEffect(() => {
+    if (selectedSite !== null) void loadAccounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSite]);
+
+  const copySecret = useCallback(async (accountId: number, field: string) => {
+    const r = await invoke<{ note: string; ttl: number }>("sk_vault_copy_secret", {
+      accountId,
+      field,
+    });
+    message.success(r.ttl > 0 ? `已复制；${r.ttl} 秒后自动清空剪贴板` : "已复制（不会进入历史）");
+  }, []);
+
+  const showTotp = useCallback(
+    (a: AccountRow) => {
+      let info = message.open({
+        type: "loading",
+        content: "正在生成动态码…",
+        duration: 0,
+      });
+      const tick = () => {
+        void invoke<string>("sk_vault_totp_code", { accountId: a.id })
+          .then((code) => {
+            if (!code) {
+              message.error("TOTP 密钥无效（含字母表外字符？）");
+              return;
+            }
+            info();
+            const remain = 30 - (Math.floor(Date.now() / 1000) % 30);
+            info = message.open({
+              type: "info",
+              content: `${accountTitle(a)} 动态码：${code}（${remain}s 后刷新）`,
+              duration: Math.max(remain, 1),
+            });
+          })
+          .catch((e) => {
+            message.error(String(e));
+          });
+      };
+      tick();
+    },
+    [],
+  );
+
+  const siteModal = useCallback(
+    (site?: SiteRow) => {
+      let form = { name: site?.name ?? "", domain: site?.domain ?? "", url: site?.url ?? "",
+                   aliases: site?.aliases ?? "", tags: site?.tags ?? "" };
+      Modal.confirm({
+        title: site ? `编辑站点「${site.name}」` : "添加站点",
+        width: 520,
+        content: (
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Input id="vf-site-name" defaultValue={form.name} placeholder="名称 *"
+                   onChange={(e) => (form.name = e.target.value)} />
+            <Input id="vf-site-domain" defaultValue={form.domain} placeholder="域名（如 github.com）"
+                   onChange={(e) => (form.domain = e.target.value)} />
+            <Input id="vf-site-url" defaultValue={form.url} placeholder="URL"
+                   onChange={(e) => (form.url = e.target.value)} />
+            <Input id="vf-site-aliases" defaultValue={form.aliases} placeholder="别名（逗号分隔）"
+                   onChange={(e) => (form.aliases = e.target.value)} />
+            <Input id="vf-site-tags" defaultValue={form.tags} placeholder="标签（逗号分隔）"
+                   onChange={(e) => (form.tags = e.target.value)} />
+          </Space>
+        ),
+        okText: "保存",
+        cancelText: "取消",
+        onOk: async () => {
+          if (!form.name.trim()) {
+            message.error("名称不能为空");
+            throw new Error("empty name");
+          }
+          if (site) {
+            await invoke("sk_vault_update_site", { siteId: site.id, ...form });
+          } else {
+            const id = await invoke<number>("sk_vault_add_site", { ...form });
+            setSelectedSite(id);
+          }
+          message.success("已保存");
+          await loadSites(search);
+        },
+      });
+    },
+    [search, loadSites],
+  );
+
+  const addSiteModal = useCallback(() => siteModal(), [siteModal]);
+
+  const accountModal = useCallback(
+    (account?: AccountRow) => {
+      if (selectedSite === null) return;
+      let form = {
+        label: account?.label ?? "",
+        username: account?.username ?? "",
+        password: "",
+        totp_secret: "",
+        notes: "",
+      };
+      Modal.confirm({
+        title: account ? `编辑账号「${accountTitle(account)}」` : "添加账号",
+        width: 520,
+        content: (
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Input id="vf-acc-label" defaultValue={form.label} placeholder="标签（如 主账号）"
+                   onChange={(e) => (form.label = e.target.value)} />
+            <Input id="vf-acc-username" defaultValue={form.username} placeholder="用户名"
+                   onChange={(e) => (form.username = e.target.value)} />
+            <Input.Password
+              id="vf-acc-password"
+              placeholder={account ? "留空 = 不修改密码" : "密码 *"}
+              onChange={(e) => (form.password = e.target.value)}
+            />
+            <Input id="vf-acc-totp" defaultValue={form.totp_secret} placeholder="TOTP 密钥（Base32，可留空）"
+                   onChange={(e) => (form.totp_secret = e.target.value)} />
+            <Input.TextArea id="vf-acc-notes" defaultValue={form.notes} placeholder="备注（加密存储）"
+                            onChange={(e) => (form.notes = e.target.value)} />
+          </Space>
+        ),
+        okText: "保存",
+        cancelText: "取消",
+        onOk: async () => {
+          if (!account && !form.password) {
+            message.error("密码不能为空");
+            throw new Error("empty password");
+          }
+          if (account) {
+            await invoke("sk_vault_update_account", {
+              accountId: account.id,
+              label: form.label,
+              username: form.username,
+              password: form.password,          // 空串=不改（后端口径）
+              totpSecret: form.totp_secret,
+              notes: form.notes,
+            });
+          } else {
+            await invoke("sk_vault_add_account", {
+              siteId: selectedSite,
+              password: form.password,
+              label: form.label,
+              username: form.username,
+              totpSecret: form.totp_secret,
+              notes: form.notes,
+            });
+          }
+          message.success("已保存");
+          await loadAccounts();
+          await loadSites(search);
+        },
+      });
+    },
+    [selectedSite, loadAccounts, loadSites, search],
+  );
+
+  const addAccountModal = useCallback(() => accountModal(), [accountModal]);
+
+
   const notice = storageNotice(status);
-  const addCheck = canAddPassword(status);
   const setPwCheck = canSetMasterPassword(status);
 
   const setup = useCallback(() => {
@@ -311,27 +517,208 @@ export function VaultPage() {
         </Card>
       )}
 
-      <Card size="small" className="sk-card" title="密码条目">
-        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+      <Card
+        size="small"
+        className="sk-card"
+        title="密码条目"
+        extra={
           <Space>
-            <Button size="small" type="primary" disabled={!addCheck.ok} onClick={() => void invoke("sk_vault_store_unavailable").catch((e) => message.error(String(e)))}>
-              添加密码
-            </Button>
-            <span className="sk-hint">{addCheck.ok ? "" : addCheck.reason}</span>
-          </Space>
-          <Divider style={{ margin: "4px 0" }} />
-          {storageAvailable(status) ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无密码条目" />
-          ) : (
-            // 不渲染空列表：那看起来像"还没有条目"，而不是"功能未做"
-            <Alert
-              type="info"
-              showIcon
-              message="此处不会显示任何条目"
-              description="数据层未引入，因此本页既不展示条目也不提供添加表单——避免让「空列表」被误读为「还没有密码」。加密层已完成，vault.key 与 Python 版双向互通。"
+            <Input.Search
+              size="small"
+              allowClear
+              placeholder="搜索站点…"
+              style={{ width: 200 }}
+              onSearch={(q) => void loadSites(q)}
             />
-          )}
-        </Space>
+            {storageAvailable(status) && phase === "unlocked" && (
+              <Button size="small" type="primary" onClick={addSiteModal}>
+                添加站点
+              </Button>
+            )}
+          </Space>
+        }
+      >
+        {!storageAvailable(status) ? (
+          // 数据层不可用：不渲染空列表（那看起来像"还没有条目"，而非"功能没做"）
+          <Alert
+            type="info"
+            showIcon
+            message="此处不会显示任何条目"
+            description={notice || "数据层未引入，因此本页既不展示条目也不提供添加表单。"}
+          />
+        ) : phase !== "unlocked" ? (
+          <Alert
+            type="info"
+            showIcon
+            message="解锁后显示密码条目"
+            description="条目列表需要解锁密码库；解锁后本页直接读库展示站点与账号。"
+          />
+        ) : (
+          <Space direction="vertical" size={10} style={{ width: "100%" }}>
+            <Table<SiteRow>
+              size="small"
+              rowKey="id"
+              loading={sitesLoading}
+              columns={[
+                {
+                  title: "站点",
+                  dataIndex: "name",
+                  render: (v: string, r) => (
+                    <Space size={4}>
+                      <span style={{ fontWeight: 600 }}>{v}</span>
+                      {r.domain && <span className="sk-hint">{r.domain}</span>}
+                    </Space>
+                  ),
+                },
+                { title: "账号数", dataIndex: "n_accounts", width: 80 },
+                {
+                  title: "操作",
+                  key: "ops",
+                  width: 190,
+                  render: (_: unknown, r) => (
+                    <Space size={4}>
+                      <Button
+                        size="small"
+                        type={selectedSite === r.id ? "primary" : "default"}
+                        onClick={() => setSelectedSite(r.id)}
+                      >
+                        账号
+                      </Button>
+                      <Button size="small" onClick={() => siteModal(r)}>
+                        编辑
+                      </Button>
+                      <Button
+                        size="small"
+                        danger
+                        onClick={() =>
+                          Modal.confirm({
+                            title: `删除站点「${r.name}」`,
+                            content: `将同时删除其下 ${r.n_accounts} 个账号，且不可恢复。`,
+                            okText: "删除",
+                            okButtonProps: { danger: true },
+                            cancelText: "取消",
+                            onOk: async () => {
+                              await invoke("sk_vault_delete_site", { siteId: r.id });
+                              message.success("已删除");
+                              if (selectedSite === r.id) setSelectedSite(null);
+                              await loadSites(search);
+                            },
+                          })
+                        }
+                      >
+                        删除
+                      </Button>
+                    </Space>
+                  ),
+                },
+              ]}
+              dataSource={sites}
+              pagination={false}
+              locale={{ emptyText: "暂无站点——点右上角「添加站点」开始" }}
+            />
+
+            {selectedSite !== null && (
+              <>
+                <Divider style={{ margin: "4px 0" }} />
+                <Space>
+                  <Typography.Text strong>
+                    {sites.find((s) => s.id === selectedSite)?.name ?? "账号"}
+                  </Typography.Text>
+                  <Button size="small" onClick={addAccountModal}>
+                    添加账号
+                  </Button>
+                </Space>
+                <Table<AccountRow>
+                  size="small"
+                  rowKey="id"
+                  loading={accountsLoading}
+                  columns={[
+                    {
+                      title: "账号",
+                      key: "title",
+                      render: (_: unknown, a) => (
+                        <Space size={4}>
+                          {a.is_favorite && <span>⭐</span>}
+                          <span>{accountTitle(a)}</span>
+                          {a.username && a.username !== a.label && (
+                            <span className="sk-hint">{a.username}</span>
+                          )}
+                        </Space>
+                      ),
+                    },
+                    {
+                      title: "密文",
+                      key: "secret",
+                      width: 120,
+                      render: () => <span className="sk-hint">{maskedSecret()}</span>,
+                    },
+                    {
+                      title: "操作",
+                      key: "ops",
+                      width: 320,
+                      render: (_: unknown, a) => (
+                        <Space size={4}>
+                          <Button size="small" onClick={() => void copySecret(a.id, "password")}>
+                            复制密码
+                          </Button>
+                          {a.has_totp && (
+                            <Button size="small" onClick={() => void showTotp(a)}>
+                              动态码
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            onClick={() =>
+                              void invoke("sk_clip_copy_plain", { text: a.username })
+                                .then(() => message.success("用户名已复制"))
+                                .catch((e) => message.error(String(e)))
+                            }
+                          >
+                            复制用户名
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() =>
+                              void invoke<boolean>("sk_vault_toggle_favorite", { accountId: a.id })
+                                .then(() => void loadAccounts())
+                                .catch((e) => message.error(String(e)))
+                            }
+                          >
+                            {a.is_favorite ? "取消置顶" : "置顶"}
+                          </Button>
+                          <Button size="small" onClick={() => accountModal(a)}>
+                            编辑
+                          </Button>
+                          <Button
+                            size="small"
+                            danger
+                            onClick={() =>
+                              Modal.confirm({
+                                title: `删除账号「${accountTitle(a)}」`,
+                                okText: "删除",
+                                okButtonProps: { danger: true },
+                                cancelText: "取消",
+                                onOk: async () => {
+                                  await invoke("sk_vault_delete_account", { accountId: a.id });
+                                  await loadAccounts();
+                                },
+                              })
+                            }
+                          >
+                            删除
+                          </Button>
+                        </Space>
+                      ),
+                    },
+                  ]}
+                  dataSource={accounts}
+                  pagination={false}
+                  locale={{ emptyText: "该站点暂无账号" }}
+                />
+              </>
+            )}
+          </Space>
+        )}
       </Card>
     </Space>
   );

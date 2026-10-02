@@ -1068,21 +1068,26 @@ pub async fn sk_clip_action_run(id: String, arg: String) -> Result<String, Strin
 /// "不会自动清空"时提示其余保护仍在。
 #[tauri::command]
 pub fn sk_clip_copy_sensitive(text: String) -> Result<serde_json::Value, String> {
+    copy_sensitive_text(&text)
+}
+
+/// 复制 + 三重敏感防护（copy 命令与密码库复制共用，M6）。
+pub fn copy_sensitive_text(text: &str) -> Result<serde_json::Value, String> {
     if text.is_empty() {
         return Err("内容为空".to_string());
     }
     let ttl = crate::sensitive::effective_ttl(crate::settings::get_int("clip_sensitive_ttl"));
     // 1. 让监听器在 TTL 内不记录。无 TTL 时给足够长的窗口——敏感内容本就该长期
     //    不进历史（与 Python 的 `ttl if ttl > 0 else 3600` 同口径）
-    crate::clipboard_history::mark_sensitive(&text, ttl.map(|s| s as i64).unwrap_or(3600));
+    crate::clipboard_history::mark_sensitive(text, ttl.map(|s| s as i64).unwrap_or(3600));
     // 2. 写入剪贴板
-    if !crate::w32::clipboard_set_text(&text) {
+    if !crate::w32::clipboard_set_text(text) {
         return Err("写入剪贴板失败（可能被其他程序占用）".to_string());
     }
     // 3. 排除系统历史与云同步：必须在写入**之后**补设格式
     crate::w32::exclude_os_history();
     // 4. 安排到期清空
-    crate::sensitive::arm(&text, ttl);
+    crate::sensitive::arm(text, ttl);
     Ok(serde_json::json!({
         "ttl": ttl.unwrap_or(0),
         "note": crate::sensitive::clear_note(ttl),
@@ -1788,17 +1793,36 @@ pub fn sk_vault_get_secret(
     account_id: i64,
     field: String,
     touch: Option<bool>,
-    sensitive_ttl: Option<i64>,
 ) -> Result<String, String> {
     let mut guard = session_get(&session)?;
     let crypto = guard.as_mut().expect("已确认 Some");
-    let text = crate::vault_store::get_secret(account_id, crypto, &field, touch.unwrap_or(true))?;
-    if let Some(ttl) = sensitive_ttl {
-        if !text.is_empty() {
-            crate::clipboard_history::mark_sensitive(&text, ttl);
-        }
+    crate::vault_store::get_secret(account_id, crypto, &field, touch.unwrap_or(true))
+}
+
+/// 解密并复制（明文不过前端 JS；三重敏感防护与复制命令同一实现）。
+#[tauri::command]
+pub fn sk_vault_copy_secret(
+    session: tauri::State<'_, VaultSession>,
+    account_id: i64,
+    field: String,
+) -> Result<serde_json::Value, String> {
+    let mut guard = session_get(&session)?;
+    let crypto = guard.as_mut().expect("已确认 Some");
+    let text = crate::vault_store::get_secret(account_id, crypto, &field, true)?;
+    copy_sensitive_text(&text)
+}
+
+/// 明文复制（用户名等非敏感字段；走系统剪贴板，无敏感防护）。
+#[tauri::command]
+pub fn sk_clip_copy_plain(text: String) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("内容为空".to_string());
     }
-    Ok(text)
+    if crate::w32::clipboard_set_text(&text) {
+        Ok(())
+    } else {
+        Err("写入剪贴板失败（可能被其他程序占用）".to_string())
+    }
 }
 
 /// 批量解密（整列显示语义；单条损坏降级缺席，不外溢）。

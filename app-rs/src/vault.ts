@@ -1,9 +1,8 @@
 /**
  * 密码库页纯逻辑（无 React/DOM，vitest 覆盖）。
  *
- * **本阶段的诚实性要求**：数据层（vault.db / SQLite）按决定未实现，因此
- * 界面绝不能显示任何密码条目、也不能给出"保存成功"的暗示。用户把密码存进来
- * 却发现什么都没有，是比"功能未做"严重得多的伤害——密码这种数据丢了就是丢了。
+ * M6 数据层已实现：本页渲染真实条目（sites/accounts），复制走后端
+ * `sk_vault_copy_secret`（明文不过 JS，三重敏感防护后端完成）。
  */
 
 /** 后端 `sk_vault_status`。 */
@@ -13,10 +12,12 @@ export interface VaultStatus {
   unlocked: boolean;
   has_master_password: boolean;
   mode: string;
+  /** 免重复输入窗口剩余秒数（undefined/0 = 无窗口）。 */
+  trusted_until?: number;
   capabilities: {
     key_management: boolean;
     password_storage: boolean;
-    password_storage_reason: string;
+    password_storage_reason?: string;
   };
 }
 
@@ -67,6 +68,50 @@ export function storageNotice(s: VaultStatus | null): string {
     s.capabilities?.password_storage_reason ||
     "密码条目存取尚未实现（数据层未引入），当前无法保存或读取密码。"
   );
+}
+
+// ---------------- M6 数据层（后端 vault_store 薄封装的界面模型） ----------------
+
+/** 后端 `sk_vault_sites` 行。 */
+export interface SiteRow {
+  id: number;
+  name: string;
+  domain: string;
+  url: string;
+  aliases: string;
+  tags: string;
+  created_at?: string;
+  updated_at?: string;
+  n_accounts: number;
+}
+
+/** 后端 `sk_vault_site_accounts` 行（无任何明文 secrets）。 */
+export interface AccountRow {
+  id: number;
+  site_id: number;
+  label: string;
+  username: string;
+  is_favorite: boolean;
+  last_used_at?: string;
+  has_totp: boolean;
+  has_notes: boolean;
+}
+
+/** 账号行的展示标题：label 优先，退用户名，再退「账号 #id」。 */
+export function accountTitle(a: AccountRow): string {
+  if (a.label.trim()) return a.label.trim();
+  if (a.username.trim()) return a.username.trim();
+  return `账号 #${a.id}`;
+}
+
+/** 密文型字段在列表中的掩码（长度不外泄——固定 8 位圆点）。 */
+export function maskedSecret(): string {
+  return "••••••••";
+}
+
+/** TOTP 剩余秒数（30s 窗口），供倒计时环；[0,30)。 */
+export function totpRemainingSecs(nowMs = Date.now()): number {
+  return 30 - Math.floor(nowMs / 1000) % 30;
 }
 
 /**
