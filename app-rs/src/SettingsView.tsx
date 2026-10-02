@@ -30,9 +30,12 @@ import {
   groupSettings,
   humanLogSize,
   isChanged,
+  isUnwired,
   logLevel,
   restartNote,
   tailSummary,
+  unwiredBadge,
+  unwiredCount,
   validateValue,
   type LogList,
   type LogTail,
@@ -81,6 +84,13 @@ function SettingRow({
           <Space size={6}>
             <span>{item.label}</span>
             {isChanged(item) && <Tag color="orange">已改动</Tag>}
+            {isUnwired(item) && (
+              <Tooltip title={item.unwired_reason}>
+                <Tag color="default" style={{ borderStyle: "dashed" }}>
+                  {unwiredBadge(item)}
+                </Tag>
+              </Tooltip>
+            )}
             {item.needs_restart && (
               <Tooltip title="该设置需要重启 SysKit 才生效">
                 <Tag>重启生效</Tag>
@@ -204,6 +214,7 @@ function SettingsPanel() {
   const items = all?.items ?? [];
   const grouped = useMemo(() => groupSettings(items), [items]);
   const changed = changedCount(items);
+  const unwired = unwiredCount(items);
 
   const reset = useCallback(() => {
     Modal.confirm({
@@ -235,6 +246,15 @@ function SettingsPanel() {
 
   return (
     <Space direction="vertical" size={10} style={{ width: "100%" }}>
+      {unwired > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message={`有 ${unwired} 项设置暂未生效`}
+          description="这些项会被正常保存，但 Rust 版还没有对应的实现，改了不会有实际效果（点各项的「暂未生效」标签看原因）。保留它们是为了让设置文件与 Python 版保持同构，迁移期不会丢配置。"
+        />
+      )}
+
       <Space>
         <span className="sk-hint">
           共 {all?.count ?? 0} 项

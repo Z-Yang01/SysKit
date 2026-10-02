@@ -501,25 +501,36 @@ M2 的自动化测试已锁住**格式与聚合口径**（与 Python 逐值比�
 
 ### 已知缺口（诚实清单，尚未实现）
 
-以下是**审计后确认存在、但目前没做**的能力。列出来是因为"没做"必须让使用者知道，
-否则会被当成"应该能用却坏了"：
+以下是**逐键审计后确认存在、目前没做**的能力。列出来是因为"没做"必须让使用者知道，
+否则会被当成"应该能用却坏了"。**设置页里未生效的项已加「暂未生效」徽标并在页顶汇总**
+（`settings.rs::UNWIRED` + `tests` 锁住清单），所以用户改了没效果时能立刻看到原因。
 
-1. **剪贴板图片捕获**：监听器能识别"剪贴板里有位图"并登记一条占位条目，
-   但**不搬运像素**——真正的位图捕获要解析 `CF_DIB`/`CF_DIBV5` 的位深、压缩方式
-   与行序（bottom-up）。影响：复制图片后历史里有条目，但粘贴不回去原图。
-   文本 / 文件 / HTML 三类是完整的。
+**⚠ 最大的缺口：「自动诊断/修复」整组功能未移植**（Python 侧 `monitor.py`，150 行）。
+以下六项设置都属于它，因此**全部标为暂未生效**：`auto_repair_enabled`、
+`poll_interval_sec`、`auto_repair_max_level`、`fail_threshold`、`cooldown_sec`、
+`level3_cooldown_sec`。当前只能手动点「开始诊断」，没有任何后台轮询与自动修复梯度。
+（`repairs.rs` 的 19 个动作执行器是完整的——缺的是**调度**它们的那层。）
+
+其余单项：
+1. **剪贴板图片捕获不完整**：能识别"剪贴板里有位图"并登记占位条目，但**不搬运像素**
+   ——真正的位图捕获要解析 `CF_DIB`/`CF_DIBV5` 的位深、压缩方式与行序（bottom-up）。
+   影响：复制图片后历史里有条目，但粘贴不回去原图。文本 / 文件 / HTML 是完整的。
 2. **剪贴板内容规则动作**（Python `cliprules.py`，79 行）：识别复制内容像什么
    （URL / 颜色 / 路径 / 域名 / JSON / IP）并给出可执行动作（打开链接、DNS 查询、
    ping、二维码等）。未移植，因此系统助手页的剪贴板历史**没有动作按钮**。
-3. **`vault_autolock_min` / `vault_trust_min` 未接线**：密码库没有自动锁定与
-   免重复输入窗口。（密码库数据层本身按要求未实现，见 M6。）
-4. **`clip_sensitive_ttl` 未接线**：敏感内容自动清空剪贴板的计时未实现。
-   `mark_sensitive` 标记本身已存在并生效（密码库写回时会标），缺的是"到期清空"。
-5. **`clip_process_blacklist` 已接线**（监听器每次抓取前查前台进程），
-   `clip_capture_images` 已接线（控制是否记录图片条目）。
+3. `minimize_to_tray` 未接线（窗口关闭行为固定）。
+4. `sound_alert_enabled` 未接线（声音提醒未实现）。
+5. `clip_sensitive_ttl` 未接线：敏感标记本身生效（密码库复制不进历史），
+   但"到期自动清空剪贴板"的计时器未实现。
+6. `vault_autolock_min` / `vault_trust_min` 未接线（密码库数据层按要求未实现）。
 
-> 第 3、4 条与设置页有关：那两项在设置页里**可见可改**。理想情况下未接线的项
-> 应当标注"暂未生效"，否则用户改了没效果会以为是 bug。这一处待补。
+已接线（供对照）：`tray_rate_enabled`、`dark_mode`、`dns_preset`、`clipboard_max`、
+`clipboard_watch`、`clipboard_retain_days`、`clip_process_blacklist`、
+`clip_capture_images`（部分）、三个热键、`palette_commands`。
+
+> 标注纪律：`settings.rs` 里的 `UNWIRED` 常量是**手工审计的清单**，同时是一份待办。
+> 接上消费方后从清单删掉该项；删掉时 `unwired_keys_are_marked_and_explained` 会失败
+> ——这正是提醒我们摘掉过期标签的机制。
 
 ### M1 真机复核清单（GO/NO-GO 判定，必须人工执行）
 前置：**先退出托盘里正在运行的 Python 版 SysKit**（两版共用 `%APPDATA%\SysKit`

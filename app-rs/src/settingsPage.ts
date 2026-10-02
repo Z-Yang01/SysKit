@@ -18,6 +18,8 @@ export interface SettingItem {
   max?: number;
   options?: string[];
   needs_restart: boolean;
+  /** 非空表示该设置**目前没有消费方**（改了不生效），内容为原因说明。 */
+  unwired_reason?: string;
 }
 
 export interface SettingsAll {
@@ -143,6 +145,29 @@ export function displayValue(item: SettingItem): string {
 /** 重启生效提示文案（为空表示无需重启）。 */
 export function restartNote(item: SettingItem): string {
   return item.needs_restart ? "重启后生效" : "";
+}
+
+/**
+ * 该设置是否"暂未生效"（无消费方，改了没有效果）。
+ *
+ * 界面必须把这类项**显眼标出**：给了开关却没人读，用户改了没效果只会以为
+ * 程序坏了或自己改错了。诚实标注是唯一可接受的呈现。
+ */
+export function isUnwired(item: SettingItem): boolean {
+  const r = item.unwired_reason ?? "";
+  return r.startsWith("暂未生效") || r.startsWith("部分生效");
+}
+
+/** 未生效项的标签文案（标签很短，详情看 tooltip）。 */
+export function unwiredBadge(item: SettingItem): string {
+  const r = item.unwired_reason ?? "";
+  if (r.startsWith("部分生效")) return "部分生效";
+  return r.startsWith("暂未生效") ? "暂未生效" : "";
+}
+
+/** 统计未生效项数（页面顶部提示用）。 */
+export function unwiredCount(items: SettingItem[]): number {
+  return items.filter(isUnwired).length;
 }
 
 /** 日志文件大小展示。 */

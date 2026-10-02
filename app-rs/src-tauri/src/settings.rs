@@ -79,9 +79,12 @@ pub struct SettingMeta {
     pub options: Option<Vec<String>>,
     /// 是否重启后生效（界面标注）
     pub needs_restart: bool,
+    /// 非空表示**该设置目前没有消费方**（改了不生效），内容为原因说明。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub unwired_reason: String,
 }
 
-/// 界面装饰信息（标签 / 描述 / 范围 / 可选值 / 是否重启生效）。
+/// 界面装饰信息（标签 / 描述 / 范围 / 可选值 / 是否重启生效 / 未接线说明）。
 ///
 /// 用结构体而不是六元组：六元组在调用处要靠位置记忆，极易把 `min`/`max` 写反，
 /// 而写反的范围会让校验变成"总是拒绝"或"总是接受"。
@@ -93,6 +96,11 @@ pub struct Decoration {
     pub max: Option<i64>,
     pub options: Option<Vec<String>>,
     pub needs_restart: bool,
+    /// 非空表示**该设置目前没有消费方**（改了不生效），文案说明原因。
+    ///
+    /// 为什么必须标出来：设置页给了开关却没人读，用户改了没效果只会以为"坏了"
+    /// 或"我改错了"。诚实地写明"暂未生效"是唯一可接受的呈现。
+    pub unwired_reason: &'static str,
 }
 
 impl Decoration {
@@ -105,6 +113,7 @@ impl Decoration {
             max: None,
             options: None,
             needs_restart: false,
+            unwired_reason: "",
         }
     }
 
@@ -137,29 +146,53 @@ impl Decoration {
             ..Self::new(label, description)
         }
     }
+
+    /// 标记为"暂未生效"（该键目前没有消费方）。
+    fn unwired(mut self, reason: &'static str) -> Self {
+        self.unwired_reason = reason;
+        self
+    }
 }
 
 /// 界面装饰信息。
 fn decoration(key: &str) -> Decoration {
+    // 「暂未生效」的统一说明：自动诊断/修复调度整体未移植
+    const NO_SCHEDULER: &str =
+        "暂未生效：自动诊断/修复调度尚未移植到 Rust 版，当前只能手动点「开始诊断」。\
+本项会被保存但不会生效——保留是为了让设置文件与 Python 版同构，迁移期不丢配置。";
     match key {
-        "auto_repair_enabled" => Decoration::new("自动修复", "诊断出问题时自动执行修复动作"),
-        "poll_interval_sec" => Decoration::int("检测间隔（秒）", "后台自动诊断的间隔", 10, 3600),
+        // ⚠ 以下六项属于「自动诊断/修复」功能组，该功能整体未移植（Python 侧为 monitor.py）。
+        // 标为「暂未生效」而不是隐藏：隐藏会让用户以为设置丢了，
+        // 留着不说会让用户以为改了有用——两种都不可接受，只能明说。
+        "auto_repair_enabled" => {
+            Decoration::new("自动修复", "诊断出问题时自动执行修复动作").unwired(NO_SCHEDULER)
+        }
+        "poll_interval_sec" => {
+            Decoration::int("检测间隔（秒）", "后台自动诊断的间隔", 10, 3600).unwired(NO_SCHEDULER)
+        }
         "auto_repair_max_level" => Decoration::int(
             "自动修复最高等级",
             "1=刷缓存 2=+服务/续租 3=+重启网卡",
             1,
             3,
-        ),
-        "fail_threshold" => Decoration::int("连续失败次数阈值", "连续失败几次触发修复", 1, 20),
-        "cooldown_sec" => Decoration::int("修复冷却（秒）", "两次修复之间的最小间隔", 0, 86400),
+        )
+        .unwired(NO_SCHEDULER),
+        "fail_threshold" => {
+            Decoration::int("连续失败次数阈值", "连续失败几次触发修复", 1, 20).unwired(NO_SCHEDULER)
+        }
+        "cooldown_sec" => Decoration::int("修复冷却（秒）", "两次修复之间的最小间隔", 0, 86400)
+            .unwired(NO_SCHEDULER),
         "level3_cooldown_sec" => {
             Decoration::int("三级修复冷却（秒）", "执行过三级修复后的冷却时间", 0, 86400)
+                .unwired(NO_SCHEDULER)
         }
-        "minimize_to_tray" => Decoration::new("关闭时最小化到托盘", "点关闭按钮不退出程序"),
+        "minimize_to_tray" => Decoration::new("关闭时最小化到托盘", "点关闭按钮不退出程序")
+            .unwired("暂未生效：窗口关闭行为尚未接入本设置（当前关闭按钮行为固定）。"),
         "tray_rate_enabled" => {
             Decoration::new("托盘显示实时速率", "把上下行速率显示在托盘悬浮提示里")
         }
-        "sound_alert_enabled" => Decoration::new("声音提醒", "断网/恢复时播放提示音"),
+        "sound_alert_enabled" => Decoration::new("声音提醒", "断网/恢复时播放提示音")
+            .unwired("暂未生效：声音提醒尚未实现。"),
         "dark_mode" => Decoration::new("深色主题", "切换界面深浅配色"),
         "dns_preset" => Decoration::choice(
             "默认 DNS 预设",
@@ -184,20 +217,28 @@ fn decoration(key: &str) -> Decoration {
             "复制敏感内容后自动清空剪贴板的秒数；0=不清空",
             0,
             3600,
+        )
+        .unwired(
+            "暂未生效：敏感标记本身已生效（密码库复制不会被记进历史），\
+             但「到期自动清空剪贴板」的计时器尚未实现。",
         ),
-        "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径"),
-        "vault_autolock_min" => Decoration::int("密码库自动锁定（分）", "0=不自动锁定", 0, 1440),
+        "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径")
+            .unwired("部分生效：图片关闭后确实不记录；但开启时目前只登记占位条目，尚不搬运像素。"),
+        "vault_autolock_min" => Decoration::int("密码库自动锁定（分）", "0=不自动锁定", 0, 1440)
+            .unwired("暂未生效：密码库数据层未实现（见 M6 说明），自动锁定无从谈起。"),
         "vault_trust_min" => Decoration::int(
             "主密码免重复输入（分）",
             "验证后多久内不再要求输入主密码",
             0,
             1440,
-        ),
+        )
+        .unwired("暂未生效：密码库数据层未实现（见 M6 说明）。"),
         "palette_hotkey" => Decoration::restart("命令面板热键", "保存后即时生效；被占用会自动回退"),
         "clip_paste_hotkey" => Decoration::restart("快捷粘贴面板热键", "空=禁用，仅托盘呼出"),
         "clip_quick_hotkey" => {
             Decoration::restart("快速粘贴热键", "不弹面板直接粘贴最新一条；空=禁用")
         }
+        // migrated_v2 是内部迁移标志，本就无需消费方；不标「暂未生效」以免误导
         "migrated_v2" => Decoration::new("双热键迁移标志", "内部标志，一次性迁移用；一般无需改动"),
         "palette_commands" => {
             Decoration::new("命令面板自定义命令", "JSON 数组 [{name,type,value}]")
@@ -235,6 +276,7 @@ pub fn describe_all() -> Vec<SettingMeta> {
                 max: d.max,
                 options: d.options,
                 needs_restart: d.needs_restart,
+                unwired_reason: d.unwired_reason.to_string(),
             }
         })
         .collect()
@@ -689,6 +731,92 @@ mod tests {
         for k in ["key", "label", "ty", "default", "current", "needs_restart"] {
             assert!(j.contains(k), "序列化应含 {k}: {j}");
         }
+    }
+
+    // ---------------- 「暂未生效」标注（诚实性） ----------------
+
+    /// 审计结论：这些键当前**没有消费方**，改了不生效，必须在界面上说明。
+    ///
+    /// 这个清单是**手工审计的产物**（逐键搜 `src-tauri/src/` 与 `src/` 里的引用）。
+    /// 它同时是一份待办：接上消费方后应把该键从清单里删掉，删掉时这条测试会失败
+    /// ——这正是我们想要的提醒（否则容易忘记摘掉过期的"暂未生效"标签）。
+    const UNWIRED: [&str; 11] = [
+        // 自动诊断/修复功能组（Python 侧 monitor.py 整体未移植）
+        "auto_repair_enabled",
+        "poll_interval_sec",
+        "auto_repair_max_level",
+        "fail_threshold",
+        "cooldown_sec",
+        "level3_cooldown_sec",
+        // 单项
+        "minimize_to_tray",
+        "sound_alert_enabled",
+        "clip_sensitive_ttl",
+        "vault_autolock_min",
+        "vault_trust_min",
+    ];
+
+    #[test]
+    fn unwired_keys_are_marked_and_explained() {
+        let items = describe_all();
+        for k in UNWIRED {
+            let m = items
+                .iter()
+                .find(|m| m.key == k)
+                .unwrap_or_else(|| panic!("{k} 不在 defaults() 里"));
+            assert!(
+                !m.unwired_reason.is_empty(),
+                "{k} 没有消费方，必须标注「暂未生效」并说明原因"
+            );
+            assert!(
+                m.unwired_reason.contains("暂未生效"),
+                "{k} 的说明必须以「暂未生效」开头，便于界面统一识别：{}",
+                m.unwired_reason
+            );
+        }
+    }
+
+    #[test]
+    fn wired_keys_are_not_marked_unwired() {
+        // 反向：完全接线的项不得带任何提示，否则用户会不敢用。
+        // 两类例外：明确未接线的（UNWIRED），以及"部分生效"的（PARTIAL）。
+        const PARTIAL: [&str; 1] = ["clip_capture_images"];
+        for m in describe_all() {
+            if UNWIRED.contains(&m.key.as_str()) || PARTIAL.contains(&m.key.as_str()) {
+                continue;
+            }
+            assert!(
+                m.unwired_reason.is_empty(),
+                "{} 已接线，不应标任何「暂未生效」提示：{}",
+                m.key,
+                m.unwired_reason
+            );
+        }
+    }
+
+    #[test]
+    fn clip_capture_images_is_marked_partial_not_unwired() {
+        // 这一项特殊：关闭确实生效（不记录图片），开启只登记占位条目。
+        // 不能简单归入"未接线"，但也不能让用户以为图片捕获是完整的。
+        let m = describe_all()
+            .into_iter()
+            .find(|m| m.key == "clip_capture_images")
+            .unwrap();
+        assert!(
+            m.unwired_reason.contains("部分生效"),
+            "应说明是部分生效：{}",
+            m.unwired_reason
+        );
+    }
+
+    #[test]
+    fn internal_flag_is_not_marked_unwired() {
+        // migrated_v2 是内部标志，本就无需消费方；标「暂未生效」会误导
+        let m = describe_all()
+            .into_iter()
+            .find(|m| m.key == "migrated_v2")
+            .unwrap();
+        assert!(m.unwired_reason.is_empty());
     }
 
     #[test]

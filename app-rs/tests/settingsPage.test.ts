@@ -14,9 +14,12 @@ import {
   groupSettings,
   humanLogSize,
   isChanged,
+  isUnwired,
   logLevel,
   restartNote,
   tailSummary,
+  unwiredBadge,
+  unwiredCount,
   validateValue,
   type LogTail,
   type SettingItem,
@@ -178,6 +181,41 @@ describe("restartNote", () => {
   });
 });
 
+describe("未生效标注（诚实性）", () => {
+  it("「暂未生效」被判为未生效", () => {
+    const it = item({ unwired_reason: "暂未生效：自动诊断未移植" });
+    expect(isUnwired(it)).toBe(true);
+    expect(unwiredBadge(it)).toBe("暂未生效");
+  });
+
+  it("「部分生效」单独成档（不能混成完全未生效）", () => {
+    const it = item({ unwired_reason: "部分生效：关闭有效，开启只登记占位条目" });
+    expect(isUnwired(it)).toBe(true);
+    expect(unwiredBadge(it)).toBe("部分生效");
+  });
+
+  it("无标注的项不算未生效", () => {
+    expect(isUnwired(item())).toBe(false);
+    expect(unwiredBadge(item())).toBe("");
+    expect(isUnwired(item({ unwired_reason: "" }))).toBe(false);
+  });
+
+  it("其它文案不会被误判（必须以前缀识别）", () => {
+    // 后端约定用「暂未生效」/「部分生效」开头；其它说明不该触发徽标
+    expect(isUnwired(item({ unwired_reason: "注意：需要管理员权限" }))).toBe(false);
+  });
+
+  it("计数", () => {
+    const items = [
+      item({ key: "a", unwired_reason: "暂未生效：x" }),
+      item({ key: "b", unwired_reason: "部分生效：y" }),
+      item({ key: "c" }),
+    ];
+    expect(unwiredCount(items)).toBe(2);
+    expect(unwiredCount([])).toBe(0);
+  });
+});
+
 describe("日志展示", () => {
   it("humanLogSize 三档", () => {
     expect(humanLogSize(512)).toBe("512 B");
@@ -206,3 +244,4 @@ describe("日志展示", () => {
     expect(logLevel("2026-01-01 INFO 启动完成")).toBe("info");
   });
 });
+
