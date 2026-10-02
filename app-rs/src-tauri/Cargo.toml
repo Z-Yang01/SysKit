@@ -20,7 +20,7 @@ serde_json = "1"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-log = "0.4"
+log = { version = "0.4", features = ["std"] }
 # 规则名身份键：`SysKit-AppNet-<sha1(norm_path)[:10]>` 必须与 Python 版逐字节一致，
 # 否则同一个 exe 会被两个版本各建一条规则（用户在 wf.msc 里看到重复项）。
 # 用 crate 而不是手写 SHA-1：摘要是密码学原语，手写不出错很难、出错很难发现。

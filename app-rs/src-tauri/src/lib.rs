@@ -34,6 +34,7 @@ mod hostsed;
 mod hotkey;
 mod input;
 mod input_panel;
+mod logging;
 mod modes;
 mod monitor;
 mod netcheck;
@@ -121,6 +122,7 @@ fn start_hotkeys(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    logging::init(); // 文件日志先行：其后任何初始化失败都有迹可循
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
