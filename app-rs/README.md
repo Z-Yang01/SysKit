@@ -11,12 +11,31 @@ Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决�
 | M0 | 脚手架 + 主题 token 奇偶校验 + 门禁 | ✅ |
 | M1 | 托盘 + 三热键 + 快捷粘贴闭环（GO/NO-GO 决策点） | ✅ 代码完成 / ⏳ **需真机复核** |
 | M2 | 遥测采样 + 概览/网络监控 + 多粒度流量/日报 | ✅ 数据层+界面完成 / ⏳ 待真机看曲线 |
-| M3-M7 | 诊断修复/工具箱/系统助手/密码库/收尾 | 待做 |
+| M3 | 诊断与修复（netcheck 15 项 + 修复动作库） | 🚧 **修复动作库已交付**；15 项检查待做 |
+| M4-M7 | 工具箱/系统助手/密码库/收尾 | 待做 |
 
-门禁全绿（**145 例 Rust + 57 例前端**）。M1/M2 的**真机清单尚未执行**——按
+门禁全绿（**173 例 Rust + 75 例前端**）。M1/M2 的**真机清单尚未执行**——按
 `UNATTENDED.md` §3，托盘里可能跑着用户实例、且测试红线禁止真实 Win32 注入，
 因此 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」与
 「M2 真机复核清单」。
+
+### M3 本批交付范围（诚实边界）
+
+**已交付**：修复动作库（19 项，元数据与 Python `ACTION_IDS` 逐项对齐：id/名称/
+风险/描述/还原提示/参数/需重启）+ 3 个组合 + 管理员门禁 + 前端分级界面；
+执行器接了「安全且可反复执行/只读」的一批（`flush_dns`、`renew_dhcp`、
+`start_nlasvc`、`restart_services`、`winsock_reset`、`ipstack_reset`），
+其中 `ipconfig /flushdns` 已有真机断言。
+
+**未接入（显式失败，绝不假成功）**：需要管理员/改注册表/改网卡配置的 13 项
+（`fix_nlasvc`、`restart_wlan`、`toggle_adapter`、`restore_point`、`dns_auto`、
+`dns_preset`、`ncsi_restore`、`ncsi_disable`、`power_off`、`del_persistent_route`、
+`proxy_off`、`mac_random_off`、`mac_random_on`）。它们返回
+「…尚未在 Rust 版接入（原因）」并把 UI 标为 **warning 而非 error**——
+修复链里的假成功比「明确说没做」危险得多，这条有专门单测锁住。
+
+**未开始**：`netcheck` 15 项诊断检查。诊断页当前显示明确的待接入说明，
+而不是空表。
 
 ### M2 相对 Python 版的两处有意简化（不是漏做）
 
@@ -68,10 +87,28 @@ app-rs/
 │  ├─ src/netstats.rs        # 日报聚合 + 多粒度序列（纯逻辑）
 │  ├─ src/telemetry.rs       # 1 秒采样（GetIfTable2/GetSystemTimes/内存/磁盘）
 │  ├─ src/telemetry_hub.rs   # 采样线程 + 共享状态 + sk://tick 事件
+│  ├─ src/repairs.rs         # 修复动作库（19 项分级 + 组合 + 管理员门禁）
 │  ├─ src/commands.rs        # invoke 接口
 │  └─ capabilities/default.json  # 窗口能力（前端 show/hide/listen 必需）
 └─ check.ps1       # 门禁一条命令
 ```
+
+## 进程执行层的一条硬教训（M3 踩到）
+
+`CreateProcessW` 有两个坑，都表现为「进程正常退出但零输出」，极难查：
+
+1. **给了 `lpApplicationName` 就不再搜 PATH** —— 裸名 `cmd`/`ipconfig`/`netsh`
+   全部报「系统找不到指定的文件」。必须自己做 PATH + PATHEXT 解析
+   （`w32::resolve_executable`，对应 Python subprocess 的既有行为）。
+2. **句柄继承**：`STARTF_USESTDHANDLES` 要求句柄可继承，手工
+   `CreateFileW` + `SetHandleInformation` 也必须配合正确的
+   `bInheritHandles`/`STARTUPINFO` 组合，否则子进程拿到无效句柄、
+   写不进文件。
+
+最终改用 `std::process::Command`（std 已正确处理这两件事），只用它的
+`creation_flags(CREATE_NO_WINDOW)` 压黑窗；超时用 `try_wait` 轮询 + `kill`，
+不引额外依赖。**结论：能交给 std 就不要手写 CreateProcess。**
+
 
 ## M2 真机复核清单（数据正确性）
 

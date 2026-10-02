@@ -307,6 +307,80 @@ pub fn sk_overview_init(hub: State<'_, Arc<Hub>>) -> serde_json::Value {
     })
 }
 
+// ---------------- M3 诊断 / 修复 ----------------
+
+/// 当前是否管理员（修复页据此禁用改配置类动作）。
+#[tauri::command]
+pub fn sk_is_admin() -> bool {
+    crate::w32::is_elevated()
+}
+
+/// 修复动作清单 + 组合 + 管理员状态（修复页一次拿全）。
+#[tauri::command]
+pub fn sk_repair_list() -> serde_json::Value {
+    use crate::repairs::{catalog, COMBOS};
+    let actions: Vec<serde_json::Value> = catalog()
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id,
+                "title": a.title,
+                "risk": a.risk,
+                "risk_label": a.risk.label(),
+                "description": a.description,
+                "restore_hint": a.restore_hint,
+                "brief": a.brief,
+                "need_reboot": a.need_reboot,
+                "params": a.params,
+            })
+        })
+        .collect();
+    let combos: Vec<serde_json::Value> = COMBOS
+        .iter()
+        .map(|c| serde_json::json!({ "key": c.key, "title": c.title, "actions": c.actions }))
+        .collect();
+    serde_json::json!({
+        "actions": actions,
+        "combos": combos,
+        "is_admin": crate::w32::is_elevated(),
+    })
+}
+
+/// 组合展开计划（含每步是否被跳过及原因；跳过必须显式告知）。
+#[tauri::command]
+pub fn sk_repair_plan(combo: String, is_admin: Option<bool>) -> Vec<crate::repairs::ComboStep> {
+    let admin = is_admin.unwrap_or_else(crate::w32::is_elevated);
+    crate::repairs::combo_plan(&combo, admin)
+}
+
+/// 执行单个修复动作（在阻塞线程池里跑，绝不冻 UI）。
+#[tauri::command]
+pub async fn sk_repair_run(
+    id: String,
+    params: Option<serde_json::Value>,
+) -> Result<crate::repairs::RepairOutcome, String> {
+    let action = crate::repairs::get_action(&id).ok_or_else(|| format!("未知修复动作: {id}"))?;
+    let mut map = std::collections::BTreeMap::new();
+    if let Some(serde_json::Value::Object(obj)) = params {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                map.insert(k, s.to_string());
+            }
+        }
+    }
+    let out = tauri::async_runtime::spawn_blocking(move || action.execute(&map))
+        .await
+        .map_err(|e| format!("修复线程失败: {e}"))?;
+    log::info!("修复动作 {id} -> success={} {}", out.success, out.message);
+    Ok(out)
+}
+
+/// 记录一条诊断/修复事件到时间线（修复页执行后调用，供概览页展示）。
+#[tauri::command]
+pub fn sk_log_event(hub: State<'_, Arc<Hub>>, state: String, detail: String) {
+    hub.record_event(&state, &detail);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

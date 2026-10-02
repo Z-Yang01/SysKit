@@ -23,6 +23,7 @@ import {
   message,
 } from "antd";
 import { Dashboard } from "./Overview";
+import { Diagnose } from "./Diagnose";
 import { applyTheme, palette, type Palette } from "./theme";
 
 interface ClipRow {
@@ -204,13 +205,7 @@ export function App() {
   const pages: Record<string, React.ReactNode> = {
     overview: <Dashboard />,
     clipboard: <ClipboardPage />,
-    diagnose: (
-      <Pending
-        title="诊断 / 修复"
-        milestone="M3"
-        detail="netcheck 15 项检测 + 风险分级 + 一键修复将在此落地。"
-      />
-    ),
+    diagnose: <Diagnose />,
     toolbox: (
       <Pending
         title="工具箱"

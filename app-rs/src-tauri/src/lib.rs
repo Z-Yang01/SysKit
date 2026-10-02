@@ -27,6 +27,7 @@ mod netstats;
 mod paths;
 mod rate_stats;
 mod rate_store;
+mod repairs;
 mod secure_store;
 mod settings;
 mod stores;
@@ -144,6 +145,11 @@ pub fn run() {
             commands::sk_record_event,
             commands::sk_traffic_flush,
             commands::sk_overview_init,
+            commands::sk_is_admin,
+            commands::sk_repair_list,
+            commands::sk_repair_plan,
+            commands::sk_repair_run,
+            commands::sk_log_event,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

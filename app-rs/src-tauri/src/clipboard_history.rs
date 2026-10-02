@@ -175,6 +175,26 @@ pub fn with<R>(f: impl FnOnce(&mut History) -> R) -> R {
     f(&mut g)
 }
 
+/// 清掉进程级历史缓存并丢弃摘要窗口（**仅测试**：隔离目录被重置后，
+/// 内存里那份旧实例还指着已删除的文件，会让后续断言读到过期数据）。
+#[cfg(test)]
+pub fn reset_global_for_test() {
+    if let Some(cell) = HISTORY.get() {
+        let mut g = cell.lock().unwrap_or_else(|p| p.into_inner());
+        *g = History::default();
+    }
+    sensitive()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entries
+        .clear();
+    suppressed()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entries
+        .clear();
+}
+
 /// 剪贴板历史（内存态 + 防抖落盘）。
 pub struct History {
     pub max_items: usize,
@@ -592,6 +612,9 @@ mod tests {
 
     #[test]
     fn save_and_reload_round_trip_through_isolation() {
+        // 串行 + 先清盘：否则并行的其它用例会与我们抢同一份 clipboard.json
+        let _g = crate::test_support::serial();
+        crate::test_support::reset_persistent_files();
         // 写盘路径必须落在隔离目录（绝不能碰真实 %APPDATA%\SysKit）
         let dir = crate::test_support::isolate();
         assert!(crate::paths::clipboard_file().starts_with(&dir));
@@ -615,7 +638,8 @@ mod tests {
 
     #[test]
     fn flush_only_writes_when_dirty() {
-        let _ = crate::test_support::isolate();
+        let _g = crate::test_support::serial();
+        crate::test_support::reset_persistent_files();
         let mut h = History::default();
         assert!(!h.flush_if_dirty(), "无变更不应写盘");
         h.add("触发脏标记", "text", "");

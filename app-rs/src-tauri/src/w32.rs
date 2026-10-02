@@ -377,8 +377,248 @@ pub fn dpapi_unprotect(data: &[u8]) -> Option<Vec<u8>> {
         )
         .ok()?;
         let v = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+        // CryptUnprotectData 同样用 LocalAlloc 分配输出，必须由调用方 LocalFree
         let _ = LocalFree(Some(HLOCAL(out.pbData as *mut std::ffi::c_void)));
         Some(v)
+    }
+}
+
+// ---------------- 子进程执行（修复动作的底座） ----------------
+
+/// 子进程执行结果（对应 Python `proc.run` 的返回）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcOutput {
+    pub ok: bool,
+    pub code: u32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl ProcOutput {
+    /// `stdout + stderr` 合并（Python 侧多处这样拼接做关键字判定）。
+    pub fn combined(&self) -> String {
+        format!("{}{}", self.stdout, self.stderr)
+    }
+
+    /// 尾部截断（Python 有 `r.stdout[-200:] + r.stderr[-100:]` 这类写法）。
+    pub fn tail(&self, out_n: usize, err_n: usize) -> String {
+        format!(
+            "{}{}",
+            tail_chars(&self.stdout, out_n),
+            tail_chars(&self.stderr, err_n)
+        )
+    }
+}
+
+fn tail_chars(s: &str, n: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= n {
+        return s.to_string();
+    }
+    chars[chars.len() - n..].iter().collect()
+}
+
+/// 按 Windows 命令行规则给单个参数加引号（含空格/制表/引号时必须）。
+///
+/// 规则同 Python `subprocess.list2cmdline`：反斜杠只在引号前成对转义，
+/// 参数末尾的反斜杠在加引号时要翻倍。
+pub fn quote_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
+        return arg.to_string();
+    }
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => {
+                backslashes += 1;
+                out.push(ch);
+            }
+            '"' => {
+                out.push_str(&"\\".repeat(backslashes));
+                out.push_str("\\\"");
+                backslashes = 0;
+            }
+            _ => {
+                backslashes = 0;
+                out.push(ch);
+            }
+        }
+    }
+    out.push_str(&"\\".repeat(backslashes));
+    out.push('"');
+    out
+}
+
+/// 把参数表拼成命令行。
+pub fn build_command_line(args: &[String]) -> String {
+    args.iter()
+        .map(|a| quote_arg(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 把命令名解析成绝对路径。
+///
+/// **为什么必须自己做**：一旦给 `CreateProcessW` 传了 `lpApplicationName`，
+/// Windows 就**不再搜索 PATH**（只搜索当前目录）——`cmd`、`ipconfig`、`netsh`
+/// 这些裸名字全都会报「系统找不到指定的文件」。Python 的 subprocess 会自己解析
+/// PATH，所以这是移植时必须补上的一层。
+///
+/// 解析顺序：含路径分隔符 → 原样返回；否则按 PATHEXT 在 PATH 各目录里找。
+pub fn resolve_executable(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    if name.contains('\\') || name.contains('/') {
+        let p = std::path::Path::new(name);
+        return p.is_file().then(|| name.to_string());
+    }
+    // PATHEXT 默认值（Windows 未设 PATHEXT 时也要能用）
+    let exts: Vec<String> = std::env::var("PATHEXT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            s.split(';')
+                .map(|e| e.trim().to_ascii_lowercase())
+                .filter(|e| !e.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| vec![".com".into(), ".exe".into(), ".bat".into(), ".cmd".into()]);
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        // 已经带扩展名的先直接试
+        let direct = dir.join(name);
+        if direct.is_file() {
+            return Some(direct.to_string_lossy().to_string());
+        }
+        for ext in &exts {
+            let cand = dir.join(format!("{name}{ext}"));
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 执行一个可执行文件并捕获输出。
+///
+/// **为什么重定向到临时文件而不是管道**：管道要求父进程继承/读取句柄，在受限
+/// 沙箱下会被拒（与 `spawn EPERM` 同源）；文件重定向只依赖 CreateFile，
+/// 任何模式下都成立。代价是一次临时文件往返——修复动作都是秒级操作，可接受。
+///
+/// 当前进程是否以管理员（提升）身份运行。
+///
+/// 对应 Python `admin.is_admin()`：取令牌的 TokenElevation 判断。修复动作里
+/// 「改配置类」在非管理员下必须跳过或明确失败，绝不能假装成功。
+pub fn is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = HANDLE(std::ptr::null_mut());
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut ret_len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut _ as *mut core::ffi::c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok && elevation.TokenIsElevated != 0
+    }
+}
+
+/// 失败时返回人话原因（修复页要把它显示给用户，不能只报「失败了」）。
+pub fn run_capture(args: &[String], timeout_secs: u64) -> Result<ProcOutput, String> {
+    use std::process::{Command, Stdio};
+
+    if args.is_empty() {
+        return Err("空命令".to_string());
+    }
+    let resolved = resolve_executable(&args[0])
+        .ok_or_else(|| format!("找不到可执行文件: {}（不在 PATH 中）", args[0]))?;
+
+    let mut cmd = Command::new(&resolved);
+    cmd.args(&args[1..]);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    // 不弹控制台黑窗（对应 Python 的 startupinfo 隐藏窗口）
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("无法启动 {}: {e}", args[0]))?;
+
+    // 超时：std 没有 wait_timeout，自己轮询最省事且不引额外依赖。
+    // 到点先 kill 再收尸，绝不留下孤儿进程（修复动作里有 90 秒级的 ipconfig /renew）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1));
+    let mut timed_out = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    timed_out = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(format!("等待 {} 失败: {e}", args[0])),
+        }
+    }
+
+    // 进程已退出后再统一读取管道（顺序反了会在子进程写满缓冲时死锁）
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("读取 {} 输出失败: {e}", args[0]))?;
+
+    let code = output.status.code().unwrap_or(-1);
+    Ok(ProcOutput {
+        ok: !timed_out && output.status.success(),
+        code: if timed_out {
+            u32::MAX
+        } else {
+            code.max(0) as u32
+        },
+        stdout: decode_console_bytes(&output.stdout),
+        stderr: decode_console_bytes(&output.stderr),
+    })
+}
+
+/// 控制台输出解码：先试 UTF-8，失败退化为逐字节（保 ASCII 可读，绝不 panic）。
+///
+/// 中文 Windows 控制台默认 GBK，完整码表需额外依赖；这里保证「修复杂志不出现
+/// 替换字符乱码致无法判断成败」这一底线，同时 ASCII 部分（含错误码）始终可读。
+fn decode_console_bytes(raw: &[u8]) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    match std::str::from_utf8(raw) {
+        Ok(s) => s.to_string(),
+        Err(_) => raw.iter().map(|b| *b as char).collect::<String>(),
     }
 }
 
@@ -473,5 +713,154 @@ mod tests {
     #[test]
     fn send_input_rejects_empty() {
         assert!(!send_input(&[]), "空序列必须失败而不是假成功");
+    }
+
+    // ---------------- 子进程执行 ----------------
+
+    #[test]
+    fn quote_arg_matches_windows_rules() {
+        assert_eq!(quote_arg("ipconfig"), "ipconfig");
+        assert_eq!(quote_arg("/flushdns"), "/flushdns");
+        assert_eq!(quote_arg("a b"), "\"a b\"");
+        assert_eq!(quote_arg(""), "\"\"");
+        assert_eq!(quote_arg("say \"hi\""), "\"say \\\"hi\\\"\"");
+        // 末尾反斜杠在加引号时必须翻倍，否则会吃掉收尾引号
+        assert_eq!(
+            quote_arg("C:\\dir with space\\"),
+            "\"C:\\dir with space\\\\\""
+        );
+        // 不在引号前的反斜杠原样保留
+        assert_eq!(quote_arg("C:\\a\\b"), "C:\\a\\b");
+        assert_eq!(quote_arg("na me\\"), "\"na me\\\\\"");
+    }
+
+    #[test]
+    fn build_command_line_joins_quoted_args() {
+        let args = vec!["cmd".to_string(), "/c".to_string(), "echo hi".to_string()];
+        assert_eq!(build_command_line(&args), "cmd /c \"echo hi\"");
+        assert_eq!(build_command_line(&[]), "");
+    }
+
+    #[test]
+    fn tail_truncates_by_chars_not_bytes() {
+        let o = ProcOutput {
+            ok: true,
+            code: 0,
+            stdout: "abcdefghij".into(),
+            stderr: "XY".into(),
+        };
+        assert_eq!(o.tail(3, 1), "hijY", "stdout 取尾 3 + stderr 取尾 1");
+        assert_eq!(o.tail(50, 50), "abcdefghijXY", "短于上限时原样返回");
+        // 中文按字符截断，不产生半个字符
+        let cn = ProcOutput {
+            ok: true,
+            code: 0,
+            stdout: "中文输出测试".into(),
+            stderr: String::new(),
+        };
+        assert_eq!(cn.tail(2, 0), "测试");
+    }
+
+    #[test]
+    fn combined_concatenates_stdout_then_stderr() {
+        let o = ProcOutput {
+            ok: false,
+            code: 1,
+            stdout: "out".into(),
+            stderr: "err".into(),
+        };
+        assert_eq!(o.combined(), "outerr");
+    }
+
+    #[test]
+    fn resolve_executable_finds_system_tools() {
+        // PATH 解析是移植时必须补的一层：CreateProcessW 带 lpApplicationName 时
+        // **不搜 PATH**，裸名 cmd/ipconfig/netsh 会全报「系统找不到指定的文件」。
+        for name in ["cmd", "ipconfig", "netsh", "sc", "reg"] {
+            let p = resolve_executable(name).unwrap_or_else(|| panic!("应能解析 {name}"));
+            assert!(
+                std::path::Path::new(&p).is_file(),
+                "{name} 解析结果必须是真实文件: {p}"
+            );
+            assert!(
+                p.to_ascii_lowercase().ends_with(".exe"),
+                "解析结果应带扩展名: {p}"
+            );
+        }
+        assert!(resolve_executable("syskit_no_such_program_xyz").is_none());
+        assert!(resolve_executable("").is_none());
+        // 带路径分隔符的原样校验
+        let cmd = resolve_executable("cmd").unwrap();
+        assert!(resolve_executable(&cmd).is_some(), "绝对路径应可再次解析");
+    }
+
+    #[test]
+    fn run_capture_executes_and_captures_stdout() {
+        // 真实起一个子进程：cmd /c echo 是最小可验证目标
+        let out = run_capture(&["cmd".into(), "/c".into(), "echo hello-syskit".into()], 20)
+            .unwrap_or_else(|e| panic!("cmd 应能启动: {e}"));
+        assert!(
+            out.ok,
+            "echo 应成功: code={} err={:?} out={:?}",
+            out.code, out.stderr, out.stdout
+        );
+        assert_eq!(out.code, 0);
+        assert!(
+            out.stdout.contains("hello-syskit"),
+            "必须捕获到 stdout: {:?}",
+            out.stdout
+        );
+    }
+
+    #[test]
+    fn run_capture_reports_nonzero_exit() {
+        let out = run_capture(&["cmd".into(), "/c".into(), "exit 3".into()], 20)
+            .unwrap_or_else(|e| panic!("cmd 应能启动: {e}"));
+        assert!(!out.ok, "非零退出必须判失败");
+        assert_eq!(out.code, 3, "退出码要原样带出来（修复动作靠它判成败）");
+    }
+
+    #[test]
+    fn run_capture_reports_stderr() {
+        let out = run_capture(
+            &["cmd".into(), "/c".into(), "echo oops 1>&2 & exit 1".into()],
+            20,
+        )
+        .unwrap_or_else(|e| panic!("cmd 应能启动: {e}"));
+        assert!(!out.ok);
+        assert!(
+            out.stderr.contains("oops"),
+            "必须捕获到 stderr: {:?}",
+            out.stderr
+        );
+    }
+
+    #[test]
+    fn run_capture_survives_unknown_program() {
+        // 不存在的程序：必须返回 Err 或失败结果，绝不 panic
+        match run_capture(&["syskit_no_such_program_xyz".into()], 5) {
+            Err(_) => {}
+            Ok(o) => assert!(!o.ok, "不存在的程序不得判成功"),
+        }
+    }
+
+    #[test]
+    fn run_capture_empty_args_is_err() {
+        assert!(run_capture(&[], 5).is_err());
+    }
+
+    #[test]
+    fn run_capture_handles_non_ascii_output() {
+        // 中文输出不得 panic，且 ASCII 部分必须可读
+        let out = run_capture(
+            &["cmd".into(), "/c".into(), "echo 中文 & echo OK".into()],
+            20,
+        )
+        .unwrap_or_else(|e| panic!("cmd 应能启动: {e}"));
+        assert!(
+            out.stdout.contains("OK"),
+            "ASCII 部分必须可读: {:?}",
+            out.stdout
+        );
     }
 }
