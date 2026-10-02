@@ -17,6 +17,7 @@
 // 每个 M 接入调用方后逐条删除此豁免（见 README 里程碑表的待办）。
 #![allow(dead_code)]
 
+mod appnet;
 mod backup;
 mod clipboard_history;
 mod clipboard_write;
@@ -176,6 +177,11 @@ pub fn run() {
             commands::sk_tracert,
             commands::sk_dns_speed,
             commands::sk_speedtest_status,
+            commands::sk_appnet_list,
+            commands::sk_appnet_add,
+            commands::sk_appnet_remove,
+            commands::sk_appnet_validate,
+            commands::sk_appnet_pick_exe,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

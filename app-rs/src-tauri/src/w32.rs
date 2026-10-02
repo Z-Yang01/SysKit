@@ -970,6 +970,54 @@ fn decode_console_bytes(raw: &[u8]) -> String {
     }
 }
 
+// ---------------- 原生文件选择器 ----------------
+
+/// 弹出系统「打开文件」对话框，返回选中路径（取消返回空串）。
+///
+/// 用 `GetOpenFileNameW` 而不是 `tauri-plugin-dialog`：只为一个选择器引入一个插件
+/// （前端包 + 权限配置 + IPC 命令）不划算，而这个 API 自 Win95 起就没变过。
+///
+/// `filter` 是 Win32 的双 NUL 结尾格式：`"名称\0*.exe\0所有文件\0*.*\0"`。
+pub fn pick_file_dialog(title: &str, filter: &str) -> Result<String, String> {
+    use windows::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+
+    // 缓冲区要放得下长路径（MAX_PATH 在长路径启用的机器上不够用）
+    let mut buf = [0u16; 1024];
+    // filter 必须是「双 NUL 结尾」，即最后两个 u16 都是 0——调用方少写一个 NUL
+    // 就会读到越界内存。这里统一补齐，不依赖调用方（已用测试锁住）。
+    let mut filter_u16: Vec<u16> = filter.encode_utf16().collect();
+    while filter_u16.len() < 2 || filter_u16[filter_u16.len() - 2..] != [0, 0] {
+        filter_u16.push(0);
+    }
+    let title_u16: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let def_ext: Vec<u16> = "exe\0".encode_utf16().collect();
+
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: HWND(std::ptr::null_mut()),
+        lpstrFilter: windows::core::PCWSTR(filter_u16.as_ptr()),
+        nFilterIndex: 1,
+        lpstrFile: windows::core::PWSTR(buf.as_mut_ptr()),
+        nMaxFile: buf.len() as u32,
+        lpstrTitle: windows::core::PCWSTR(title_u16.as_ptr()),
+        lpstrDefExt: windows::core::PCWSTR(def_ext.as_ptr()),
+        // NOCHANGEDIR：对话框会改进程当前目录，而 `real_path` 依赖 cwd 解析相对路径
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+
+    // SAFETY: ofn 的所有指针都指向本函数栈上、生命周期覆盖该调用的缓冲
+    let ok = unsafe { GetOpenFileNameW(&mut ofn) };
+    if !ok.as_bool() {
+        // 用户取消（CommDlgExtendedError 为 0）与真失败都走这里；返回空串让前端保持安静
+        return Ok(String::new());
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Ok(String::from_utf16_lossy(&buf[..len]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -768,6 +768,223 @@ pub fn sk_speedtest_status() -> serde_json::Value {
     })
 }
 
+// ---------------- M4 工具箱：应用联网 ----------------
+
+/// 台账 + 实际规则状态合并（三态：on/off/drift/missing）。
+#[tauri::command]
+pub async fn sk_appnet_list() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let entries = crate::appnet::load_entries();
+        let programs: Vec<String> = entries.iter().map(|e| e.program.clone()).collect();
+        let states = query_states(&programs);
+        let rows: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                let state = states
+                    .get(&e.rule)
+                    .copied()
+                    .unwrap_or(crate::appnet::RuleState::Missing);
+                serde_json::json!({
+                    "program": e.program,
+                    "rule": e.rule,
+                    "blocked": e.blocked,
+                    "added": e.added,
+                    "state": state.as_str(),
+                    "blocking": state.is_blocking(),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "rows": rows,
+            "count": rows.len(),
+            "is_admin": crate::w32::is_elevated(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("查询线程失败: {e}"))?
+}
+
+/// 批量查规则状态：PS 一次问完（避免每条规则起一次 powershell）。
+///
+/// 没有哨兵 = `Get-NetFirewallRule` 跑不动（模块缺失/被策略禁用），此时**退回 netsh
+/// 逐条查**——不能把"查不到"当成"规则不存在"，否则界面会显示"未阻断"而实际在拦。
+fn query_states(
+    programs: &[String],
+) -> std::collections::BTreeMap<String, crate::appnet::RuleState> {
+    if programs.is_empty() {
+        return std::collections::BTreeMap::new();
+    }
+    let script = crate::appnet::ps_status_script(programs);
+    if let Ok(out) = crate::w32::run_capture(
+        &[
+            "powershell".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            script,
+        ],
+        40,
+    ) {
+        let combined = out.combined();
+        if combined.contains(crate::appnet::PS_PROBE) {
+            return crate::appnet::parse_status_output(&combined);
+        }
+    }
+    // 退回 netsh（较慢，但至少能给出答案）
+    let mut map = std::collections::BTreeMap::new();
+    for p in programs {
+        let cmd = crate::appnet::cmd_show(p);
+        let state = match crate::w32::run_capture(&cmd, 15) {
+            Ok(o) => match crate::appnet::parse_netsh_state(&o.combined()) {
+                Some((enabled, action)) => {
+                    if !crate::appnet::action_is_block(&action) {
+                        crate::appnet::RuleState::Drift
+                    } else if enabled {
+                        crate::appnet::RuleState::On
+                    } else {
+                        crate::appnet::RuleState::Off
+                    }
+                }
+                None => crate::appnet::RuleState::Missing,
+            },
+            Err(_) => crate::appnet::RuleState::Missing,
+        };
+        map.insert(crate::appnet::rule_name(p), state);
+    }
+    map
+}
+
+/// 添加（或对已存在条目改状态）一个受控程序。
+#[tauri::command]
+pub async fn sk_appnet_add(program: String, blocked: bool) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !crate::w32::is_elevated() {
+            return Err(crate::appnet::ADMIN_MSG.to_string());
+        }
+        let path = crate::appnet::real_path(&program);
+        let exists = std::path::Path::new(&path).is_file();
+        crate::appnet::validate_program(&program, exists)?;
+
+        let mut entries = crate::appnet::load_entries();
+        let existing = crate::appnet::find_entry(&entries, &path);
+        // 台账里已有 → 只切启用状态（不重复 add，否则 netsh 报规则已存在）
+        let cmd = match existing {
+            Some(_) => crate::appnet::cmd_set_enable(&path, blocked),
+            None => crate::appnet::cmd_add(&path, blocked),
+        };
+        let out = crate::w32::run_capture(&cmd, 30).map_err(|e| format!("netsh 无法执行: {e}"))?;
+        if !out.ok {
+            return Err(format!("添加规则失败: {}", out.tail(0, 200).trim()));
+        }
+        // 确认规则真的按预期生效（不自证：重新查一次）
+        let states = query_states(std::slice::from_ref(&path));
+        let state = states
+            .get(&crate::appnet::rule_name(&path))
+            .copied()
+            .unwrap_or(crate::appnet::RuleState::Missing);
+        let expect = if blocked {
+            crate::appnet::RuleState::On
+        } else {
+            crate::appnet::RuleState::Off
+        };
+        if state != expect {
+            return Err(format!(
+                "规则已下发但状态不符（期望 {}，实际 {}）——可能被组策略覆盖",
+                expect.as_str(),
+                state.as_str()
+            ));
+        }
+        if existing.is_none() {
+            entries.push(crate::appnet::AppNetEntry {
+                program: path.clone(),
+                rule: crate::appnet::rule_name(&path),
+                blocked,
+                added: crate::timefmt::now_fmt(crate::timefmt::FMT_TS),
+            });
+            crate::appnet::save_entries(&entries);
+        } else if let Some(i) = existing {
+            entries[i].blocked = blocked;
+            crate::appnet::save_entries(&entries);
+        }
+        Ok(serde_json::json!({
+            "ok": true,
+            "program": path,
+            "state": state.as_str(),
+            "message": if blocked {
+                format!("{path} 已禁止联网（出站阻断）")
+            } else {
+                format!("{path} 已放行")
+            },
+        }))
+    })
+    .await
+    .map_err(|e| format!("执行线程失败: {e}"))?
+}
+
+/// 移除受控程序：删规则 + 从台账移除。
+#[tauri::command]
+pub async fn sk_appnet_remove(program: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !crate::w32::is_elevated() {
+            return Err(crate::appnet::ADMIN_MSG.to_string());
+        }
+        let out = crate::w32::run_capture(&crate::appnet::cmd_delete(&program), 30)
+            .map_err(|e| format!("netsh 无法执行: {e}"))?;
+        // 规则本来就不在也算成功（用户目标已达成），但必须确认它确实不在
+        let states = query_states(std::slice::from_ref(&program));
+        let still = states
+            .get(&crate::appnet::rule_name(&program))
+            .copied()
+            .unwrap_or(crate::appnet::RuleState::Missing);
+        if still != crate::appnet::RuleState::Missing {
+            return Err(format!(
+                "删除未生效（规则仍在，状态 {}）：{}",
+                still.as_str(),
+                out.tail(0, 150).trim()
+            ));
+        }
+        let mut entries = crate::appnet::load_entries();
+        if let Some(i) = crate::appnet::find_entry(&entries, &program) {
+            entries.remove(i);
+            crate::appnet::save_entries(&entries);
+        }
+        Ok(format!(
+            "已移除 {} 的联网控制规则",
+            crate::appnet::real_path(&program)
+        ))
+    })
+    .await
+    .map_err(|e| format!("执行线程失败: {e}"))?
+}
+
+/// 校验路径（前端在提交前调用，给出即时反馈）。
+#[tauri::command]
+pub fn sk_appnet_validate(program: String) -> Result<serde_json::Value, String> {
+    let path = crate::appnet::real_path(&program);
+    let exists = std::path::Path::new(&path).is_file();
+    Ok(serde_json::json!({
+        "program": path,
+        "exists": exists,
+        "rule": crate::appnet::rule_name(&program),
+        "error": crate::appnet::validate_program(&program, exists).err().unwrap_or_default(),
+        "is_admin": crate::w32::is_elevated(),
+        "admin_msg": crate::appnet::ADMIN_MSG,
+    }))
+}
+
+/// 打开原生文件选择器选一个 exe（避免为一次选择引入 tauri-plugin-dialog 依赖）。
+#[tauri::command]
+pub async fn sk_appnet_pick_exe() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        crate::w32::pick_file_dialog(
+            "选择要控制的程序",
+            "可执行文件\0*.exe;*.bat;*.cmd;*.com\0所有文件\0*.*\0",
+        )
+    })
+    .await
+    .map_err(|e| format!("选择线程失败: {e}"))?
+}
+
 // ---------------- M4 工具箱：局域网设备 ----------------
 
 /// 扫描本机所在 /24 网段：并发 ping 唤醒邻居 → 读 ARP 表列出存活设备。

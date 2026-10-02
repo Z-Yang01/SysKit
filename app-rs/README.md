@@ -12,10 +12,10 @@ Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决�
 | M1 | 托盘 + 三热键 + 快捷粘贴闭环（GO/NO-GO 决策点） | ✅ 代码完成 / ⏳ **需真机复核** |
 | M2 | 遥测采样 + 概览/网络监控 + 多粒度流量/日报 | ✅ 数据层+界面完成 / ⏳ 待真机看曲线 |
 | M3 | 诊断与修复（netcheck 15 项 + 修复动作库） | ✅ **15/15 项检查 + 19/19 动作执行器** |
-| M4 | 工具箱（测速/端口/Hosts/DNS 计算/ping 路由/局域网/DNS 测速/应用联网） | 🚧 **Hosts + 端口/进程 + 局域网 + DNS/子网/ping·路由 + DNS 测速**已交付 |
+| M4 | 工具箱（测速/端口/Hosts/DNS 计算/ping 路由/局域网/DNS 测速/应用联网） | ✅ **全部 8 项已交付**（下载测速待 TLS，已如实标注） |
 | M5-M7 | 系统助手/密码库/收尾 | 待做 |
 
-门禁全绿（**333 例 Rust + 168 例前端**）。M1/M2 的**真机清单尚未执行**——
+门禁全绿（**363 例 Rust + 187 例前端**）。M1/M2 的**真机清单尚未执行**——
 按 `UNATTENDED.md` §3，托盘里可能跑着用户实例、且测试红线禁止真实 Win32 注入，
 因此 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」与
 「M2 真机复核清单」。
@@ -50,6 +50,33 @@ ping 复用 netcheck 的丢包率解析；tracert 逐跳解析。
 界面如实显示未接入原因与替代手段（「网络监控」页看实时速率），因为**一个假的速率
 数字比没有更糟**——用户会据此判断网络好坏。`sk_speedtest_status` 明确返回
 `available: false`，前端有专门测试锁住这一点。
+
+**应用联网**（`appnet.rs` + `ToolboxAppNet.tsx`）：用 Windows 防火墙出站规则按程序
+阻断联网，台账与 Python 版共享 `%APPDATA%\SysKit\appnet.json`。
+
+**跨版本身份契约（本模块最重要的约束）**：规则名 =
+`SysKit-AppNet-<sha1(norm_path(program))[:10]>`，**两版必须逐字节一致**，否则同一个
+exe 会被两个版本各建一条规则，用户在 `wf.msc` 里看到重复项，而"放行"只关掉其中一条
+——程序仍连不上网，用户却已被告知"已放行"。因此有两个**不可混用**的路径形态：
+- `norm_path`：**身份键**，小写 + 反斜杠，只用于比对与哈希（= Python `normcase(abspath)`）；
+- `real_path`：**下发给 netsh 的值**，保留原始大小写（防火墙不敏感，但把用户程序名
+  改成小写会让规则在 `wf.msc` 里显得像伪造的）。
+
+已用真实 Python 输出校准为锚点测试：`C:\Program Files\A\a.exe` → `5bd6cecf63`、
+`C:\Windows\notepad.exe` → `84a531d86f`、`C:\a.exe` → `c0bae2df43`。
+
+**三态展示，`drift` 不可省**：`on`（启用且动作=阻止）/ `off`（规则停用）/ `drift`
+（动作被外部改成"允许"）。用户把动作改成允许后 `Enabled` 仍是 `True`——只看 Enabled
+或只看台账 `blocked`，都会把**已经放行的程序报成"已禁止联网"**，对安全控制属实质性
+错报。前端 `isReallyBlocking` 一律以实际状态为准，并有专门测试锁住"台账 blocked=true
++ 状态 drift 时不得算在拦"。
+
+其余移植细节：`netsh add rule` **没有** `group`/`displayName` 参数（那是 PowerShell
+`New-NetFirewallRule` 的概念，带上必报"不是这个指令的有效参数"）；PS 批量查询脚本
+末尾必须 `exit 0`（`-Name` 里有名字不存在时 `powershell.exe` 即使输出正常也返回 1）；
+没有 `Get-NetFirewallRule` 哨兵时**退回 netsh 逐条查**，不能把"查不到"当成"规则不存在"。
+文件选择器用 Win32 `GetOpenFileNameW`（带 `OFN_NOCHANGEDIR`，避免对话框改掉进程 cwd
+而影响 `real_path` 的相对路径解析），不为一次选择引入 `tauri-plugin-dialog`。
 
 两条**用户数据保护护栏**原样移植（Python 注释里是损坏事故换来的）：
 - **BOM**：按 `utf-8-sig` 剥离——BOM 会污染首个 token，导致 IP 判定失败、
