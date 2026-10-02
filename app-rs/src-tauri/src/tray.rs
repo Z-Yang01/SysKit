@@ -106,7 +106,7 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("sk_tray")
         .icon(icon)
-        .tooltip("SysKit 系统工具箱 — 无网络连接")
+        .tooltip(base_tooltip("offline"))
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event: MenuEvent| on_menu(app, event.id().as_ref()))
@@ -161,6 +161,69 @@ pub fn flush_history() {
     hist::with(|h| h.flush_if_dirty());
 }
 
+/// 悬浮提示文本：`基础文案` + 可选实时速率行；与上一份相同则返回空串（= 无需更新）。
+///
+/// 去重是重点（对齐 Python `TrayHost._refresh_tip`）：遥测每秒回调一次，空闲时
+/// 速率文本压根没变，不去重就会每秒重挂一次原生提示（NIM_MODIFY 是跨进程 shell
+/// 调用，挂机一天就是 86400 次空转）。
+pub fn tooltip_text(base: &str, rate: Option<&str>, last: &str) -> String {
+    let candidate = match rate {
+        Some(r) if !r.is_empty() => format!("{base}\n{r}"),
+        _ => base.to_string(),
+    };
+    if candidate == last {
+        String::new()
+    } else {
+        candidate
+    }
+}
+
+/// 速率行文本（托盘 tooltip 用），对齐 Python `update_rate`。
+pub fn rate_line(down_bps: u64, up_bps: u64) -> String {
+    format!(
+        "↓ {}/s   ↑ {}/s",
+        crate::telemetry::human_bytes(down_bps as f64),
+        crate::telemetry::human_bytes(up_bps as f64)
+    )
+}
+
+/// 状态 → 基础提示文案（与 Python `TrayHost.set_state` 的 tips 表一致）。
+pub fn base_tooltip(state: &str) -> String {
+    let what = match state {
+        "ok" => "网络正常",
+        "no_net" => "已连接但无法上网",
+        "ncsi_false" => "NCSI 误报",
+        "no_internet" => "外网不可达",
+        "offline" => "无网络连接",
+        other => other,
+    };
+    format!("{} — {}", crate::paths::DISPLAY_NAME, what)
+}
+
+/// 按状态更新托盘图标与悬浮提示（由网络监控/M3 调用）。
+pub fn apply_state<R: Runtime>(app: &AppHandle<R>, state: &str) {
+    let Some(tray) = app.tray_by_id("sk_tray") else {
+        return;
+    };
+    let (rgba, size) = state_icon_rgba(state, 64);
+    let _ = tray.set_icon(Some(tauri::image::Image::new_owned(rgba, size, size)));
+    let _ = tray.set_tooltip(Some(base_tooltip(state)));
+}
+
+/// 更新实时速率悬浮提示（尊重 tray_rate_enabled 设置；去重后写入）。
+pub fn apply_rate<R: Runtime>(app: &AppHandle<R>, down_bps: u64, up_bps: u64, state: &str) {
+    if !crate::settings::get_bool("tray_rate_enabled") {
+        return;
+    }
+    let Some(tray) = app.tray_by_id("sk_tray") else {
+        return;
+    };
+    let text = tooltip_text(&base_tooltip(state), Some(&rate_line(down_bps, up_bps)), "");
+    if !text.is_empty() {
+        let _ = tray.set_tooltip(Some(text));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +264,53 @@ mod tests {
             assert_eq!(buf[top + 3], 0, "顶行必须透明（留边）");
             assert_eq!(buf[left + 3], 0, "左列必须透明（留边）");
         }
+    }
+
+    #[test]
+    fn tooltip_dedup_returns_empty_when_unchanged() {
+        let base = base_tooltip("ok");
+        let rate = rate_line(1024, 512);
+        let first = tooltip_text(&base, Some(&rate), "");
+        assert!(first.contains("网络正常"));
+        assert!(first.contains("↓ 1.0 KB/s"));
+        assert!(first.contains("↑ 512 B/s"));
+        assert_eq!(
+            tooltip_text(&base, Some(&rate), &first),
+            "",
+            "与上一份相同必须返回空串（否则每秒重挂原生提示）"
+        );
+        // 速率变了就要更新
+        let rate2 = rate_line(2048, 512);
+        assert!(!tooltip_text(&base, Some(&rate2), &first).is_empty());
+    }
+
+    #[test]
+    fn tooltip_without_rate_is_single_line() {
+        let base = base_tooltip("offline");
+        assert_eq!(tooltip_text(&base, None, ""), base);
+        assert!(!tooltip_text(&base, None, "").contains('\n'));
+        // 空速率串等同无速率
+        assert_eq!(tooltip_text(&base, Some(""), ""), base);
+    }
+
+    #[test]
+    fn base_tooltips_match_python_tips_table() {
+        assert!(base_tooltip("ok").ends_with("网络正常"));
+        assert!(base_tooltip("no_net").ends_with("已连接但无法上网"));
+        assert!(base_tooltip("ncsi_false").ends_with("NCSI 误报"));
+        assert!(base_tooltip("no_internet").ends_with("外网不可达"));
+        assert!(base_tooltip("offline").ends_with("无网络连接"));
+        assert!(
+            base_tooltip("自定义态").ends_with("自定义态"),
+            "未知状态原样显示"
+        );
+    }
+
+    #[test]
+    fn rate_line_formats_both_directions() {
+        assert_eq!(rate_line(0, 0), "↓ 0 B/s   ↑ 0 B/s");
+        let l = rate_line(1024 * 1024, 1024);
+        assert!(l.starts_with("↓ 1.0 MB/s"));
+        assert!(l.contains("↑ 1.0 KB/s"));
     }
 }

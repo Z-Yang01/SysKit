@@ -10,11 +10,23 @@ Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决�
 |---|------|------|
 | M0 | 脚手架 + 主题 token 奇偶校验 + 门禁 | ✅ |
 | M1 | 托盘 + 三热键 + 快捷粘贴闭环（GO/NO-GO 决策点） | ✅ 代码完成 / ⏳ **需真机复核** |
-| M2-M7 | 遥测/诊断修复/工具箱/系统助手/密码库/收尾 | 待做 |
+| M2 | 遥测采样 + 概览/网络监控 + 多粒度流量/日报 | ✅ 数据层+界面完成 / ⏳ 待真机看曲线 |
+| M3-M7 | 诊断修复/工具箱/系统助手/密码库/收尾 | 待做 |
 
-M1 的门禁全绿（78 例 Rust + 40 例前端），但**真机 8 靶清单尚未执行**——按
+门禁全绿（**145 例 Rust + 57 例前端**）。M1/M2 的**真机清单尚未执行**——按
 `UNATTENDED.md` §3，托盘里可能跑着用户实例、且测试红线禁止真实 Win32 注入，
-因此本里程碑的 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」。
+因此 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」与
+「M2 真机复核清单」。
+
+### M2 相对 Python 版的两处有意简化（不是漏做）
+
+- **WiFi 信号/SSID 暂用「未实现」占位**：Python 版每 5 秒起一次 `netsh wlan`
+  子进程。Rust 侧不引子进程（进程创建开销大且难测），改用 `wlanapi.dll`
+  （`WlanOpenHandle`/`WlanQueryInterface`）是正确做法——留待下一轮，届时
+  `rate_stats` 的 SSID 归因才真正启用（当前所有流量归「以太网/未知」桶，
+  **与 Python 未连接时的行为一致**，数据不丢）。
+- **Top 进程（系统页）未做**：属 M5 范围，且 `procs` 采样与 WiFi 一样是
+  「昂贵分组」，留到系统助手页一起接。
 
 ## 门禁（每里程碑必过）
 
@@ -50,10 +62,36 @@ app-rs/
 │  ├─ src/paths.rs           # 目录拓扑 + 便携模式 + 测试目录覆盖
 │  ├─ src/tray.rs            # 托盘（代码绘制状态色图标 + 菜单）
 │  ├─ src/input_panel.rs     # 两个无边框面板窗口 + 粘贴链序号守卫
+│  ├─ src/timefmt.rs         # 本地时间格式化（格式串集中，锁 JSON 键形态）
+│  ├─ src/rate_store.rs      # TrafficStore + EventStore（traffic/events.json 对齐）
+│  ├─ src/rate_stats.rs      # 多粒度流量桶 netstats_buckets.json（含整点归并）
+│  ├─ src/netstats.rs        # 日报聚合 + 多粒度序列（纯逻辑）
+│  ├─ src/telemetry.rs       # 1 秒采样（GetIfTable2/GetSystemTimes/内存/磁盘）
+│  ├─ src/telemetry_hub.rs   # 采样线程 + 共享状态 + sk://tick 事件
 │  ├─ src/commands.rs        # invoke 接口
 │  └─ capabilities/default.json  # 窗口能力（前端 show/hide/listen 必需）
 └─ check.ps1       # 门禁一条命令
 ```
+
+## M2 真机复核清单（数据正确性）
+
+M2 的自动化测试已锁住**格式与聚合口径**（与 Python 逐值比对），但「真机上数字
+对不对」只能人工看。启动后（同样先退出 Python 版）：
+
+| # | 靶 | 通过标准 |
+|---|-----|---------|
+| 1 | 速率合理性 | 概览页下行/上行随实际流量变化；**空闲时接近 0**（若恒为 0 或恒为某固定值，说明基线算错） |
+| 2 | 虚拟网卡不计入 | 用 Clash/VPN/Hyper-V 时，速率不应把隧道或虚拟交换机的转发量重复计入 |
+| 3 | CPU/内存 | 与任务管理器数值同量级（允许 1-2 秒采样相位差） |
+| 4 | 托盘速率 | tooltip 每秒刷新速率；**空闲时不闪**（去重生效） |
+| 5 | 多粒度切换 | 近 60 分钟/48 小时/30 天/12 月四个 Tab 都有柱子；切粒度不报错 |
+| 6 | 跨版本数据 | 先跑 Python 版产生流量 → 退出 → 跑 Rust 版：**柱状图能看到 Python 版写下的桶**（这是共用文件的硬证明） |
+| 7 | 日报 | 事件时间线在无事件时显示空态文案；有事件时按「时间 · 状态 · 说明」列出 |
+| 8 | 落盘 | 运行 ≥60 秒后退出，`%APPDATA%\SysKit\netstats_buckets.json` 的 mtime 已更新且 JSON 合法 |
+
+> 靶 6 是 M2 最有价值的一条：它同时验证 `traffic.json` / `events.json` /
+> `netstats_buckets.json` 三份文件的跨版本兼容。
+
 
 ## M1 真机复核清单（GO/NO-GO 判定，必须人工执行）
 

@@ -3170,6 +3170,7 @@ name = "syskit-rs"
 version = "1.2.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "image",
  "log",
  "serde",

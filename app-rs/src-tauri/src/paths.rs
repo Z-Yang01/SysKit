@@ -82,6 +82,21 @@ pub fn clipboard_files_dir() -> PathBuf {
     appdata_dir().join("clipboard_files")
 }
 
+/// `traffic.json` —— 按天上下行累计（TrafficStore）。
+pub fn traffic_file() -> PathBuf {
+    appdata_dir().join("traffic.json")
+}
+
+/// `events.json` —— 断网/恢复事件时间线（EventStore）。
+pub fn events_file() -> PathBuf {
+    appdata_dir().join("events.json")
+}
+
+/// `netstats_buckets.json` —— 多粒度流量桶（RateStatsStore）。
+pub fn netstats_file() -> PathBuf {
+    appdata_dir().join("netstats_buckets.json")
+}
+
 pub fn log_dir() -> PathBuf {
     localappdata_dir().join("logs")
 }

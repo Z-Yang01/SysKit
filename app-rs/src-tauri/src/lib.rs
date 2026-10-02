@@ -23,15 +23,21 @@ mod commands;
 mod hotkey;
 mod input;
 mod input_panel;
+mod netstats;
 mod paths;
+mod rate_stats;
+mod rate_store;
 mod secure_store;
 mod settings;
 mod stores;
+mod telemetry;
+mod telemetry_hub;
 mod test_support;
+mod timefmt;
 mod tray;
 mod w32;
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// 后端就绪后要一起处理的一次性维护：历史按天过期 + 图片载荷孤儿清扫。
 fn startup_maintenance() {
@@ -102,6 +108,10 @@ pub fn run() {
             input_panel::ensure_palette(&handle)?;
             startup_maintenance();
             start_hotkeys(&handle);
+            // M2：遥测采样线程（1 秒一拍，60 拍落盘一次）
+            let hub = telemetry_hub::Hub::new();
+            telemetry_hub::spawn(handle.clone(), hub.clone());
+            app.manage(hub);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -126,6 +136,14 @@ pub fn run() {
             commands::sk_recent_items,
             commands::sk_tray_ready,
             commands::sk_write_item,
+            commands::sk_tick,
+            commands::sk_stats_series,
+            commands::sk_known_ssids,
+            commands::sk_daily_report,
+            commands::sk_events,
+            commands::sk_record_event,
+            commands::sk_traffic_flush,
+            commands::sk_overview_init,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");
