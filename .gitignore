@@ -63,3 +63,6 @@ app-rs/node_modules/
 app-rs/dist/
 app-rs/src-tauri/target/
 app-rs/src-tauri/gen/schemas/
+
+# ===== 本机文件权限诊断产物（DSH 沙箱 ACL 修复备份，机器相关，不入库）=====
+.acl-recovery/

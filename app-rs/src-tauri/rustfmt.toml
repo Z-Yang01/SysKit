@@ -1,0 +1,3 @@
+# SysKit Rust 后端格式约定（门禁第 1 步 cargo fmt --check 依赖本文件）
+edition = "2021"
+max_width = 100
