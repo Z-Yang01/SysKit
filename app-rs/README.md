@@ -531,14 +531,25 @@ easyconnect/sangfor/nekoray/hysteria/utun 等）。VPN 护栏依赖它——**�
 1. **剪贴板图片捕获不完整**：能识别"剪贴板里有位图"并登记占位条目，但**不搬运像素**
    ——真正的位图捕获要解析 `CF_DIB`/`CF_DIBV5` 的位深、压缩方式与行序（bottom-up）。
    影响：复制图片后历史里有条目，但粘贴不回去原图。文本 / 文件 / HTML 是完整的。
-2. **剪贴板内容规则动作**（Python `cliprules.py`，79 行）：识别复制内容像什么
-   （URL / 颜色 / 路径 / 域名 / JSON / IP）并给出可执行动作（打开链接、DNS 查询、
-   ping、二维码等）。未移植，因此系统助手页的剪贴板历史**没有动作按钮**。
-3. `minimize_to_tray` 未接线（窗口关闭行为固定）。
-4. `sound_alert_enabled` 未接线（声音提醒未实现）。
-5. `clip_sensitive_ttl` 未接线：敏感标记本身生效（密码库复制不进历史），
+2. **二维码渲染未内置**：`url_qr` 动作已识别，但本版不代渲染——**也不静默调用第三方
+   二维码服务**（那等于把用户复制的链接发出去）。界面给出可复制地址，让用户自己选
+   信任的工具。要内置需引入二维码生成依赖（待定）。
+3. **IP 归属地查询不代查**：同上，避免静默把你的 IP 发给第三方服务。
+4. `minimize_to_tray` 未接线（窗口关闭行为固定）。
+5. `sound_alert_enabled` 未接线（声音提醒未实现）。
+6. `clip_sensitive_ttl` 未接线：敏感标记本身生效（密码库复制不进历史），
    但"到期自动清空剪贴板"的计时器未实现。
-6. `vault_autolock_min` / `vault_trust_min` 未接线（密码库数据层按要求未实现）。
+7. `vault_autolock_min` / `vault_trust_min` 未接线（密码库数据层按要求未实现）。
+
+**✅ 已闭环：剪贴板内容规则动作**（`cliprules.rs`，对应 Python `cliprules.py`）。
+识别 JSON / URL / 颜色 / Windows 路径 / IP / 域名并给出动作；系统助手页的剪贴板历史
+每条都有「动作」按钮，点开显示可用操作（打开链接、打开文件/定位、格式化 JSON 回写、
+ping、DNS 解析、色块）。两处真机细节照搬 Python：
+- **URL 必须排除 CJK 与全角标点**：中文语境里链接后常紧跟句号或全角括号，
+  不排除就会把标点抓进 URL，二维码/打开链接拿到错误地址；
+- **`exists()` 之前先做盘型预检**：失效网络盘上的 `exists()` 会阻塞数秒到数十秒，
+  而 `detect()` 在 UI 线程被调用（选中历史即触发）——一次卡顿就是界面冻结。
+  只对本地盘型（可移动/固定/光驱/RAM）探测。
 
 已接线（供对照）：`tray_rate_enabled`、`dark_mode`、`dns_preset`、`clipboard_max`、
 `clipboard_watch`、`clipboard_retain_days`、`clip_process_blacklist`、

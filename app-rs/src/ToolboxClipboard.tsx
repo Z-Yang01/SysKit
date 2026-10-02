@@ -37,6 +37,19 @@ import {
   type ClipRow,
   type ClipSummary,
 } from "./cliphistory";
+import {
+  actionColor,
+  actionHint,
+  actionsSummary,
+  formatColor,
+  isLightColor,
+  normalizeHex,
+  routeAction,
+  shouldShowActions,
+  summarizeResult,
+  type ClipAction,
+  type DetectResult,
+} from "./cliprules";
 
 export function ClipboardHistoryPanel() {
   const [rows, setRows] = useState<ClipRow[]>([]);
@@ -46,6 +59,13 @@ export function ClipboardHistoryPanel() {
   const [purgeDays, setPurgeDays] = useState(30);
   const [busy, setBusy] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // 内容规则动作：detected 是"当前展示的那一条"的检测结果
+  const [detecting, setDetecting] = useState(-1);
+  const [detected, setDetected] = useState<DetectResult | null>(null);
+  const [detectedFor, setDetectedFor] = useState(-1);
+  const [running, setRunning] = useState("");
+  const [qrOf, setQrOf] = useState("");
+  const [colorOf, setColorOf] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -59,6 +79,10 @@ export function ClipboardHistoryPanel() {
       setRows(list);
       setSummary(sum);
       setNowMs(Date.now());
+      // 列表刷新后旧的检测结果已不对应任何行，必须清掉——
+      // 否则用户会对着 A 条目的按钮操作 B 的内容
+      setDetected(null);
+      setDetectedFor(-1);
     } catch (e) {
       message.error(`读取剪贴板历史失败：${String(e)}`);
     }
@@ -120,6 +144,53 @@ export function ClipboardHistoryPanel() {
       message.error(String(e));
     }
   }, []);
+
+  /** 检测选中条目的可执行动作（后端识别，前端呈现）。 */
+  const detect = useCallback(async (row: ClipRow) => {
+    setDetecting(row.idx);
+    try {
+      setDetected(await invoke<DetectResult>("sk_clip_detect", { text: row.text }));
+      setDetectedFor(row.idx);
+    } catch (e) {
+      setDetected(null);
+      message.error(String(e));
+    } finally {
+      setDetecting(-1);
+    }
+  }, []);
+
+  /** 执行一个动作：前端路由的自行处理，其余交给后端。 */
+  const runAction = useCallback(
+    async (a: ClipAction) => {
+      const route = routeAction(a.id);
+      if (route === "unsupported") {
+        message.warning(`该动作尚未接入界面：${a.id}`);
+        return;
+      }
+      if (route === "frontend") {
+        if (a.id === "url_qr") {
+          setQrOf(a.arg);
+          return;
+        }
+        if (a.id === "color_show") {
+          setColorOf(a.arg);
+          return;
+        }
+        // ip_geo 需要外部服务，本版不代查（避免静默把 IP 发给第三方）
+        message.info("归属地查询需要联网查询第三方服务，本版不代查以免泄露你的 IP");
+        return;
+      }
+      setRunning(a.id);
+      try {
+        message.success(summarizeResult(await invoke<string>("sk_clip_action_run", { id: a.id, arg: a.arg })));
+      } catch (e) {
+        message.error(String(e));
+      } finally {
+        setRunning("");
+      }
+    },
+    [],
+  );
 
   const clearAll = useCallback(() => {
     const count = summary?.count ?? rows.length;
@@ -288,11 +359,110 @@ export function ClipboardHistoryPanel() {
                     <Button size="small" type="link" danger onClick={() => remove(r)}>
                       删除
                     </Button>
+                    {/* 内容规则动作：识别这段文本能做什么（URL/JSON/颜色/路径/IP/域名） */}
+                    <Button
+                      size="small"
+                      type="link"
+                      loading={detecting === r.idx}
+                      onClick={() => void detect(r)}
+                    >
+                      动作
+                    </Button>
                   </Space>
                 );
               },
             },
           ]}
+        />
+      )}
+
+      {detected && shouldShowActions(detected) && (
+        <Alert
+          type="info"
+          showIcon
+          message={`可执行动作 · ${actionsSummary(detected)}`}
+          description={
+            <Space wrap size={6}>
+              {detected.actions.map((a) => (
+                <Tooltip key={a.id} title={actionHint(a)}>
+                  <Button
+                    size="small"
+                    danger={actionColor(a.id) === "red"}
+                    type={actionColor(a.id) === "default" ? "default" : "primary"}
+                    loading={running === a.id}
+                    disabled={detectedFor !== -1 && !rows.some((x) => x.idx === detectedFor)}
+                    onClick={() => void runAction(a)}
+                  >
+                    {a.label}
+                  </Button>
+                </Tooltip>
+              ))}
+              <Button size="small" type="text" onClick={() => setDetected(null)}>
+                收起
+              </Button>
+            </Space>
+          }
+        />
+      )}
+
+      {qrOf && (
+        <Alert
+          type="success"
+          showIcon
+          message="二维码"
+          description={
+            <Space direction="vertical" size={6}>
+              {/* 不静默调用第三方二维码服务：那等于把用户复制的链接发出去。
+                  改为给出可复制地址，让用户自己选信任的工具。 */}
+              <Typography.Text copyable={{ text: qrOf }}>{qrOf}</Typography.Text>
+              <Typography.Text type="secondary" className="sk-hint">
+                本版未内置二维码渲染（需额外依赖）。可复制上面的地址到你信任的二维码工具生成
+                ——这样不会把你的链接发给第三方服务。
+              </Typography.Text>
+              <Button size="small" onClick={() => setQrOf("")}>
+                收起
+              </Button>
+            </Space>
+          }
+        />
+      )}
+
+      {colorOf && (
+        <Alert
+          type="success"
+          showIcon
+          message="色块"
+          description={
+            <Space direction="vertical" size={6}>
+              <div
+                style={{
+                  width: "100%",
+                  height: 64,
+                  borderRadius: 6,
+                  background: normalizeHex(colorOf) || "#000",
+                  border: "1px solid #8884",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: isLightColor(colorOf) ? "#000" : "#fff",
+                  fontFamily: "Consolas, monospace",
+                }}
+              >
+                {normalizeHex(colorOf) || colorOf}
+              </div>
+              <Space size={10} wrap>
+                <Typography.Text copyable={{ text: normalizeHex(colorOf) }} className="sk-hint">
+                  HEX: {normalizeHex(colorOf)}
+                </Typography.Text>
+                <Typography.Text copyable={{ text: formatColor(colorOf, "RGB") }} className="sk-hint">
+                  RGB: {formatColor(colorOf, "RGB")}
+                </Typography.Text>
+                <Button size="small" onClick={() => setColorOf("")}>
+                  收起
+                </Button>
+              </Space>
+            </Space>
+          }
         />
       )}
 
@@ -302,3 +472,6 @@ export function ClipboardHistoryPanel() {
     </Space>
   );
 }
+
+
+

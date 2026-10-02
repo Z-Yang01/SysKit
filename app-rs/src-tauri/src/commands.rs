@@ -985,6 +985,76 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- 剪贴板内容规则动作 ----------------
+
+/// 检测一段文本可以做什么（返回动作列表）。
+///
+/// **不执行任何动作**，只做识别——执行走 `sk_clip_action_run`，由用户显式点击。
+#[tauri::command]
+pub async fn sk_clip_detect(text: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // 路径存在性检查含磁盘 IO，所以在阻塞线程里做
+        let hits = crate::cliprules::detect_real(&text);
+        Ok(serde_json::json!({
+            "actions": hits,
+            "count": hits.len(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("检测线程失败: {e}"))?
+}
+
+/// 执行一个规则动作。
+///
+/// 只有这几类副作用：打开链接/文件/目录、复制格式化结果、发起 ping/DNS（只读）。
+/// **没有"删除""写入"类动作**——所以这里不需要确认对话框；
+/// 唯一有写操作的是 `json_format`，它把格式化结果**写回剪贴板**（不落盘）。
+#[tauri::command]
+pub async fn sk_clip_action_run(id: String, arg: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || match id.as_str() {
+        "url_open" => {
+            crate::w32::shell_open(&arg)?;
+            Ok(format!("已在浏览器打开 {arg}"))
+        }
+        "file_open" => {
+            crate::w32::shell_open(&arg)?;
+            Ok(format!("已打开 {arg}"))
+        }
+        "file_reveal" => {
+            // explorer /select 会打开父目录并选中该文件
+            crate::w32::open_folder_selecting(&arg)?;
+            Ok(format!("已在资源管理器中定位 {arg}"))
+        }
+        "json_format" => {
+            // 把格式化结果写回剪贴板（与剪贴板页的"复制"同语义）
+            if crate::w32::clipboard_set_text(&arg) {
+                Ok("已格式化并复制回剪贴板".to_string())
+            } else {
+                Err("写回剪贴板失败".to_string())
+            }
+        }
+        "url_qr" | "color_show" | "ip_geo" => Err(format!(
+            "{id} 需要界面渲染（二维码/色块/归属地），请在前端处理"
+        )),
+        "ip_ping" | "domain_ping" => {
+            let out = crate::w32::run_capture(&args(&["ping", "-n", "2", "-w", "1000", &arg]), 20)
+                .map_err(|e| format!("ping 无法执行: {e}"))?;
+            Ok(out.tail(0, 400))
+        }
+        "domain_dns" => {
+            let ips = crate::dnsclient::resolve_system(&arg, 4.0);
+            if ips.is_empty() {
+                Err(format!("{arg} 解析失败或无记录"))
+            } else {
+                Ok(format!("{arg} → {}", ips.join(", ")))
+            }
+        }
+        other => Err(format!("未知动作: {other}")),
+    })
+    .await
+    .map_err(|e| format!("动作线程失败: {e}"))?
+}
+
 // ---------------- 后台监控 / 自动修复 ----------------
 
 /// 监控状态（状态码、失败连击、已执行修复次数、最近梯度）。

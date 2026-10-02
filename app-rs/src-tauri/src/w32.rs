@@ -1311,6 +1311,39 @@ fn bcrypt_gcm(
     }
 }
 
+// ---------------- 盘符类型 ----------------
+
+/// 在资源管理器里打开父目录并**选中**该文件（`explorer /select,<path>`）。
+pub fn open_folder_selecting(path: &str) -> Result<(), String> {
+    // explorer 的 /select 需要完整路径且不能有额外引号包裹问题；
+    // 用 run_capture 走 PATH 解析（explorer 在 System32 下）
+    let out = run_capture(&["explorer".to_string(), format!("/select,{path}")], 15)
+        .map_err(|e| format!("explorer 无法执行: {e}"))?;
+    // explorer 对成功也常返回非 0（它把请求转给已有实例就退出），
+    // 所以**不能**用退出码判定，只要进程起来了就算成功
+    let _ = out;
+    Ok(())
+}
+
+/// 把纯文本写入剪贴板（`CF_UNICODETEXT`）。
+pub fn clipboard_set_text(text: &str) -> bool {
+    clipboard_set_std(CF_UNICODETEXT, &build_unicode_text(text))
+}
+/// 查询盘符根路径的类型（`GetDriveTypeW`）。
+///
+/// 返回值：0 未知 / 1 无根目录 / 2 可移动 / 3 固定 / 4 远程 / 5 光驱 / 6 RAM 盘。
+/// **用途是"该不该对路径做 `exists()` 探测"**：远程盘与未知类型上的 `exists()`
+/// 在失效网络映射下会阻塞数秒到数十秒，而调用方常在 UI 线程里。
+pub fn drive_type(root: &str) -> Option<u32> {
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    if root.is_empty() {
+        return None;
+    }
+    let w: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: w 以 NUL 结尾且在本调用内有效
+    Some(unsafe { GetDriveTypeW(windows::core::PCWSTR(w.as_ptr())) })
+}
+
 // ---------------- 标准剪贴板格式号 ----------------
 
 // windows crate 不导出这些 `CF_*` 常量（它们在 WinUser.h 里），所以按官方数值定义。

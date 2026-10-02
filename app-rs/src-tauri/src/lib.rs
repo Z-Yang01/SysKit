@@ -24,6 +24,7 @@ mod cleanup;
 mod clipboard_history;
 mod clipboard_watch;
 mod clipboard_write;
+mod cliprules;
 mod commands;
 mod disk;
 mod dnsclient;
@@ -232,6 +233,8 @@ pub fn run() {
             commands::sk_monitor_state,
             commands::sk_monitor_force_check,
             commands::sk_monitor_preview,
+            commands::sk_clip_detect,
+            commands::sk_clip_action_run,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");
