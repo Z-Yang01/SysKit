@@ -20,9 +20,11 @@
 mod clipboard_history;
 mod clipboard_write;
 mod commands;
+mod dnsclient;
 mod hotkey;
 mod input;
 mod input_panel;
+mod netcheck;
 mod netstats;
 mod paths;
 mod rate_stats;
@@ -150,6 +152,8 @@ pub fn run() {
             commands::sk_repair_plan,
             commands::sk_repair_run,
             commands::sk_log_event,
+            commands::sk_diag_run,
+            commands::sk_diag_one,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

@@ -381,6 +381,51 @@ pub fn sk_log_event(hub: State<'_, Arc<Hub>>, state: String, detail: String) {
     hub.record_event(&state, &detail);
 }
 
+/// 运行网络诊断（`quick=true` 跳过慢速外网探测，供监控轮询）。
+///
+/// 15 项检查里含 ping/HTTP/DNS 等秒级操作，必须放阻塞线程池，绝不能冻 UI。
+#[tauri::command]
+pub async fn sk_diag_run(quick: Option<bool>) -> serde_json::Value {
+    let quick = quick.unwrap_or(false);
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let results = crate::netcheck::run_all(quick);
+        let (verdict_code, verdict_text) = crate::netcheck::verdict(&results);
+        let counts = crate::netcheck::status_counts(&results);
+        (results, verdict_code, verdict_text, counts)
+    })
+    .await;
+    match outcome {
+        Ok((results, code, text, counts)) => serde_json::json!({
+            "results": results,
+            "verdict": code,
+            "verdict_text": text,
+            "counts": counts,
+            "quick": quick,
+        }),
+        Err(e) => serde_json::json!({
+            "results": [],
+            "verdict": "error",
+            "verdict_text": format!("诊断线程失败: {e}"),
+            "counts": {},
+            "quick": quick,
+        }),
+    }
+}
+
+/// 单项检查（前端逐项刷新用）。
+#[tauri::command]
+pub async fn sk_diag_one(id: String) -> Result<crate::netcheck::CheckResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::netcheck::all_checks()
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.run())
+            .ok_or_else(|| format!("未知检查项: {id}"))
+    })
+    .await
+    .map_err(|e| format!("诊断线程失败: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

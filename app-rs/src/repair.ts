@@ -146,3 +146,149 @@ export function summarizePlan(steps: ComboStep[]): {
   }
   return { run, skipped, needsReboot: steps.some((s) => s.risk === "aggressive") };
 }
+
+// ---------------- 诊断结果展示（netcheck 15 项） ----------------
+
+export type CheckStatus = "pass" | "warn" | "fail" | "skip" | "info";
+
+/** 后端 `sk_diag_run` 的单条结果。 */
+export interface CheckResult {
+  id: string;
+  name: string;
+  status: CheckStatus;
+  detail: string;
+  fix_ids: string[];
+}
+
+export interface DiagReport {
+  results: CheckResult[];
+  verdict: string;
+  verdict_text: string;
+  counts: Record<string, number>;
+  quick: boolean;
+}
+
+/** 状态中文标签。 */
+export function statusLabel(status: CheckStatus): string {
+  switch (status) {
+    case "pass":
+      return "通过";
+    case "warn":
+      return "警告";
+    case "fail":
+      return "失败";
+    case "skip":
+      return "跳过";
+    case "info":
+      return "提示";
+  }
+}
+
+/** 状态符号（与 Python STATUS_MARK 逐字一致）。 */
+export function statusMark(status: CheckStatus): string {
+  switch (status) {
+    case "pass":
+      return "√";
+    case "warn":
+      return "!";
+    case "fail":
+      return "×";
+    case "skip":
+      return "-";
+    case "info":
+      return "·";
+  }
+}
+
+/** 状态语义色 token（复用 --sk-*）。 */
+export function statusToken(status: CheckStatus): string {
+  switch (status) {
+    case "pass":
+      return "ok";
+    case "warn":
+      return "warn";
+    case "fail":
+      return "err";
+    default:
+      return "sub";
+  }
+}
+
+/** AntD Tag 颜色。 */
+export function statusTagColor(status: CheckStatus): string {
+  switch (status) {
+    case "pass":
+      return "green";
+    case "warn":
+      return "orange";
+    case "fail":
+      return "red";
+    case "skip":
+      return "default";
+    default:
+      return "blue";
+  }
+}
+
+/** 综合判定 → 语义色（normal 绿 / 误报与 DNS 橙 / 无外网红）。 */
+export function verdictColor(verdict: string): string {
+  switch (verdict) {
+    case "normal":
+      return "green";
+    case "ncsi_false_alarm":
+    case "dns_broken":
+      return "orange";
+    case "no_internet":
+      return "red";
+    default:
+      return "default";
+  }
+}
+
+/**
+ * 摘要计数：把后端 counts 补齐成固定顺序，缺失记 0。
+ *
+ * 固定顺序很重要——否则「0 个失败」会被隐藏，用户看不出"全过"还是"没跑"。
+ */
+export function summarizeDiag(report: DiagReport | null): {
+  status: CheckStatus;
+  label: string;
+  count: number;
+}[] {
+  const order: CheckStatus[] = ["pass", "warn", "fail", "skip", "info"];
+  const labels: Record<CheckStatus, string> = {
+    pass: "通过",
+    warn: "警告",
+    fail: "失败",
+    skip: "跳过",
+    info: "提示",
+  };
+  return order.map((s) => ({
+    status: s,
+    label: labels[s],
+    count: report?.counts?.[s] ?? 0,
+  }));
+}
+
+/** 按状态排序：失败 → 警告 → 提示 → 跳过 → 通过（让问题顶到上面）。 */
+export function sortBySeverity(results: CheckResult[]): CheckResult[] {
+  const rank: Record<CheckStatus, number> = {
+    fail: 0,
+    warn: 1,
+    info: 2,
+    skip: 3,
+    pass: 4,
+  };
+  return [...results].sort((a, b) => rank[a.status] - rank[b.status]);
+}
+
+/** 报告里是否有值得用户去点的修复建议。 */
+export function actionableFixes(report: DiagReport | null): string[] {
+  if (!report) return [];
+  const seen = new Set<string>();
+  for (const r of report.results) {
+    for (const id of r.fix_ids) seen.add(id);
+  }
+  return [...seen];
+}
+

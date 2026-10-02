@@ -27,6 +27,7 @@ import {
 } from "antd";
 
 import {
+  actionableFixes,
   confirmText,
   groupByRisk,
   needsConfirm,
@@ -34,14 +35,25 @@ import {
   riskLabel,
   riskToken,
   skipReason,
+  sortBySeverity,
+  statusMark,
+  statusTagColor,
+  statusToken,
+  summarizeDiag,
   summarizePlan,
+  verdictColor,
   willBeSkipped,
+  type CheckResult,
+  type CheckStatus,
   type Combo,
   type ComboStep,
+  type DiagReport,
   type RepairAction,
   type RepairList,
   type RepairOutcome,
 } from "./repair";
+
+import { statusLabel } from "./repair";
 
 export function Diagnose() {
   const [data, setData] = useState<RepairList | null>(null);
@@ -49,6 +61,8 @@ export function Diagnose() {
   const [outcomes, setOutcomes] = useState<Record<string, RepairOutcome>>({});
   const [paramValues, setParamValues] = useState<Record<string, Record<string, string>>>({});
   const [plan, setPlan] = useState<{ key: string; steps: ComboStep[] } | null>(null);
+  const [report, setReport] = useState<DiagReport | null>(null);
+  const [diagBusy, setDiagBusy] = useState<"" | "quick" | "full">("");
 
   const load = useCallback(async () => {
     try {
@@ -63,6 +77,21 @@ export function Diagnose() {
   }, [load]);
 
   const isAdmin = data?.is_admin ?? false;
+
+  /** 运行诊断（quick=true 跳过慢速外网探测）。 */
+  const runDiag = useCallback(async (quick: boolean) => {
+    setDiagBusy(quick ? "quick" : "full");
+    try {
+      const r = await invoke<DiagReport>("sk_diag_run", { quick });
+      setReport(r);
+      const lvl = r.verdict === "normal" ? "success" : "warning";
+      message[lvl](r.verdict_text);
+    } catch (e) {
+      message.error(`诊断失败：${String(e)}`);
+    } finally {
+      setDiagBusy("");
+    }
+  }, []);
 
   /** 执行一个动作（改配置/强力类先确认）。 */
   const run = useCallback(
@@ -213,12 +242,101 @@ export function Diagnose() {
         size="small"
         className="sk-card"
         title="网络诊断"
-        extra={<Tag color="blue">M3 下一步</Tag>}
+        extra={
+          <Space>
+            <Button
+              size="small"
+              onClick={() => void runDiag(true)}
+              loading={diagBusy === "quick"}
+            >
+              快速检测
+            </Button>
+            <Button
+              type="primary"
+              size="small"
+              onClick={() => void runDiag(false)}
+              loading={diagBusy === "full"}
+            >
+              完整检测
+            </Button>
+          </Space>
+        }
       >
-        <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="netcheck 15 项检查（NlaSvc / 静态 DNS / 网关 / DNS 对比 / NCSI / 代理 / 路由 / IPv6 / WLAN …）尚未移植到 Rust；本轮先交付修复动作库与管理员门禁。"
-        />
+        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+          {report ? (
+            <>
+              <Space wrap>
+                <Tag color={verdictColor(report.verdict)}>{report.verdict_text}</Tag>
+                {summarizeDiag(report).map((s) => (
+                  <Tag key={s.status} color={statusTagColor(s.status)}>
+                    {s.label} {s.count}
+                  </Tag>
+                ))}
+                <span className="sk-hint">
+                  {report.quick ? "快速检测（跳过慢速项）" : "完整检测"} · 共{" "}
+                  {report.results.length} 项
+                </span>
+              </Space>
+
+              {actionableFixes(report).length > 0 && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={`诊断建议修复：${actionableFixes(report).join("、")}（可在下方对应动作里执行）`}
+                />
+              )}
+
+              <Table<CheckResult>
+                size="small"
+                rowKey="id"
+                pagination={false}
+                dataSource={sortBySeverity(report.results)}
+                columns={[
+                  {
+                    title: "",
+                    dataIndex: "status",
+                    width: 46,
+                    render: (s: CheckStatus) => (
+                      <span style={{ color: `var(--sk-${statusToken(s)})`, fontWeight: 600 }}>
+                        {statusMark(s)}
+                      </span>
+                    ),
+                  },
+                  { title: "检查项", dataIndex: "name" },
+                  {
+                    title: "状态",
+                    dataIndex: "status",
+                    width: 90,
+                    render: (s: CheckStatus) => (
+                      <Tag color={statusTagColor(s)}>{statusLabel(s)}</Tag>
+                    ),
+                  },
+                  {
+                    title: "详情",
+                    dataIndex: "detail",
+                    render: (v: string, row) => (
+                      <Space direction="vertical" size={2}>
+                        <span className="sk-hint">{v}</span>
+                        {row.fix_ids.length > 0 && (
+                          <span className="sk-hint">建议动作：{row.fix_ids.join("、")}</span>
+                        )}
+                      </Space>
+                    ),
+                  },
+                ]}
+              />
+            </>
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                diagBusy
+                  ? "正在检测…（含 ping / HTTP / DNS 查询，完整检测约需数秒）"
+                  : "尚未检测。点「完整检测」运行 15 项网络检查——其中 5 项依赖网卡/路由采集，Rust 版尚未接入，会如实显示为「跳过」而不是伪造通过。"
+              }
+            />
+          )}
+        </Space>
       </Card>
 
       {groups.map((g) => (

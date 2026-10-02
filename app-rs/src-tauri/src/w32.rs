@@ -6,6 +6,7 @@
 //! - 修饰键释放顺序固定 SHIFT→CONTROL→MENU→LWIN→RWIN，一次调用；
 //! - 剪贴板一律 UTF-16/原始字节写入，禁止任何 ANSI 窄字符路径。
 
+use std::collections::BTreeMap;
 use windows::core::HSTRING;
 use windows::Win32::Foundation::{GlobalFree, LocalFree, HANDLE, HGLOBAL, HLOCAL, HWND};
 use windows::Win32::Security::Cryptography::{
@@ -15,6 +16,8 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+
+use windows::Win32::System::Registry::REG_VALUE_TYPE;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, SendInput, UnregisterHotKey, HOT_KEY_MODIFIERS, INPUT, INPUT_0, INPUT_KEYBOARD,
@@ -512,6 +515,231 @@ pub fn resolve_executable(name: &str) -> Option<String> {
 /// 沙箱下会被拒（与 `spawn EPERM` 同源）；文件重定向只依赖 CreateFile，
 /// 任何模式下都成立。代价是一次临时文件往返——修复动作都是秒级操作，可接受。
 ///
+/// 读取注册表值（字符串 / DWORD / 多字符串 / 二进制）；键或值不存在返回 None。
+///
+/// 对应 Python `winregread.value(path, name, default)`。路径形如
+/// `HKLM\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet`。
+pub fn reg_value(path: &str, name: &str) -> Option<RegValue> {
+    let hkey = reg_open(path)?;
+    let out = reg_query(hkey, name);
+    unsafe {
+        let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+    }
+    out
+}
+
+/// 枚举一个键下的全部值（对应 Python `winregread.values(path)`）；失败返回空表。
+pub fn reg_values(path: &str) -> BTreeMap<String, RegValue> {
+    use windows::Win32::System::Registry::{RegEnumValueW, RegQueryInfoKeyW};
+    let mut out = BTreeMap::new();
+    let Some(hkey) = reg_open(path) else {
+        return out;
+    };
+    unsafe {
+        let mut subkeys = 0u32;
+        let mut values = 0u32;
+        let mut max_name = 0u32;
+        let mut max_data = 0u32;
+        if RegQueryInfoKeyW(
+            hkey,
+            None,
+            None,
+            None,
+            Some(&mut subkeys),
+            None,
+            None,
+            Some(&mut values),
+            Some(&mut max_name),
+            Some(&mut max_data),
+            None,
+            None,
+        ) != windows::Win32::Foundation::WIN32_ERROR(0)
+        {
+            let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+            return out;
+        }
+        let name_cap = (max_name + 2) as usize;
+        let data_cap = (max_data + 8) as usize;
+        for i in 0..values {
+            let mut name_buf = vec![0u16; name_cap];
+            let mut name_len = name_cap as u32;
+            let mut ty = REG_VALUE_TYPE(0);
+            let mut data = vec![0u8; data_cap];
+            let mut data_len = data_cap as u32;
+            let rc = RegEnumValueW(
+                hkey,
+                i,
+                Some(windows::core::PWSTR(name_buf.as_mut_ptr())),
+                &mut name_len,
+                None,
+                Some(&mut ty as *mut REG_VALUE_TYPE as *mut u32),
+                Some(data.as_mut_ptr()),
+                Some(&mut data_len),
+            );
+            if rc != windows::Win32::Foundation::WIN32_ERROR(0) {
+                continue;
+            }
+            let key = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+            if let Some(v) = decode_reg_value(ty, &data[..data_len as usize]) {
+                out.insert(key, v);
+            }
+        }
+        let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+    }
+    out
+}
+
+/// 注册表值（保留类型，便于与默认值做字符串比对——Python 侧也是 `str(got) != str(want)`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegValue {
+    Dword(u32),
+    Str(String),
+    MultiStr(Vec<String>),
+    Binary(Vec<u8>),
+}
+
+impl RegValue {
+    /// 与 Python `str(value)` 等价的展示形态（比对默认值时用）。
+    pub fn as_compare_str(&self) -> String {
+        match self {
+            RegValue::Dword(n) => n.to_string(),
+            RegValue::Str(s) => s.clone(),
+            RegValue::MultiStr(v) => v.join(","),
+            RegValue::Binary(b) => b.iter().map(|x| format!("{x:02x}")).collect(),
+        }
+    }
+
+    pub fn as_u32(&self) -> Option<u32> {
+        match self {
+            RegValue::Dword(n) => Some(*n),
+            RegValue::Str(s) => s.trim().parse::<u32>().ok(),
+            _ => None,
+        }
+    }
+}
+
+fn reg_open(path: &str) -> Option<windows::Win32::System::Registry::HKEY> {
+    use windows::Win32::System::Registry::{
+        RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY,
+    };
+    let (root, sub) = split_reg_path(path)?;
+    let hkey = match root {
+        "HKLM" | "HKEY_LOCAL_MACHINE" => HKEY_LOCAL_MACHINE,
+        "HKCU" | "HKEY_CURRENT_USER" => HKEY_CURRENT_USER,
+        _ => return None,
+    };
+    let mut out = HKEY(std::ptr::null_mut());
+    // WOW64_64KEY：SysKit 是 64 位进程，显式读 64 位视图，避免被重定向到 Wow6432Node
+    let rc = unsafe {
+        RegOpenKeyExW(
+            hkey,
+            &HSTRING::from(sub),
+            Some(0),
+            KEY_READ | KEY_WOW64_64KEY,
+            &mut out,
+        )
+    };
+    (rc == windows::Win32::Foundation::WIN32_ERROR(0)).then_some(out)
+}
+
+fn split_reg_path(path: &str) -> Option<(&str, &str)> {
+    let mut it = path.splitn(2, '\\');
+    let root = it.next()?;
+    let sub = it.next().unwrap_or("");
+    (!root.is_empty()).then_some((root, sub))
+}
+
+fn reg_query(hkey: windows::Win32::System::Registry::HKEY, name: &str) -> Option<RegValue> {
+    use windows::Win32::System::Registry::{RegQueryValueExW, REG_VALUE_TYPE};
+    let mut ty = REG_VALUE_TYPE(0);
+    let mut len = 0u32;
+    let name_h = HSTRING::from(name);
+    let rc = unsafe { RegQueryValueExW(hkey, &name_h, None, Some(&mut ty), None, Some(&mut len)) };
+    if rc != windows::Win32::Foundation::WIN32_ERROR(0) || len == 0 {
+        // 长度为 0 的合法值（空字符串）也要能取到：再走一次带缓冲的调用
+        let mut buf = [0u8; 4];
+        let mut l = buf.len() as u32;
+        let rc2 = unsafe {
+            RegQueryValueExW(
+                hkey,
+                &name_h,
+                None,
+                Some(&mut ty),
+                Some(buf.as_mut_ptr()),
+                Some(&mut l),
+            )
+        };
+        if rc2 != windows::Win32::Foundation::WIN32_ERROR(0) {
+            return None;
+        }
+        return decode_reg_value(ty, &buf[..l as usize]);
+    }
+    let mut buf = vec![0u8; len as usize + 2];
+    let mut l = buf.len() as u32;
+    let rc2 = unsafe {
+        RegQueryValueExW(
+            hkey,
+            &name_h,
+            None,
+            Some(&mut ty),
+            Some(buf.as_mut_ptr()),
+            Some(&mut l),
+        )
+    };
+    if rc2 != windows::Win32::Foundation::WIN32_ERROR(0) {
+        return None;
+    }
+    decode_reg_value(ty, &buf[..l as usize])
+}
+
+fn decode_reg_value(
+    ty: windows::Win32::System::Registry::REG_VALUE_TYPE,
+    data: &[u8],
+) -> Option<RegValue> {
+    use windows::Win32::System::Registry::{REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_SZ};
+    if ty == REG_DWORD {
+        if data.len() < 4 {
+            return None;
+        }
+        return Some(RegValue::Dword(u32::from_le_bytes([
+            data[0], data[1], data[2], data[3],
+        ])));
+    }
+    if ty == REG_SZ || ty == REG_EXPAND_SZ {
+        return Some(RegValue::Str(utf16_bytes_to_string(data)));
+    }
+    if ty == REG_MULTI_SZ {
+        let units: Vec<u16> = data
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let mut items = Vec::new();
+        let mut cur = Vec::new();
+        for u in units {
+            if u == 0 {
+                if cur.is_empty() {
+                    break;
+                }
+                items.push(String::from_utf16_lossy(&cur));
+                cur.clear();
+            } else {
+                cur.push(u);
+            }
+        }
+        return Some(RegValue::MultiStr(items));
+    }
+    Some(RegValue::Binary(data.to_vec()))
+}
+
+fn utf16_bytes_to_string(data: &[u8]) -> String {
+    let units: Vec<u16> = data
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let end = units.iter().position(|c| *c == 0).unwrap_or(units.len());
+    String::from_utf16_lossy(&units[..end])
+}
+
 /// 当前进程是否以管理员（提升）身份运行。
 ///
 /// 对应 Python `admin.is_admin()`：取令牌的 TokenElevation 判断。修复动作里

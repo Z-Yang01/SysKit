@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   RISK_ORDER,
+  actionableFixes,
   confirmText,
   groupByRisk,
   needsConfirm,
@@ -15,9 +16,18 @@ import {
   riskLabel,
   riskToken,
   skipReason,
+  sortBySeverity,
+  statusLabel,
+  statusMark,
+  statusTagColor,
+  statusToken,
+  summarizeDiag,
   summarizePlan,
+  verdictColor,
   willBeSkipped,
+  type CheckResult,
   type ComboStep,
+  type DiagReport,
   type RepairAction,
 } from "../src/repair";
 
@@ -168,5 +178,111 @@ describe("组合计划摘要", () => {
 
   it("空计划全 0", () => {
     expect(summarizePlan([])).toEqual({ run: 0, skipped: 0, needsReboot: false });
+  });
+});
+
+// ---------------- 诊断结果展示 ----------------
+
+function check(over: Partial<CheckResult> = {}): CheckResult {
+  return {
+    id: "real_conn",
+    name: "真实连通性",
+    status: "pass",
+    detail: "204探测:OK",
+    fix_ids: [],
+    ...over,
+  };
+}
+
+function report(over: Partial<DiagReport> = {}): DiagReport {
+  return {
+    results: [check()],
+    verdict: "normal",
+    verdict_text: "网络正常",
+    counts: { pass: 1 },
+    quick: false,
+    ...over,
+  };
+}
+
+describe("诊断状态展示", () => {
+  it("状态符号与 Python STATUS_MARK 逐字一致", () => {
+    expect(statusMark("pass")).toBe("√");
+    expect(statusMark("warn")).toBe("!");
+    expect(statusMark("fail")).toBe("×");
+    expect(statusMark("skip")).toBe("-");
+    expect(statusMark("info")).toBe("·");
+  });
+
+  it("状态标签与配色", () => {
+    expect(statusLabel("pass")).toBe("通过");
+    expect(statusLabel("skip")).toBe("跳过");
+    expect(statusToken("fail")).toBe("err");
+    expect(statusTagColor("pass")).toBe("green");
+    expect(statusTagColor("skip")).toBe("default");
+  });
+
+  it("综合判定配色区分三档", () => {
+    expect(verdictColor("normal")).toBe("green");
+    expect(verdictColor("ncsi_false_alarm")).toBe("orange");
+    expect(verdictColor("dns_broken")).toBe("orange");
+    expect(verdictColor("no_internet")).toBe("red");
+    expect(verdictColor("其他")).toBe("default");
+  });
+});
+
+describe("诊断摘要", () => {
+  it("固定顺序输出五档，缺失记 0（0 也要显示）", () => {
+    const s = summarizeDiag(report({ counts: { pass: 3, fail: 1 } }));
+    expect(s.map((x) => x.status)).toEqual(["pass", "warn", "fail", "skip", "info"]);
+    expect(s.find((x) => x.status === "pass")?.count).toBe(3);
+    expect(s.find((x) => x.status === "fail")?.count).toBe(1);
+    expect(s.find((x) => x.status === "skip")?.count).toBe(0);
+  });
+
+  it("空报告全 0 且不炸", () => {
+    const s = summarizeDiag(null);
+    expect(s).toHaveLength(5);
+    expect(s.every((x) => x.count === 0)).toBe(true);
+  });
+});
+
+describe("按严重度排序", () => {
+  it("失败 → 警告 → 提示 → 跳过 → 通过", () => {
+    const sorted = sortBySeverity([
+      check({ id: "a", status: "pass" }),
+      check({ id: "b", status: "skip" }),
+      check({ id: "c", status: "fail" }),
+      check({ id: "d", status: "info" }),
+      check({ id: "e", status: "warn" }),
+    ]);
+    expect(sorted.map((r) => r.status)).toEqual(["fail", "warn", "info", "skip", "pass"]);
+  });
+
+  it("是纯函数：不改原数组", () => {
+    const orig = [check({ id: "a", status: "pass" }), check({ id: "b", status: "fail" })];
+    sortBySeverity(orig);
+    expect(orig.map((r) => r.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("可执行修复建议", () => {
+  it("汇总去重后返回", () => {
+    const r = report({
+      results: [
+        check({ id: "a", status: "fail", fix_ids: ["flush_dns", "dns_auto"] }),
+        check({ id: "b", status: "warn", fix_ids: ["flush_dns"] }),
+        check({ id: "c", status: "pass", fix_ids: [] }),
+      ],
+    });
+    const fixes = actionableFixes(r);
+    expect(fixes).toHaveLength(2);
+    expect(fixes).toContain("flush_dns");
+    expect(fixes).toContain("dns_auto");
+  });
+
+  it("空报告返回空数组", () => {
+    expect(actionableFixes(null)).toEqual([]);
+    expect(actionableFixes(report({ results: [] }))).toEqual([]);
   });
 });
