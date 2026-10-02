@@ -11,15 +11,15 @@ Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决�
 | M0 | 脚手架 + 主题 token 奇偶校验 + 门禁 | ✅ |
 | M1 | 托盘 + 三热键 + 快捷粘贴闭环（GO/NO-GO 决策点） | ✅ 代码完成 / ⏳ **需真机复核** |
 | M2 | 遥测采样 + 概览/网络监控 + 多粒度流量/日报 | ✅ 数据层+界面完成 / ⏳ 待真机看曲线 |
-| M3 | 诊断与修复（netcheck 15 项 + 修复动作库） | 🚧 动作库 + 10/15 项检查已交付；5 项待 snapshot |
+| M3 | 诊断与修复（netcheck 15 项 + 修复动作库） | ✅ **15/15 项检查 + 23 项动作分级** / ⏳ 13 项动作执行器待接 |
 | M4-M7 | 工具箱/系统助手/密码库/收尾 | 待做 |
 
-门禁全绿（**219 例 Rust + 84 例前端**）。M1/M2 的**真机清单尚未执行**——按
+门禁全绿（**233 例 Rust + 84 例前端**）。M1/M2 的**真机清单尚未执行**——按
 `UNATTENDED.md` §3，托盘里可能跑着用户实例、且测试红线禁止真实 Win32 注入，
 因此 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」与
 「M2 真机复核清单」。
 
-### M3 本批交付范围（诚实边界）
+### M3 交付状态（诚实边界）
 
 **修复动作库**：19 项（元数据与 Python `ACTION_IDS` 逐项对齐）+ 3 个组合 +
 管理员门禁 + 前端分级界面。执行器接了安全/可反复执行的一批（`flush_dns`、
@@ -27,24 +27,24 @@ Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决�
 `ipstack_reset`）；**13 项需管理员/注册表/网卡配置的动作显式返回「尚未接入」**
 （前端标 warning 而非 error），有专门单测锁住「未接入绝不返回成功」。
 
-**网络诊断 15 项**：`ALL_CHECKS` 顺序、名称、quick 跳过集合均与 Python 逐项对齐。
-- **已实现 10 项**：`nlasvc`、`proxy`、`gateway`、`dns_compare`、`dns_pollution`、
-  `ncsi_probe`、`real_conn`、`ncsi_reg`、`services`（+ 注册表服务枚举辅助）。
-- **5 项依赖 `snapshot.py`**（全量 PowerShell 采集）**尚未移植**：`persistent_route`、
-  `static_dns`、`routes`、`ipv6`、`wlan`。它们返回 **`skip` + 「尚未接入」说明**，
-  并在测试里被断言「不许伪造 pass」——诊断页的假绿勾比留白危险得多。
+**网络诊断 15 项：全部实现**（`ALL_CHECKS` 顺序、名称、quick 跳过集合与
+Python 逐项对齐）。为支持依赖网卡/路由的 5 项，新增 `snapshot.rs` 采集层：
+`Get-NetAdapter` / `Get-NetIPAddress` / `Get-NetRoute` / `Get-NetIPInterface` /
+`Get-DnsClientServerAddress` / `Get-NetIPConfiguration` 一次采回 JSON，
+**解析全部是 Rust 原生纯函数**（含 `ifMetrics` 驼峰键、按 ifIndex 归并、
+CIDR 换算）；持久路由走注册表 `Tcpip\Parameters\PersistentRoutes`（权威来源，
+不必解析本地化 `route print`）。全部 15 项**一次快照复用**，不重复起 PowerShell。
 
-**两处相对 Python 的降级（已在代码与界面标注，不是隐藏缺陷）**：
-- **HTTPS 只验证 TCP 可达**（Rust 标准库无 TLS）。`real_conn` 的详情会明确写
-  「TCP可达(未校验证书)」，不会把「未验证」写成「已验证」。
-- **`ping` 走 `ping.exe`** 而非 `IcmpSendEcho`（后者是 M4 工具箱的事），
-  丢包率解析同时认中英输出。
+**两处相对 Python 的降级（代码与界面都标注）**：
+- **HTTPS 只验证 TCP 可达**（Rust 标准库无 TLS）。`real_conn` 详情明确写
+  「TCP可达(未校验证书)」，不把「未验证」写成「已验证」。
+- **`ping` 走 `ping.exe`** 而非 `IcmpSendEcho`（后者属 M4 工具箱）。
 
-**新增自研 DNS 客户端**（`dnsclient.rs`，对应 Python `dnsquery.py`）：
-QNAME 编码 / 报文组装 / 应答解析（含指针压缩、TC=1、RCODE、多 Question 偏移）
-全部为纯函数并逐项断言；超时重发 3 次（家庭路由器 1~2% 偶发丢包曾被单发实现
-误判为「系统 DNS 故障」）；`resolve_system` 用 daemon 语义线程 + join 限时，
-系统 DNS 挂死时不拖住退出。
+**测试里逮到的两个自己的错（都是静默失败型）**：
+1. `RawRoot` 漏了 `#[serde(rename_all = "camelCase")]` —— serde 把不认识的键
+   **静默**丢进 default，接口跃点表恒为空且不报错。
+2. `if_metrics` 的填充顺序排在 routes 之后 → `if_metric` 恒为 0。
+   两处都是「结果看起来正常但数值全错」，靠断言具体数值才暴露。
 
 ### M2 相对 Python 版的两处有意简化（不是漏做）
 
@@ -96,6 +96,9 @@ app-rs/
 │  ├─ src/netstats.rs        # 日报聚合 + 多粒度序列（纯逻辑）
 │  ├─ src/telemetry.rs       # 1 秒采样（GetIfTable2/GetSystemTimes/内存/磁盘）
 │  ├─ src/telemetry_hub.rs   # 采样线程 + 共享状态 + sk://tick 事件
+│  ├─ src/dnsclient.rs       # 自研 UDP DNS 客户端（线格式纯函数 + 超时重发）
+│  ├─ src/netcheck.rs        # 15 项网络诊断 + verdict 综合判定
+│  ├─ src/snapshot.rs        # 网卡/路由/服务/WLAN 快照（PowerShell JSON + 原生解析）
 │  ├─ src/repairs.rs         # 修复动作库（19 项分级 + 组合 + 管理员门禁）
 │  ├─ src/commands.rs        # invoke 接口
 │  └─ capabilities/default.json  # 窗口能力（前端 show/hide/listen 必需）

@@ -331,8 +331,8 @@ export function Diagnose() {
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               description={
                 diagBusy
-                  ? "正在检测…（含 ping / HTTP / DNS 查询，完整检测约需数秒）"
-                  : "尚未检测。点「完整检测」运行 15 项网络检查——其中 5 项依赖网卡/路由采集，Rust 版尚未接入，会如实显示为「跳过」而不是伪造通过。"
+                  ? "正在检测…（含 ping / HTTP / DNS 查询与网卡采集，完整检测约需数秒）"
+                  : "尚未检测。点「完整检测」运行全部 15 项网络检查（NlaSvc / 持久路由 / 静态 DNS / 代理 / 网关 / DNS 对比 / NCSI / 服务 / 路由 / IPv6 / WLAN …）；「快速检测」跳过 5 项慢速项。"
               }
             />
           )}

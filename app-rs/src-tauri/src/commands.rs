@@ -419,7 +419,7 @@ pub async fn sk_diag_one(id: String) -> Result<crate::netcheck::CheckResult, Str
         crate::netcheck::all_checks()
             .iter()
             .find(|c| c.id == id)
-            .map(|c| c.run())
+            .map(|c| c.run(&crate::snapshot::take()))
             .ok_or_else(|| format!("未知检查项: {id}"))
     })
     .await

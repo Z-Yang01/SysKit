@@ -32,6 +32,7 @@ mod rate_store;
 mod repairs;
 mod secure_store;
 mod settings;
+mod snapshot;
 mod stores;
 mod telemetry;
 mod telemetry_hub;

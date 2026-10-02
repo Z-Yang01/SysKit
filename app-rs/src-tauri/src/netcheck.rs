@@ -19,6 +19,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::dnsclient;
+use crate::snapshot::{RouteEntry, Snapshot};
 use crate::w32::{self, RegValue};
 
 pub const PASS: &str = "pass";
@@ -133,6 +134,17 @@ pub fn bogus_ips() -> Vec<&'static str> {
         "208.67.220.220",
     ]
 }
+
+/// 国内不可靠、常被列为"地雷"的国外 DNS（与 config.FOREIGN_DNS_BLACKLIST 逐项一致）。
+pub const FOREIGN_DNS_BLACKLIST: [&str; 7] = [
+    "8.8.8.8",
+    "8.8.4.4",
+    "1.1.1.1",
+    "1.0.0.1",
+    "9.9.9.9",
+    "208.67.222.222",
+    "208.67.220.220",
+];
 
 // ---------------- HTTP 探测（直连，不走系统代理） ----------------
 
@@ -478,58 +490,72 @@ pub fn chk_services() -> CheckResult {
 
 /// 网关连通（id=gateway）。
 ///
-/// Snapshot 缺失下退化为「查默认网关 IP 再 ping」，等价性覆盖 Python 检查的主旨。
-pub fn chk_gateway() -> CheckResult {
+/// 判定对象是「已连接的物理网卡各自的默认网关」（与 Python 一致），
+/// 无物理网卡时返回 skip。
+pub fn chk_gateway(snap: &Snapshot) -> CheckResult {
     let mut r = CheckResult::new("gateway", "网关连通（Ping 默认网关 ×3）", SKIP);
-    let gw = default_gateway_v4();
-    let Some(gw) = gw else {
-        r.detail = "未找到默认网关（可能无网络连接）".to_string();
+    let ups = snap.physical_up_adapters();
+    if ups.is_empty() {
+        r.detail = "无已连接的物理网卡，跳过".to_string();
         return r;
-    };
-    let out = w32::run_capture(
-        &[
-            "ping".into(),
-            "-n".into(),
-            "3".into(),
-            "-w".into(),
-            "1000".into(),
-            gw.clone(),
-        ],
-        15,
-    );
-    match out {
-        Ok(o) => {
-            let loss = ping_loss(&o.combined()).unwrap_or(0);
-            if o.ok && loss == 0 {
-                r.status = PASS;
-                r.detail = format!("网关 {gw} 3 次全通");
-            } else if o.ok && loss < 100 {
-                r.status = WARN;
-                r.detail = format!("网关 {gw} 丢包 {loss}%");
-            } else {
-                r.status = FAIL;
-                r.detail = format!("网关 {gw} 不可达（丢包 {loss}%）");
-            }
-        }
-        Err(e) => {
-            r.status = FAIL;
-            r.detail = format!("ping 执行失败: {e}");
+    }
+    let mut lines = Vec::new();
+    let mut any_ok = false;
+    let mut any_fail = false;
+    for a in ups {
+        // 每张网卡只测第一个网关（对应 Python `a.gw4[:1]`）
+        for gw in a.gw4.iter().take(1) {
+            let p = w32::run_capture(
+                &[
+                    "ping".into(),
+                    "-n".into(),
+                    "3".into(),
+                    "-w".into(),
+                    "1000".into(),
+                    gw.clone(),
+                ],
+                12,
+            );
+            let loss = p.as_ref().ok().and_then(|o| ping_loss(&o.combined()));
+            let ok = loss.map(|l| l < 100).unwrap_or(false);
+            any_ok |= ok;
+            any_fail |= !ok;
+            lines.push(format!(
+                "{} 网关 {gw}: 丢包 {}%",
+                a.name,
+                loss.map(|l| l.to_string()).unwrap_or_else(|| "??".into())
+            ));
         }
     }
+    if lines.is_empty() {
+        r.detail = "已连接网卡均无默认网关".to_string();
+        r.status = WARN;
+        return r;
+    }
+    r.detail = lines.join("；");
+    r.status = if any_fail && !any_ok {
+        FAIL
+    } else if any_fail {
+        WARN
+    } else {
+        PASS
+    };
     r
 }
 
-/// DNS 解析对比：系统 DNS vs 公共 DNS（id=dns_compare）。
-pub fn chk_dns_compare() -> CheckResult {
+/// DNS 解析对比（id=dns_compare）：用**网卡上的系统 DNS** 与公共 DNS 对比。
+///
+/// Python 版分别向 `a.dns` 与公共 DNS 各查一次同一域名；两者结果都为空才算
+/// 「无系统 DNS 可测」。这里保留该语义，并对结果做集合比对。
+pub fn chk_dns_compare(snap: &Snapshot) -> CheckResult {
     let mut r = CheckResult::new("dns_compare", "DNS 解析（系统 DNS vs 公共 DNS 对比）", SKIP);
-    let sys_ips = dnsclient::resolve_system(DNS_COMPARE_HOST, 4.0);
-    if sys_ips.is_empty() {
-        r.status = FAIL;
-        r.detail = format!("系统 DNS 解析 {DNS_COMPARE_HOST} 失败/超时");
-        r.fix_ids = vec!["flush_dns", "dns_auto"];
+    let ups = snap.physical_up_adapters();
+    let sys_dns = ups.iter().map(|a| v4_dns(&a.dns)).find(|d| !d.is_empty());
+    let Some(sys_dns) = sys_dns else {
+        r.detail = "无系统 DNS 可测".to_string();
         return r;
-    }
-    // 公共 DNS 逐个比对；任一给出结果即算公共侧可用
+    };
+    let sys_ips = dnsclient::query_safe(DNS_COMPARE_HOST, &sys_dns);
     let mut pub_ips = Vec::new();
     let mut pub_detail = Vec::new();
     for server in PUBLIC_DNS_TEST {
@@ -548,21 +574,26 @@ pub fn chk_dns_compare() -> CheckResult {
             pub_ips = ips;
         }
     }
+    let _ = &pub_detail;
+    if sys_ips.is_empty() {
+        r.status = FAIL;
+        r.detail = format!("网卡 DNS {sys_dns} 解析 {DNS_COMPARE_HOST} 失败/超时");
+        r.fix_ids = vec!["flush_dns", "dns_auto"];
+        return r;
+    }
     if pub_ips.is_empty() {
         r.status = WARN;
         r.detail = format!(
-            "系统 DNS 解析到 {}，但公共 DNS 全部无响应（{}）——可能是网络屏蔽了 53 端口",
+            "网卡 DNS {sys_dns} → {}；公共 DNS 全部无响应（{}）——可能是网络屏蔽了 53 端口",
             sys_ips.join(","),
             pub_detail.join(" ")
         );
         return r;
     }
-    // 集合是否相交：系统 DNS 结果与公共 DNS 结果应有交集
-    let intersect = sys_ips.iter().any(|ip| pub_ips.contains(ip));
-    if intersect {
+    if sys_ips.iter().any(|ip| pub_ips.contains(ip)) {
         r.status = PASS;
         r.detail = format!(
-            "系统 DNS → {}；公共 DNS → {}（{}）",
+            "系统 DNS({sys_dns}) → {}；公共 DNS → {}（{}）",
             sys_ips.join(","),
             pub_ips.join(","),
             pub_detail.join(" ")
@@ -633,13 +664,415 @@ pub fn chk_real() -> CheckResult {
     .with_detail(detail)
 }
 
-/// 需要 Snapshot 的检查统一返回「尚未接入」。
-fn needs_snapshot(id: &'static str, name: &'static str, what: &str) -> CheckResult {
-    CheckResult::new(id, name, SKIP).with_detail(format!(
-        "尚未接入：本项依赖 snapshot 采集（{what}），Rust 版待移植（Python 版可用）"
-    ))
+/// 持久路由（id=persistent_route）：默认持久路由是流量黑洞的元凶。
+pub fn chk_persistent_route(snap: &Snapshot) -> CheckResult {
+    let mut r = CheckResult::new(
+        "persistent_route",
+        "持久路由（重启不消失的手工路由，休眠时会劫持流量）",
+        PASS,
+    );
+    if snap.persistent_routes.is_empty() {
+        r.detail = "无持久路由".to_string();
+        return r;
+    }
+    let defaults: Vec<&RouteEntry> = snap
+        .persistent_routes
+        .iter()
+        .filter(|p| p.dest == "0.0.0.0/0")
+        .collect();
+    let others: Vec<&RouteEntry> = snap
+        .persistent_routes
+        .iter()
+        .filter(|p| p.dest != "0.0.0.0/0")
+        .collect();
+    if !defaults.is_empty() {
+        let gws = defaults
+            .iter()
+            .map(|d| format!("{}(跃点{})", d.next_hop, d.metric))
+            .collect::<Vec<_>>()
+            .join(", ");
+        r.status = FAIL;
+        r.detail = format!(
+            "存在持久默认路由 → {gws}。连上同网段 WiFi 时它会以更低跃点抢占全部流量，若该网关不可达则流量黑洞（热点/USB 不受影响）"
+        );
+        r.fix_ids = vec!["del_persistent_route"];
+    } else {
+        r.status = WARN;
+        let list = others
+            .iter()
+            .take(4)
+            .map(|p| format!("{}→{}", p.dest, p.next_hop))
+            .collect::<Vec<_>>()
+            .join(", ");
+        r.detail = format!("存在非默认持久路由: {list}");
+    }
+    r
 }
 
+/// 网卡静态 DNS 审计（id=static_dns）。
+pub fn chk_static_dns(snap: &Snapshot) -> CheckResult {
+    let mut r = CheckResult::new(
+        "static_dns",
+        "网卡静态 DNS 审计（残留的静态 DNS 只影响对应网卡）",
+        PASS,
+    );
+    let mut problems = Vec::new();
+    let mut notes = Vec::new();
+    for a in &snap.adapters {
+        if a.dns.is_empty() || a.virtual_ || a.desc.contains("WAN Miniport") {
+            continue;
+        }
+        let v4 = v4_dns(&a.dns);
+        if v4.is_empty() {
+            continue;
+        }
+        let (is_static, _src) = dns_is_static(&a.name);
+        let foreign: Vec<&String> = a
+            .dns
+            .iter()
+            .filter(|d| FOREIGN_DNS_BLACKLIST.contains(&d.as_str()))
+            .collect();
+        let tag = if a.status.eq_ignore_ascii_case("up") {
+            ""
+        } else {
+            "(未连接)"
+        };
+        if !foreign.is_empty() {
+            let fw = foreign
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            problems.push(format!(
+                "{}{tag}: {}（{}，含国内不可达的 {fw}）",
+                a.name,
+                a.dns.join(","),
+                if is_static { "静态" } else { "DHCP" }
+            ));
+            r.fix_ids = vec!["dns_auto", "dns_preset"];
+        } else if is_static {
+            notes.push(format!("{}{tag}: 静态 {}", a.name, a.dns.join(",")));
+        }
+    }
+    if !problems.is_empty() {
+        r.status = WARN;
+        let mut all = problems;
+        all.extend(notes);
+        r.detail = all.join("；");
+    } else if !notes.is_empty() {
+        r.status = INFO;
+        r.detail = notes.join("；");
+    } else {
+        r.detail = "各网卡 DNS 均为 DHCP 自动获取，无国外黑名单 DNS".to_string();
+    }
+    r
+}
+
+/// 静态 DNS 判定：解析 `netsh interface ipv4 show dnsservers` 的中英文标记。
+///
+/// 这是静态判定的**唯一实现**（Python 注释里的教训：两处各写一份正则曾导致语义分叉）。
+pub fn dns_is_static(adapter_name: &str) -> (bool, &'static str) {
+    let out = w32::run_capture(
+        &[
+            "netsh".into(),
+            "interface".into(),
+            "ipv4".into(),
+            "show".into(),
+            "dnsservers".into(),
+            adapter_name.to_string(),
+        ],
+        10,
+    );
+    let text = match out {
+        Ok(o) => o.stdout,
+        Err(_) => return (false, "unknown"),
+    };
+    if contains_ci(&text, "静态配置") || contains_ci(&text, "Statically configured") {
+        return (true, "static");
+    }
+    if contains_ci(&text, "通过 DHCP 配置")
+        || contains_ci(&text, "DHCP configured")
+        || contains_ci(&text, "Initiated by Dhcp")
+    {
+        return (false, "dhcp");
+    }
+    (false, "unknown")
+}
+
+fn contains_ci(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+/// 路由健康（id=routes）：幽灵默认路由 / 多默认网关 / 隧道抢占。
+pub fn chk_routes(snap: &Snapshot) -> CheckResult {
+    let mut r = CheckResult::new(
+        "routes",
+        "路由健康（幽灵路由 / 多默认网关 / 隧道抢占）",
+        PASS,
+    );
+    let status_of = |idx: u32| -> String {
+        snap.adapter_by_index(idx)
+            .map(|a| a.status.to_lowercase())
+            .unwrap_or_default()
+    };
+    let fmt = |d: &RouteEntry| -> String {
+        format!(
+            "{}(if{}, 跃点{})",
+            d.next_hop,
+            d.if_index,
+            d.metric + d.if_metric
+        )
+    };
+    let phantom: Vec<&RouteEntry> = snap
+        .default_routes
+        .iter()
+        .filter(|d| status_of(d.if_index) != "up")
+        .collect();
+    let active: Vec<&RouteEntry> = snap
+        .default_routes
+        .iter()
+        .filter(|d| status_of(d.if_index) == "up")
+        .collect();
+    let lines: Vec<String> = active
+        .iter()
+        .map(|d| format!("活动默认路由: {}", fmt(d)))
+        .collect();
+
+    if !phantom.is_empty() {
+        let persist_gw: Vec<&str> = snap
+            .persistent_routes
+            .iter()
+            .filter(|p| p.dest == "0.0.0.0/0")
+            .map(|p| p.next_hop.as_str())
+            .collect();
+        let from_persist = phantom
+            .iter()
+            .any(|d| persist_gw.contains(&d.next_hop.as_str()));
+        r.status = FAIL;
+        r.detail = format!(
+            "幽灵默认路由（接口已断开却占据活动路由表）: {}{}",
+            phantom
+                .iter()
+                .map(|d| fmt(d))
+                .collect::<Vec<_>>()
+                .join("; "),
+            if from_persist {
+                "；来自持久路由 —— 连上同网段网络时会劫持全部流量，且已扰乱 DNS 解析排序"
+            } else {
+                ""
+            }
+        );
+        r.fix_ids = vec!["del_persistent_route"];
+        return r;
+    }
+
+    if active.len() > 1 {
+        r.status = WARN;
+        r.detail = format!("{} —— 存在多个默认网关，流量出口可能漂移", lines.join("；"));
+        return r;
+    }
+
+    // 隧道抢占：隧道网卡有默认路由且跃点不高于物理网卡
+    let tunnels: Vec<&crate::snapshot::Adapter> = snap
+        .adapters
+        .iter()
+        .filter(|a| a.status.eq_ignore_ascii_case("up") && is_tunnel(&a.desc))
+        .collect();
+    let tun_with_gw: Vec<u32> = active.iter().map(|d| d.if_index).collect();
+    let mut low_metric_tun = Vec::new();
+    for t in &tunnels {
+        if !tun_with_gw.contains(&t.if_index) {
+            continue;
+        }
+        let Some(&m) = snap.if_metrics.get(&t.if_index) else {
+            continue;
+        };
+        let phys: Vec<u32> = snap
+            .adapters
+            .iter()
+            .filter(|a| a.status.eq_ignore_ascii_case("up") && !is_tunnel(&a.desc) && !a.virtual_)
+            .filter_map(|a| snap.if_metrics.get(&a.if_index).copied())
+            .collect();
+        if !phys.is_empty() && m <= *phys.iter().min().unwrap() {
+            let short: String = t.desc.chars().take(20).collect();
+            low_metric_tun.push(format!("{}({short}, 跃点{m})", t.name));
+        }
+    }
+    if !low_metric_tun.is_empty() {
+        r.status = WARN;
+        r.detail = format!(
+            "{}；隧道网卡跃点不高于物理网卡: {}",
+            lines.join("；"),
+            low_metric_tun.join(", ")
+        );
+    } else {
+        r.detail = if lines.is_empty() {
+            "无默认路由（可能未连接）".to_string()
+        } else {
+            lines.join("；")
+        };
+    }
+    r
+}
+
+/// 隧道网卡识别（与 Python `vpn.TUNNEL_PAT` 同一份口径）。
+pub fn is_tunnel(desc: &str) -> bool {
+    let lower = desc.to_lowercase();
+    [
+        "tunnel",
+        "tap-",
+        "tun",
+        "wintun",
+        "wireguard",
+        "openvpn",
+        "softether",
+        "clash",
+        "sing-box",
+        "v2ray",
+        "shadowsocks",
+        "wireguard",
+    ]
+    .iter()
+    .any(|k| lower.contains(k))
+}
+
+/// IPv6 状态（id=ipv6）：NCSI 的 V6 探测值是否存在。
+pub fn chk_ipv6() -> CheckResult {
+    let mut r = CheckResult::new("ipv6", "IPv6 状态（V6 探测值缺失会导致 v6 网络误判）", INFO);
+    let vals = w32::reg_values(NCSI_REG_FULL);
+    let has_v6 = !vals.is_empty() && vals.contains_key("ActiveWebProbeHostV6");
+    r.detail = format!("NCSI V6 探测值: {}", if has_v6 { "有" } else { "无" });
+    r
+}
+
+/// WLAN 配置（id=wlan）：连接状态 + MAC 随机化。
+pub fn chk_wlan() -> CheckResult {
+    let mut r = CheckResult::new("wlan", "WLAN 配置（MAC 随机化 / 连接状态）", INFO);
+    let text = crate::snapshot::wlan_interfaces_text();
+    let ssid = crate::snapshot::current_ssid(&text);
+    let mut lines = Vec::new();
+    if crate::snapshot::wlan_disconnected(&text) {
+        lines.push("当前未连接 WiFi".to_string());
+    } else if !ssid.is_empty() {
+        lines.push(format!("已连接: {ssid}"));
+    }
+    let settings = crate::snapshot::wlan_settings_text();
+    if mac_randomization_enabled(&settings) {
+        lines.push(
+            "接口级 MAC 随机化已启用（部分路由器/公寓网对此不友好，连不上或频繁掉线时可尝试关闭）"
+                .to_string(),
+        );
+        r.status = WARN;
+    }
+    r.detail = if lines.is_empty() {
+        "无法读取 WLAN 设置".to_string()
+    } else {
+        lines.join("；")
+    };
+    r
+}
+
+/// MAC 随机化是否启用：真实输出里词组间有说明文字与冒号，必须用「宽松匹配」。
+///
+/// Python 注释记着这条：旧正则紧邻匹配永不命中，导致该 WARN 从未产生过。
+pub fn mac_randomization_enabled(settings_text: &str) -> bool {
+    for line in settings_text.lines() {
+        let lower = line.to_lowercase();
+        let mentions = lower.contains("mac 随机化")
+            || lower.contains("mac randomization")
+            || lower.contains("随机硬件地址");
+        if !mentions {
+            continue;
+        }
+        if lower.contains("已启用") || lower.contains("enabled") {
+            return true;
+        }
+    }
+    false
+}
+
+/// 网卡节电（id=power_mgmt）：PnPCapabilities 显示「允许系统关闭设备」。
+///
+/// 数据来源是网卡驱动注册表（`...\Control\Class\{4d36e972-...}\<NNNN>`），
+/// 只对物理网卡判定；读不到时返回 skip（对应 Python 的 `scan is None` 分支）。
+pub fn chk_power_mgmt(snap: &Snapshot) -> CheckResult {
+    let mut r = CheckResult::new("power_mgmt", "网卡节电（允许系统关闭设备以节约电源）", INFO);
+    let scan = pnp_capabilities_scan();
+    let mut items = Vec::new();
+    for a in &snap.adapters {
+        if a.virtual_ || a.desc.is_empty() {
+            continue;
+        }
+        match pnp_capabilities(&a.desc, &scan) {
+            // 24 = PnPCapabilities 里「允许系统关闭设备以节约电源」的位组合
+            Some(24) => {
+                let short: String = a.desc.chars().take(24).collect();
+                items.push(format!("{}({short}): 允许断电", a.name));
+            }
+            Some(_) => {
+                let short: String = a.desc.chars().take(24).collect();
+                items.push(format!("{}({short}): 已禁止断电", a.name));
+            }
+            None => continue,
+        }
+    }
+    if scan.is_empty() && items.is_empty() {
+        r.status = SKIP;
+        r.detail = "无法读取网卡注册表".to_string();
+        return r;
+    }
+    let risky: Vec<&String> = items.iter().filter(|i| i.contains("允许断电")).collect();
+    if !risky.is_empty() {
+        r.status = WARN;
+        r.detail = format!(
+            "{} —— 无线/USB 网卡被允许休眠省电，是 WiFi/USB 共享频繁掉线的常见原因",
+            items.join("；")
+        );
+        r.fix_ids = vec!["power_off"];
+    } else {
+        r.status = PASS;
+        r.detail = if items.is_empty() {
+            "未发现可断电网卡".to_string()
+        } else {
+            items.join("；")
+        };
+    }
+    r
+}
+
+/// 扫描网卡类键：描述 → PnPCapabilities（一次读全，避免每网卡各枚举一遍）。
+///
+/// Python 注释记着这条性能教训：曾每个物理网卡各调一次 → 重复全量枚举，
+/// 实测 7ms × 网卡数，在虚拟卡多的机器上线性放大。
+pub fn pnp_capabilities_scan() -> BTreeMap<String, u32> {
+    const NIC_CLASS_KEY: &str =
+        r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
+    let mut out = BTreeMap::new();
+    // 子键形如 0000 / 0001 …；逐个数探测（RegEnumKey 未在本层封装）
+    for i in 0..32 {
+        let sub = format!("{NIC_CLASS_KEY}\\{i:04}");
+        let vals = w32::reg_values(&sub);
+        if vals.is_empty() {
+            continue;
+        }
+        let Some(desc) = vals.get("DriverDesc").map(RegValue::as_compare_str) else {
+            continue;
+        };
+        let cap = vals
+            .get("PnPCapabilities")
+            .and_then(RegValue::as_u32)
+            .unwrap_or(0);
+        out.insert(desc, cap);
+    }
+    out
+}
+
+/// 按驱动描述查 PnPCapabilities（24 = 允许系统关闭设备省电）。
+pub fn pnp_capabilities(driver_desc: &str, scan: &BTreeMap<String, u32>) -> Option<u32> {
+    scan.get(driver_desc).copied()
+}
+
+/// NlaSvc 服务状态（id=nlasvc）：只靠 sc query 即可判断，不依赖快照。
 pub fn chk_nlasvc() -> CheckResult {
     // NlaSvc 是否运行可以只靠 sc query 判断——是 Snapshot 检查里唯一能独立实现的一项
     let mut r = CheckResult::new(
@@ -666,22 +1099,6 @@ pub fn chk_nlasvc() -> CheckResult {
         }
     }
     r
-}
-
-pub fn chk_persistent_route() -> CheckResult {
-    needs_snapshot(
-        "persistent_route",
-        "持久路由（重启不消失的手工路由，休眠时会劫持流量）",
-        "route print 持久路由表",
-    )
-}
-
-pub fn chk_static_dns() -> CheckResult {
-    needs_snapshot(
-        "static_dns",
-        "网卡静态 DNS 审计（残留的静态 DNS 只影响对应网卡）",
-        "网卡 DNS 配置",
-    )
 }
 
 pub fn chk_proxy() -> CheckResult {
@@ -714,30 +1131,6 @@ pub fn chk_proxy() -> CheckResult {
     r
 }
 
-pub fn chk_routes() -> CheckResult {
-    needs_snapshot(
-        "routes",
-        "路由健康（幽灵路由 / 多默认网关 / 隧道抢占）",
-        "默认路由与网卡状态",
-    )
-}
-
-pub fn chk_ipv6() -> CheckResult {
-    needs_snapshot(
-        "ipv6",
-        "IPv6 状态（V6 探测值缺失会导致 v6 网络误判）",
-        "NCSI V6 注册表 + 网卡",
-    )
-}
-
-pub fn chk_wlan() -> CheckResult {
-    needs_snapshot(
-        "wlan",
-        "WLAN 配置（MAC 随机化 / 连接状态）",
-        "netsh wlan 输出",
-    )
-}
-
 // ---------------- 检查清单与综合判定 ----------------
 
 /// 一项检查的注册信息。
@@ -746,13 +1139,13 @@ pub struct CheckDef {
     pub name: &'static str,
     /// quick 模式（监控轮询）是否跳过：对应 Python 的慢速外网探测集合。
     pub slow: bool,
-    runner: fn() -> CheckResult,
+    runner: fn(&Snapshot) -> CheckResult,
 }
 
 impl CheckDef {
     /// 执行本项检查。
-    pub fn run(&self) -> CheckResult {
-        (self.runner)()
+    pub fn run(&self, snap: &Snapshot) -> CheckResult {
+        (self.runner)(snap)
     }
 }
 
@@ -763,7 +1156,7 @@ pub fn all_checks() -> &'static [CheckDef] {
             id: "nlasvc",
             name: "NlaSvc 网络位置感知服务（画'有网/无网'标记的服务）",
             slow: false,
-            runner: chk_nlasvc,
+            runner: |_| chk_nlasvc(),
         },
         CheckDef {
             id: "persistent_route",
@@ -781,7 +1174,7 @@ pub fn all_checks() -> &'static [CheckDef] {
             id: "proxy",
             name: "系统代理（代理软件残留会让全网流量进死端口）",
             slow: false,
-            runner: chk_proxy,
+            runner: |_| chk_proxy(),
         },
         CheckDef {
             id: "gateway",
@@ -799,43 +1192,37 @@ pub fn all_checks() -> &'static [CheckDef] {
             id: "dns_pollution",
             name: "NCSI 域名解析对比（污染检测）",
             slow: true,
-            runner: chk_dns_pollution,
+            runner: |_| chk_dns_pollution(),
         },
         CheckDef {
             id: "ncsi_probe",
             name: "NCSI 探测模拟（Windows 判定'有网'的依据）",
             slow: false,
-            runner: chk_ncsi_probe,
+            runner: |_| chk_ncsi_probe(),
         },
         CheckDef {
             id: "real_conn",
             name: "真实连通性（204 端点 + HTTPS）",
             slow: false,
-            runner: chk_real,
+            runner: |_| chk_real(),
         },
         CheckDef {
             id: "ncsi_reg",
             name: "NCSI 注册表配置核对",
             slow: true,
-            runner: chk_ncsi_registry,
+            runner: |_| chk_ncsi_registry(),
         },
         CheckDef {
             id: "power_mgmt",
             name: "网卡节电（允许系统关闭设备以节约电源）",
             slow: true,
-            runner: || {
-                needs_snapshot(
-                    "power_mgmt",
-                    "网卡节电（允许系统关闭设备以节约电源）",
-                    "网卡驱动注册表",
-                )
-            },
+            runner: chk_power_mgmt,
         },
         CheckDef {
             id: "services",
             name: "关键网络服务状态",
             slow: false,
-            runner: chk_services,
+            runner: |_| chk_services(),
         },
         CheckDef {
             id: "routes",
@@ -847,13 +1234,13 @@ pub fn all_checks() -> &'static [CheckDef] {
             id: "ipv6",
             name: "IPv6 状态（V6 探测值缺失会导致 v6 网络误判）",
             slow: true,
-            runner: chk_ipv6,
+            runner: |_| chk_ipv6(),
         },
         CheckDef {
             id: "wlan",
             name: "WLAN 配置（MAC 随机化 / 连接状态）",
             slow: true,
-            runner: chk_wlan,
+            runner: |_| chk_wlan(),
         },
     ];
     CHECKS
@@ -880,10 +1267,13 @@ pub fn default_gateway_v4() -> Option<String> {
 
 /// 逐项执行检查（`quick=true` 跳过慢速外网探测）。
 pub fn run_all(quick: bool) -> Vec<CheckResult> {
+    // **快照只采一次**：多项检查都需要它，每项各采一次就是多次 PowerShell
+    //（与 Python 版 `snap = take_snap()` 的做法一致）
+    let snap = crate::snapshot::take();
     all_checks()
         .iter()
         .filter(|c| !(quick && c.slow))
-        .map(|c| (c.runner)())
+        .map(|c| c.run(&snap))
         .collect()
 }
 
@@ -1184,22 +1574,53 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_dependent_checks_are_skip_not_fake_pass() {
-        // 核心诚实性断言：依赖 Snapshot 的项必须报 skip + 说明，绝不能伪造 pass
+    fn snapshot_checks_are_resilient_to_empty_snapshot() {
+        // 空快照（采集失败/无网卡）下每项都必须给出可读结论，绝不 panic、
+        // 也绝不假装「已检测到问题」——空数据只能说「无」或「跳过」
+        let empty = crate::snapshot::Snapshot::default();
         for r in [
-            chk_persistent_route(),
-            chk_static_dns(),
-            chk_routes(),
+            chk_persistent_route(&empty),
+            chk_static_dns(&empty),
+            chk_routes(&empty),
             chk_ipv6(),
             chk_wlan(),
         ] {
-            assert_eq!(r.status, SKIP, "{} 应为 skip", r.id);
+            assert!(!r.detail.is_empty(), "{} 必须有详情", r.id);
             assert!(
-                r.detail.contains("尚未接入"),
-                "{} 必须说明尚未接入，实际: {}",
+                matches!(r.status, PASS | WARN | FAIL | SKIP | INFO),
+                "{} 状态非法: {}",
+                r.id,
+                r.status
+            );
+        }
+        // 空快照的具体语义
+        assert_eq!(
+            chk_persistent_route(&empty).status,
+            PASS,
+            "无持久路由 = pass（不是 skip）"
+        );
+        assert_eq!(
+            chk_static_dns(&empty).status,
+            PASS,
+            "无网卡 = 无静态 DNS 问题"
+        );
+        assert_eq!(chk_routes(&empty).status, PASS, "无默认路由 = 无幽灵路由");
+    }
+
+    #[test]
+    fn no_check_reports_not_implemented_anymore() {
+        // 全量实现的回归锁：15 项都不许再出现「尚未接入」——
+        // 之前 5 项依赖 snapshot 时这里会亮红灯，现在是完成度断言
+        let snap = crate::snapshot::take();
+        for c in all_checks() {
+            let r = c.run(&snap);
+            assert!(
+                !r.detail.contains("尚未接入"),
+                "{} 仍显示尚未接入: {}",
                 r.id,
                 r.detail
             );
+            assert!(!r.detail.is_empty(), "{} 详情为空", r.id);
         }
     }
 
@@ -1273,14 +1694,14 @@ mod tests {
 
     #[test]
     fn gateway_check_reports_something_actionable() {
-        let r = chk_gateway();
+        let r = chk_gateway(&crate::snapshot::Snapshot::default());
         assert!(!r.detail.is_empty());
         assert!(r.status == PASS || r.status == WARN || r.status == FAIL || r.status == SKIP);
     }
 
     #[test]
     fn dns_compare_runs_and_reports() {
-        let r = chk_dns_compare();
+        let r = chk_dns_compare(&crate::snapshot::Snapshot::default());
         assert!(!r.detail.is_empty());
         // 断网机器也会给 FAIL/WARN + 可读说明，不得 panic
         assert!(r.fix_ids.is_empty() || !r.fix_ids.is_empty());
