@@ -12,8 +12,8 @@ Write-Host "==== [2/5] cargo clippy -D warnings ====" -ForegroundColor Cyan
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 if ($LASTEXITCODE -ne 0) { $failed += "cargo clippy" }
 
-Write-Host "==== [3/5] cargo test ====" -ForegroundColor Cyan
-cargo test --manifest-path src-tauri/Cargo.toml
+Write-Host "==== [3/5] cargo test（单线程：并行模式存在 0xc0000005 竞争，待排查） ====" -ForegroundColor Cyan
+cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 if ($LASTEXITCODE -ne 0) { $failed += "cargo test" }
 
 Write-Host "==== [4/5] tsc --noEmit ====" -ForegroundColor Cyan

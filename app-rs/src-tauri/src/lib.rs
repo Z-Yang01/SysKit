@@ -59,6 +59,7 @@ mod test_support;
 mod timefmt;
 mod tray;
 mod vault_crypto;
+mod vault_store;
 mod w32;
 mod wifi;
 
@@ -184,6 +185,9 @@ pub fn run() {
             // 剪贴板监听：把"用户复制了什么"变成历史条目。
             // 没有它，快捷粘贴面板会在空历史里"正常"工作——命令全对、列表恒空。
             clipboard_watch::spawn();
+            // M6 密码库会话：解锁后的数据密钥只驻留在托管会话里
+            app.manage(commands::VaultSession(std::sync::Mutex::new(None)));
+            app.manage(commands::VaultTrust(std::sync::Mutex::new(None)));
             // 后台监控 + 保守自动修复梯度（消费那六项 auto_repair_* 设置）
             monitor::spawn();
             Ok(())
@@ -267,7 +271,19 @@ pub fn run() {
             commands::sk_vault_set_password,
             commands::sk_vault_verify_password,
             commands::sk_vault_remove_password,
-            commands::sk_vault_store_unavailable,
+            commands::sk_vault_sites,
+            commands::sk_vault_site_accounts,
+            commands::sk_vault_add_site,
+            commands::sk_vault_update_site,
+            commands::sk_vault_delete_site,
+            commands::sk_vault_add_account,
+            commands::sk_vault_update_account,
+            commands::sk_vault_delete_account,
+            commands::sk_vault_toggle_favorite,
+            commands::sk_vault_get_secret,
+            commands::sk_vault_secrets_bulk,
+            commands::sk_vault_global_search,
+            commands::sk_vault_totp_code,
             commands::sk_settings_all,
             commands::sk_settings_set,
             commands::sk_settings_reset,

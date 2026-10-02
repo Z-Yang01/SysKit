@@ -25,6 +25,10 @@ log = { version = "0.4", features = ["std"] }
 # 否则同一个 exe 会被两个版本各建一条规则（用户在 wf.msc 里看到重复项）。
 # 用 crate 而不是手写 SHA-1：摘要是密码学原语，手写不出错很难、出错很难发现。
 sha1 = "0.10"
+# 密码库数据层（M6）：bundled=自带 SQLite C 源（免系统 dll 依赖）；同库互开
+# 是跨语言硬约束，schema/SQL 逐字对齐 syskit/vault.py
+rusqlite = { version = "0.32", features = ["bundled"] }
+hmac = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

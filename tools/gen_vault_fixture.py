@@ -70,6 +70,46 @@ def main() -> int:
         print("自检失败：Python 无法解开自己生成的字段密文")
         return 1
 
+    # DB fixture（M6 数据层）：真实 schema + 用同一数据密钥加密的字段，
+    # 验证 Rust 侧 vault_store 对同一 vault.db 的互开与 CRUD 读。
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from syskit import vault as vault_mod
+
+    db_path = os.path.join(OUT, "vault.db")
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    vault_mod._db_path = lambda: db_path          # 重定向到 fixture 目录
+    vault_mod.init_db()
+    site_id = vault_mod.add_site("Fixture Site", "fixture.example", "https://fixture.example",
+                                 "别名甲，别名乙", "测试标签")
+    acc1 = vault_mod.add_account(
+        site_id, "db-password-密码1", v, label="主账号", username="alice",
+        totp_secret="JBSWY3DPEHPK3PXP", notes="备注甲")
+    acc2 = vault_mod.add_account(site_id, "db-password-2", v, label="备用", username="bob")
+    vault_mod.toggle_favorite(acc2)
+    expected_totp = vault_mod.totp_code("JBSWY3DPEHPK3PXP", at=59)
+    assert expected_totp, "生成器自检：TOTP 密钥应有效"
+    with open(os.path.join(OUT, "vault_db_expected.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "site_name": "Fixture Site",
+                "site_id": site_id,
+                "acc1": acc1,
+                "acc2": acc2,
+                "acc1_password": "db-password-密码1",
+                "acc1_totp_secret": "JBSWY3DPEHPK3PXP",
+                "acc1_notes": "备注甲",
+                "acc2_password": "db-password-2",
+                "expected_totp_at59": expected_totp,
+            },
+            f, ensure_ascii=False)
+
+    # 自检：按标准路径语义再读一遍
+    assert vault_mod.list_sites()[0]["name"] == "Fixture Site"
+    assert vault_mod.get_secret(acc1, v, "password") == "db-password-密码1"
+
     print(f"fixture 已生成并通过自检：{OUT}")
     return 0
 

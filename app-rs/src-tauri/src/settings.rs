@@ -209,15 +209,18 @@ fn decoration(key: &str) -> Decoration {
             3600,
         ),
         "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径"),
-        "vault_autolock_min" => Decoration::int("密码库自动锁定（分）", "0=不自动锁定", 0, 1440)
-            .unwired("暂未生效：密码库数据层未实现（见 M6 说明），自动锁定无从谈起。"),
-        "vault_trust_min" => Decoration::int(
-            "主密码免重复输入（分）",
-            "验证后多久内不再要求输入主密码",
+        "vault_autolock_min" => Decoration::int(
+            "密码库自动锁定（分）",
+            "解锁超过该时长后，下一次密码库操作会要求重新解锁；0=不自动锁定",
             0,
             1440,
-        )
-        .unwired("暂未生效：密码库数据层未实现（见 M6 说明）。"),
+        ),
+        "vault_trust_min" => Decoration::int(
+            "主密码免重复输入（分）",
+            "验证通过后该窗口内不再要求重新输入主密码；0=每次都要求",
+            0,
+            1440,
+        ),
         "palette_hotkey" => Decoration::new("命令面板热键", "保存后即时生效；被占用会自动回退旧值"),
         "clip_paste_hotkey" => Decoration::new(
             "快捷粘贴面板热键",
@@ -729,13 +732,9 @@ mod tests {
     /// 这个清单是**手工审计的产物**（逐键搜 `src-tauri/src/` 与 `src/` 里的引用）。
     /// 它同时是一份待办：接上消费方后应把该键从清单里删掉，删掉时这条测试会失败
     /// ——这正是我们想要的提醒（否则容易忘记摘掉过期的"暂未生效"标签）。
-    const UNWIRED: [&str; 4] = [
-        // 单项
-        "minimize_to_tray",
-        "sound_alert_enabled",
-        "vault_autolock_min",
-        "vault_trust_min",
-    ];
+    /// vault_autolock_min/vault_trust_min 已随 M6 数据层接线（会话自动重锁/
+    /// trust 窗口），摘除。
+    const UNWIRED: [&str; 2] = ["minimize_to_tray", "sound_alert_enabled"];
 
     #[test]
     fn unwired_keys_are_marked_and_explained() {

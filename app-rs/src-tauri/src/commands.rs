@@ -1410,131 +1410,430 @@ pub async fn sk_log_tail(name: String, lines: Option<usize>) -> Result<serde_jso
     .map_err(|e| format!("读取线程失败: {e}"))?
 }
 
-// ---------------- M6 密码库（本阶段：加密层 + 界面骨架） ----------------
+// ---------------- M6 密码库（会话式：解锁后数据命令共享同一实例） ----------------
+
+/// 会话持有解锁后的 VaultCrypto；None = 未解锁。
+/// 旧实现每个命令各 new 一个实例——unlock 与数据命令不在同一实例上，
+/// 数据密钥根本传不过去（M6 接线时修正为托管会话）。
+pub struct VaultSession(pub std::sync::Mutex<Option<crate::vault_crypto::VaultCrypto>>);
+
+/// 主密码免重复输入窗口的到期时刻（sk_vault_verify_password 成功时续期）。
+pub struct VaultTrust(pub std::sync::Mutex<Option<std::time::Instant>>);
+
+fn session_lock(
+    session: &VaultSession,
+) -> Result<std::sync::MutexGuard<'_, Option<crate::vault_crypto::VaultCrypto>>, String> {
+    // 自动重锁：vault_autolock_min>0 且会话超过窗口 → 就地收锁
+    {
+        let mut guard = session.0.lock().expect("vault 会话锁中毒");
+        let min = crate::settings::get_int("vault_autolock_min");
+        if let (Some(c), true) = (guard.as_mut(), min > 0) {
+            if let Some(since) = c.unlocked_since_secs() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                if now - since >= min as f64 * 60.0 {
+                    c.lock();
+                    *guard = None;
+                }
+            }
+        }
+    }
+    let guard = session.0.lock().expect("vault 会话锁中毒");
+    if guard.is_none() {
+        return Err("密码库未解锁".into());
+    }
+    Ok(guard)
+}
+
+/// 取会话守卫（未解锁 → Err）。调用方以 `guard.as_mut().expect(...)` 拿实例——
+/// MutexGuard::map 尚未稳定（mapped_lock_guards），不走它。
+fn session_get(
+    session: &VaultSession,
+) -> Result<std::sync::MutexGuard<'_, Option<crate::vault_crypto::VaultCrypto>>, String> {
+    session_lock(session)
+}
+
+/// DPAPI 免密模式专用：状态命令里把自动解锁的实例复制进会话
+/// （本实例继续读 meta；数据密钥是随机 32B，重解锁无副作用）。
+fn reopen_unlocked(source: &crate::vault_crypto::VaultCrypto) -> crate::vault_crypto::VaultCrypto {
+    let mut n = crate::vault_crypto::VaultCrypto::with_path(source.path().to_path_buf());
+    let _ = n.unlock(None);
+    n
+}
 
 /// 密码库状态（含各能力的可用性，供界面如实展示）。
 #[tauri::command]
-pub fn sk_vault_status() -> serde_json::Value {
+pub fn sk_vault_status(
+    session: tauri::State<'_, VaultSession>,
+    trust: tauri::State<'_, VaultTrust>,
+) -> serde_json::Value {
     let mut c = crate::vault_crypto::VaultCrypto::new();
     let path = c.path().to_string_lossy().to_string();
     let provisioned = c.is_provisioned();
     let meta = c.read_meta();
     let has_pw = provisioned && meta.mode == "password";
     // 免密模式可以自动解锁（DPAPI 绑定当前用户，无需输入）
-    if provisioned && meta.mode == "dpapi" {
-        let _ = c.unlock(None);
+    if provisioned && meta.mode == "dpapi" && c.unlock(None) == Ok(true) {
+        // 自动解锁后的实例进会话：数据命令立即可用
+        let auto = reopen_unlocked(&c);
+        *session.0.lock().expect("vault 会话锁中毒") = Some(auto);
     }
+    let session_unlocked = session.0.lock().expect("vault 会话锁中毒").is_some();
+    let trusted_until = trust.0.lock().expect("vault trust 锁中毒").map(|t| {
+        t.checked_duration_since(std::time::Instant::now())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    });
     serde_json::json!({
         "path": path,
         "provisioned": provisioned,
-        "unlocked": c.is_unlocked(),
+        "unlocked": session_unlocked,
         "has_master_password": has_pw,
         "mode": meta.mode,
+        "trusted_until": trusted_until,
         // 各能力可用性：界面据此决定按钮能不能点、要不要显示说明
         "capabilities": {
             "key_management": true,
-            "password_storage": false,
-            "password_storage_reason":
-                "数据层（vault.db / SQLite）按你的决定暂不实现，因此目前无法存取密码条目。\
-                 加密层已完成并通过双向跨语言验证：vault.key 与 Python 版互通。\
-                 后续要启用存取功能，需引入 SQLite 依赖（如 rusqlite）。",
+            "password_storage": true,
         },
     })
 }
 
 /// 初始化密码库（首次创建 `vault.key`）。`password` 为空则用 DPAPI 免密模式。
 #[tauri::command]
-pub async fn sk_vault_setup(password: Option<String>) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+pub async fn sk_vault_setup(
+    session: tauri::State<'_, VaultSession>,
+    password: Option<String>,
+) -> Result<serde_json::Value, String> {
+    // 600k 次 PBKDF2 在主线程会明显卡顿，所以走阻塞线程池；
+    // State 借用不能进 'static 闭包——本地实例跑完再进会话
+    let (c, mode) = tauri::async_runtime::spawn_blocking(move || {
         let mut c = crate::vault_crypto::VaultCrypto::new();
         if c.is_provisioned() {
-            return Err("密码库已初始化".to_string());
+            return Err(("密码库已初始化".to_string(), "dpapi"));
         }
         let pw = password.filter(|p| !p.is_empty());
-        // 600k 次 PBKDF2 在主线程会明显卡顿，所以走阻塞线程池
-        c.setup(pw.as_deref())?;
-        Ok(serde_json::json!({
-            "ok": true,
-            "mode": if pw.is_some() { "password" } else { "dpapi" },
-            "message": if pw.is_some() {
-                "已创建密码库（主密码模式）"
-            } else {
-                "已创建密码库（免密模式：密钥由 Windows DPAPI 绑定当前用户保护）"
-            },
-        }))
+        let mode = if pw.is_some() { "password" } else { "dpapi" };
+        c.setup(pw.as_deref()).map_err(|e| (e, mode))?;
+        Ok((c, mode))
     })
     .await
     .map_err(|e| format!("初始化线程失败: {e}"))?
+    .map_err(|(e, _)| e)?;
+    *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+    Ok(serde_json::json!({
+        "ok": true,
+        "mode": mode,
+        "message": if mode == "password" {
+            "已创建密码库（主密码模式）"
+        } else {
+            "已创建密码库（免密模式：密钥由 Windows DPAPI 绑定当前用户保护）"
+        },
+    }))
 }
 
 /// 解锁。失败返回可读原因（区分密码错误与文件损坏）。
 #[tauri::command]
-pub async fn sk_vault_unlock(password: Option<String>) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+pub async fn sk_vault_unlock(
+    session: tauri::State<'_, VaultSession>,
+    password: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let unlocked = tauri::async_runtime::spawn_blocking(move || {
         let mut c = crate::vault_crypto::VaultCrypto::new();
         match c.unlock(password.as_deref()) {
-            Ok(true) => Ok(serde_json::json!({ "ok": true, "message": "已解锁" })),
+            Ok(true) => Ok(c),
             Ok(false) => Err("解锁失败".to_string()),
             Err(e) => Err(e.message()),
         }
     })
     .await
-    .map_err(|e| format!("解锁线程失败: {e}"))?
+    .map_err(|e| format!("解锁线程失败: {e}"))?;
+    let c = unlocked?;
+    *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+    Ok(serde_json::json!({ "ok": true, "message": "已解锁" }))
 }
 
 /// 锁定（清空内存中的密钥）。
 #[tauri::command]
-pub fn sk_vault_lock() -> serde_json::Value {
-    let mut c = crate::vault_crypto::VaultCrypto::new();
-    c.lock();
+pub fn sk_vault_lock(session: tauri::State<VaultSession>) -> serde_json::Value {
+    if let Some(mut c) = session.0.lock().expect("vault 会话锁中毒").take() {
+        c.lock();
+    }
     serde_json::json!({ "ok": true, "message": "已锁定" })
 }
 
 /// 设置主密码（免密 → 密码模式；数据密钥不变）。
 #[tauri::command]
-pub async fn sk_vault_set_password(password: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut c = crate::vault_crypto::VaultCrypto::new();
-        // 免密模式下先自动解锁（DPAPI），否则无法重包裹数据密钥
-        if !c.is_unlocked() {
-            let _ = c.unlock(None);
+pub async fn sk_vault_set_password(
+    session: tauri::State<'_, VaultSession>,
+    password: String,
+) -> Result<String, String> {
+    // 会话实例先 take 出来（重挂 600k PBKDF2 期间数据命令短暂不可用，可接受），
+    // 避免把 State 借用带进 'static 阻塞闭包
+    let mut c = session
+        .0
+        .lock()
+        .expect("vault 会话锁中毒")
+        .take()
+        .ok_or_else(|| "密码库未解锁".to_string())?;
+    let result =
+        tauri::async_runtime::spawn_blocking(move || match c.set_master_password(&password) {
+            Ok(()) => Ok(c),
+            Err(e) => Err((c, e)),
+        })
+        .await
+        .map_err(|e| format!("设置线程失败: {e}"))?;
+    // 无论成败都放回会话（实例仍持有解锁态）
+    match result {
+        Ok(c) => {
+            *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+            Ok("已设置主密码（数据密钥未变，已有密文仍可解开）".to_string())
         }
-        c.set_master_password(&password)?;
-        Ok("已设置主密码（数据密钥未变，已有密文仍可解开）".to_string())
-    })
-    .await
-    .map_err(|e| format!("设置线程失败: {e}"))?
+        Err((c, e)) => {
+            *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+            Err(e)
+        }
+    }
 }
 
-/// 校验主密码（不改变解锁状态）。
+/// 校验主密码（不改变解锁状态）；成功续期免重复输入窗口。
 #[tauri::command]
-pub async fn sk_vault_verify_password(password: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+pub async fn sk_vault_verify_password(
+    trust: tauri::State<'_, VaultTrust>,
+    password: String,
+) -> Result<bool, String> {
+    let ok = tauri::async_runtime::spawn_blocking(move || {
         let c = crate::vault_crypto::VaultCrypto::new();
-        Ok(c.verify_password(&password))
+        c.verify_password(&password)
     })
     .await
-    .map_err(|e| format!("校验线程失败: {e}"))?
+    .map_err(|e| format!("校验线程失败: {e}"))?;
+    if ok {
+        let mins = crate::settings::get_int("vault_trust_min").max(0) as u64;
+        let mut t = trust.0.lock().expect("vault trust 锁中毒");
+        *t = if mins > 0 {
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(mins * 60))
+        } else {
+            None
+        };
+    }
+    Ok(ok)
 }
 
 /// 移除主密码（回到免密模式）。当前密码错误返回 Ok(false)。
 #[tauri::command]
-pub async fn sk_vault_remove_password(current: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut c = crate::vault_crypto::VaultCrypto::new();
-        if !c.is_unlocked() {
-            let _ = c.unlock(Some(&current));
-        }
-        c.remove_master_password(&current)
+pub async fn sk_vault_remove_password(
+    session: tauri::State<'_, VaultSession>,
+    current: String,
+) -> Result<bool, String> {
+    let mut c = session
+        .0
+        .lock()
+        .expect("vault 会话锁中毒")
+        .take()
+        .ok_or_else(|| "密码库未解锁".to_string())?;
+    let (c, result) = tauri::async_runtime::spawn_blocking(move || {
+        let r = c.remove_master_password(&current);
+        (c, r)
     })
     .await
-    .map_err(|e| format!("移除线程失败: {e}"))?
+    .map_err(|e| format!("移除线程失败: {e}"))?;
+    *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+    result
 }
 
-/// 明文存取入口在数据层实现前**必须明确失败**，绝不假装成功。
+// ---------------- M6 数据层命令（vault_store 薄封装；会话必须已解锁） ----------------
+
 #[tauri::command]
-pub fn sk_vault_store_unavailable() -> Result<(), String> {
-    Err(crate::vault_crypto::STORAGE_UNAVAILABLE.to_string())
+pub fn sk_vault_sites(
+    session: tauri::State<'_, VaultSession>,
+    q: String,
+) -> Result<serde_json::Value, String> {
+    let _session = session_lock(&session)?;
+    crate::vault_store::init_db().map_err(|e| e.to_string())?;
+    let sites = crate::vault_store::search_sites(&q).map_err(|e| e.to_string())?;
+    serde_json::to_value(sites).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn sk_vault_site_accounts(
+    session: tauri::State<'_, VaultSession>,
+    site_id: i64,
+    q: String,
+) -> Result<serde_json::Value, String> {
+    let _session = session_lock(&session)?;
+    let accs = crate::vault_store::list_accounts(site_id, &q).map_err(|e| e.to_string())?;
+    serde_json::to_value(accs).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn sk_vault_add_site(
+    session: tauri::State<'_, VaultSession>,
+    name: String,
+    domain: String,
+    url: String,
+    aliases: String,
+    tags: String,
+) -> Result<i64, String> {
+    let _session = session_lock(&session)?;
+    crate::vault_store::add_site(&name, &domain, &url, &aliases, &tags).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn sk_vault_update_site(
+    session: tauri::State<'_, VaultSession>,
+    site_id: i64,
+    name: Option<String>,
+    domain: Option<String>,
+    url: Option<String>,
+    aliases: Option<String>,
+    tags: Option<String>,
+) -> Result<(), String> {
+    let _session = session_lock(&session)?;
+    crate::vault_store::update_site(
+        site_id,
+        &crate::vault_store::SitePatch {
+            name,
+            domain,
+            url,
+            aliases,
+            tags,
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn sk_vault_delete_site(
+    session: tauri::State<'_, VaultSession>,
+    site_id: i64,
+) -> Result<(), String> {
+    let _session = session_lock(&session)?;
+    crate::vault_store::delete_site(site_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn sk_vault_add_account(
+    session: tauri::State<'_, VaultSession>,
+    site_id: i64,
+    password: String,
+    label: String,
+    username: String,
+    totp_secret: String,
+    notes: String,
+) -> Result<i64, String> {
+    let mut guard = session_get(&session)?;
+    let crypto = guard.as_mut().expect("已确认 Some");
+    crate::vault_store::add_account(
+        site_id,
+        &password,
+        crypto,
+        &label,
+        &username,
+        &totp_secret,
+        &notes,
+    )
+}
+
+#[tauri::command]
+pub fn sk_vault_update_account(
+    session: tauri::State<'_, VaultSession>,
+    account_id: i64,
+    label: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+    totp_secret: Option<String>,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let mut guard = session_get(&session)?;
+    let crypto = guard.as_mut().expect("已确认 Some");
+    crate::vault_store::update_account(
+        account_id,
+        crypto,
+        &crate::vault_store::AccountPatch {
+            label,
+            username,
+            password,
+            totp_secret,
+            notes,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn sk_vault_delete_account(
+    session: tauri::State<'_, VaultSession>,
+    account_id: i64,
+) -> Result<(), String> {
+    let _session = session_lock(&session)?;
+    crate::vault_store::delete_account(account_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn sk_vault_toggle_favorite(
+    session: tauri::State<'_, VaultSession>,
+    account_id: i64,
+) -> Result<bool, String> {
+    let _session = session_lock(&session)?;
+    crate::vault_store::toggle_favorite(account_id).map_err(|e| e.to_string())
+}
+
+/// 解密单字段。`sensitive_ttl` 给定时同步登记敏感窗口（复制密码/TOTP 用，
+/// 与 Python 版 UI 同口径：TTL 内剪贴板监听不记录 + 系统侧排除）。
+#[tauri::command]
+pub fn sk_vault_get_secret(
+    session: tauri::State<'_, VaultSession>,
+    account_id: i64,
+    field: String,
+    touch: Option<bool>,
+    sensitive_ttl: Option<i64>,
+) -> Result<String, String> {
+    let mut guard = session_get(&session)?;
+    let crypto = guard.as_mut().expect("已确认 Some");
+    let text = crate::vault_store::get_secret(account_id, crypto, &field, touch.unwrap_or(true))?;
+    if let Some(ttl) = sensitive_ttl {
+        if !text.is_empty() {
+            crate::clipboard_history::mark_sensitive(&text, ttl);
+        }
+    }
+    Ok(text)
+}
+
+/// 批量解密（整列显示语义；单条损坏降级缺席，不外溢）。
+#[tauri::command]
+pub fn sk_vault_secrets_bulk(
+    session: tauri::State<'_, VaultSession>,
+    account_ids: Vec<i64>,
+    field: String,
+) -> Result<serde_json::Value, String> {
+    let mut guard = session_get(&session)?;
+    let crypto = guard.as_mut().expect("已确认 Some");
+    let map = crate::vault_store::get_secrets_bulk(&account_ids, crypto, &field)?;
+    serde_json::to_value(map).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn sk_vault_global_search(
+    session: tauri::State<'_, VaultSession>,
+    q: String,
+) -> Result<serde_json::Value, String> {
+    let _session = session_lock(&session)?;
+    let rows = crate::vault_store::global_search(&q).map_err(|e| e.to_string())?;
+    serde_json::to_value(rows).map_err(|e| e.to_string())
+}
+
+/// 现算 TOTP 验证码（密文按需解密；验证码本身不进敏感窗口）。
+#[tauri::command]
+pub fn sk_vault_totp_code(
+    session: tauri::State<'_, VaultSession>,
+    account_id: i64,
+) -> Result<String, String> {
+    let mut guard = session_get(&session)?;
+    let crypto = guard.as_mut().expect("已确认 Some");
+    let secret = crate::vault_store::get_secret(account_id, crypto, "totp", false)?;
+    Ok(crate::vault_store::totp_code(&secret, None, 6, 30))
 }
 
 // ---------------- M5 系统助手：剪贴板历史（管理动作） ----------------

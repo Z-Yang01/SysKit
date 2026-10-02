@@ -180,6 +180,8 @@ pub struct VaultCrypto {
     path: PathBuf,
     /// 32B 数据密钥，仅解锁后驻留内存
     data_key: Option<Vec<u8>>,
+    /// 本次解锁的 UNIX 时刻（秒）：自动重锁窗口判定用；锁定时清空
+    unlocked_at: Option<f64>,
 }
 
 impl VaultCrypto {
@@ -193,6 +195,7 @@ impl VaultCrypto {
         Self {
             path,
             data_key: None,
+            unlocked_at: None,
         }
     }
 
@@ -267,6 +270,12 @@ impl VaultCrypto {
             }
         }
         self.data_key = Some(key);
+        self.unlocked_at = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0),
+        );
         Ok(())
     }
 
@@ -305,6 +314,12 @@ impl VaultCrypto {
             return match crate::w32::dpapi_unprotect(&wrapped) {
                 Some(key) if key.len() == KEY_LEN => {
                     self.data_key = Some(key);
+                    self.unlocked_at = Some(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs_f64())
+                            .unwrap_or(0.0),
+                    );
                     Ok(true)
                 }
                 Some(_) => Err(UnlockError::Corrupt("DPAPI 解出的密钥长度非法".to_string())),
@@ -336,6 +351,12 @@ impl VaultCrypto {
         match open_gcm(&dk, &wrapped, AAD_KEY) {
             Ok(key) if key.len() == KEY_LEN => {
                 self.data_key = Some(key);
+                self.unlocked_at = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs_f64())
+                        .unwrap_or(0.0),
+                );
                 Ok(true)
             }
             Ok(_) => Err(UnlockError::Corrupt("数据密钥长度非法".to_string())),
@@ -351,6 +372,13 @@ impl VaultCrypto {
             }
         }
         self.data_key = None;
+        self.unlocked_at = None;
+    }
+
+    /// 本次解锁的 UNIX 时刻（秒）；未解锁返回 None（自动重锁窗口判定用）。
+    pub fn unlocked_since_secs(&self) -> Option<f64> {
+        self.data_key.as_ref()?;
+        self.unlocked_at
     }
 
     /// 校验主密码（不改变解锁状态）。非密码模式返回 false。
