@@ -728,6 +728,46 @@ pub async fn sk_tracert(host: String, max_hops: Option<u32>) -> Result<serde_jso
     .map_err(|e| format!("tracert 线程失败: {e}"))?
 }
 
+// ---------------- M4 工具箱：DNS 测速 ----------------
+
+/// DNS 测速：并发测各公共 DNS 的解析延迟/成功率，并推荐最优。
+#[tauri::command]
+pub async fn sk_dns_speed(domain: String, times: Option<u32>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let domain = domain.trim().to_string();
+        if domain.is_empty() {
+            return Err("测试域名不能为空".to_string());
+        }
+        let times = times.unwrap_or(3).clamp(1, 5);
+        let results = crate::dnsspeed::run_all(&domain, times);
+        let (usable, failed) = crate::dnsspeed::summarize(&results);
+        Ok(serde_json::json!({
+            "domain": domain,
+            "times": times,
+            "results": results,
+            "usable": usable,
+            "failed": failed,
+            "recommendation": crate::dnsspeed::recommendation_text(&results),
+        }))
+    })
+    .await
+    .map_err(|e| format!("测速线程失败: {e}"))?
+}
+
+/// 下载测速的**未实现说明**（前端据此显示明确提示，而不是给假结果）。
+#[tauri::command]
+pub fn sk_speedtest_status() -> serde_json::Value {
+    serde_json::json!({
+        "available": false,
+        "reason": "Rust 版尚无 HTTPS 下载能力（标准库不提供 TLS，需引入 rustls/native-tls 并做依赖决策）；Python 版的测速源全是 https。为避免给出假结果，下载测速暂未接入。",
+        "python_urls": [
+            "https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe",
+            "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_250avis_x64.exe",
+            "https://mirrors.aliyun.com/debian-cd/current/amd64/iso-cd/debian-12.9.0-amd64-netinst.iso"
+        ],
+    })
+}
+
 // ---------------- M4 工具箱：局域网设备 ----------------
 
 /// 扫描本机所在 /24 网段：并发 ping 唤醒邻居 → 读 ARP 表列出存活设备。

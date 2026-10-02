@@ -22,6 +22,7 @@ mod clipboard_history;
 mod clipboard_write;
 mod commands;
 mod dnsclient;
+mod dnsspeed;
 mod hostsed;
 mod hotkey;
 mod input;
@@ -173,6 +174,8 @@ pub fn run() {
             commands::sk_dns_query,
             commands::sk_ping,
             commands::sk_tracert,
+            commands::sk_dns_speed,
+            commands::sk_speedtest_status,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");
