@@ -18,6 +18,7 @@ import {
   Space,
   Switch,
   Table,
+  Tabs,
   Tag,
   Typography,
   message,
@@ -25,6 +26,7 @@ import {
 import { Dashboard } from "./Overview";
 import { Diagnose } from "./Diagnose";
 import { ToolboxHosts } from "./ToolboxHosts";
+import { ToolboxPorts } from "./ToolboxPorts";
 import { applyTheme, palette, type Palette } from "./theme";
 
 interface ClipRow {
@@ -207,7 +209,25 @@ export function App() {
     overview: <Dashboard />,
     clipboard: <ClipboardPage />,
     diagnose: <Diagnose />,
-    toolbox: <ToolboxHosts />,
+    toolbox: (
+      <Tabs
+        items={[
+          { key: "hosts", label: "Hosts 编辑", children: <ToolboxHosts /> },
+          { key: "ports", label: "端口 / 局域网", children: <ToolboxPorts /> },
+          {
+            key: "soon",
+            label: "待接入",
+            children: (
+              <Pending
+                title="工具箱其余项"
+                milestone="M4"
+                detail="测速 / DNS 子网计算 / ping 路由 / DNS 测速 / 应用联网 —— 逐轮接入。"
+              />
+            ),
+          },
+        ]}
+      />
+    ),
     system: (
       <Pending
         title="系统助手"

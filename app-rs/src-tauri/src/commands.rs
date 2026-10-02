@@ -533,6 +533,157 @@ pub async fn sk_hosts_backup() -> Result<String, String> {
     .map_err(|e| format!("备份线程失败: {e}"))?
 }
 
+// ---------------- M4 工具箱：端口 / 进程 ----------------
+
+/// 构造命令参数表（本地小工具，避免每处写 `.to_string()`）。
+fn args(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+/// 端口与进程列表：`netstat -ano` + `tasklist` 合并。
+#[tauri::command]
+pub async fn sk_ports_list() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let ns = crate::w32::run_capture(&args(&["netstat", "-ano"]), 30)
+            .map_err(|e| format!("netstat 无法执行: {e}"))?;
+        // tasklist 失败不致命：只是进程名缺失
+        let tl = crate::w32::run_capture(&args(&["tasklist", "/fo", "csv", "/nh"]), 30)
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+        let procs = crate::portscan::parse_tasklist_csv(&tl);
+        let rows: Vec<serde_json::Value> = crate::portscan::parse_netstat(&ns.stdout)
+            .into_iter()
+            .map(|r| {
+                let pid = r.pid;
+                serde_json::json!({
+                    "proto": r.proto,
+                    "local": r.local,
+                    "remote": r.remote,
+                    "state": r.state,
+                    "pid": pid,
+                    "process": procs.get(&pid).cloned().unwrap_or_default(),
+                    "listening": r.is_listening(),
+                    "port": r.local_port(),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "rows": rows,
+            "total": rows.len(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("采集线程失败: {e}"))?
+}
+
+/// 结束指定进程（危险操作，前端必须二次确认）。
+#[tauri::command]
+pub async fn sk_kill_process(pid: u32) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if pid == 0 {
+            return Err("PID 0 是系统空闲进程，不允许结束".to_string());
+        }
+        if pid == 4 {
+            return Err("PID 4 是系统进程，不允许结束".to_string());
+        }
+        if pid == std::process::id() {
+            return Err("不允许结束 SysKit 自身".to_string());
+        }
+        let out = crate::w32::run_capture(&args(&["taskkill", "/PID", &pid.to_string(), "/F"]), 15)
+            .map_err(|e| format!("taskkill 无法执行: {e}"))?;
+        if out.ok {
+            Ok(format!("已结束进程 PID {pid}"))
+        } else {
+            Err(format!("结束失败: {}", out.tail(0, 150).trim()))
+        }
+    })
+    .await
+    .map_err(|e| format!("执行线程失败: {e}"))?
+}
+
+// ---------------- M4 工具箱：局域网设备 ----------------
+
+/// 扫描本机所在 /24 网段：并发 ping 唤醒邻居 → 读 ARP 表列出存活设备。
+#[tauri::command]
+pub async fn sk_lan_scan(prefix: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let prefix = match prefix.filter(|p| !p.trim().is_empty()) {
+            Some(p) => p.trim().to_string(),
+            None => {
+                let up = crate::telemetry::physical_up_adapters();
+                let snap = crate::snapshot::take();
+                let ip = up
+                    .iter()
+                    .find_map(|name| {
+                        snap.adapters
+                            .iter()
+                            .find(|a| &a.name == name)
+                            .and_then(|a| a.ipv4.first().cloned())
+                    })
+                    .ok_or_else(|| "未找到可用的本机 IPv4 地址，无法推断网段".to_string())?;
+                crate::portscan::subnet24_of(&ip)
+                    .ok_or_else(|| format!("无法从 {ip} 推断 /24 网段"))?
+            }
+        };
+        let hosts = crate::portscan::hosts_in_subnet24(&prefix);
+        // 并发 ping：256 个线程太重，用 32 路分批（每批 ~1 秒，总 ~8 秒）
+        const BATCH: usize = 32;
+        for chunk in hosts.chunks(BATCH) {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|h| {
+                    let h = h.clone();
+                    std::thread::spawn(move || {
+                        let _ = crate::w32::run_capture(
+                            &args(&["ping", "-n", "1", "-w", "500", &h]),
+                            3,
+                        );
+                    })
+                })
+                .collect();
+            for h in handles {
+                let _ = h.join();
+            }
+        }
+        let arp = crate::w32::run_capture(&args(&["arp", "-a"]), 20)
+            .map_err(|e| format!("arp 无法执行: {e}"))?;
+        let mut devices: Vec<serde_json::Value> = crate::portscan::parse_arp(&arp.stdout)
+            .into_iter()
+            .filter(crate::portscan::is_useful_neighbor)
+            .filter(|e| e.ip.starts_with(&format!("{prefix}.")))
+            .map(|e| {
+                // 再 ping 一次拿延迟（ARP 表已暖，这次很快）
+                let latency =
+                    crate::w32::run_capture(&args(&["ping", "-n", "1", "-w", "800", &e.ip]), 3)
+                        .ok()
+                        .filter(|o| o.ok)
+                        .and_then(|o| crate::portscan::parse_ping_ms(&o.combined()));
+                serde_json::json!({
+                    "ip": e.ip,
+                    "mac": e.mac,
+                    "kind": e.kind,
+                    "latency_ms": latency,
+                })
+            })
+            .collect();
+        devices.sort_by_key(|d| {
+            d["ip"]
+                .as_str()
+                .and_then(|s| s.rsplit('.').next())
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0)
+        });
+        Ok(serde_json::json!({
+            "prefix": prefix,
+            "scanned": hosts.len(),
+            "devices": devices,
+            "count": devices.len(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("扫描线程失败: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

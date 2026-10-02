@@ -29,6 +29,7 @@ mod input_panel;
 mod netcheck;
 mod netstats;
 mod paths;
+mod portscan;
 mod rate_stats;
 mod rate_store;
 mod repairs;
@@ -164,6 +165,9 @@ pub fn run() {
             commands::sk_hosts_toggle,
             commands::sk_hosts_write,
             commands::sk_hosts_backup,
+            commands::sk_ports_list,
+            commands::sk_kill_process,
+            commands::sk_lan_scan,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");
