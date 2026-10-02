@@ -19,6 +19,7 @@
 
 mod appnet;
 mod backup;
+mod battery;
 mod cleanup;
 mod clipboard_history;
 mod clipboard_write;
@@ -194,6 +195,8 @@ pub fn run() {
             commands::sk_clean_targets,
             commands::sk_clean_scan,
             commands::sk_clean_run,
+            commands::sk_power_status,
+            commands::sk_battery_health,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

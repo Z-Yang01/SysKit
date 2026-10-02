@@ -985,6 +985,41 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M5 系统助手：电池 ----------------
+
+/// 实时电源状态（`GetSystemPowerStatus`，微秒级，可频繁调用）。
+#[tauri::command]
+pub fn sk_power_status() -> serde_json::Value {
+    let p = crate::battery::read_power();
+    serde_json::json!({
+        "ac_online": p.ac_online,
+        "has_battery": p.has_battery,
+        "percent": p.percent,
+        "charging": p.charging,
+        "seconds_left": p.seconds_left,
+        "remaining_human": crate::battery::human_remaining(p.seconds_left),
+        "summary": crate::battery::power_summary(&p),
+    })
+}
+
+/// 电池健康度（WMI，**最坏 30 秒**）——只由用户点刷新触发，不做轮询。
+#[tauri::command]
+pub async fn sk_battery_health() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let h = crate::battery::query_health();
+        Ok(serde_json::json!({
+            "design_mwh": h.design_mwh,
+            "full_mwh": h.full_mwh,
+            "health_percent": h.health_percent,
+            "token": crate::battery::health_token(h.health_percent),
+            "available": h.is_available(),
+            "note": crate::battery::health_note(&h),
+        }))
+    })
+    .await
+    .map_err(|e| format!("查询线程失败: {e}"))?
+}
+
 // ---------------- M5 系统助手：磁盘空间 / 垃圾清理 ----------------
 
 /// 列出本地卷的容量与使用率。
