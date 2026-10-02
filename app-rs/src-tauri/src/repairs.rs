@@ -1333,7 +1333,7 @@ fn mac_random_apply(p: &BTreeMap<String, String>, enable: bool, verb: &str) -> R
 
 // ---------------- 注册表（顺序与 Python ACTION_IDS 完全一致） ----------------
 
-/// 全部 20 个动作，顺序 = Python `ACTION_IDS` 顺序。
+/// 全部 19 个动作，顺序 = Python `ACTION_IDS` 顺序。
 pub fn catalog() -> &'static [RepairAction] {
     static ACTIONS: &[RepairAction] = &[
         RepairAction {

@@ -218,11 +218,15 @@ fn decoration(key: &str) -> Decoration {
             1440,
         )
         .unwired("暂未生效：密码库数据层未实现（见 M6 说明）。"),
-        "palette_hotkey" => Decoration::restart("命令面板热键", "保存后即时生效；被占用会自动回退"),
-        "clip_paste_hotkey" => Decoration::restart("快捷粘贴面板热键", "空=禁用，仅托盘呼出"),
-        "clip_quick_hotkey" => {
-            Decoration::restart("快速粘贴热键", "不弹面板直接粘贴最新一条；空=禁用")
-        }
+        "palette_hotkey" => Decoration::new("命令面板热键", "保存后即时生效；被占用会自动回退旧值"),
+        "clip_paste_hotkey" => Decoration::new(
+            "快捷粘贴面板热键",
+            "保存后即时生效；被占用自动回退 Ctrl+Alt+V 预设，仍失败则禁用；空=禁用",
+        ),
+        "clip_quick_hotkey" => Decoration::new(
+            "快速粘贴热键",
+            "保存后即时生效，不弹面板直接粘贴最新一条；被占用自动回退旧值",
+        ),
         // migrated_v2 是内部迁移标志，本就无需消费方；不标「暂未生效」以免误导
         "migrated_v2" => Decoration::new("双热键迁移标志", "内部标志，一次性迁移用；一般无需改动"),
         "palette_commands" => {
@@ -782,6 +786,19 @@ mod tests {
             "图片捕获已完整实现，不该再标「暂未生效」或「部分生效」：{}",
             m.unwired_reason
         );
+    }
+
+    #[test]
+    fn hotkey_keys_are_instant_effect() {
+        // 三热键已实现「保存后即时重挂+被占回退」（Step 2），不得再标需重启——
+        // 标注随实现更新：过期标签会变成新的谎言。
+        for key in ["palette_hotkey", "clip_quick_hotkey", "clip_paste_hotkey"] {
+            let m = describe_all()
+                .into_iter()
+                .find(|m| m.key == key)
+                .unwrap_or_else(|| panic!("{key} 不在 defaults() 里"));
+            assert!(!m.needs_restart, "{key} 已即时重挂，不该再标「需重启」");
+        }
     }
 
     #[test]

@@ -12,9 +12,10 @@
 //! 教训清单见 app-rs/README.md（M1 起点必读）。
 
 // 绞杀者迁移期的跨里程碑契约：这些函数/常量已按 Python 版逐条实现并带单测，
-// 但它们的**调用方**属于后续里程碑（记录侧 M5、密码库 M6、设置写入 M7）。
+// 但它们的**调用方**属于剩余工作——M6 密码库数据层、Step4 的 UNWIRED 五项
+// 接线与原生 ICMP（实测移除本豁免现存 63 处，全部属上述两批）。
 // 覆盖范围是明确的、不掩盖错误——未使用变量/导入等仍按错误处理。
-// 每个 M 接入调用方后逐条删除此豁免（见 README 里程碑表的待办）。
+// 上述两批落地后本豁免必须收窄（README「已知缺口」有跟踪项）。
 #![allow(dead_code)]
 
 mod appnet;
@@ -83,15 +84,18 @@ fn startup_maintenance() {
     }
 }
 
-/// 注册三个全局热键；任一条被占用只记日志降级（托盘菜单仍可呼出）。
-fn start_hotkeys(app: &tauri::AppHandle) {
-    let bindings = hotkey::bindings(settings::get_str);
-    if bindings.is_empty() {
-        log::warn!("三个热键均未配置（或被显式关闭），仅托盘菜单可用");
-        return;
-    }
+/// 三把全局热键的宿主状态：重挂时 drain 旧 host（反注册）再压入新的。
+pub struct HotkeyHosts(pub std::sync::Mutex<Vec<hotkey::HotkeyHost>>);
+
+/// 注册/重挂三个全局热键。`previous` 提供各键保存前旧值（回退步来源）；
+/// 启动路径传 get_str 本身 → 旧值==当前值 → 无回退步。
+///
+/// 回退生效时：持久化实际生效值到设置 + 发 `sk://hotkey-reverted` 事件
+/// （前端刷新组合框），语义对齐 Python `_rehook_hotkey/_rehook_paste_hotkey`。
+pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) {
+    let chains = hotkey::build_chains(settings::get_str, previous);
     let handle = app.clone();
-    let (host, results) = hotkey::HotkeyHost::start(bindings, move |id, action| {
+    let (host, results) = hotkey::HotkeyHost::start_chains(chains, move |id, action| {
         log::info!("热键命中 id={id} action={action}");
         match action {
             "paste_panel" => input_panel::toggle_paste_panel(&handle),
@@ -109,15 +113,55 @@ fn start_hotkeys(app: &tauri::AppHandle) {
             _ => {}
         }
     });
-    for (id, ok) in &results {
-        if *ok {
-            log::info!("全局热键已注册 id={id}");
+    {
+        let state = app.state::<HotkeyHosts>();
+        let mut hosts = state.0.lock().expect("热键宿主锁中毒");
+        for h in hosts.drain(..) {
+            let mut h = h;
+            h.stop();
+        }
+        hosts.push(host);
+    }
+    for r in &results {
+        if !r.ok {
+            log::warn!(
+                "全局热键 {} 全链注册失败（可能被占用），功能可经托盘菜单呼出",
+                r.key
+            );
+            continue;
+        }
+        if r.value_used != r.requested {
+            // 回退/禁用生效：持久化实际值 + 通知前端刷新（不再标 needs_restart）
+            let _ = settings::set_one(r.key, serde_json::json!(r.value_used));
+            log::warn!(
+                "热键 {} 请求值「{}」被占，已回退为「{}」",
+                r.key,
+                r.requested,
+                if r.value_used.is_empty() {
+                    "禁用"
+                } else {
+                    &r.value_used
+                }
+            );
+            let _ = app.emit(
+                "sk://hotkey-reverted",
+                serde_json::json!({ "key": r.key, "value": r.value_used }),
+            );
         } else {
-            log::warn!("全局热键 id={id} 注册失败（可能被占用），功能可经托盘菜单呼出");
+            log::info!(
+                "全局热键已生效 key={} id={} 值={}",
+                r.key,
+                r.id,
+                r.value_used
+            );
         }
     }
-    // 句柄常驻：丢弃只 detach、泵线程照旧存活；显式 leak 表达「与进程同寿」的意图
-    Box::leak(Box::new(host));
+}
+
+/// 注册三个全局热键；任一条被占用按链回退（对齐 Python _rehook 语义）。
+fn start_hotkeys(app: &tauri::AppHandle) {
+    app.manage(HotkeyHosts(std::sync::Mutex::new(Vec::new())));
+    apply_hotkeys(app, &settings::get_str);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

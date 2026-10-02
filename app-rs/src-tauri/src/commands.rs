@@ -1305,9 +1305,32 @@ pub fn sk_settings_all() -> serde_json::Value {
 }
 
 /// 写入一个设置项（类型收敛 + 范围校验都在后端做，界面可被绕过）。
+///
+/// 热键三键保存后即时重挂（语义对齐 Python `_rehook_hotkey`）：被占回退
+/// 旧值并持久化 + 发 `sk://hotkey-reverted`；`previous` 快照在写入前捕获。
 #[tauri::command]
-pub fn sk_settings_set(key: String, value: serde_json::Value) -> Result<serde_json::Value, String> {
+pub fn sk_settings_set(
+    key: String,
+    value: serde_json::Value,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    const HOTKEY_KEYS: [&str; 3] = ["palette_hotkey", "clip_quick_hotkey", "clip_paste_hotkey"];
+    let previous = if HOTKEY_KEYS.contains(&key.as_str()) {
+        Some(crate::settings::get_str(&key))
+    } else {
+        None
+    };
     let saved = crate::settings::set_one(&key, value)?;
+    if let Some(previous) = previous {
+        let prev_getter = |k: &str| -> String {
+            if k == key {
+                previous.clone()
+            } else {
+                crate::settings::get_str(k)
+            }
+        };
+        crate::apply_hotkeys(&app, &prev_getter);
+    }
     Ok(serde_json::json!({ "key": key, "value": saved, "message": "已保存" }))
 }
 

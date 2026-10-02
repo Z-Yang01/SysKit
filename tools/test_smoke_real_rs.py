@@ -34,6 +34,7 @@
 """
 import ctypes
 import os
+import shutil
 import sys
 import time
 from ctypes import wintypes
@@ -744,14 +745,73 @@ def advapi32_open_process_token(advapi, proc_handle, out_token):
 
 
 class TestEdgeAFallbackChain:
-    """边界 a（热键回退链）：Rust 版待 Step 2 实现即时重注册+回退链后补验。
+    """边界 a：占住 Ctrl+Win+V → 设置页改键保存 → 即时重挂回退链。
 
-    当前 Rust 语义：启动时注册一次，注册失败仅日志降级（托盘兜底），
-    改键需重启且设置页已如实标注 needs_restart——无可驱动的回退链路。
+    Rust 版已实现即时重注册（Step 2）：sk_settings_set 保存热键键 →
+    apply_hotkeys 走链（当前值 → Ctrl+Alt+V 预设(快速键未占时) → 禁用），
+    回退结果持久化 settings.json。需人工配合：按提示在设置页操作。
+    回退提示经 webview message 呈现（无原生对话框），断言只看 settings.json。
     """
 
-    def test_fallback_chain_pending_step2(self):
-        pytest.skip("回退链属 Step 2（热键即时重注册）交付物，落地后本靶改写为真验证")
+    def test_fallback_chain_when_ctrl_win_v_occupied(self, tmp_path):
+        require_syskit_running()
+        settings_path = _find_settings_file()
+        if not settings_path:
+            pytest.skip("未定位到运行实例的 settings.json（用 SYSKIT_DATA_DIR 指定后重跑）")
+        import json
+        before = json.load(open(settings_path, encoding="utf-8"))
+        panel_before = before.get("clip_paste_hotkey", "")
+        if panel_before != "Ctrl+Win+V":
+            pytest.skip(f"面板热键当前为 {panel_before!r}（需为 Ctrl+Win+V 再跑本靶）")
+
+        log = LogWatcher()
+        occupier = _Occupier()
+        ahk = shutil.which("AutoHotkey.exe") or shutil.which("AutoHotkeyU64.exe")
+        if ahk:
+            ahk_script = tmp_path / "occupy.ahk"
+            ahk_script.write_text("^#v::Return" + chr(10), encoding="utf-8")
+            os.startfile(f'"{ahk}" "{ahk_script}"')
+            time.sleep(1.0)
+            release = lambda: None
+        else:
+            occupier.acquire()
+            release = occupier.release
+        try:
+            print(chr(10) + "[边界a] 请在 Rust 版设置页把面板粘贴热键改为 Ctrl+Win+V 并保存…")
+            changed = wait_until(lambda: _panel_key_changed(settings_path, panel_before),
+                                 90, step=0.5)
+            if not changed:
+                pytest.skip("90s 内未检测到保存动作（人工步骤未执行），本靶跳过")
+            after = json.load(open(settings_path, encoding="utf-8"))
+            panel_after = after.get("clip_paste_hotkey", "")
+            quick_key = str(after.get("clip_quick_hotkey", "")).strip().lower()
+            if quick_key == "ctrl+alt+v":
+                assert panel_after == "",                     f"回退链未按预期禁用面板键：当前 {panel_after!r}（预期 ''）"
+            else:
+                assert panel_after == "Ctrl+Alt+V",                     f"回退链未回退到 Ctrl+Alt+V：当前 {panel_after!r}"
+            lines = chr(10).join(log.new_lines())
+            print(chr(10) + "[边界a] SysKit(Rust) 日志尾部：" + chr(10) + lines[-800:])
+            print(chr(10) + "[边界a] 结果：面板键 " + repr(panel_before) + " → "
+                  + repr(panel_after) + "；恢复方法：退出占用源后在设置页改回并保存。")
+        finally:
+            release()
+
+
+def _Occupier():
+    class _Occ:
+        def acquire(self):
+            MOD_CTRL_WIN = 0x0002 | 0x0008
+            self.ok = bool(ctypes.windll.user32.RegisterHotKey(
+                None, 0x5991, MOD_CTRL_WIN | 0x4000, VK_V))
+            if not self.ok:
+                pytest.skip("本进程注册 Ctrl+Win+V 失败（已被占？）——占位环境不成立")
+
+        def release(self):
+            try:
+                ctypes.windll.user32.UnregisterHotKey(None, 0x5991)
+            except Exception:
+                pass
+    return _Occ()
 
 
 def _find_settings_file():

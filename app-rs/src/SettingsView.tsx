@@ -24,6 +24,13 @@ import {
   message,
 } from "antd";
 
+/** 热键回退事件里的键名 → 界面名称（与 settings.rs Decoration label 对齐）。 */
+const HOTKEY_LABELS: Record<string, string> = {
+  palette_hotkey: "命令面板热键",
+  clip_paste_hotkey: "快捷粘贴面板热键",
+  clip_quick_hotkey: "快速粘贴热键",
+};
+
 import {
   changedCount,
   displayValue,
@@ -200,6 +207,27 @@ function SettingsPanel() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // 热键被占回退：后端已持久化实际生效值，这里刷新界面并明示（对齐 Python 弹窗语义）
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlisten = await listen<{ key: string; value: string }>(
+        "sk://hotkey-reverted",
+        (e) => {
+          const name = HOTKEY_LABELS[e.payload.key] ?? e.payload.key;
+          message.warning(
+            e.payload.value
+              ? `热键已被其他程序占用，「${name}」已回退为「${e.payload.value}」`
+              : `热键已被其他程序占用，「${name}」已禁用（可在设置页改为其他组合）`,
+          );
+          void load();
+        },
+      );
+    })();
+    return () => unlisten?.();
   }, [load]);
 
   const save = useCallback(

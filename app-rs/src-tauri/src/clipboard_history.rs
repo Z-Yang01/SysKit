@@ -85,7 +85,17 @@ impl DigestWindow {
         self.prune();
     }
 
-    fn contains(&self, text: &str) -> bool {
+    /// 读取语义对齐 Python `_text_in`：**匹配前先剪掉过期摘要**——TTL 一过
+    /// 立即失效，不等下一次 mark 顺带清理（分叉修复，Step 2）。
+    fn contains(&mut self, text: &str) -> bool {
+        self.prune();
+        let d = digest(text);
+        self.entries.iter().any(|(e, _)| *e == d)
+    }
+
+    #[cfg(test)]
+    fn contains_at(&mut self, text: &str, now: f64) -> bool {
+        self.entries.retain(|(_, until)| *until > now);
         let d = digest(text);
         self.entries.iter().any(|(e, _)| *e == d)
     }
@@ -448,6 +458,21 @@ fn delete_image_files(items: &[ClipItem]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digest_window_contains_prunes_expired_on_read() {
+        // 对齐 Python _text_in：匹配前先剪过期——TTL 一过立即失效，
+        // 不等下一次 mark 顺带清理（Step 2 分叉修复）
+        let mut w = DigestWindow::default();
+        let now = now_secs();
+        w.entries.push((digest("secret"), now + 5.0));
+        assert!(w.contains_at("secret", now), "TTL 内应命中");
+        assert!(!w.contains_at("secret", now + 6.0), "过期后应立即失效");
+        assert!(
+            w.entries.is_empty(),
+            "读时剪枝应清掉过期条目，而非仅比对跳过"
+        );
+    }
 
     fn fresh() -> History {
         // 先钉住数据目录：add/remove/evict 会经由 paths::image_path 落路径

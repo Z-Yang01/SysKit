@@ -183,6 +183,42 @@ pub struct HotkeyBinding {
     pub action: &'static str,
 }
 
+/// 重挂链的一步：Register 尝试注册；Disable 是「禁用」终态（不注册），
+/// value 为该步落盘的设置值（回退到空/不可解析旧值时原样保存，对齐 Python）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainStep {
+    Register {
+        value: String,
+        binding: HotkeyBinding,
+    },
+    Disable {
+        value: String,
+    },
+}
+
+/// 一把热键的重挂链：依次尝试，首个注册成功者生效。
+/// 语义移植 Python `_rehook_hotkey`（palette/quick：新值失败回退旧值）与
+/// `_rehook_paste_hotkey`（面板：新值 → Ctrl+Alt+V 预设 → 禁用）。
+#[derive(Debug, Clone)]
+pub struct HotkeyChain {
+    pub key: &'static str,
+    pub id: i32,
+    pub action: &'static str,
+    /// 保存前请求的值（用于判断「是否发生回退」）。
+    pub requested: String,
+    pub steps: Vec<ChainStep>,
+}
+
+/// 链执行结果：value_used 为实际生效的设置值（回退/禁用后 ≠ requested）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainResult {
+    pub key: &'static str,
+    pub id: i32,
+    pub requested: String,
+    pub value_used: String,
+    pub ok: bool,
+}
+
 /// 由设置文本构造绑定；文本为空（用户显式关闭）或非法 → None。
 pub fn binding_for(id: i32, text: &str, action: &'static str) -> Option<HotkeyBinding> {
     let text = text.trim();
@@ -198,18 +234,89 @@ pub fn binding_for(id: i32, text: &str, action: &'static str) -> Option<HotkeyBi
     })
 }
 
-/// 三个热键的绑定清单（设置键 → id → 动作），逐项对齐 palette.py。
+/// 三个热键的重挂链构造（设置键 → id → 动作），逐项对齐 palette.py。
 ///
-/// `get` 是设置读取器（测试注入假设置，生产传 settings::get_str）。
-pub fn bindings<F: Fn(&str) -> String>(get: F) -> Vec<HotkeyBinding> {
-    [
+/// `get` 读当前设置（构造尝试序列）；`previous` 读保存前旧值（回退步来源，
+/// 生产由 sk_settings_set 捕获快照注入；启动路径传 get 本身 → 旧值==当前值
+/// 自动去重，无回退步——对齐 Python 启动注册无回退语义）。
+pub fn build_chains<F, P>(get: F, previous: P) -> Vec<HotkeyChain>
+where
+    F: Fn(&str) -> String,
+    P: Fn(&str) -> String,
+{
+    let mut out = Vec::new();
+    for (key, id, action) in [
         ("palette_hotkey", ID_PALETTE, "palette"),
         ("clip_quick_hotkey", ID_QUICK_PASTE, "quick_paste"),
-        ("clip_paste_hotkey", ID_PASTE_PANEL, "paste_panel"),
-    ]
-    .into_iter()
-    .filter_map(|(key, id, action)| binding_for(id, &get(key), action))
-    .collect()
+    ] {
+        let cur = get(key).trim().to_string();
+        let mut steps = Vec::new();
+        // 空串 = 显式禁用：早退、不回退（对齐 Python `if not text or setup: return`）
+        if !cur.is_empty() {
+            if let Some(b) = binding_for(id, &cur, action) {
+                steps.push(ChainStep::Register {
+                    value: cur.clone(),
+                    binding: b,
+                });
+            }
+            let prev = previous(key).trim().to_string();
+            if prev != cur {
+                // 回退步：旧值可解析则注册之；不可解析/为空则落盘旧值（禁用态）
+                match binding_for(id, &prev, action) {
+                    Some(b) => steps.push(ChainStep::Register {
+                        value: prev.clone(),
+                        binding: b,
+                    }),
+                    None => steps.push(ChainStep::Disable { value: prev }),
+                }
+            }
+        }
+        out.push(HotkeyChain {
+            key,
+            id,
+            action,
+            requested: cur,
+            steps,
+        });
+    }
+    // 面板键走专用链（_rehook_paste_hotkey 语义）：
+    // 当前值 → Ctrl+Alt+V 预设（仅当快速键未占用该组合）→ 禁用
+    {
+        let key = "clip_paste_hotkey";
+        let id = ID_PASTE_PANEL;
+        let action = "paste_panel";
+        let cur = get(key).trim().to_string();
+        let mut steps = Vec::new();
+        if !cur.is_empty() {
+            if let Some(b) = binding_for(id, &cur, action) {
+                steps.push(ChainStep::Register {
+                    value: cur.clone(),
+                    binding: b,
+                });
+            }
+            let preset = "Ctrl+Alt+V";
+            let quick = get("clip_quick_hotkey").trim().to_lowercase();
+            if quick != preset.to_lowercase() {
+                if let Some(b) = binding_for(id, preset, action) {
+                    steps.push(ChainStep::Register {
+                        value: preset.to_string(),
+                        binding: b,
+                    });
+                }
+            }
+            steps.push(ChainStep::Disable {
+                value: String::new(),
+            });
+        }
+        out.push(HotkeyChain {
+            key,
+            id,
+            action,
+            requested: cur,
+            steps,
+        });
+    }
+    out
 }
 
 /// 消息泵线程句柄：保留用于进程退出前的反注册。
@@ -222,24 +329,58 @@ pub struct HotkeyHost {
 const WM_SK_STOP: u32 = 0x8000 + 0x5359;
 
 impl HotkeyHost {
-    /// 起线程注册全部热键并跑消息泵；`on_hotkey` 在泵线程被调用。
+    /// 起线程逐链注册并跑消息泵；`on_hotkey` 在泵线程被调用。
     ///
-    /// 返回每条的注册结果（id, 是否成功）——失败不 panic，调用方记日志降级。
-    pub fn start<F>(bindings: Vec<HotkeyBinding>, on_hotkey: F) -> (Self, Vec<(i32, bool)>)
+    /// 每条链按序尝试：Register 步失败换下一步，Disable 步直接视为「禁用」
+    /// 生效；全部 Register 失败且无 Disable 步 → ok=false（调用方记日志）。
+    /// 注册必须在本线程做（WM_HOTKEY 派发给注册线程）——回退也因此在本线程走。
+    pub fn start_chains<F>(chains: Vec<HotkeyChain>, on_hotkey: F) -> (Self, Vec<ChainResult>)
     where
         F: Fn(i32, &'static str) + Send + 'static,
     {
-        let (ready_tx, ready_rx) = mpsc::channel::<(u32, Vec<(i32, bool)>)>();
+        let (ready_tx, ready_rx) = mpsc::channel::<(u32, Vec<ChainResult>)>();
         let join = thread::spawn(move || {
             let thread_id = unsafe { GetCurrentThreadId() };
-            let mut registered = Vec::new();
-            for b in &bindings {
-                let ok = crate::w32::register_hotkey(b.mods, b.vk, b.id);
-                registered.push((b.id, ok));
+            let mut registered = Vec::new(); // (id, ok) 收尾反注册用
+            let mut results = Vec::new();
+            let mut table: Vec<(i32, &'static str)> = Vec::new();
+            for chain in &chains {
+                let mut outcome = ChainResult {
+                    key: chain.key,
+                    id: chain.id,
+                    requested: chain.requested.clone(),
+                    value_used: chain.requested.clone(),
+                    ok: false,
+                };
+                if chain.steps.is_empty() {
+                    // 空链 = 显式禁用（空串早退）：视为成功，维持空值
+                    outcome.ok = true;
+                    results.push(outcome);
+                    continue;
+                }
+                for step in &chain.steps {
+                    match step {
+                        ChainStep::Register { value, binding } => {
+                            let ok =
+                                crate::w32::register_hotkey(binding.mods, binding.vk, binding.id);
+                            if ok {
+                                outcome.ok = true;
+                                outcome.value_used = value.clone();
+                                registered.push((binding.id, true));
+                                table.push((binding.id, chain.action));
+                                break;
+                            }
+                        }
+                        ChainStep::Disable { value } => {
+                            outcome.ok = true;
+                            outcome.value_used = value.clone();
+                            break;
+                        }
+                    }
+                }
+                results.push(outcome);
             }
-            let _ = ready_tx.send((thread_id, registered.clone()));
-            let table: Vec<(i32, &'static str)> =
-                bindings.iter().map(|b| (b.id, b.action)).collect();
+            let _ = ready_tx.send((thread_id, results.clone()));
             let mut msg = MSG::default();
             loop {
                 // 阻塞取消息；WM_SK_STOP 由 stop() 投递以唤醒
@@ -369,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn bindings_follow_python_defaults() {
+    fn chains_follow_python_defaults() {
         let get = |k: &str| -> String {
             match k {
                 "palette_hotkey" => "Ctrl+Alt+K".into(),
@@ -378,16 +519,155 @@ mod tests {
                 _ => String::new(),
             }
         };
-        let bs = bindings(get);
-        assert_eq!(bs.len(), 3);
-        assert_eq!(bs[0].id, ID_PALETTE);
-        assert_eq!(bs[0].action, "palette");
-        assert_eq!(bs[1].id, ID_QUICK_PASTE);
-        assert_eq!(bs[2].id, ID_PASTE_PANEL);
+        let chains = build_chains(get, get);
+        assert_eq!(chains.len(), 3);
+        // 每条链首步 = Python 默认值的注册步（id/动作对齐）
+        let first = |c: &HotkeyChain| match &c.steps[0] {
+            ChainStep::Register { binding, .. } => (binding.id, binding.action),
+            other => panic!("首步应为 Register，实际 {other:?}"),
+        };
+        assert_eq!(first(&chains[0]), (ID_PALETTE, "palette"));
+        assert_eq!(first(&chains[1]), (ID_QUICK_PASTE, "quick_paste"));
+        assert_eq!(first(&chains[2]), (ID_PASTE_PANEL, "paste_panel"));
     }
 
     #[test]
     fn ids_match_python() {
         assert_eq!((ID_PALETTE, ID_QUICK_PASTE, ID_PASTE_PANEL), (1, 2, 3));
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    /// 假设置：当前值表 + 旧值表（sk_settings_set 的 previous 快照口径）。
+    fn fixtures(
+        cur: &[(&str, &str)],
+        prev: &[(&str, &str)],
+    ) -> (impl Fn(&str) -> String, impl Fn(&str) -> String) {
+        let cur: Vec<(String, String)> = cur
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let prev: Vec<(String, String)> = prev
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let c = move |k: &str| -> String {
+            cur.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let p = move |k: &str| -> String {
+            prev.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        (c, p)
+    }
+
+    fn chain_of<'a>(chains: &'a [HotkeyChain], key: &str) -> &'a HotkeyChain {
+        chains.iter().find(|c| c.key == key).unwrap()
+    }
+
+    #[test]
+    fn palette_chain_reverts_to_previous_on_fallback() {
+        let (cur, prev) = fixtures(
+            &[("palette_hotkey", "Ctrl+Alt+H")],
+            &[("palette_hotkey", "Ctrl+Alt+K")],
+        );
+        let chains = build_chains(cur, prev);
+        let c = chain_of(&chains, "palette_hotkey");
+        assert_eq!(c.requested, "Ctrl+Alt+H");
+        assert_eq!(c.steps.len(), 2, "新值 + 旧值两个 Register 步");
+        match &c.steps[1] {
+            ChainStep::Register { value, .. } => assert_eq!(value, "Ctrl+Alt+K"),
+            other => panic!("第二步应为 Register(旧值)，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_chain_no_fallback_when_previous_equals_current() {
+        // 启动路径 previous 传 get 本身 → 旧值==当前值 → 无回退步
+        let (cur, prev) = fixtures(
+            &[("palette_hotkey", "Ctrl+Alt+K")],
+            &[("palette_hotkey", "Ctrl+Alt+K")],
+        );
+        let chains = build_chains(cur, prev);
+        let c = chain_of(&chains, "palette_hotkey");
+        assert_eq!(c.steps.len(), 1);
+    }
+
+    #[test]
+    fn palette_chain_empty_current_yields_no_register() {
+        // 空串 = 显式禁用：早退、不回退（对齐 Python `if not text or setup: return`）
+        let (cur, prev) = fixtures(
+            &[("palette_hotkey", "")],
+            &[("palette_hotkey", "Ctrl+Alt+K")],
+        );
+        let chains = build_chains(cur, prev);
+        let c = chain_of(&chains, "palette_hotkey");
+        assert!(c.steps.is_empty(), "空当前值不得产生任何注册/回退步");
+    }
+
+    #[test]
+    fn panel_chain_skips_preset_when_quick_occupies_it() {
+        let (cur, prev) = fixtures(
+            &[
+                ("clip_paste_hotkey", "Ctrl+Win+V"),
+                ("clip_quick_hotkey", "Ctrl+Alt+V"),
+            ],
+            &[("clip_paste_hotkey", "Ctrl+Win+V")],
+        );
+        let chains = build_chains(cur, prev);
+        let c = chain_of(&chains, "clip_paste_hotkey");
+        assert_eq!(c.steps.len(), 2, "当前值 + 禁用终态（预设被快速键占用）");
+        assert!(matches!(c.steps[1], ChainStep::Disable { .. }));
+    }
+
+    #[test]
+    fn panel_chain_includes_preset_then_disable() {
+        let (cur, prev) = fixtures(
+            &[
+                ("clip_paste_hotkey", "Ctrl+Win+V"),
+                ("clip_quick_hotkey", "Ctrl+Shift+V"),
+            ],
+            &[("clip_paste_hotkey", "Ctrl+Win+V")],
+        );
+        let chains = build_chains(cur, prev);
+        let c = chain_of(&chains, "clip_paste_hotkey");
+        assert_eq!(c.steps.len(), 3);
+        match &c.steps[1] {
+            ChainStep::Register { value, .. } => assert_eq!(value, "Ctrl+Alt+V"),
+            other => panic!("第二步应为 Ctrl+Alt+V 预设，实际 {other:?}"),
+        }
+        assert!(matches!(c.steps[2], ChainStep::Disable { .. }));
+    }
+
+    #[test]
+    fn panel_chain_empty_current_goes_straight_to_disable() {
+        let (cur, prev) = fixtures(
+            &[
+                ("clip_paste_hotkey", ""),
+                ("clip_quick_hotkey", "Ctrl+Shift+V"),
+            ],
+            &[("clip_paste_hotkey", "")],
+        );
+        let chains = build_chains(cur, prev);
+        let c = chain_of(&chains, "clip_paste_hotkey");
+        assert!(c.steps.is_empty(), "空当前值早退，不尝试预设/禁用步");
+    }
+
+    #[test]
+    fn chains_cover_three_keys_with_ids() {
+        let (cur, prev) = fixtures(&[], &[]);
+        let chains = build_chains(cur, prev);
+        assert_eq!(chains.len(), 3);
+        assert_eq!(chains[0].id, ID_PALETTE);
+        assert_eq!(chains[1].id, ID_QUICK_PASTE);
+        assert_eq!(chains[2].id, ID_PASTE_PANEL);
     }
 }
