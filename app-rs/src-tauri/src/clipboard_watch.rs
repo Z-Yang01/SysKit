@@ -167,6 +167,13 @@ pub fn spawn() {
             let mut last_text = String::new();
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+                // 敏感内容到期清空搭在同一个循环里：不另起定时器，
+                // 且清空会改剪贴板内容——同循环内更新序号基线，不会把
+                // "我们自己清空"当成一次新复制。
+                if crate::sensitive::tick_clear() {
+                    last_seq = w32::clipboard_sequence();
+                    last_text.clear();
+                }
                 // 暂停时只更新序号基线：恢复后不会把暂停期间的内容补录进来
                 let seq = w32::clipboard_sequence();
                 if seq == last_seq {

@@ -1055,6 +1055,83 @@ pub async fn sk_clip_action_run(id: String, arg: String) -> Result<String, Strin
     .map_err(|e| format!("动作线程失败: {e}"))?
 }
 
+// ---------------- 敏感内容剪贴板 ----------------
+
+/// 复制一段敏感文本到剪贴板（密码 / WiFi 密钥等）。
+///
+/// 三处泄露面一起堵（少堵一处等于没堵）：
+/// 1. `mark_sensitive` —— 本应用的历史在 TTL 内不记录该文本；
+/// 2. `exclude_os_history` —— 不进 Win+V 历史、不上传云剪贴板；
+/// 3. 到期清空剪贴板（TTL 来自设置 `clip_sensitive_ttl`，0=不清空）。
+///
+/// 返回说明包含"多久后清空"，让用户知道保护强度；也便于界面在
+/// "不会自动清空"时提示其余保护仍在。
+#[tauri::command]
+pub fn sk_clip_copy_sensitive(text: String) -> Result<serde_json::Value, String> {
+    if text.is_empty() {
+        return Err("内容为空".to_string());
+    }
+    let ttl = crate::sensitive::effective_ttl(crate::settings::get_int("clip_sensitive_ttl"));
+    // 1. 让监听器在 TTL 内不记录。无 TTL 时给足够长的窗口——敏感内容本就该长期
+    //    不进历史（与 Python 的 `ttl if ttl > 0 else 3600` 同口径）
+    crate::clipboard_history::mark_sensitive(&text, ttl.map(|s| s as i64).unwrap_or(3600));
+    // 2. 写入剪贴板
+    if !crate::w32::clipboard_set_text(&text) {
+        return Err("写入剪贴板失败（可能被其他程序占用）".to_string());
+    }
+    // 3. 排除系统历史与云同步：必须在写入**之后**补设格式
+    crate::w32::exclude_os_history();
+    // 4. 安排到期清空
+    crate::sensitive::arm(&text, ttl);
+    Ok(serde_json::json!({
+        "ttl": ttl.unwrap_or(0),
+        "note": crate::sensitive::clear_note(ttl),
+    }))
+}
+
+/// 是否还有待清空的敏感内容（界面据此显示状态）。
+#[tauri::command]
+pub fn sk_clip_sensitive_pending() -> serde_json::Value {
+    serde_json::json!({
+        "pending": crate::sensitive::pending_text().is_some(),
+        "ttl": crate::sensitive::effective_ttl(crate::settings::get_int("clip_sensitive_ttl"))
+            .unwrap_or(0),
+    })
+}
+
+/// 已保存的 WLAN 配置文件列表（供密码查看下拉）。
+#[tauri::command]
+pub async fn sk_wifi_profiles() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let list = crate::repairs::wlan_profiles();
+        Ok(serde_json::json!({ "profiles": list, "count": list.len() }))
+    })
+    .await
+    .map_err(|e| format!("枚举线程失败: {e}"))?
+}
+
+/// 读取某个已保存 WLAN 配置文件的明文密钥（需管理员权限）。
+///
+/// 单独的只读查询：**不写剪贴板**。复制走 `sk_clip_copy_sensitive`——
+/// 密码类内容只能经由那条路径进入剪贴板，否则会漏掉"不进历史/不进系统历史/
+/// 到期清空"三重保护。这条纪律靠 `vault::password_copy_routes_through_sensitive`
+/// 一类的守卫测试维持。
+#[tauri::command]
+pub async fn sk_wifi_profile_password(name: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // netsh 超时 15s：必须在阻塞线程，不能占住命令线程
+        let c = crate::wifi::profile_credential(&name)?;
+        Ok(serde_json::json!({
+            "name": c.name,
+            "auth": c.auth,
+            "password": c.password,
+            "has_password": !c.password.is_empty(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("读取线程失败: {e}"))?
+}
+
 // ---------------- 后台监控 / 自动修复 ----------------
 
 /// 监控状态（状态码、失败连击、已执行修复次数、最近梯度）。

@@ -204,13 +204,9 @@ fn decoration(key: &str) -> Decoration {
         }
         "clip_sensitive_ttl" => Decoration::int(
             "敏感内容存活（秒）",
-            "复制敏感内容后自动清空剪贴板的秒数；0=不清空",
+            "复制敏感内容后自动清空剪贴板的秒数；0=不清空（仍不进历史与系统剪贴板历史）",
             0,
             3600,
-        )
-        .unwired(
-            "暂未生效：敏感标记本身已生效（密码库复制不会被记进历史），\
-             但「到期自动清空剪贴板」的计时器尚未实现。",
         ),
         "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径"),
         "vault_autolock_min" => Decoration::int("密码库自动锁定（分）", "0=不自动锁定", 0, 1440)
@@ -729,11 +725,10 @@ mod tests {
     /// 这个清单是**手工审计的产物**（逐键搜 `src-tauri/src/` 与 `src/` 里的引用）。
     /// 它同时是一份待办：接上消费方后应把该键从清单里删掉，删掉时这条测试会失败
     /// ——这正是我们想要的提醒（否则容易忘记摘掉过期的"暂未生效"标签）。
-    const UNWIRED: [&str; 5] = [
+    const UNWIRED: [&str; 4] = [
         // 单项
         "minimize_to_tray",
         "sound_alert_enabled",
-        "clip_sensitive_ttl",
         "vault_autolock_min",
         "vault_trust_min",
     ];

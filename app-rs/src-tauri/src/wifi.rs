@@ -365,3 +365,151 @@ mod tests {
         }
     }
 }
+
+/// 已保存的 WLAN 配置文件的凭据。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ProfileCredential {
+    /// 配置文件名（= SSID）
+    pub name: String,
+    /// 认证类型（原文，如 `WPA2-Personal` / `开放式`）
+    pub auth: String,
+    /// 明文密钥；取不到时为空串
+    pub password: String,
+}
+
+/// 从 `netsh wlan show profile name=… key=clear` 的输出里取认证类型与明文密钥。
+///
+/// **中英文都要认**：netsh 输出随系统语言变化，只认一种会在另一种语言下静默
+/// 返回空密码——用户看到"密码是空的"却不知道是解析失败。
+///
+/// 按**第一个**冒号/全角冒号切分：密码本身可能含冒号，按最后一个切会截断。
+pub fn parse_profile_credential(text: &str) -> (String, String) {
+    let mut auth = String::new();
+    let mut pwd = String::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once([':', '：']) else {
+            continue;
+        };
+        let k = key.trim();
+        let v = value.trim();
+        // 「身份验证」= Authentication；「关键内容」= Key Content
+        let is_auth = k.ends_with("身份验证") || k.eq_ignore_ascii_case("Authentication");
+        let is_key = k.ends_with("关键内容") || k.eq_ignore_ascii_case("Key Content");
+        // 首次命中即定：后续空值不得覆盖已取到的值
+        if is_auth && auth.is_empty() {
+            auth = v.to_string();
+        } else if is_key && pwd.is_empty() {
+            pwd = v.to_string();
+        }
+    }
+    (auth, pwd)
+}
+
+/// 读取某个已保存配置文件的凭据（需要管理员权限才能取回明文密钥）。
+pub fn profile_credential(name: &str) -> Result<ProfileCredential, String> {
+    let mut args: Vec<String> = ["netsh", "wlan", "show", "profile"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    args.push(format!("name={name}"));
+    args.push("key=clear".to_string());
+    let out = crate::w32::run_capture(&args, 15).map_err(|e| format!("netsh 无法执行: {e}"))?;
+    let text = out.combined();
+    // netsh 对不存在的配置文件会失败：明确报出来而不是给一个空密码
+    if text.contains("找不到") || text.to_lowercase().contains("not found") {
+        return Err(format!("找不到配置文件 {name}"));
+    }
+    let (auth, password) = parse_profile_credential(&text);
+    let is_open = auth.contains("开放") || auth.to_lowercase().contains("open");
+    if password.is_empty() && !is_open {
+        // 有认证却拿不到密钥：最常见原因是没有管理员权限（key=clear 接口限制）
+        return Err(
+            "读取明文密钥失败——通常需要以管理员身份运行（netsh key=clear 接口限制）".to_string(),
+        );
+    }
+    Ok(ProfileCredential {
+        name: name.to_string(),
+        auth,
+        password,
+    })
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn parses_chinese_netsh_output() {
+        let out = "\
+配置文件 SSID 的信息
+-----------------------------------------------------------------------
+    名称                   : MyWiFi
+    控制选项               : 所有用户配置文件
+    身份验证               : WPA2 - 个人
+    关键内容               : my-secret-pass
+";
+        let (auth, pwd) = parse_profile_credential(out);
+        assert_eq!(auth, "WPA2 - 个人");
+        assert_eq!(pwd, "my-secret-pass");
+    }
+
+    #[test]
+    fn parses_english_netsh_output() {
+        // 系统语言为英文时输出不同——只认中文会静默返回空密码
+        let out = "\
+Profile MyWiFi on interface Wi-Fi:
+-----------------------------------------------------------------------
+    Applied: All User Profile
+    Authentication         : WPA2-Personal
+    Key Content            : my-secret-pass
+";
+        let (auth, pwd) = parse_profile_credential(out);
+        assert_eq!(auth, "WPA2-Personal");
+        assert_eq!(pwd, "my-secret-pass");
+    }
+
+    #[test]
+    fn open_network_has_no_password_field() {
+        let out = "    身份验证               : 开放式\n";
+        let (auth, pwd) = parse_profile_credential(out);
+        assert_eq!(auth, "开放式");
+        assert_eq!(pwd, "", "开放网络本就没有密钥");
+    }
+
+    #[test]
+    fn full_width_colon_is_accepted() {
+        let out = "    关键内容：test123\n";
+        let (_, pwd) = parse_profile_credential(out);
+        assert_eq!(pwd, "test123");
+    }
+
+    #[test]
+    fn password_with_colon_is_kept_whole() {
+        // 密码含冒号：只能按**第一个**冒号切分，否则被截断成一半
+        let out = "    关键内容               : ab:cd:ef\n";
+        let (_, pwd) = parse_profile_credential(out);
+        assert_eq!(pwd, "ab:cd:ef");
+    }
+
+    #[test]
+    fn password_with_inner_spaces_is_preserved() {
+        // 首尾空白剥掉，中间空格保留（密码里的空格是有效字符）
+        let out = "    Key Content            :   my pass  \n";
+        let (_, pwd) = parse_profile_credential(out);
+        assert_eq!(pwd, "my pass");
+    }
+
+    #[test]
+    fn missing_fields_yield_empty_strings() {
+        let (auth, pwd) = parse_profile_credential("完全无关的输出\n");
+        assert!(auth.is_empty() && pwd.is_empty());
+    }
+
+    #[test]
+    fn first_occurrence_wins() {
+        // 不能被子段里的空值覆盖
+        let out = "    关键内容               : real\n    关键内容               : \n";
+        let (_, pwd) = parse_profile_credential(out);
+        assert_eq!(pwd, "real");
+    }
+}

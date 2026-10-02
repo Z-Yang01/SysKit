@@ -45,6 +45,7 @@ mod rate_stats;
 mod rate_store;
 mod repairs;
 mod secure_store;
+mod sensitive;
 mod settings;
 mod snapshot;
 mod startup;
@@ -236,6 +237,10 @@ pub fn run() {
             commands::sk_monitor_preview,
             commands::sk_clip_detect,
             commands::sk_clip_action_run,
+            commands::sk_clip_copy_sensitive,
+            commands::sk_clip_sensitive_pending,
+            commands::sk_wifi_profile_password,
+            commands::sk_wifi_profiles,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

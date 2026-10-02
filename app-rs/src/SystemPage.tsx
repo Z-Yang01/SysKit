@@ -4,10 +4,27 @@
  * 已交付：CPU / 内存 / 磁盘曲线 + WiFi 状态（SSID、信号、dBm、链路速率）。
  * 其余分页（启动项/电池/清理/磁盘/剪贴板/场景）逐轮补。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
+import {
+  Alert,
+  Button,
+  Card,
+  Col,
+  Descriptions,
+  Empty,
+  Row,
+  Select,
+  Space,
+  Spin,
+  Statistic,
+  Table,
+  Tabs,
+  Tag,
+  Typography,
+  message,
+} from "antd";
 
 import { ToolboxStartup } from "./ToolboxStartup";
 import { CleanupPanel, DiskPanel } from "./ToolboxDisk";
@@ -30,6 +47,16 @@ import {
   type TopProcs,
   type WifiInfo,
 } from "./system";
+import {
+  copyResultMessage,
+  maskPassword,
+  passwordErrorHint,
+  SENSITIVE_COPY_COMMAND,
+  strengthHint,
+  type ProfileCredential,
+  type ProfilesResult,
+  type SensitiveCopyResult,
+} from "./wifipassword";
 
 function tokenColor(token: string): string {
   switch (token) {
@@ -86,6 +113,7 @@ export function SystemPage() {
           { key: "battery", label: "电池健康", children: <BatteryPanel /> },
           { key: "modes", label: "场景模式", children: <ModesPanel /> },
           { key: "clip", label: "剪贴板历史", children: <ClipboardHistoryPanel /> },
+      { key: "wifipwd", label: "WiFi 密码", children: <WifiPasswordPanel /> },
         ]}
       />
     </Card>
@@ -301,3 +329,133 @@ function PerfPanel() {
     </Space>
   );
 }
+
+/** WiFi 密码：枚举已保存配置文件，读取明文密钥（需管理员），复制走敏感路径。 */
+function WifiPasswordPanel() {
+  const [profiles, setProfiles] = useState<string[]>([]);
+  const [selected, setSelected] = useState("");
+  const [cred, setCred] = useState<ProfileCredential | null>(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [show, setShow] = useState(false);
+
+  const loadProfiles = useCallback(async () => {
+    try {
+      const r = await invoke<ProfilesResult>("sk_wifi_profiles");
+      setProfiles(r.profiles);
+    } catch (e) {
+      message.error(String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProfiles();
+  }, [loadProfiles]);
+
+  const read = useCallback(async (name: string) => {
+    setSelected(name);
+    setLoading(true);
+    setErr("");
+    setCred(null);
+    setShow(false);
+    try {
+      setCred(await invoke<ProfileCredential>("sk_wifi_profile_password", { name }));
+    } catch (e) {
+      setErr(passwordErrorHint(String(e)));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const copy = useCallback(async () => {
+    if (!cred?.password) return;
+    try {
+      // 纪律：密码必须走敏感路径（不进历史 / 不进 Win+V 与云剪贴板 / 到期清空）
+      const r = await invoke<SensitiveCopyResult>(SENSITIVE_COPY_COMMAND, {
+        text: cred.password,
+      });
+      message.success(copyResultMessage(r));
+    } catch (e) {
+      message.error(String(e));
+    }
+  }, [cred]);
+
+  const strength = strengthHint(cred?.password ?? "");
+
+  return (
+    <Space direction="vertical" size={10} style={{ width: "100%" }}>
+      <Space wrap>
+        <Select
+          style={{ minWidth: 260 }}
+          placeholder="选择已保存的 WiFi"
+          value={selected || undefined}
+          onChange={(v) => void read(v)}
+          options={profiles.map((p) => ({ value: p, label: p }))}
+        />
+        <Button size="small" onClick={() => void loadProfiles()}>
+          刷新列表
+        </Button>
+        {loading && <Spin size="small" />}
+      </Space>
+
+      {profiles.length === 0 && !loading && (
+        <Alert
+          type="info"
+          showIcon
+          message="没有找到已保存的 WiFi 配置"
+          description="本机没有保存过 WLAN 配置文件，或无线网卡被禁用。这里只读取本机已保存的记录，不会扫描周边网络。"
+        />
+      )}
+
+      {err && <Alert type="warning" showIcon message="读取失败" description={err} />}
+
+      {cred && (
+        <Card size="small" title={`${cred.name} 的密钥`}>
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            <Descriptions size="small" column={1}>
+              <Descriptions.Item label="认证方式">{cred.auth || "—"}</Descriptions.Item>
+              <Descriptions.Item label="密钥">
+                {cred.has_password ? (
+                  <Space size={8}>
+                    <Typography.Text code>{maskPassword(cred.password, show)}</Typography.Text>
+                    <Button size="small" type="link" onClick={() => setShow((s) => !s)}>
+                      {show ? "隐藏" : "显示"}
+                    </Button>
+                  </Space>
+                ) : (
+                  <Typography.Text type="secondary">（无密钥，可能是开放网络）</Typography.Text>
+                )}
+              </Descriptions.Item>
+              {cred.has_password && (
+                <Descriptions.Item label="强度">
+                  <Space size={6}>
+                    <Tag color={strength.score >= 3 ? "green" : strength.score >= 2 ? "orange" : "red"}>
+                      {strength.label}
+                    </Tag>
+                    <span className="sk-hint">{strength.advice}</span>
+                  </Space>
+                </Descriptions.Item>
+              )}
+            </Descriptions>
+            {cred.has_password && (
+              <Space>
+                <Button type="primary" size="small" onClick={() => void copy()}>
+                  复制密钥
+                </Button>
+                <Typography.Text type="secondary" className="sk-hint">
+                  复制会走敏感通道：不进剪贴板历史、不进 Win+V 与云剪贴板，
+                  {copyResultMessage({
+                    ttl: 0,
+                    note: "并按设置里的「敏感内容存活」到期清空",
+                  })}
+                </Typography.Text>
+              </Space>
+            )}
+          </Space>
+        </Card>
+      )}
+    </Space>
+  );
+}
+
+
