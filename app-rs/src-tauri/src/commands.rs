@@ -985,6 +985,100 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M7 设置 / 日志 ----------------
+
+/// 全部设置的当前值与界面元数据。
+#[tauri::command]
+pub fn sk_settings_all() -> serde_json::Value {
+    serde_json::json!({
+        "items": crate::settings::describe_all(),
+        "count": crate::settings::defaults().len(),
+    })
+}
+
+/// 写入一个设置项（类型收敛 + 范围校验都在后端做，界面可被绕过）。
+#[tauri::command]
+pub fn sk_settings_set(key: String, value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let saved = crate::settings::set_one(&key, value)?;
+    Ok(serde_json::json!({ "key": key, "value": saved, "message": "已保存" }))
+}
+
+/// 恢复默认值（只重置已知键，动态键保留）。
+#[tauri::command]
+pub fn sk_settings_reset() -> Result<String, String> {
+    let n = crate::settings::reset_to_defaults()?;
+    Ok(format!(
+        "已恢复 {n} 项默认值（动态键如 modes_prev_volume 保留）"
+    ))
+}
+
+/// 日志文件列表（按修改时间倒序）。
+#[tauri::command]
+pub fn sk_log_list() -> serde_json::Value {
+    let dir = crate::paths::log_dir();
+    let mut files: Vec<serde_json::Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_file() {
+                continue;
+            }
+            let meta = e.metadata().ok();
+            let name = e.file_name().to_string_lossy().to_string();
+            // 只列日志类文件，避免把目录里的杂项也展示出来
+            if !name.ends_with(".log") && !name.ends_with(".txt") {
+                continue;
+            }
+            files.push(serde_json::json!({
+                "name": name,
+                "bytes": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                "modified": meta
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            }));
+        }
+    }
+    files.sort_by(|a, b| b["modified"].as_u64().cmp(&a["modified"].as_u64()));
+    serde_json::json!({
+        "dir": dir.to_string_lossy(),
+        "files": files,
+        "count": files.len(),
+    })
+}
+
+/// 读取日志尾部若干行（**只读尾部**：日志可能很大，整读会卡住界面）。
+#[tauri::command]
+pub async fn sk_log_tail(name: String, lines: Option<usize>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // 防目录穿越：只允许纯文件名
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(format!("非法的日志文件名: {name}"));
+        }
+        let path = crate::paths::log_dir().join(&name);
+        if !path.is_file() {
+            return Err(format!("日志文件不存在: {name}"));
+        }
+        let n = lines.unwrap_or(500).clamp(1, 5000);
+        let bytes = std::fs::read(&path).map_err(|e| format!("读取失败: {e}"))?;
+        // 日志既有 UTF-8 也有 ANSI 的可能：lossy 解码保证不因个别字节整篇失败
+        let text = String::from_utf8_lossy(&bytes);
+        let all: Vec<&str> = text.lines().collect();
+        let start = all.len().saturating_sub(n);
+        let tail: Vec<&str> = all[start..].to_vec();
+        Ok(serde_json::json!({
+            "name": name,
+            "total_lines": all.len(),
+            "shown": tail.len(),
+            "truncated": start > 0,
+            "lines": tail,
+        }))
+    })
+    .await
+    .map_err(|e| format!("读取线程失败: {e}"))?
+}
+
 // ---------------- M6 密码库（本阶段：加密层 + 界面骨架） ----------------
 
 /// 密码库状态（含各能力的可用性，供界面如实展示）。

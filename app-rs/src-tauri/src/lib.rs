@@ -211,6 +211,11 @@ pub fn run() {
             commands::sk_vault_verify_password,
             commands::sk_vault_remove_password,
             commands::sk_vault_store_unavailable,
+            commands::sk_settings_all,
+            commands::sk_settings_set,
+            commands::sk_settings_reset,
+            commands::sk_log_list,
+            commands::sk_log_tail,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

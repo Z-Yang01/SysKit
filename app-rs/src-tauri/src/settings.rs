@@ -55,6 +55,237 @@ pub fn defaults() -> Vec<(&'static str, Value, Ty)> {
     ]
 }
 
+/// 一个设置项的界面元数据。
+///
+/// **`defaults()` 是键清单的唯一来源**，这里只补"给人看"的信息：
+/// 缺元数据的键会退回 `key` 作为标签、并给空描述，**不会从界面上消失**。
+/// 这样元数据不会成为"漏掉某个键"的第二处真相。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SettingMeta {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    /// `bool` / `int` / `str`
+    pub ty: String,
+    pub default: Value,
+    pub current: Value,
+    /// 整数项的合法范围（越界会被拒绝写入）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<i64>,
+    /// 字符串项的可选值（非空时界面用下拉框）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+    /// 是否重启后生效（界面标注）
+    pub needs_restart: bool,
+}
+
+/// 界面装饰信息（标签 / 描述 / 范围 / 可选值 / 是否重启生效）。
+///
+/// 用结构体而不是六元组：六元组在调用处要靠位置记忆，极易把 `min`/`max` 写反，
+/// 而写反的范围会让校验变成"总是拒绝"或"总是接受"。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decoration {
+    pub label: &'static str,
+    pub description: &'static str,
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+    pub options: Option<Vec<String>>,
+    pub needs_restart: bool,
+}
+
+impl Decoration {
+    /// 没有元数据时的占位：标签留空，由调用方退回键名。
+    fn none() -> Self {
+        Self {
+            label: "",
+            description: "",
+            min: None,
+            max: None,
+            options: None,
+            needs_restart: false,
+        }
+    }
+
+    fn new(label: &'static str, description: &'static str) -> Self {
+        Self {
+            label,
+            description,
+            ..Self::none()
+        }
+    }
+
+    fn restart(label: &'static str, description: &'static str) -> Self {
+        Self {
+            needs_restart: true,
+            ..Self::new(label, description)
+        }
+    }
+
+    fn int(label: &'static str, description: &'static str, min: i64, max: i64) -> Self {
+        Self {
+            min: Some(min),
+            max: Some(max),
+            ..Self::new(label, description)
+        }
+    }
+
+    fn choice(label: &'static str, description: &'static str, opts: &[&str]) -> Self {
+        Self {
+            options: Some(opts.iter().map(|s| s.to_string()).collect()),
+            ..Self::new(label, description)
+        }
+    }
+}
+
+/// 界面装饰信息。
+fn decoration(key: &str) -> Decoration {
+    match key {
+        "auto_repair_enabled" => Decoration::new("自动修复", "诊断出问题时自动执行修复动作"),
+        "poll_interval_sec" => Decoration::int("检测间隔（秒）", "后台自动诊断的间隔", 10, 3600),
+        "auto_repair_max_level" => Decoration::int(
+            "自动修复最高等级",
+            "1=刷缓存 2=+服务/续租 3=+重启网卡",
+            1,
+            3,
+        ),
+        "fail_threshold" => Decoration::int("连续失败次数阈值", "连续失败几次触发修复", 1, 20),
+        "cooldown_sec" => Decoration::int("修复冷却（秒）", "两次修复之间的最小间隔", 0, 86400),
+        "level3_cooldown_sec" => {
+            Decoration::int("三级修复冷却（秒）", "执行过三级修复后的冷却时间", 0, 86400)
+        }
+        "minimize_to_tray" => Decoration::new("关闭时最小化到托盘", "点关闭按钮不退出程序"),
+        "tray_rate_enabled" => {
+            Decoration::new("托盘显示实时速率", "把上下行速率显示在托盘悬浮提示里")
+        }
+        "sound_alert_enabled" => Decoration::new("声音提醒", "断网/恢复时播放提示音"),
+        "dark_mode" => Decoration::new("深色主题", "切换界面深浅配色"),
+        "dns_preset" => Decoration::choice(
+            "默认 DNS 预设",
+            "修复动作 dns_preset 未指定时使用的预设",
+            &["阿里", "腾讯", "114", "360"],
+        ),
+        "clipboard_max" => Decoration::int(
+            "剪贴板历史上限",
+            "最多保留多少条（置顶不参与淘汰）",
+            1,
+            1000,
+        ),
+        "clipboard_watch" => Decoration::restart("剪贴板监听", "总开关；关闭只停新记录，历史保留"),
+        "clipboard_retain_days" => {
+            Decoration::int("剪贴板保留天数", "0=永不过期；置顶条目不受影响", 0, 3650)
+        }
+        "clip_process_blacklist" => {
+            Decoration::new("剪贴板黑名单", "前台是这些进程时不记录（逗号分隔）")
+        }
+        "clip_sensitive_ttl" => Decoration::int(
+            "敏感内容存活（秒）",
+            "复制敏感内容后自动清空剪贴板的秒数；0=不清空",
+            0,
+            3600,
+        ),
+        "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径"),
+        "vault_autolock_min" => Decoration::int("密码库自动锁定（分）", "0=不自动锁定", 0, 1440),
+        "vault_trust_min" => Decoration::int(
+            "主密码免重复输入（分）",
+            "验证后多久内不再要求输入主密码",
+            0,
+            1440,
+        ),
+        "palette_hotkey" => Decoration::restart("命令面板热键", "保存后即时生效；被占用会自动回退"),
+        "clip_paste_hotkey" => Decoration::restart("快捷粘贴面板热键", "空=禁用，仅托盘呼出"),
+        "clip_quick_hotkey" => {
+            Decoration::restart("快速粘贴热键", "不弹面板直接粘贴最新一条；空=禁用")
+        }
+        "migrated_v2" => Decoration::new("双热键迁移标志", "内部标志，一次性迁移用；一般无需改动"),
+        "palette_commands" => {
+            Decoration::new("命令面板自定义命令", "JSON 数组 [{name,type,value}]")
+        }
+        // defaults() 里新增而这里还没补元数据时走这一支：标签退回键名，不从界面消失
+        _ => Decoration::none(),
+    }
+}
+
+/// 全部设置的当前值与界面元数据。
+pub fn describe_all() -> Vec<SettingMeta> {
+    let cur = load();
+    defaults()
+        .into_iter()
+        .map(|(key, default, ty)| {
+            let ty_str = match ty {
+                Ty::Bool => "bool",
+                Ty::Int => "int",
+                Ty::Str => "str",
+            };
+            let current = cur.get(key).cloned().unwrap_or_else(|| default.clone());
+            let d = decoration(key);
+            SettingMeta {
+                key: key.to_string(),
+                label: if d.label.is_empty() {
+                    key.to_string()
+                } else {
+                    d.label.to_string()
+                },
+                description: d.description.to_string(),
+                ty: ty_str.to_string(),
+                default,
+                current,
+                min: d.min,
+                max: d.max,
+                options: d.options,
+                needs_restart: d.needs_restart,
+            }
+        })
+        .collect()
+}
+
+/// 写入一个设置项（按键的类型收敛 + 范围校验）。
+///
+/// 范围校验放在这里而不是只靠界面：界面可以被绕过，而 `poll_interval_sec=0`
+/// 会让后台线程忙碌空转、`clipboard_max=0` 会让剪贴板功能直接失效。
+pub fn set_one(key: &str, value: Value) -> Result<Value, String> {
+    let Some((_, default, ty)) = defaults().into_iter().find(|(k, _, _)| *k == key) else {
+        return Err(format!("未知设置项: {key}"));
+    };
+    // 先做类型收敛（与读路径同一套规则），再校验范围
+    let coerced = coerce(key, &default, ty, &value);
+    if matches!(coerced, Value::Null) {
+        return Err(format!("{key} 的值类型不合法"));
+    }
+    let d = decoration(key);
+    let (min, max, options) = (d.min, d.max, d.options);
+    if let Some(n) = coerced.as_i64() {
+        if let Some(lo) = min {
+            if n < lo {
+                return Err(format!("{key} 不能小于 {lo}（当前填 {n}）"));
+            }
+        }
+        if let Some(hi) = max {
+            if n > hi {
+                return Err(format!("{key} 不能大于 {hi}（当前填 {n}）"));
+            }
+        }
+    }
+    if let (Some(opts), Some(s)) = (&options, coerced.as_str()) {
+        if !opts.iter().any(|o| o == s) {
+            return Err(format!("{key} 只能是 {} 之一", opts.join(" / ")));
+        }
+    }
+    let mut patch = Map::new();
+    patch.insert(key.to_string(), coerced.clone());
+    save(&patch).map_err(|e| format!("写入设置失败: {e}"))?;
+    Ok(coerced)
+}
+
+/// 恢复默认值（只重置已知键，动态键如 `modes_prev_volume` 保留）。
+pub fn reset_to_defaults() -> Result<usize, String> {
+    let patch = default_map();
+    let n = patch.len();
+    save(&patch).map_err(|e| format!("写入设置失败: {e}"))?;
+    Ok(n)
+}
+
 fn default_map() -> Map<String, Value> {
     let mut m = Map::new();
     for (k, v, _) in defaults() {
@@ -259,6 +490,206 @@ pub fn as_sorted(data: &Map<String, Value>) -> BTreeMap<String, Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ---------------- 界面元数据（M7 设置页） ----------------
+
+    #[test]
+    fn describe_all_covers_every_default_key() {
+        // 元数据是装饰层，**绝不能成为"漏掉某个键"的第二处真相**：
+        // 键数必须与 defaults() 完全一致
+        let described = describe_all();
+        assert_eq!(
+            described.len(),
+            defaults().len(),
+            "describe_all 必须覆盖全部默认键"
+        );
+        let keys: Vec<String> = described.iter().map(|m| m.key.clone()).collect();
+        for (k, _, _) in defaults() {
+            assert!(keys.contains(&k.to_string()), "{k} 没有出现在设置页里");
+        }
+    }
+
+    #[test]
+    fn every_key_has_a_human_label() {
+        // 缺元数据时退回键名（不是空串），保证界面不会出现空白标签
+        for m in describe_all() {
+            assert!(!m.label.is_empty(), "{} 的标签为空", m.key);
+            assert!(!m.ty.is_empty(), "{} 的类型为空", m.key);
+        }
+    }
+
+    #[test]
+    fn decoration_covers_all_keys_so_none_falls_back_to_raw_name() {
+        // 这条是"元数据补全度"的看门检查：新增键却忘了写标签会在这里失败，
+        // 而不是等用户看到一串英文键名
+        for (k, _, _) in defaults() {
+            let d = decoration(k);
+            assert!(!d.label.is_empty(), "{k} 缺少界面标签");
+            assert!(!d.description.is_empty(), "{k} 缺少说明文字");
+        }
+    }
+
+    #[test]
+    fn int_keys_declare_a_range() {
+        // 整数项必须给范围：poll_interval_sec=0 会让后台线程空转，
+        // clipboard_max=0 会让剪贴板功能失效——界面要能拦住
+        for m in describe_all() {
+            if m.ty == "int" {
+                assert!(
+                    m.min.is_some() && m.max.is_some(),
+                    "{} 是整数项但没有声明范围",
+                    m.key
+                );
+                let lo = m.min.unwrap();
+                let hi = m.max.unwrap();
+                assert!(lo <= hi, "{} 的范围颠倒", m.key);
+                let d = m.default.as_i64().unwrap();
+                assert!(
+                    d >= lo && d <= hi,
+                    "{} 的默认值 {d} 不在声明的范围 [{lo},{hi}] 内",
+                    m.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dns_preset_options_match_repairs_constants() {
+        let m = describe_all()
+            .into_iter()
+            .find(|m| m.key == "dns_preset")
+            .unwrap();
+        let opts = m.options.expect("dns_preset 应有下拉选项");
+        assert_eq!(opts, vec!["阿里", "腾讯", "114", "360"]);
+        // 与修复动作里的预设必须一致，否则界面能选但动作不认
+        for o in opts {
+            assert!(
+                crate::repairs::dns_preset(&o).is_some(),
+                "{o} 在设置页可选，但 repairs::dns_preset 不认识它"
+            );
+        }
+    }
+
+    #[test]
+    fn describe_reports_current_not_default() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        set_one("poll_interval_sec", json!(120)).unwrap();
+        let m = describe_all()
+            .into_iter()
+            .find(|m| m.key == "poll_interval_sec")
+            .unwrap();
+        assert_eq!(m.current, json!(120), "应报告当前值");
+        assert_eq!(m.default, json!(30), "默认值仍是 30");
+    }
+
+    // ---------------- set_one 的校验 ----------------
+
+    #[test]
+    fn set_one_rejects_unknown_key() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        let e = set_one("no_such_key", json!(1)).unwrap_err();
+        assert!(e.contains("未知设置项"), "{e}");
+    }
+
+    #[test]
+    fn set_one_enforces_range() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        // poll_interval_sec 范围 10..3600：0 会让后台线程空转
+        let e = set_one("poll_interval_sec", json!(0)).unwrap_err();
+        assert!(e.contains("不能小于"), "{e}");
+        let e2 = set_one("poll_interval_sec", json!(999999)).unwrap_err();
+        assert!(e2.contains("不能大于"), "{e2}");
+        // 边界值本身要接受
+        assert_eq!(set_one("poll_interval_sec", json!(10)).unwrap(), json!(10));
+        assert_eq!(
+            set_one("poll_interval_sec", json!(3600)).unwrap(),
+            json!(3600)
+        );
+    }
+
+    #[test]
+    fn set_one_accepts_zero_where_zero_is_meaningful() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        // 0 在语义上是"不限制"的项不该被范围拦掉
+        assert_eq!(
+            set_one("clipboard_retain_days", json!(0)).unwrap(),
+            json!(0)
+        );
+        assert_eq!(set_one("vault_autolock_min", json!(0)).unwrap(), json!(0));
+        assert_eq!(set_one("clip_sensitive_ttl", json!(0)).unwrap(), json!(0));
+    }
+
+    #[test]
+    fn set_one_validates_enum_options() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        assert_eq!(set_one("dns_preset", json!("腾讯")).unwrap(), json!("腾讯"));
+        let e = set_one("dns_preset", json!("不存在的预设")).unwrap_err();
+        assert!(e.contains("只能是"), "{e}");
+    }
+
+    #[test]
+    fn set_one_coerces_types_like_python() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        // 手改 0/1 按意图收敛成布尔（与读路径同一套规则）
+        assert_eq!(set_one("dark_mode", json!(1)).unwrap(), json!(true));
+        assert_eq!(set_one("dark_mode", json!(0)).unwrap(), json!(false));
+        // 数字字符串收敛成整数
+        assert_eq!(set_one("fail_threshold", json!("5")).unwrap(), json!(5));
+        // 布尔写进整数键 → 0/1
+        assert_eq!(set_one("fail_threshold", json!(true)).unwrap(), json!(1));
+    }
+
+    #[test]
+    fn set_one_falls_back_to_default_for_uncoercible_bool() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        // 字符串 "true" **不**被收敛（Python 的 _typed 同样只认 0/1 数字），
+        // 而是回退默认值——这是既有语义，不是 bug；这里锁住它免得后人"顺手改成
+        // 认字符串"从而与 Python 版行为分叉。
+        set_one("dark_mode", json!(true)).unwrap();
+        assert_eq!(set_one("dark_mode", json!("true")).unwrap(), json!(false));
+        // 同理，无法收敛的整数也回退默认而不是报错
+        assert_eq!(
+            set_one("fail_threshold", json!("很快")).unwrap(),
+            json!(2),
+            "无法收敛时回退默认值"
+        );
+    }
+
+    #[test]
+    fn reset_to_defaults_restores_every_key_and_keeps_dynamic_ones() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        set_one("poll_interval_sec", json!(120)).unwrap();
+        set_one("dark_mode", json!(true)).unwrap();
+        // 动态键（不在 defaults 里）不该被重置掉
+        set_i64("modes_prev_volume", 12345).unwrap();
+
+        let n = reset_to_defaults().unwrap();
+        assert_eq!(n, defaults().len());
+        let cur = load();
+        assert_eq!(cur.get("poll_interval_sec"), Some(&json!(30)));
+        assert_eq!(cur.get("dark_mode"), Some(&json!(false)));
+        assert_eq!(
+            cur.get("modes_prev_volume"),
+            Some(&json!(12345)),
+            "动态键必须保留（否则场景模式的音量记录会被重置清掉）"
+        );
+    }
+
+    #[test]
+    fn describe_serializes_with_expected_fields() {
+        let j = serde_json::to_string(&describe_all()[0]).unwrap();
+        for k in ["key", "label", "ty", "default", "current", "needs_restart"] {
+            assert!(j.contains(k), "序列化应含 {k}: {j}");
+        }
+    }
 
     #[test]
     fn defaults_cover_python_keys() {

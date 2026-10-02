@@ -32,6 +32,7 @@ import { ToolboxSpeed } from "./ToolboxSpeed";
 import { ToolboxAppNet } from "./ToolboxAppNet";
 import { SystemPage } from "./SystemPage";
 import { VaultPage } from "./VaultPage";
+import { SettingsView } from "./SettingsView";
 import { applyTheme, palette, type Palette } from "./theme";
 
 interface ClipRow {
@@ -227,13 +228,7 @@ export function App() {
     ),
     system: <SystemPage />,
     vault: <VaultPage />,
-    settings: (
-      <Pending
-        title="设置 / 日志"
-        milestone="M7"
-        detail="设置页读写、日志查看、命令面板 provider 扩展。"
-      />
-    ),
+    settings: <SettingsView />,
   };
 
   return (
@@ -306,3 +301,4 @@ export function App() {
     </ConfigProvider>
   );
 }
+
