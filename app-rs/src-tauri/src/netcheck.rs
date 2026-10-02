@@ -916,24 +916,42 @@ pub fn chk_routes(snap: &Snapshot) -> CheckResult {
 }
 
 /// 隧道网卡识别（与 Python `vpn.TUNNEL_PAT` 同一份口径）。
+/// 隧道网卡描述关键字。
+///
+/// **必须与 Python `vpn.TUNNEL_PAT` 覆盖同一批产品**：这个判定有安全含义——
+/// 自动修复的 L3 梯度（`renew_dhcp`/`restart_wlan`/`toggle_adapter`）会**切断隧道**，
+/// 而护栏就是"检测到隧道就跳过这些步骤"。漏检一个产品，用户挂着 VPN 时就会被
+/// 自动修复踢下线。
+pub const TUNNEL_KEYWORDS: [&str; 23] = [
+    "wintun",
+    "tap-windows",
+    "tap-win32",
+    "tap9",
+    "tun",
+    "utun",
+    "wireguard",
+    "openvpn",
+    "easyconnect",
+    "sangfor",
+    "clash",
+    "v2ray",
+    "sing-box",
+    "nekoray",
+    "hysteria",
+    "uu加速",
+    "uu ",
+    "hamachi",
+    "zerotier",
+    "tailscale",
+    "oray",
+    "pgyer",
+    "tunnel",
+];
+
+/// 描述里是否含隧道/VPN 产品关键字（大小写不敏感）。
 pub fn is_tunnel(desc: &str) -> bool {
     let lower = desc.to_lowercase();
-    [
-        "tunnel",
-        "tap-",
-        "tun",
-        "wintun",
-        "wireguard",
-        "openvpn",
-        "softether",
-        "clash",
-        "sing-box",
-        "v2ray",
-        "shadowsocks",
-        "wireguard",
-    ]
-    .iter()
-    .any(|k| lower.contains(k))
+    TUNNEL_KEYWORDS.iter().any(|k| lower.contains(k))
 }
 
 /// IPv6 状态（id=ipv6）：NCSI 的 V6 探测值是否存在。

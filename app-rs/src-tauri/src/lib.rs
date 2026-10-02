@@ -33,6 +33,7 @@ mod hotkey;
 mod input;
 mod input_panel;
 mod modes;
+mod monitor;
 mod netcheck;
 mod netstats;
 mod palette;
@@ -134,6 +135,8 @@ pub fn run() {
             // 剪贴板监听：把"用户复制了什么"变成历史条目。
             // 没有它，快捷粘贴面板会在空历史里"正常"工作——命令全对、列表恒空。
             clipboard_watch::spawn();
+            // 后台监控 + 保守自动修复梯度（消费那六项 auto_repair_* 设置）
+            monitor::spawn();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -226,6 +229,9 @@ pub fn run() {
             commands::sk_clip_watch_state,
             commands::sk_clip_watch_set,
             commands::sk_clip_probe,
+            commands::sk_monitor_state,
+            commands::sk_monitor_force_check,
+            commands::sk_monitor_preview,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

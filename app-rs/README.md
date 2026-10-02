@@ -505,13 +505,29 @@ M2 的自动化测试已锁住**格式与聚合口径**（与 Python 逐值比�
 否则会被当成"应该能用却坏了"。**设置页里未生效的项已加「暂未生效」徽标并在页顶汇总**
 （`settings.rs::UNWIRED` + `tests` 锁住清单），所以用户改了没效果时能立刻看到原因。
 
-**⚠ 最大的缺口：「自动诊断/修复」整组功能未移植**（Python 侧 `monitor.py`，150 行）。
-以下六项设置都属于它，因此**全部标为暂未生效**：`auto_repair_enabled`、
-`poll_interval_sec`、`auto_repair_max_level`、`fail_threshold`、`cooldown_sec`、
-`level3_cooldown_sec`。当前只能手动点「开始诊断」，没有任何后台轮询与自动修复梯度。
-（`repairs.rs` 的 19 个动作执行器是完整的——缺的是**调度**它们的那层。）
+**⚠ 已闭环：「自动诊断/修复」整组功能已移植**（`monitor.rs`，对应 Python `monitor.py`）。
+六项设置（`auto_repair_enabled` / `poll_interval_sec` / `auto_repair_max_level` /
+`fail_threshold` / `cooldown_sec` / `level3_cooldown_sec`）**已接线并被消费**，
+设置页不再标「暂未生效」。
 
-其余单项：
+保守梯度：L1 `flush_dns` → L2 +`start_nlasvc`/`renew_dhcp` → L3
++`restart_wlan`/`toggle_adapter`。后三项是"改配置/断网"类，**这里是唯一自动执行
+它们的路径**，靠三道闸约束：L3 限频 + 通用冷却 + **VPN 护栏**；其余改配置类动作
+只给建议、绝不自动执行。设置页新增「后台监控」分页，显示状态、失败连击、已执行
+次数，并**预览当前梯度**（含被 VPN 跳过项）——让用户在动网卡之前就看到会发生什么。
+
+三处实测细节（照搬 Python）：**先探连通后抓快照**（快照是全量 PowerShell 采集
+4~6 秒，只在探测失败时才有意义）；**无活动物理网卡时失败计数归零**（纯虚拟网卡
+场景"探测失败"≠断网）；**L3 时间戳用单调时钟**（写入 epoch 秒会让差值为巨负、
+L3 冷却永久命中，自动修复被静默降级到 L2）。
+
+顺带修正一处**安全相关的不一致**：Rust 的 `is_tunnel` 关键字比 Python 的
+`TUNNEL_PAT` 少了 11 个产品（少了 uu加速/hamachi/zerotier/tailscale/oray/pgyer/
+easyconnect/sangfor/nekoray/hysteria/utun 等）。VPN 护栏依赖它——**漏检一个产品，
+用户挂着 VPN 就会被自动修复踢下线**。已补齐到 23 个关键字并加断言（含"普通网卡
+不得误判"的反向用例）。
+
+其余单项（仍未做）：
 1. **剪贴板图片捕获不完整**：能识别"剪贴板里有位图"并登记占位条目，但**不搬运像素**
    ——真正的位图捕获要解析 `CF_DIB`/`CF_DIBV5` 的位深、压缩方式与行序（bottom-up）。
    影响：复制图片后历史里有条目，但粘贴不回去原图。文本 / 文件 / HTML 是完整的。
@@ -526,7 +542,8 @@ M2 的自动化测试已锁住**格式与聚合口径**（与 Python 逐值比�
 
 已接线（供对照）：`tray_rate_enabled`、`dark_mode`、`dns_preset`、`clipboard_max`、
 `clipboard_watch`、`clipboard_retain_days`、`clip_process_blacklist`、
-`clip_capture_images`（部分）、三个热键、`palette_commands`。
+`clip_capture_images`（部分）、三个热键、`palette_commands`、**六项 auto_repair_***
+（本轮接入 monitor.rs）。
 
 > 标注纪律：`settings.rs` 里的 `UNWIRED` 常量是**手工审计的清单**，同时是一份待办。
 > 接上消费方后从清单删掉该项；删掉时 `unwired_keys_are_marked_and_explained` 会失败

@@ -27,6 +27,70 @@ export interface SettingsAll {
   count: number;
 }
 
+/** 后端 `sk_monitor_state`。 */
+export interface MonitorState {
+  running: boolean;
+  state: string;
+  detail: string;
+  last_check_ts: number;
+  repair_count: number;
+  last_ladder: string;
+  fail_streak: number;
+}
+
+/** 后端 `sk_monitor_preview`。 */
+export interface MonitorPreview {
+  enabled: boolean;
+  max_level: number;
+  poll_interval_sec: number;
+  fail_threshold: number;
+  cooldown_sec: number;
+  vpn_up: boolean;
+  ladder: string[];
+  skipped_by_vpn: string[];
+  vpn_note: string;
+  suggestions: { id: string; reason: string }[];
+}
+
+/** 监控状态码 → 展示文案（与 Python 的 ST_* 同名）。 */
+export function monitorStateLabel(state: string): string {
+  switch (state) {
+    case "ok":
+      return "网络正常";
+    case "no_net":
+      return "连通性异常";
+    case "ncsi_false":
+      return "NCSI 误报";
+    case "offline":
+      return "无活动网络连接";
+    case "":
+      return "尚未检查";
+    default:
+      return state;
+  }
+}
+
+/**
+ * 该状态是否值得告警。
+ *
+ * `offline`（没有活动物理网卡，例如没插网线或纯虚拟网卡）**不算故障**：
+ * 它不是"网络坏了"，而是"本来就没接"。把它报成故障会让用户白折腾。
+ */
+export function monitorNeedsAttention(state: string): boolean {
+  return state === "no_net" || state === "ncsi_false";
+}
+
+/** 梯度预览摘要。 */
+export function ladderSummary(p: MonitorPreview | null): string {
+  if (!p) return "尚未读取";
+  if (!p.enabled) return "自动修复已关闭（仍会探测并显示状态）";
+  const n = p.ladder.length;
+  const skipped = p.skipped_by_vpn.length;
+  return skipped > 0
+    ? `将执行 ${n} 步，VPN 护栏跳过 ${skipped} 步`
+    : `将执行 ${n} 步`;
+}
+
 /** 后端 `sk_log_list`。 */
 export interface LogFile {
   name: string;

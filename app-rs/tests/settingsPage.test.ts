@@ -15,6 +15,9 @@ import {
   humanLogSize,
   isChanged,
   isUnwired,
+  ladderSummary,
+  monitorNeedsAttention,
+  monitorStateLabel,
   logLevel,
   restartNote,
   tailSummary,
@@ -22,6 +25,7 @@ import {
   unwiredCount,
   validateValue,
   type LogTail,
+  type MonitorPreview,
   type SettingItem,
 } from "../src/settingsPage";
 
@@ -216,6 +220,51 @@ describe("未生效标注（诚实性）", () => {
   });
 });
 
+describe("后台监控展示", () => {
+  const preview = (over: Partial<MonitorPreview> = {}): MonitorPreview => ({
+    enabled: true,
+    max_level: 3,
+    poll_interval_sec: 30,
+    fail_threshold: 2,
+    cooldown_sec: 180,
+    vpn_up: false,
+    ladder: ["flush_dns", "start_nlasvc", "renew_dhcp"],
+    skipped_by_vpn: [],
+    vpn_note: "",
+    suggestions: [],
+    ...over,
+  });
+
+  it("状态码文案与后端 ST_* 对齐", () => {
+    expect(monitorStateLabel("ok")).toBe("网络正常");
+    expect(monitorStateLabel("no_net")).toContain("异常");
+    expect(monitorStateLabel("ncsi_false")).toContain("NCSI");
+    expect(monitorStateLabel("offline")).toContain("无活动");
+    expect(monitorStateLabel("")).toBe("尚未检查");
+  });
+
+  it("offline 不算故障（没接网线不等于网络坏了）", () => {
+    // 报成故障会让用户白折腾
+    expect(monitorNeedsAttention("offline")).toBe(false);
+    expect(monitorNeedsAttention("ok")).toBe(false);
+    expect(monitorNeedsAttention("no_net")).toBe(true);
+    expect(monitorNeedsAttention("ncsi_false")).toBe(true);
+  });
+
+  it("梯度摘要含步数与 VPN 跳过数", () => {
+    expect(ladderSummary(preview())).toContain("3 步");
+    expect(ladderSummary(preview({ skipped_by_vpn: ["renew_dhcp"] }))).toContain("跳过 1 步");
+  });
+
+  it("关闭自动修复时明确说明（仍会探测）", () => {
+    expect(ladderSummary(preview({ enabled: false, ladder: [] }))).toContain("已关闭");
+  });
+
+  it("未读取时不为空", () => {
+    expect(ladderSummary(null)).toBe("尚未读取");
+  });
+});
+
 describe("日志展示", () => {
   it("humanLogSize 三档", () => {
     expect(humanLogSize(512)).toBe("512 B");
@@ -244,4 +293,5 @@ describe("日志展示", () => {
     expect(logLevel("2026-01-01 INFO 启动完成")).toBe("info");
   });
 });
+
 

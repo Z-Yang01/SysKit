@@ -156,36 +156,26 @@ impl Decoration {
 
 /// 界面装饰信息。
 fn decoration(key: &str) -> Decoration {
-    // 「暂未生效」的统一说明：自动诊断/修复调度整体未移植
-    const NO_SCHEDULER: &str =
-        "暂未生效：自动诊断/修复调度尚未移植到 Rust 版，当前只能手动点「开始诊断」。\
-本项会被保存但不会生效——保留是为了让设置文件与 Python 版同构，迁移期不丢配置。";
     match key {
-        // ⚠ 以下六项属于「自动诊断/修复」功能组，该功能整体未移植（Python 侧为 monitor.py）。
-        // 标为「暂未生效」而不是隐藏：隐藏会让用户以为设置丢了，
-        // 留着不说会让用户以为改了有用——两种都不可接受，只能明说。
+        // ⚠ 以下六项已由 monitor.rs 接线：后台监控 + 保守自动修复梯度
         "auto_repair_enabled" => {
-            Decoration::new("自动修复", "诊断出问题时自动执行修复动作").unwired(NO_SCHEDULER)
+            Decoration::new("自动修复", "连通性持续失败时自动执行保守修复梯度")
         }
-        "poll_interval_sec" => {
-            Decoration::int("检测间隔（秒）", "后台自动诊断的间隔", 10, 3600).unwired(NO_SCHEDULER)
-        }
+        "poll_interval_sec" => Decoration::int("检测间隔（秒）", "后台连通性探测的间隔", 10, 3600),
         "auto_repair_max_level" => Decoration::int(
             "自动修复最高等级",
-            "1=刷缓存 2=+服务/续租 3=+重启网卡",
+            "L1=刷DNS L2=+起NlaSvc/续租 L3=+重启WLAN/断合网卡",
             1,
             3,
-        )
-        .unwired(NO_SCHEDULER),
-        "fail_threshold" => {
-            Decoration::int("连续失败次数阈值", "连续失败几次触发修复", 1, 20).unwired(NO_SCHEDULER)
-        }
-        "cooldown_sec" => Decoration::int("修复冷却（秒）", "两次修复之间的最小间隔", 0, 86400)
-            .unwired(NO_SCHEDULER),
-        "level3_cooldown_sec" => {
-            Decoration::int("三级修复冷却（秒）", "执行过三级修复后的冷却时间", 0, 86400)
-                .unwired(NO_SCHEDULER)
-        }
+        ),
+        "fail_threshold" => Decoration::int("连续失败次数阈值", "连续失败几次触发修复", 1, 20),
+        "cooldown_sec" => Decoration::int("修复冷却（秒）", "两次修复之间的最小间隔", 0, 86400),
+        "level3_cooldown_sec" => Decoration::int(
+            "三级修复冷却（秒）",
+            "L3 会短暂断网，此冷却内自动降级为 L2",
+            0,
+            86400,
+        ),
         "minimize_to_tray" => Decoration::new("关闭时最小化到托盘", "点关闭按钮不退出程序")
             .unwired("暂未生效：窗口关闭行为尚未接入本设置（当前关闭按钮行为固定）。"),
         "tray_rate_enabled" => {
@@ -740,14 +730,7 @@ mod tests {
     /// 这个清单是**手工审计的产物**（逐键搜 `src-tauri/src/` 与 `src/` 里的引用）。
     /// 它同时是一份待办：接上消费方后应把该键从清单里删掉，删掉时这条测试会失败
     /// ——这正是我们想要的提醒（否则容易忘记摘掉过期的"暂未生效"标签）。
-    const UNWIRED: [&str; 11] = [
-        // 自动诊断/修复功能组（Python 侧 monitor.py 整体未移植）
-        "auto_repair_enabled",
-        "poll_interval_sec",
-        "auto_repair_max_level",
-        "fail_threshold",
-        "cooldown_sec",
-        "level3_cooldown_sec",
+    const UNWIRED: [&str; 5] = [
         // 单项
         "minimize_to_tray",
         "sound_alert_enabled",

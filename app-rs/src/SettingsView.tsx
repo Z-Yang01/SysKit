@@ -31,6 +31,9 @@ import {
   humanLogSize,
   isChanged,
   isUnwired,
+  ladderSummary,
+  monitorNeedsAttention,
+  monitorStateLabel,
   logLevel,
   restartNote,
   tailSummary,
@@ -38,6 +41,8 @@ import {
   unwiredCount,
   validateValue,
   type LogList,
+  type MonitorPreview,
+  type MonitorState,
   type LogTail,
   type SettingItem,
   type SettingsAll,
@@ -400,11 +405,116 @@ export function SettingsView() {
       <Tabs
         items={[
           { key: "settings", label: "设置", children: <SettingsPanel /> },
+          { key: "monitor", label: "后台监控", children: <MonitorPanel /> },
           { key: "logs", label: "日志", children: <LogPanel /> },
         ]}
       />
     </Card>
   );
 }
+
+/** 后台监控 / 自动修复的只读视图与"立即检查"。 */
+function MonitorPanel() {
+  const [state, setState] = useState<MonitorState | null>(null);
+  const [preview, setPreview] = useState<MonitorPreview | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [s, p] = await Promise.all([
+        invoke<MonitorState>("sk_monitor_state"),
+        invoke<MonitorPreview>("sk_monitor_preview"),
+      ]);
+      setState(s);
+      setPreview(p);
+    } catch (e) {
+      message.error(`读取监控状态失败：${String(e)}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const t = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(t);
+  }, [load]);
+
+  return (
+    <Space direction="vertical" size={10} style={{ width: "100%" }}>
+      <Space wrap>
+        <Tag
+          color={
+            monitorNeedsAttention(state?.state ?? "")
+              ? "orange"
+              : state?.state === "ok"
+                ? "green"
+                : "default"
+          }
+        >
+          {monitorStateLabel(state?.state ?? "")}
+        </Tag>
+        {state?.detail && <span className="sk-hint">{state.detail}</span>}
+        <span className="sk-hint">{ladderSummary(preview)}</span>
+        <span className="sk-hint">
+          已执行自动修复 {state?.repair_count ?? 0} 次 · 连续失败 {state?.fail_streak ?? 0}
+        </span>
+        <Button size="small" onClick={() => void load()}>
+          刷新
+        </Button>
+        <Button
+          size="small"
+          type="primary"
+          onClick={() =>
+            void invoke("sk_monitor_force_check").then(() => message.success("已请求立即检查"))
+          }
+        >
+          立即检查
+        </Button>
+      </Space>
+
+      <Alert
+        type="info"
+        showIcon
+        message="自动修复只走固定白名单梯度"
+        description="L1 刷 DNS → L2 + 起 NlaSvc / 续租 → L3 + 重启 WLAN / 断合网卡。L3 会短暂断网，因此受「三级修复冷却」限频，冷却内自动降级为 L2。其余改配置类动作只给建议、绝不自动执行。"
+      />
+
+      {preview?.vpn_up && (
+        <Alert type="warning" showIcon message="检测到 VPN / 隧道在线" description={preview.vpn_note} />
+      )}
+
+      <Card size="small" title="当前梯度预览（不会执行）">
+        <Space direction="vertical" size={6} style={{ width: "100%" }}>
+          <Space wrap>
+            <span className="sk-hint">上限 L{preview?.max_level ?? "—"}</span>
+            <span className="sk-hint">间隔 {preview?.poll_interval_sec ?? "—"}s</span>
+            <span className="sk-hint">阈值 {preview?.fail_threshold ?? "—"} 次</span>
+            <span className="sk-hint">冷却 {preview?.cooldown_sec ?? "—"}s</span>
+            {preview && !preview.enabled && <Tag color="red">自动修复已关闭</Tag>}
+          </Space>
+          <Space wrap>
+            {(preview?.ladder ?? []).map((id) => (
+              <Tag key={id} color="blue">
+                {id}
+              </Tag>
+            ))}
+            {(preview?.skipped_by_vpn ?? []).map((id) => (
+              <Tooltip key={id} title="VPN/隧道在线，该项会切断隧道，已跳过">
+                <Tag color="default" style={{ textDecoration: "line-through" }}>
+                  {id}
+                </Tag>
+              </Tooltip>
+            ))}
+          </Space>
+          {(preview?.suggestions?.length ?? 0) > 0 && (
+            <div className="sk-hint">
+              修复无效时只会给建议（不自动执行）：
+              {preview?.suggestions.map((s) => s.id).join("、")}
+            </div>
+          )}
+        </Space>
+      </Card>
+    </Space>
+  );
+}
+
 
 
