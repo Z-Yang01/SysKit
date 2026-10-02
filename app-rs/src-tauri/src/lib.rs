@@ -22,6 +22,7 @@ mod backup;
 mod battery;
 mod cleanup;
 mod clipboard_history;
+mod clipboard_watch;
 mod clipboard_write;
 mod commands;
 mod disk;
@@ -130,6 +131,9 @@ pub fn run() {
             let hub = telemetry_hub::Hub::new();
             telemetry_hub::spawn(handle.clone(), hub.clone());
             app.manage(hub);
+            // 剪贴板监听：把"用户复制了什么"变成历史条目。
+            // 没有它，快捷粘贴面板会在空历史里"正常"工作——命令全对、列表恒空。
+            clipboard_watch::spawn();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -219,6 +223,9 @@ pub fn run() {
             commands::sk_log_tail,
             commands::sk_palette_actions,
             commands::sk_palette_calc,
+            commands::sk_clip_watch_state,
+            commands::sk_clip_watch_set,
+            commands::sk_clip_probe,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

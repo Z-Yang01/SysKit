@@ -985,6 +985,49 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- 剪贴板监听状态 ----------------
+
+/// 监听状态（是否运行/启用、已记录与两类跳过计数）。
+///
+/// 计数是**可验证性**的关键：用户说"我复制了却没进历史"时，这两个计数能直接
+/// 区分"没监听"、"被黑名单挡了"、"被去重挡了"三种情况。
+#[tauri::command]
+pub fn sk_clip_watch_state() -> serde_json::Value {
+    serde_json::to_value(crate::clipboard_watch::state()).unwrap_or(serde_json::json!({}))
+}
+
+/// 暂停/恢复记录（隐私暂停：不记录新内容，历史保留）。
+///
+/// 同时把总开关写进设置：暂停状态要跨重启保持，否则用户以为暂停了、
+/// 重启后却又开始记录——这是隐私工具里不能有的意外。
+#[tauri::command]
+pub fn sk_clip_watch_set(enabled: bool) -> Result<serde_json::Value, String> {
+    crate::clipboard_watch::set_enabled(enabled);
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        "clipboard_watch".to_string(),
+        serde_json::Value::Bool(enabled),
+    );
+    crate::settings::save(&patch).map_err(|e| format!("保存设置失败: {e}"))?;
+    Ok(serde_json::json!({
+        "enabled": enabled,
+        "message": if enabled { "已开始记录剪贴板" } else { "已暂停记录（历史保留，恢复后不补录）" },
+    }))
+}
+
+/// 读一次剪贴板快照（调试/测试用：确认读取原语在真机可用）。
+#[tauri::command]
+pub fn sk_clip_probe() -> serde_json::Value {
+    let s = crate::clipboard_watch::read_snapshot();
+    serde_json::json!({
+        "has_text": s.text.is_some(),
+        "text_len": s.text.as_ref().map(|t| t.chars().count()).unwrap_or(0),
+        "file_count": s.files.as_ref().map(|f| f.len()).unwrap_or(0),
+        "has_image": s.has_image,
+        "has_html": s.has_html,
+    })
+}
+
 // ---------------- M7 命令面板 provider ----------------
 
 /// 面板动作全集：内置页面跳转 + 自定义命令，按查询排序。

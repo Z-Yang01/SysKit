@@ -1311,6 +1311,151 @@ fn bcrypt_gcm(
     }
 }
 
+// ---------------- 标准剪贴板格式号 ----------------
+
+// windows crate 不导出这些 `CF_*` 常量（它们在 WinUser.h 里），所以按官方数值定义。
+// 数值写错会静默读到别的格式或读不到——所以集中定义一处并加断言。
+/// 位图（BITMAPINFOHEADER 起头）。
+pub const CF_DIB: u32 = 8;
+/// 文本（UTF-16LE + NUL 结尾）。
+pub const CF_UNICODETEXT: u32 = 13;
+/// 文件列表（DROPFILES 头 + 双 NUL 结尾路径）。
+pub const CF_HDROP: u32 = 15;
+/// 带 alpha 的位图（V5 头）。
+pub const CF_DIBV5: u32 = 17;
+
+// ---------------- 剪贴板读取（监听器用） ----------------
+
+/// 剪贴板序号（`GetClipboardSequenceNumber`）：内容每次变化都会递增。
+///
+/// 轮询这个序号是**监听剪贴板最省事且不丢事件**的做法：它不需要窗口与消息循环
+/// （`AddClipboardFormatListener` 要求一个 HWND 并处理 WM_CLIPBOARDUPDATE），
+/// 也不像 `WM_DRAWCLIPBOARD` 那样需要维护监听链。序号不变就完全不用打开剪贴板，
+/// 开销接近零。
+pub fn clipboard_sequence() -> u32 {
+    use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
+    // SAFETY: 无参数、无副作用
+    unsafe { GetClipboardSequenceNumber() }
+}
+
+/// 读取剪贴板文本（`CF_UNICODETEXT`）。无文本返回 None。
+pub fn clipboard_get_text() -> Option<String> {
+    use windows::Win32::System::DataExchange::GetClipboardData;
+    // SAFETY: 剪贴板在 open/close 成对之间访问；句柄由系统持有，不释放
+    unsafe {
+        if OpenClipboard(null_hwnd()).is_err() {
+            return None;
+        }
+        let _guard = ClipboardGuard;
+        let Ok(h) = GetClipboardData(CF_UNICODETEXT) else {
+            return None;
+        };
+        if h.is_invalid() {
+            return None;
+        }
+        let p = GlobalLock(HGLOBAL(h.0)) as *const u16;
+        if p.is_null() {
+            return None;
+        }
+        // 按 NUL 结尾扫描（CF_UNICODETEXT 保证以 NUL 结尾）
+        let mut len = 0usize;
+        while *p.add(len) != 0 {
+            len += 1;
+            // 防御：异常巨型内容不至于无限扫描（真实剪贴板远达不到）
+            if len > 8_000_000 {
+                break;
+            }
+        }
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+        let _ = GlobalUnlock(HGLOBAL(h.0));
+        Some(s)
+    }
+}
+
+/// 读取剪贴板文件列表（`CF_HDROP`）。无文件返回 None。
+pub fn clipboard_get_files() -> Option<Vec<String>> {
+    use windows::Win32::System::DataExchange::GetClipboardData;
+    use windows::Win32::UI::Shell::{DragQueryFileW, DROPFILES, HDROP};
+    // SAFETY: 同上；HDROP 由剪贴板持有
+    unsafe {
+        if OpenClipboard(null_hwnd()).is_err() {
+            return None;
+        }
+        let _guard = ClipboardGuard;
+        let Ok(h) = GetClipboardData(CF_HDROP) else {
+            return None;
+        };
+        if h.is_invalid() {
+            return None;
+        }
+        let p = GlobalLock(HGLOBAL(h.0)) as *const DROPFILES;
+        if p.is_null() {
+            return None;
+        }
+        let drop = HDROP(h.0);
+        let count = DragQueryFileW(drop, 0xFFFF_FFFF, None);
+        let mut out = Vec::new();
+        for i in 0..count {
+            let need = DragQueryFileW(drop, i, None) as usize;
+            if need == 0 {
+                continue;
+            }
+            let mut buf = vec![0u16; need + 1];
+            let got = DragQueryFileW(drop, i, Some(&mut buf));
+            if got > 0 {
+                out.push(String::from_utf16_lossy(&buf[..got as usize]));
+            }
+        }
+        let _ = GlobalUnlock(HGLOBAL(h.0));
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+}
+
+/// 剪贴板里是否有位图（`CF_DIB` / `CF_DIBV5`）。
+///
+/// 只做"有没有"的探测，不搬运像素：真正的位图读取要处理 BITMAPINFOHEADER 的
+/// 位深、压缩方式与行序，属于图片捕获单独一轮的工作。
+pub fn clipboard_has_image() -> bool {
+    use windows::Win32::System::DataExchange::IsClipboardFormatAvailable;
+    // SAFETY: 无副作用查询
+    unsafe {
+        IsClipboardFormatAvailable(CF_DIB).is_ok() || IsClipboardFormatAvailable(CF_DIBV5).is_ok()
+    }
+}
+
+/// 剪贴板里是否有 HTML（`HTML Format` 注册格式）。
+pub fn clipboard_has_html() -> bool {
+    clipboard_named_available("HTML Format")
+}
+
+/// 指定注册格式是否可用。
+pub fn clipboard_named_available(name: &str) -> bool {
+    use windows::Win32::System::DataExchange::{
+        IsClipboardFormatAvailable, RegisterClipboardFormatW,
+    };
+    let w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: w 以 NUL 结尾且在本调用内有效
+    unsafe {
+        let fmt = RegisterClipboardFormatW(windows::core::PCWSTR(w.as_ptr()));
+        fmt != 0 && IsClipboardFormatAvailable(fmt).is_ok()
+    }
+}
+
+/// 读完自动关闭剪贴板（提前 return 也必须关，否则会卡住其他程序）。
+struct ClipboardGuard;
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        // SAFETY: 与 OpenClipboard 成对
+        unsafe {
+            let _ = CloseClipboard();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
