@@ -985,6 +985,95 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M5 系统助手：剪贴板历史（管理动作） ----------------
+
+/// 把一条历史保存为文件（图片 → PNG，其它 → 文本）。
+///
+/// 文本文件名做**路径分隔符消毒**：条目内容不可信，直接拼进默认文件名里
+/// 可能带 `..\` 之类的片段；虽然最终路径由用户在对话框里确认，默认值也不该
+/// 指向目录之外。
+#[tauri::command]
+pub async fn sk_clip_save_as(index: usize) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let row = hist::with(|h| h.search(None, None).get(index).map(ClipRow::from_item))
+            .ok_or_else(|| format!("找不到第 {index} 条历史（可能已被淘汰）"))?;
+
+        if row.kind == "image" {
+            let src = crate::paths::image_path(&row.data)
+                .ok_or_else(|| format!("图片文件名非法: {}", row.data))?;
+            if !src.is_file() {
+                return Err(format!("图片文件已不存在: {}", src.to_string_lossy()));
+            }
+            let target = crate::w32::save_file_dialog(
+                "图片另存为",
+                "clip.png",
+                "PNG 图片\0*.png\0所有文件\0*.*\0",
+            )?;
+            if target.is_empty() {
+                return Ok(String::new()); // 取消
+            }
+            let target = ensure_ext(&target, "png");
+            std::fs::copy(&src, &target).map_err(|e| format!("保存失败（路径不可写？）: {e}"))?;
+            Ok(format!("图片已保存到 {target}"))
+        } else {
+            let default = safe_default_name(&row.text);
+            let filter = if row.kind == "html" {
+                "HTML 文件\0*.html\0文本文件\0*.txt\0所有文件\0*.*\0"
+            } else {
+                "文本文件\0*.txt\0所有文件\0*.*\0"
+            };
+            let target = crate::w32::save_file_dialog("另存为", &default, filter)?;
+            if target.is_empty() {
+                return Ok(String::new());
+            }
+            // 写入用与 hosts 一致的裸 \n；内容按 UTF-8
+            std::fs::write(&target, row.text.as_bytes())
+                .map_err(|e| format!("保存失败（路径不可写？）: {e}"))?;
+            Ok(format!("已保存到 {target}"))
+        }
+    })
+    .await
+    .map_err(|e| format!("保存线程失败: {e}"))?
+}
+
+/// 目标路径没有扩展名时补上（与 Python 对 .png 的处理一致）。
+fn ensure_ext(path: &str, ext: &str) -> String {
+    let lower = path.to_lowercase();
+    if lower.ends_with(&format!(".{ext}")) {
+        path.to_string()
+    } else {
+        format!("{path}.{ext}")
+    }
+}
+
+/// 由条目内容生成安全的默认文件名（不含路径分隔符与非法字符）。
+///
+/// 只用于文本/HTML 条目；图片走 `clip.png` 那套（对话框里已给固定默认名）。
+pub fn safe_default_name(text: &str) -> String {
+    let head: String = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(40)
+        // Windows 文件名非法字符：\ / : * ? " < > |，另加控制字符
+        .map(|c| {
+            if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    // 去掉首尾空白与点：以点结尾在 Windows 上会被静默截断
+    let trimmed = head.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "clip.txt".to_string()
+    } else {
+        format!("{trimmed}.txt")
+    }
+}
+
 // ---------------- M5 系统助手：场景模式 ----------------
 
 /// 场景模式清单（供前端渲染按钮与说明）。

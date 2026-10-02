@@ -1020,6 +1020,48 @@ pub fn pick_file_dialog(title: &str, filter: &str) -> Result<String, String> {
 
 // ---------------- 用系统关联打开文件/协议 ----------------
 
+/// 弹出系统「另存为」对话框，返回目标路径（取消返回空串）。
+///
+/// 与 [`pick_file_dialog`] 同一套实现要点：双 NUL 结尾的 filter、`OFN_NOCHANGEDIR`
+/// （对话框会改进程 cwd，而 `real_path` 依赖 cwd 解析相对路径）。
+pub fn save_file_dialog(title: &str, default_name: &str, filter: &str) -> Result<String, String> {
+    use windows::Win32::UI::Controls::Dialogs::{
+        GetSaveFileNameW, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+
+    let mut buf = [0u16; 1024];
+    // 预填默认文件名（含扩展名），对话框会把它放进"文件名"框
+    let default_u16: Vec<u16> = default_name.encode_utf16().collect();
+    let n = default_u16.len().min(buf.len() - 1);
+    buf[..n].copy_from_slice(&default_u16[..n]);
+
+    let mut filter_u16: Vec<u16> = filter.encode_utf16().collect();
+    while filter_u16.len() < 2 || filter_u16[filter_u16.len() - 2..] != [0, 0] {
+        filter_u16.push(0);
+    }
+    let title_u16: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: HWND(std::ptr::null_mut()),
+        lpstrFilter: windows::core::PCWSTR(filter_u16.as_ptr()),
+        nFilterIndex: 1,
+        lpstrFile: windows::core::PWSTR(buf.as_mut_ptr()),
+        nMaxFile: buf.len() as u32,
+        lpstrTitle: windows::core::PCWSTR(title_u16.as_ptr()),
+        // OVERWRITEPROMPT：覆盖前问一次，避免用户误覆盖已有文件
+        Flags: OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+
+    // SAFETY: ofn 的所有指针都指向本函数栈上、生命周期覆盖该调用的缓冲
+    let ok = unsafe { GetSaveFileNameW(&mut ofn) };
+    if !ok.as_bool() {
+        return Ok(String::new()); // 用户取消
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Ok(String::from_utf16_lossy(&buf[..len]))
+}
 /// 用系统默认关联打开目标（`ShellExecuteW`）。
 ///
 /// 用 `ShellExecuteW` 而不是 `std::process::Command`：它能处理 `ms-settings:` 这类

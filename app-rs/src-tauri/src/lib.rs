@@ -201,6 +201,7 @@ pub fn run() {
             commands::sk_modes_info,
             commands::sk_modes_run,
             commands::sk_modes_bg_candidates,
+            commands::sk_clip_save_as,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

@@ -13,6 +13,7 @@ import { ToolboxStartup } from "./ToolboxStartup";
 import { CleanupPanel, DiskPanel } from "./ToolboxDisk";
 import { BatteryPanel } from "./ToolboxBattery";
 import { ModesPanel } from "./ToolboxModes";
+import { ClipboardHistoryPanel } from "./ToolboxClipboard";
 
 import {
   SERIES_LEN,
@@ -84,6 +85,7 @@ export function SystemPage() {
           { key: "clean", label: "垃圾清理", children: <CleanupPanel /> },
           { key: "battery", label: "电池健康", children: <BatteryPanel /> },
           { key: "modes", label: "场景模式", children: <ModesPanel /> },
+          { key: "clip", label: "剪贴板历史", children: <ClipboardHistoryPanel /> },
         ]}
       />
     </Card>
