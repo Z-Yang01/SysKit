@@ -38,6 +38,7 @@ mod repairs;
 mod secure_store;
 mod settings;
 mod snapshot;
+mod startup;
 mod stores;
 mod subnet;
 mod telemetry;
@@ -185,6 +186,8 @@ pub fn run() {
             commands::sk_appnet_pick_exe,
             commands::sk_wifi_info,
             commands::sk_top_procs,
+            commands::sk_startup_list,
+            commands::sk_startup_set,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

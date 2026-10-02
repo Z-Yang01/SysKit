@@ -7,7 +7,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
+
+import { ToolboxStartup } from "./ToolboxStartup";
 
 import {
   SERIES_LEN,
@@ -69,6 +71,29 @@ function Spark({
 }
 
 export function SystemPage() {
+  return (
+    <Card size="small" className="sk-card">
+      <Tabs
+        items={[
+          { key: "perf", label: "性能监控", children: <PerfPanel /> },
+          { key: "startup", label: "启动项管理", children: <ToolboxStartup /> },
+          {
+            key: "soon",
+            label: "待接入",
+            children: (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="电池健康 / 垃圾清理 / 磁盘空间 / 剪贴板历史 / 场景模式 —— 逐轮接入（M5）"
+              />
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+function PerfPanel() {
   const [cpu, setCpu] = useState<number[]>([]);
   const [mem, setMem] = useState<number[]>([]);
   const [diskR, setDiskR] = useState<number[]>([]);

@@ -985,6 +985,48 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M5 系统助手：启动项管理 ----------------
+
+/// 枚举启动项（HKCU/HKLM 的 Run 键 + 启动文件夹 + SysKit 的禁用记录）。
+#[tauri::command]
+pub async fn sk_startup_list() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let items = crate::startup::enumerate_real();
+        let (on, off) = crate::startup::startup_stats(&items);
+        Ok(serde_json::json!({
+            "rows": items,
+            "count": items.len(),
+            "enabled": on,
+            "disabled": off,
+            "is_admin": crate::w32::is_elevated(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("枚举线程失败: {e}"))?
+}
+
+/// 禁用/启用一个启动项。
+///
+/// 注册表项是**搬**到 `HKCU\Software\NetTool\DisabledRun`（沿用 Python 版的键名），
+/// 启动文件夹项是改名加 `.disabled`。两版共享同一套标记，迁移期互不打架。
+#[tauri::command]
+pub async fn sk_startup_set(
+    location: String,
+    name: String,
+    enable: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::startup::set_enabled_real(&location, &name, enable)?;
+        Ok(if enable {
+            format!("已启用 {name}")
+        } else {
+            format!("已禁用 {name}（可从本页重新启用）")
+        })
+    })
+    .await
+    .map_err(|e| format!("执行线程失败: {e}"))?
+}
+
 // ---------------- M5 系统助手：Top 进程 ----------------
 
 /// Top 进程缓存（tasklist 一次约 0.5 秒，2 秒窗口内复用同一份）。
