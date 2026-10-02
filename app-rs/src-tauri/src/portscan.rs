@@ -242,6 +242,95 @@ pub fn parse_ping_ms(out: &str) -> Option<u32> {
     None
 }
 
+/// 解析 `tracert` 输出的一跳。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TraceHop {
+    pub hop: u32,
+    /// 三次探测的延迟（None = 该次超时）
+    pub latencies: Vec<Option<u32>>,
+    /// 主机名/地址；全超时为空
+    pub host: String,
+}
+
+impl TraceHop {
+    /// 该跳是否全超时。
+    pub fn timed_out(&self) -> bool {
+        self.latencies.iter().all(|l| l.is_none())
+    }
+
+    /// 最小延迟（用于展示）。
+    pub fn min_latency(&self) -> Option<u32> {
+        self.latencies.iter().flatten().copied().min()
+    }
+}
+
+/// 解析 `tracert` 输出。
+///
+/// 真实行形如：
+/// ```text
+///   1     1 ms     1 ms     1 ms  192.168.1.1
+///   2     *        *        *     请求超时。
+///   3    12 ms     *       11 ms  www.example.com [93.184.216.34]
+/// ```
+/// 全超时行的主机部分是本地化的「请求超时。」——**不能**把它当主机名。
+pub fn parse_tracert(text: &str) -> Vec<TraceHop> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 5 {
+            continue;
+        }
+        let Ok(hop) = cols[0].parse::<u32>() else {
+            continue; // 表头「通过最多 30 个跃点跟踪」等
+        };
+        // 三个延迟段：`N ms` / `<1 ms` / `*`
+        let mut latencies: Vec<Option<u32>> = Vec::new();
+        let mut idx = 1usize;
+        while idx < cols.len() && latencies.len() < 3 {
+            let c = cols[idx];
+            if c == "*" {
+                latencies.push(None);
+                idx += 1;
+                continue;
+            }
+            let numeric = c.trim_start_matches('<');
+            if let Ok(ms) = numeric.parse::<u32>() {
+                latencies.push(Some(ms));
+                idx += 1;
+                if idx < cols.len() && cols[idx].eq_ignore_ascii_case("ms") {
+                    idx += 1;
+                }
+                continue;
+            }
+            break;
+        }
+        if latencies.len() < 3 {
+            continue;
+        }
+        let host = normalize_trace_host(&cols[idx..].join(" "));
+        out.push(TraceHop {
+            hop,
+            latencies,
+            host,
+        });
+    }
+    out
+}
+
+/// 归一化跳点主机字段：全超时（本地化「请求超时。」等）→ 空串。
+pub fn normalize_trace_host(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let lower = t.to_lowercase();
+    if lower.contains("请求超时") || lower.contains("request timed out") || lower.contains("超时")
+    {
+        return String::new();
+    }
+    t.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +577,77 @@ mod tests {
         );
         assert_eq!(parse_ping_ms("请求超时。"), None);
         assert_eq!(parse_ping_ms(""), None);
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+
+    const SAMPLE: &str = "\n通过最多 30 个跃点跟踪\n到 93.184.216.34 的路由:\n\n  1     1 ms     1 ms     1 ms  192.168.1.1\n  2     *        *        *     请求超时。\n  3    12 ms     *       11 ms  www.example.com [93.184.216.34]\n\n跟踪完成。\n";
+
+    #[test]
+    fn parses_hops_with_latencies_and_host() {
+        let hops = parse_tracert(SAMPLE);
+        assert_eq!(hops.len(), 3, "三跳都应有记录（含全超时那跳）");
+        assert_eq!(hops[0].hop, 1);
+        assert_eq!(hops[0].latencies, vec![Some(1), Some(1), Some(1)]);
+        assert_eq!(hops[0].host, "192.168.1.1");
+        assert!(!hops[0].timed_out());
+        assert_eq!(hops[0].min_latency(), Some(1));
+    }
+
+    #[test]
+    fn all_timeout_hop_keeps_empty_host() {
+        let hops = parse_tracert(SAMPLE);
+        let t = &hops[1];
+        assert_eq!(t.hop, 2);
+        assert_eq!(t.latencies, vec![None, None, None]);
+        assert!(t.timed_out());
+        assert_eq!(t.host, "", "「请求超时。」不得被当成主机名");
+        assert_eq!(t.min_latency(), None);
+    }
+
+    #[test]
+    fn partial_timeout_keeps_latencies_and_host() {
+        let hops = parse_tracert(SAMPLE);
+        let h = &hops[2];
+        assert_eq!(h.latencies, vec![Some(12), None, Some(11)]);
+        assert!(!h.timed_out());
+        assert_eq!(h.min_latency(), Some(11));
+        assert!(h.host.contains("www.example.com"));
+        assert!(h.host.contains("93.184.216.34"));
+    }
+
+    #[test]
+    fn ignores_headers_and_footer() {
+        let hops = parse_tracert(SAMPLE);
+        assert!(hops.iter().all(|h| h.hop >= 1 && h.latencies.len() == 3));
+        assert!(parse_tracert("跟踪完成。").is_empty());
+        assert!(parse_tracert("").is_empty());
+    }
+
+    #[test]
+    fn parses_english_output_and_less_than_1ms() {
+        let text = "  1    <1 ms    <1 ms    <1 ms  192.168.1.1\n  2     5 ms     5 ms     5 ms  gateway.local\n";
+        let hops = parse_tracert(text);
+        assert_eq!(hops.len(), 2, "英文/<1ms 形态应可解析: {hops:?}");
+        assert_eq!(hops[0].hop, 1);
+        assert_eq!(
+            hops[0].latencies,
+            vec![Some(1), Some(1), Some(1)],
+            "<1ms 记为 1"
+        );
+        assert_eq!(hops[0].host, "192.168.1.1");
+        assert_eq!(hops[1].host, "gateway.local");
+    }
+
+    #[test]
+    fn normalize_trace_host_variants() {
+        assert_eq!(normalize_trace_host("请求超时。"), "");
+        assert_eq!(normalize_trace_host("Request timed out."), "");
+        assert_eq!(normalize_trace_host("  "), "");
+        assert_eq!(normalize_trace_host("192.168.1.1"), "192.168.1.1");
+        assert_eq!(normalize_trace_host(" a.com [1.2.3.4] "), "a.com [1.2.3.4]");
     }
 }

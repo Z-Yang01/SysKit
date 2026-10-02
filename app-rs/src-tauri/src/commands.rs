@@ -601,6 +601,133 @@ pub async fn sk_kill_process(pid: u32) -> Result<String, String> {
     .map_err(|e| format!("执行线程失败: {e}"))?
 }
 
+// ---------------- M4 工具箱：DNS 查询 / 子网计算 / ping / 路由 ----------------
+
+/// 子网计算（纯计算，秒回）。
+#[tauri::command]
+pub fn sk_subnet_calc(ip: String, prefix: u8) -> Result<serde_json::Value, String> {
+    let info = crate::subnet::subnet_info(&ip, prefix)?;
+    let lines = crate::subnet::subnet_lines(&info);
+    Ok(serde_json::json!({
+        "info": info,
+        "lines": lines,
+        "presets": crate::subnet::DNS_SERVER_PRESETS
+            .iter()
+            .map(|(l, s)| serde_json::json!({ "label": l, "server": s }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+/// DNS 查询：`server` 为空走系统解析器，否则直查指定服务器（自研 UDP 客户端）。
+#[tauri::command]
+pub async fn sk_dns_query(
+    domain: String,
+    server: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let domain = domain.trim().to_string();
+        if domain.is_empty() {
+            return Err("域名不能为空".to_string());
+        }
+        let server = server.unwrap_or_default();
+        let start = std::time::Instant::now();
+        if server.trim().is_empty() {
+            let ips = crate::dnsclient::resolve_system(&domain, 4.0);
+            let ms = start.elapsed().as_millis();
+            if ips.is_empty() {
+                return Ok(serde_json::json!({
+                    "ok": false, "domain": domain, "server": "系统默认",
+                    "ips": [], "ms": ms,
+                    "message": "系统解析失败/超时（可能是 DNS 故障或域名不存在）",
+                }));
+            }
+            Ok(serde_json::json!({
+                "ok": true, "domain": domain, "server": "系统默认",
+                "ips": ips, "ms": ms, "message": format!("解析成功，用时 {ms} ms"),
+            }))
+        } else {
+            let s = server.trim().to_string();
+            match crate::dnsclient::query_with(
+                &domain,
+                &s,
+                crate::dnsclient::DEFAULT_TIMEOUT_SECS,
+                crate::dnsclient::QTYPE_A,
+                crate::dnsclient::DEFAULT_ATTEMPTS,
+            ) {
+                Ok(ips) => {
+                    let ms = start.elapsed().as_millis();
+                    Ok(serde_json::json!({
+                        "ok": true, "domain": domain, "server": s,
+                        "ips": ips, "ms": ms, "message": format!("解析成功，用时 {ms} ms"),
+                    }))
+                }
+                Err(e) => {
+                    let ms = start.elapsed().as_millis();
+                    Ok(serde_json::json!({
+                        "ok": false, "domain": domain, "server": s,
+                        "ips": [], "ms": ms, "message": e.to_string(),
+                    }))
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("查询线程失败: {e}"))?
+}
+
+/// ping 一个主机（`ping.exe`，复用 netcheck 的丢包率解析）。
+#[tauri::command]
+pub async fn sk_ping(host: String, count: Option<u32>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = host.trim().to_string();
+        if host.is_empty() {
+            return Err("主机不能为空".to_string());
+        }
+        let n = count.unwrap_or(4).clamp(1, 20).to_string();
+        let out = crate::w32::run_capture(&args(&["ping", "-n", &n, "-w", "1000", &host]), 40)
+            .map_err(|e| format!("ping 无法执行: {e}"))?;
+        let combined = out.combined();
+        let loss = crate::netcheck::ping_loss(&combined);
+        let latency = crate::portscan::parse_ping_ms(&combined);
+        Ok(serde_json::json!({
+            "ok": out.ok,
+            "host": host,
+            "loss_percent": loss,
+            "latency_ms": latency,
+            "raw": combined,
+        }))
+    })
+    .await
+    .map_err(|e| format!("ping 线程失败: {e}"))?
+}
+
+/// 路由跟踪（`tracert`），返回逐跳解析结果。
+#[tauri::command]
+pub async fn sk_tracert(host: String, max_hops: Option<u32>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = host.trim().to_string();
+        if host.is_empty() {
+            return Err("主机不能为空".to_string());
+        }
+        let hops = max_hops.unwrap_or(15).clamp(1, 30).to_string();
+        let out = crate::w32::run_capture(
+            &args(&["tracert", "-d", "-h", &hops, "-w", "1000", &host]),
+            120,
+        )
+        .map_err(|e| format!("tracert 无法执行: {e}"))?;
+        let parsed = crate::portscan::parse_tracert(&out.stdout);
+        Ok(serde_json::json!({
+            "ok": out.ok,
+            "host": host,
+            "hops": parsed,
+            "count": parsed.len(),
+            "raw": out.combined(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("tracert 线程失败: {e}"))?
+}
+
 // ---------------- M4 工具箱：局域网设备 ----------------
 
 /// 扫描本机所在 /24 网段：并发 ping 唤醒邻居 → 读 ARP 表列出存活设备。

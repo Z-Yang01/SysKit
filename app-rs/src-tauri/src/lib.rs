@@ -37,6 +37,7 @@ mod secure_store;
 mod settings;
 mod snapshot;
 mod stores;
+mod subnet;
 mod telemetry;
 mod telemetry_hub;
 mod test_support;
@@ -168,6 +169,10 @@ pub fn run() {
             commands::sk_ports_list,
             commands::sk_kill_process,
             commands::sk_lan_scan,
+            commands::sk_subnet_calc,
+            commands::sk_dns_query,
+            commands::sk_ping,
+            commands::sk_tracert,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

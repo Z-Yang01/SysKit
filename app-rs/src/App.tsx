@@ -27,6 +27,7 @@ import { Dashboard } from "./Overview";
 import { Diagnose } from "./Diagnose";
 import { ToolboxHosts } from "./ToolboxHosts";
 import { ToolboxPorts } from "./ToolboxPorts";
+import { ToolboxDns } from "./ToolboxDns";
 import { applyTheme, palette, type Palette } from "./theme";
 
 interface ClipRow {
@@ -214,6 +215,7 @@ export function App() {
         items={[
           { key: "hosts", label: "Hosts 编辑", children: <ToolboxHosts /> },
           { key: "ports", label: "端口 / 局域网", children: <ToolboxPorts /> },
+          { key: "dns", label: "DNS / 子网 / ping", children: <ToolboxDns /> },
           {
             key: "soon",
             label: "待接入",
@@ -221,7 +223,7 @@ export function App() {
               <Pending
                 title="工具箱其余项"
                 milestone="M4"
-                detail="测速 / DNS 子网计算 / ping 路由 / DNS 测速 / 应用联网 —— 逐轮接入。"
+                detail="测速 / DNS 测速 / 应用联网 —— 逐轮接入。"
               />
             ),
           },
