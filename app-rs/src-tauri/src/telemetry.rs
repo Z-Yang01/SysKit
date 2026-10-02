@@ -116,6 +116,13 @@ pub struct Tick {
     pub disk_w: u64,
     pub today_sent: i64,
     pub today_recv: i64,
+    /// WiFi 信号质量 0~100（未连接/无网卡为 None）。
+    /// `#[serde(default)]`：老前端读新后端（或反之）时不会因缺字段报错。
+    #[serde(default)]
+    pub wifi_signal: Option<u32>,
+    /// 当前 WiFi SSID（未连接为空串）
+    #[serde(default)]
+    pub wifi_ssid: String,
 }
 
 /// 遥测采样器：持有跨拍基线。

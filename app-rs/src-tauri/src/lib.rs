@@ -46,6 +46,7 @@ mod test_support;
 mod timefmt;
 mod tray;
 mod w32;
+mod wifi;
 
 use tauri::{Emitter, Manager};
 
@@ -182,6 +183,7 @@ pub fn run() {
             commands::sk_appnet_remove,
             commands::sk_appnet_validate,
             commands::sk_appnet_pick_exe,
+            commands::sk_wifi_info,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");

@@ -30,6 +30,7 @@ import { ToolboxPorts } from "./ToolboxPorts";
 import { ToolboxDns } from "./ToolboxDns";
 import { ToolboxSpeed } from "./ToolboxSpeed";
 import { ToolboxAppNet } from "./ToolboxAppNet";
+import { SystemPage } from "./SystemPage";
 import { applyTheme, palette, type Palette } from "./theme";
 
 interface ClipRow {
@@ -223,13 +224,7 @@ export function App() {
         ]}
       />
     ),
-    system: (
-      <Pending
-        title="系统助手"
-        milestone="M5"
-        detail="性能 / 启动项 / 电池 / 清理 / 磁盘分析 / 剪贴板记录侧 / 场景模式。"
-      />
-    ),
+    system: <SystemPage />,
     vault: (
       <Pending
         title="密码库"

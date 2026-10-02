@@ -21,6 +21,11 @@ use crate::telemetry::{Sampler, Tick};
 pub const SAMPLE_INTERVAL_SECS: u64 = 1;
 /// 落盘节拍（拍数）：与 Python `save_counter >= 60` 一致。
 pub const SAVE_EVERY_TICKS: u64 = 60;
+/// WiFi 读取节拍（拍数）：与 Python `self._tickno % 5 == 0`（5 秒）一致。
+///
+/// `wlanapi` 一次调用只有微秒级，本可以每拍都读；仍按 5 秒是为了与 Python
+/// 行为对齐——信号曲线的时间分辨率变了会让两版的历史数据不可比。
+pub const WIFI_EVERY_TICKS: u64 = 5;
 
 /// 遥测共享状态：采样线程写，命令线程读。
 pub struct Hub {
@@ -99,7 +104,19 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
         .spawn(move || {
             let mut sampler = Sampler::new();
             let mut since_save = 0u64;
+            let mut tickno: u64 = 0;
+            // WiFi 每 5 秒读一次（Python 同为 5 秒周期），但**SSID 归因每次入账都要用**，
+            // 所以读数缓存在这里而不是每次重读；0 号 tick 立即读一次，
+            // 避免启动后头 5 秒的流量全归到「以太网/未知」桶。
+            let mut wifi = crate::wifi::WifiInfo::disconnected();
             while !hub.stopped() {
+                if tickno % WIFI_EVERY_TICKS == 0 {
+                    wifi = crate::wifi::read();
+                    // SSID 归因：决定流量进哪个桶（未连接时空串 → 「以太网/未知」）
+                    hub.set_ssid(&wifi.ssid);
+                }
+                tickno += 1;
+
                 let today = hub.today_traffic();
                 let tick = sampler.sample(today);
 
@@ -112,7 +129,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                     hub.rates.lock().expect("流量桶锁中毒").add(
                         tick.up as i64,
                         tick.down as i64,
-                        None,
+                        Some(&wifi.ssid),
                     );
                 }
 
@@ -122,6 +139,9 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                 tick.today_sent = sent;
                 tick.today_recv = recv;
 
+                // 信号/tick 一起带给前端（概览页信号曲线用）
+                tick.wifi_signal = wifi.signal;
+                tick.wifi_ssid = wifi.ssid.clone();
                 *hub.latest.lock().expect("遥测锁中毒") = Some(tick.clone());
                 let _ = app.emit("sk://tick", &tick);
                 // 托盘悬浮显示实时速率（内部去重 + 尊重 tray_rate_enabled 设置；

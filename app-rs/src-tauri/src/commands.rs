@@ -985,6 +985,24 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
 
+// ---------------- M5 系统助手：WiFi 状态 ----------------
+
+/// 读取 WiFi 状态（`wlanapi.dll`，微秒级）。
+#[tauri::command]
+pub fn sk_wifi_info() -> serde_json::Value {
+    let w = crate::wifi::read();
+    serde_json::json!({
+        "connected": w.connected,
+        "ssid": w.ssid,
+        "signal": w.signal,
+        "dbm": w.dbm,
+        "bssid": w.bssid,
+        "rx_kbps": w.rx_kbps,
+        "tx_kbps": w.tx_kbps,
+        "label": w.signal.map(crate::wifi::signal_label).unwrap_or("未连接"),
+    })
+}
+
 // ---------------- M4 工具箱：局域网设备 ----------------
 
 /// 扫描本机所在 /24 网段：并发 ping 唤醒邻居 → 读 ARP 表列出存活设备。
