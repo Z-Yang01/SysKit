@@ -661,6 +661,11 @@ ping、DNS 解析、色块）。两处真机细节照搬 Python：
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。
 3. **安装**：退出一切 SysKit 实例（两版严禁同跑）→ 跑 NSIS 向导（或绿色版直接
    放置 exe）。安装前保留 Python 版 exe 备份（沿用 `.bak` 链）。
+   一键换装：`tools\deploy_swap_rs.bat`（守卫双实例/备份链/字节校验）；
+   加 `with-data` 参数把 `%APPDATA%\SysKit` 的数据携入便携目录（vault db+key
+   成对拷、双方先备份）。**数据口径是决策点**：Rust 测试期数据在
+   `%APPDATA%\SysKit`，Python 部署版历史数据在 `E:\Software\SysKit\data`——
+   默认只换 exe（用便携旧数据）；要让 Rust 期配置/历史跟走就加 `with-data`。
 4. **观察期**（建议 ≥3 天）：日常使用走 Rust 版；重点留意双热键体感、TOTP、
    自动重锁窗口、断网/恢复提示音、关窗最小化。异常可随时装回 Python 版
    （数据互通，无迁移损失）。
