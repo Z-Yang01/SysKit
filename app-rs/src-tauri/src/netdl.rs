@@ -47,6 +47,7 @@ pub struct UrlResult {
 static CANCEL: AtomicBool = AtomicBool::new(false);
 
 /// 请求中止进行中的测速（前端「停止」按钮用）。
+#[allow(dead_code)] // 测速取消能力已实现，UI 接线待做（超时护栏已由并行会话补齐）
 pub fn cancel() {
     CANCEL.store(true, Ordering::SeqCst);
 }

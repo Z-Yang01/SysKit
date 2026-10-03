@@ -88,6 +88,7 @@ impl Hub {
         self.rates.lock().expect("流量桶锁中毒").save_if_dirty();
     }
 
+    #[cfg(test)]
     pub fn request_stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
     }
@@ -165,9 +166,10 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                     tick.wifi_ssid = wifi.ssid.clone();
                     *hub.latest.lock().expect("遥测锁中毒") = Some(tick.clone());
                     let _ = app.emit("sk://tick", &tick);
-                    // 托盘悬浮显示实时速率（内部去重 + 尊重 tray_rate_enabled 设置；
-                    // 状态灯暂固定 offline，M3 的网络监控接管）
-                    crate::tray::apply_rate(&app, tick.down, tick.up, "offline");
+                    // 托盘悬浮显示实时速率（内部去重 + 尊重 tray_rate_enabled 设置）；
+                    // 基础段读监控实时状态（曾硬编码 "offline"——状态灯接线后两路提示一致）
+                    let mstate = crate::monitor::state().state;
+                    crate::tray::apply_rate(&app, tick.down, tick.up, &mstate);
 
                     since_save += 1;
                     if since_save >= SAVE_EVERY_TICKS {

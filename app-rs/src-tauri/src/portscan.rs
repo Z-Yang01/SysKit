@@ -26,6 +26,7 @@ impl PortRow {
     }
 
     /// 复合过滤：关键字同时匹配端口/PID/地址/状态；`listen_only` 只留监听态。
+    #[cfg(test)]
     pub fn matches(&self, keyword: &str, listen_only: bool, proc_name: &str) -> bool {
         if listen_only && !self.is_listening() {
             return false;
@@ -254,11 +255,13 @@ pub struct TraceHop {
 
 impl TraceHop {
     /// 该跳是否全超时。
+    #[cfg(test)]
     pub fn timed_out(&self) -> bool {
         self.latencies.iter().all(|l| l.is_none())
     }
 
     /// 最小延迟（用于展示）。
+    #[cfg(test)]
     pub fn min_latency(&self) -> Option<u32> {
         self.latencies.iter().flatten().copied().min()
     }

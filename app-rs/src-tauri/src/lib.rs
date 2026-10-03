@@ -16,7 +16,6 @@
 // 接线与原生 ICMP（实测移除本豁免现存 63 处，全部属上述两批）。
 // 覆盖范围是明确的、不掩盖错误——未使用变量/导入等仍按错误处理。
 // 上述两批落地后本豁免必须收窄（README「已知缺口」有跟踪项）。
-#![allow(dead_code)]
 
 mod appnet;
 mod backup;
@@ -247,8 +246,9 @@ pub fn run() {
                     }
                 });
             }
-            // 后台监控 + 保守自动修复梯度（消费那六项 auto_repair_* 设置）
-            monitor::spawn();
+            // 后台监控 + 保守自动修复梯度（消费那六项 auto_repair_* 设置）；
+            // 注入句柄供状态切换时更新托盘状态灯
+            monitor::spawn(handle.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

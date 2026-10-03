@@ -35,6 +35,7 @@ use serde::Serialize;
 pub enum NetState {
     Ok,
     NoNet,
+    #[allow(dead_code)] // 状态机对齐 Python ST_NCSI_FALSE（Python 同样只定义未赋值）
     NcsiFalse,
     Offline,
 }
@@ -174,6 +175,8 @@ pub struct MonitorState {
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static FORCE: AtomicBool = AtomicBool::new(false);
 static STOP: AtomicBool = AtomicBool::new(false);
+/// 托盘状态灯用：set_status 切换状态时更新托盘图标/基础提示（spawn 时注入）
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
 static REPAIR_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_CHECK: AtomicI64 = AtomicI64::new(0);
 static FAIL_STREAK: AtomicU64 = AtomicU64::new(0);
@@ -191,6 +194,15 @@ fn set_status(state: NetState, detail: &str) {
     let prev = LAST_STATE.lock().expect("状态锁中毒").clone();
     *LAST_STATE.lock().expect("状态锁中毒") = state.as_str().to_string();
     *LAST_DETAIL.lock().expect("状态锁中毒") = detail.to_string();
+    // 托盘状态灯接管：只在状态真正切换时换图标/基础悬浮提示（tick 每轮都会
+    // 调 set_status，不能每轮都重绘图标）；实时速率提示由遥测每秒叠加（其
+    // 基础段同样读这里的状态，两条路径不打架）。此前没人调 apply_state，
+    // 托盘永远显示 offline 图标——这是接线缺口不是刻意行为。
+    if prev != state.as_str() {
+        if let Some(app) = APP_HANDLE.get() {
+            crate::tray::apply_state(app, state.as_str());
+        }
+    }
     // 断网/恢复提示音：sound_alert_enabled 门控（默认开）；
     // 测试运行静默（cfg 门）——FFI 本身平凡，判定逻辑另有单测
     if should_alert(&prev, state.as_str()) && crate::settings::get_bool("sound_alert_enabled") {
@@ -227,13 +239,15 @@ pub fn force_check() {
 }
 
 /// 请求停止监控线程。
+#[allow(dead_code)] // 停止语义对齐 Python（进程退出即线程消亡，优雅停止留作复用）
 pub fn request_stop() {
     STOP.store(true, Ordering::SeqCst);
     FORCE.store(true, Ordering::SeqCst);
 }
 
 /// 起监控线程（Tauri setup 阶段调用一次）。
-pub fn spawn() {
+pub fn spawn(app: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(app);
     if RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -571,6 +585,7 @@ mod tests {
         assert!(!should_alert("ok", "ok"), "同态不发声");
     }
 
+    #[test]
     fn net_state_strings_match_python() {
         assert_eq!(NetState::Ok.as_str(), "ok");
         assert_eq!(NetState::NoNet.as_str(), "no_net");

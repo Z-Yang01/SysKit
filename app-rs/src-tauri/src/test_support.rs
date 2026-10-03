@@ -42,11 +42,6 @@ pub fn isolate() -> PathBuf {
     crate::paths::appdata_dir()
 }
 
-/// 清空 settings 进程缓存（改过覆盖目录或写完盘之后重新读取用）。
-pub fn reset_settings_cache() {
-    crate::settings::reset_cache();
-}
-
 /// 清掉隔离目录里的持久化文件 + 进程内缓存（在**持有 `serial()` 令牌**时调用）。
 ///
 /// 需要它是因为进程内缓存与磁盘状态会跨用例残留：前一个用例写下的
