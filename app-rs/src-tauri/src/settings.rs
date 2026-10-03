@@ -145,12 +145,6 @@ impl Decoration {
             ..Self::new(label, description)
         }
     }
-
-    /// 标记为"暂未生效"（该键目前没有消费方）。
-    fn unwired(mut self, reason: &'static str) -> Self {
-        self.unwired_reason = reason;
-        self
-    }
 }
 
 /// 界面装饰信息。
@@ -175,13 +169,11 @@ fn decoration(key: &str) -> Decoration {
             0,
             86400,
         ),
-        "minimize_to_tray" => Decoration::new("关闭时最小化到托盘", "点关闭按钮不退出程序")
-            .unwired("暂未生效：窗口关闭行为尚未接入本设置（当前关闭按钮行为固定）。"),
+        "minimize_to_tray" => Decoration::new("关闭时最小化到托盘", "点关闭按钮不退出程序"),
         "tray_rate_enabled" => {
             Decoration::new("托盘显示实时速率", "把上下行速率显示在托盘悬浮提示里")
         }
-        "sound_alert_enabled" => Decoration::new("声音提醒", "断网/恢复时播放提示音")
-            .unwired("暂未生效：声音提醒尚未实现。"),
+        "sound_alert_enabled" => Decoration::new("声音提醒", "断网/恢复时播放提示音"),
         "dark_mode" => Decoration::new("深色主题", "切换界面深浅配色"),
         "dns_preset" => Decoration::choice(
             "默认 DNS 预设",
@@ -728,7 +720,10 @@ mod tests {
     /// ——这正是我们想要的提醒（否则容易忘记摘掉过期的"暂未生效"标签）。
     /// vault_autolock_min/vault_trust_min 已随 M6 数据层接线（会话自动重锁/
     /// trust 窗口），摘除。
-    const UNWIRED: [&str; 2] = ["minimize_to_tray", "sound_alert_enabled"];
+    /// 全部接线完成，名单归零（minimize_to_tray=lib.rs 关窗事件；
+    /// sound_alert_enabled=monitor 发声门控；vault_* 两项随 M6 接线）。新键
+    /// 若暂无消费方，加回这里并在 Decoration 上写「暂未生效：…」。
+    const UNWIRED: [&str; 0] = [];
 
     #[test]
     fn unwired_keys_are_marked_and_explained() {
