@@ -170,6 +170,20 @@ fn start_hotkeys(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     logging::init(); // 文件日志先行：其后任何初始化失败都有迹可循
+    // 单实例互斥（与 Python 版同名：兼防本版多开与两版同跑——多实例各自
+    // 刷盘会互相覆盖 clipboard.json/traffic.json，热键也会互抢）
+    if !crate::w32::acquire_single_instance_mutex("SysKit_SingleInstance_Mutex") {
+        unsafe {
+            use windows::core::{w, PCWSTR};
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_OK, MB_ICONINFORMATION};
+            let text = w!("SysKit 已在运行（含 Python 旧版）。
+请先退出已有实例（托盘右键 → 退出）再启动。");
+            let title = w!("SysKit");
+            MessageBoxW(None, text, title, MB_OK | MB_ICONINFORMATION);
+        }
+        log::warn!("已有实例在运行，本实例退出");
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {

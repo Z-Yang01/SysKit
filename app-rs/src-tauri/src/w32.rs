@@ -1888,3 +1888,22 @@ pub fn play_alert_sound(ok: bool) {
         );
     }
 }
+
+/// 单实例互斥：创建命名互斥量并立即持有关闭句柄的能力由调用方决定——
+/// 这里只创建；若 ERROR_ALREADY_EXISTS 则返回 false（已有实例）。
+/// 句柄有意泄漏（与进程同寿），进程退出时系统自动回收。
+pub fn acquire_single_instance_mutex(name: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+    unsafe {
+        let w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let h = CreateMutexW(None, false, PCWSTR(w.as_ptr()));
+        if h.is_err() {
+            return false;
+        }
+        // 不 CloseHandle：互斥量必须与进程同寿（释放即失去单实例保护）
+        std::mem::forget(h);
+        GetLastError() != ERROR_ALREADY_EXISTS
+    }
+}
