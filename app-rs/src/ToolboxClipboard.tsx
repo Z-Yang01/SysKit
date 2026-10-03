@@ -53,6 +53,7 @@ import {
   type ClipAction,
   type DetectResult,
 } from "./cliprules";
+import { svgDataUrl } from "./qr";
 
 export function ClipboardHistoryPanel() {
   const [rows, setRows] = useState<ClipRow[]>([]);
@@ -119,7 +120,7 @@ export function ClipboardHistoryPanel() {
   const saveQrPng = useCallback(async () => {
     if (!qrSvg) return;
     const img = new Image();
-    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(qrSvg);
+    img.src = svgDataUrl(qrSvg);
     try {
       await new Promise<void>((res, rej) => {
         img.onload = () => res();
@@ -526,7 +527,7 @@ export function ClipboardHistoryPanel() {
               {qrSvg ? (
                 <div style={{ background: "#fff", padding: 8, width: 296 }}>
                   <img
-                    src={"data:image/svg+xml;charset=utf-8," + encodeURIComponent(qrSvg)}
+                    src={svgDataUrl(qrSvg)}
                     width={280}
                     height={280}
                     alt="二维码"
