@@ -30,6 +30,9 @@ log = { version = "0.4", features = ["std"] }
 # 否则同一个 exe 会被两个版本各建一条规则（用户在 wf.msc 里看到重复项）。
 # 用 crate 而不是手写 SHA-1：摘要是密码学原语，手写不出错很难、出错很难发现。
 sha1 = "0.10"
+# 二维码生成（M4 缺口闭环）：纯 Rust，SVG 输出无需图像库——
+# 与「不静默调用第三方二维码服务」的隐私原则兼容（数据本地生成）
+qrcode = "0.14"
 # 密码库数据层（M6）：bundled=自带 SQLite C 源（免系统 dll 依赖）；同库互开
 # 是跨语言硬约束，schema/SQL 逐字对齐 syskit/vault.py
 rusqlite = { version = "0.32", features = ["bundled"] }

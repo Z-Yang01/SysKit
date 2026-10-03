@@ -1071,6 +1071,21 @@ pub async fn sk_clip_action_run(id: String, arg: String) -> Result<String, Strin
     .map_err(|e| format!("动作线程失败: {e}"))?
 }
 
+/// 生成二维码 SVG（`url_qr` 动作的渲染端，对应 Python `_show_qr_dialog`）。
+///
+/// 纯 Rust `qrcode` 本地渲染：绝不把用户复制的链接发给第三方二维码服务——
+/// 那等于把剪贴板内容泄露出去。SVG 交给前端展示/导出 PNG（Python 版保存
+/// 的也是图片文件，格式从 PNG 换 SVG 不改语义；前端导出仍出 PNG）。
+/// 纠错级别 M 与 Python `qrcode.make` 默认一致；外圈留白取库默认 4 模块
+/// （Python 版 border=2 偏紧，4 是扫码可靠性推荐值，只影响留白不影响内容）。
+#[tauri::command]
+pub fn sk_clip_qr_svg(data: String) -> Result<String, String> {
+    use qrcode::{render::svg, EcLevel, QrCode};
+    let code = QrCode::with_error_correction_level(data.as_bytes(), EcLevel::M)
+        .map_err(|e| format!("二维码生成失败: {e}"))?;
+    Ok(code.render::<svg::Color>().min_dimensions(280, 280).build())
+}
+
 // ---------------- 敏感内容剪贴板 ----------------
 
 /// 复制一段敏感文本到剪贴板（密码 / WiFi 密钥等）。
@@ -2504,5 +2519,36 @@ mod tests {
         let v = sk_version();
         assert_eq!(v["version"], crate::paths::VERSION);
         assert_eq!(v["display_name"], crate::paths::DISPLAY_NAME);
+    }
+
+    #[test]
+    fn qr_svg_renders_local_and_scalable() {
+        // url_qr 动作的渲染端：本地 SVG、内容可被浏览器 <img> 直接消费。
+        // 纠错级别 M 与 Python qrcode.make 默认一致——这里锁住"能出图"与
+        // "SVG 结构完整"两条底线，具体点阵形状交给 qrcode 库自己保证。
+        let svg = sk_clip_qr_svg("https://example.com/rust".into()).expect("常规 URL 必须可渲染");
+        assert!(
+            svg.starts_with("<?xml") || svg.starts_with("<svg"),
+            "必须是 SVG 文本: 首行不对"
+        );
+        assert!(svg.contains("<svg"), "缺 svg 根元素");
+        assert!(
+            svg.contains("viewBox"),
+            "无 viewBox 则 <img> 无法按比例缩放"
+        );
+        assert!(svg.contains("</svg>"), "SVG 未闭合");
+
+        // 确定性：同输入两次渲染必须逐字节一致（用户前后两次点同一动作
+        // 看到不同的码会立刻失去信任）
+        let again = sk_clip_qr_svg("https://example.com/rust".into()).expect("二次渲染失败");
+        assert_eq!(svg, again, "同一输入的二维码必须逐字节一致");
+    }
+
+    #[test]
+    fn qr_svg_rejects_oversized_payload() {
+        // 超过 QR 码字节容量（M 级上限约 2331 字节）必须报错，而不是
+        // 悄悄降级或截断——截断后的码扫出来是另一段内容，那是静默数据损坏
+        let big = "a".repeat(4000);
+        assert!(sk_clip_qr_svg(big).is_err(), "超容量输入必须 Err");
     }
 }

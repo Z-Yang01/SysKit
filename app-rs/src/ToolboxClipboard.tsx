@@ -68,6 +68,7 @@ export function ClipboardHistoryPanel() {
   const [detectedFor, setDetectedFor] = useState(-1);
   const [running, setRunning] = useState("");
   const [qrOf, setQrOf] = useState("");
+  const [qrSvg, setQrSvg] = useState("");
   const [colorOf, setColorOf] = useState("");
 
   const load = useCallback(async () => {
@@ -90,6 +91,58 @@ export function ClipboardHistoryPanel() {
       message.error(`读取剪贴板历史失败：${String(e)}`);
     }
   }, [keyword, kind]);
+
+  // 二维码：qrOf 是要编码的文本，SVG 由后端本地渲染（qrcode crate）。
+  // 失败必须把整个二维码区收起——不能留着"复制地址"让用户以为图还在。
+  useEffect(() => {
+    if (!qrOf) {
+      setQrSvg("");
+      return;
+    }
+    let alive = true;
+    invoke<string>("sk_clip_qr_svg", { data: qrOf })
+      .then((svg) => {
+        if (alive) setQrSvg(svg);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        message.error(String(e));
+        setQrOf("");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [qrOf]);
+
+  // 导出 PNG（对应 Python 版"保存图片"，文件名同为 clip_qr.png）：
+  // SVG 画上白底后转位图。data-URL 的 SVG 不含外部资源，画布不会被污染。
+  const saveQrPng = useCallback(async () => {
+    if (!qrSvg) return;
+    const img = new Image();
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(qrSvg);
+    try {
+      await new Promise<void>((res, rej) => {
+        img.onload = () => res();
+        img.onerror = () => rej(new Error("SVG 加载失败"));
+      });
+      const side = 560;
+      const canvas = document.createElement("canvas");
+      canvas.width = side;
+      canvas.height = side;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("画布不可用");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, side, side);
+      ctx.drawImage(img, 0, 0, side, side);
+      const a = document.createElement("a");
+      a.href = canvas.toDataURL("image/png");
+      a.download = "clip_qr.png";
+      a.click();
+      message.success("已保存 clip_qr.png");
+    } catch (e) {
+      message.error(`二维码导出失败：${String(e)}`);
+    }
+  }, [qrSvg]);
 
   // 监听开关三态：关→开启（确认框）；开且未暂停→暂停（直接）；已暂停→恢复（确认不补录）
   const watchToggleModal = useCallback(() => {
@@ -466,16 +519,32 @@ export function ClipboardHistoryPanel() {
           message="二维码"
           description={
             <Space direction="vertical" size={6}>
-              {/* 不静默调用第三方二维码服务：那等于把用户复制的链接发出去。
-                  改为给出可复制地址，让用户自己选信任的工具。 */}
+              {/* 本地渲染（后端 qrcode crate），不调用任何第三方二维码服务：
+                  你复制的链接不出本机。白底是扫码可靠性的硬要求（深色主题下
+                  静区必须仍是白的）。 */}
               <Typography.Text copyable={{ text: qrOf }}>{qrOf}</Typography.Text>
-              <Typography.Text type="secondary" className="sk-hint">
-                本版未内置二维码渲染（需额外依赖）。可复制上面的地址到你信任的二维码工具生成
-                ——这样不会把你的链接发给第三方服务。
-              </Typography.Text>
-              <Button size="small" onClick={() => setQrOf("")}>
-                收起
-              </Button>
+              {qrSvg ? (
+                <div style={{ background: "#fff", padding: 8, width: 296 }}>
+                  <img
+                    src={"data:image/svg+xml;charset=utf-8," + encodeURIComponent(qrSvg)}
+                    width={280}
+                    height={280}
+                    alt="二维码"
+                  />
+                </div>
+              ) : (
+                <Typography.Text type="secondary" className="sk-hint">
+                  生成中…
+                </Typography.Text>
+              )}
+              <Space size={8}>
+                <Button size="small" onClick={saveQrPng} disabled={!qrSvg}>
+                  保存图片
+                </Button>
+                <Button size="small" onClick={() => setQrOf("")}>
+                  收起
+                </Button>
+              </Space>
             </Space>
           }
         />
