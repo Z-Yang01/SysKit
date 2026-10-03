@@ -252,7 +252,42 @@ def qapp():
 
 
 def clip_set_text(text):
-    qapp().clipboard().setText(text)
+    """原生 Win32 写剪贴板（**不用 Qt**）。
+
+    Qt 的 Windows 剪贴板写入是**延迟渲染**：SetClipboardData(NULL) 占位，
+    数据等其它进程索取时才由 Qt 窗口渲染（WM_RENDERFORMAT）。冒烟驱动的
+    QApplication **从不跑事件循环**（测试体 time.sleep 阻塞主线程）→ 渲染
+    请求永远得不到处理 → Rust 应用的剪贴板读取拿到空 → 「监听未开启」假象
+    （上一轮 7 靶连挂的根因）。原生 ctypes 写入是立即数据，跨进程立即可读。
+    """
+    import ctypes
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+    k32 = ctypes.windll.kernel32
+    u32 = ctypes.windll.user32
+    # x64 句柄截断防御：显式声明 64 位 restype（本仓库已知坑）
+    k32.GlobalAlloc.restype = ctypes.c_void_p
+    k32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = [ctypes.c_void_p]
+    k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    u32.SetClipboardData.restype = ctypes.c_void_p
+    if not u32.OpenClipboard(None):
+        raise OSError("OpenClipboard 失败（被其它进程占用）")
+    try:
+        u32.EmptyClipboard()
+        data = text.encode("utf-16-le") + bytes([0, 0])
+        h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        ptr = k32.GlobalLock(h)
+        ctypes.memmove(ptr, data, len(data))
+        k32.GlobalUnlock(h)
+        # 句柄所有权移交系统，不再释放
+        if not u32.SetClipboardData(CF_UNICODETEXT, h):
+            k32.GlobalFree(h)
+            raise OSError("SetClipboardData 失败")
+    finally:
+        u32.CloseClipboard()
 
 
 def clip_set_html(html, plain):
