@@ -648,3 +648,26 @@ ping、DNS 解析、色块）。两处真机细节照搬 Python：
   CF_HTML / CF_HDROP / CF_DIB **只实现 Getter，没有 Setter**（已核对 crate 源码），
   因此 text/html/image/file 四类写回全部用 `w32.rs` 直接构造载荷。
 
+
+## Step 5 切换 runbook（冒烟 GO 后逐条执行）
+
+前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
+
+1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
+   `bundle/nsis/SysKit_1.2.0_x64-setup.exe`（安装向导，含卸载信息）。
+2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
+   `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
+   vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。
+3. **安装**：退出一切 SysKit 实例（两版严禁同跑）→ 跑 NSIS 向导（或绿色版直接
+   放置 exe）。安装前保留 Python 版 exe 备份（沿用 `.bak` 链）。
+4. **观察期**（建议 ≥3 天）：日常使用走 Rust 版；重点留意双热键体感、TOTP、
+   自动重锁窗口、断网/恢复提示音、关窗最小化。异常可随时装回 Python 版
+   （数据互通，无迁移损失）。
+5. **退役**：观察期无异常 → Python 版源码归档（`syskit/` 保留在 git 历史、
+   从工作区移除或标记维护模式——**另行决策，不在本 runbook 自动执行**）；
+   UNATTENDED.md 的 Python 侧规范随之失效。
+
+## 回滚
+
+任意时点装回 Python 版（.bak 或重跑 Python 侧 build.bat）即可——数据目录
+互通且格式未变，唯一要求仍是「两版不同时运行」。
