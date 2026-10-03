@@ -248,9 +248,12 @@ pub fn spawn() {
             let mut fail_streak: u32 = 0;
             while !STOP.load(Ordering::SeqCst) {
                 let cfg = MonitorConfig::from_settings();
-                if let Err(e) = tick(&cfg, &mut fail_streak, &mut last_repair, &mut last_l3) {
-                    log::warn!("监控循环异常: {e}");
-                }
+                // 自愈：单拍 panic 记 ERROR 后继续（守护线程死 = 监控静默消失）
+                crate::catch_tick("monitor", || {
+                    if let Err(e) = tick(&cfg, &mut fail_streak, &mut last_repair, &mut last_l3) {
+                        log::warn!("监控循环异常: {e}");
+                    }
+                });
                 FAIL_STREAK.store(fail_streak as u64, Ordering::SeqCst);
                 // 可中断等待：force 置位立即醒来
                 let deadline = Instant::now() + Duration::from_secs(cfg.poll_interval_sec);

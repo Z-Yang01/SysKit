@@ -164,7 +164,9 @@ pub fn spawn() {
         .name("sk-clipwatch".into())
         .spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
-            capture_pass();
+            // 自愈：单趟 panic 记 ERROR 后继续（监听线程死 = 记录静默消失，
+            // 用户只会觉得"功能坏了"而日志里毫无痕迹）
+            crate::catch_tick("clip-watch", capture_pass);
         })
         .expect("剪贴板监听线程启动失败");
 }

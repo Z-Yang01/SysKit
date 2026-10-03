@@ -90,6 +90,25 @@ fn startup_maintenance() {
 /// 三把全局热键的宿主状态：重挂时 drain 旧 host（反注册）再压入新的。
 pub struct HotkeyHosts(pub std::sync::Mutex<Vec<hotkey::HotkeyHost>>);
 
+/// 常驻线程循环体的自愈包装：单次 panic 记 ERROR 后返回，循环继续下一拍，
+/// 而不是整条线程静默死亡。panic 遗留的锁中毒会让循环内的 `.expect` 继续
+/// 炸——同样被这里捕获并以 ERROR 日志呈现：**响着降级**好过**哑着死亡**
+/// （真机教训：wifi RPC 卡住曾让遥测静默停摆 65 分钟才被发现）。
+///
+/// 只用于"状态/观测"类循环；剪贴板历史等持久化数据的**变异**不在此列——
+/// 中毒后继续写可能落盘脏数据，那里宁可 fail-fast。
+pub(crate) fn catch_tick<F: FnOnce()>(name: &str, f: F) {
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    if let Err(payload) = r {
+        let msg = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "未知 panic".to_string());
+        log::error!("[{name}] 单次循环 panic 已恢复（循环继续，状态可能降级）: {msg}");
+    }
+}
+
 /// 注册/重挂三个全局热键。`previous` 提供各键保存前旧值（回退步来源）；
 /// 启动路径传 get_str 本身 → 旧值==当前值 → 无回退步。
 ///
@@ -357,5 +376,17 @@ mod tests {
     #[test]
     fn ping_is_pong() {
         assert_eq!(super::commands::ping(), "pong");
+    }
+
+    #[test]
+    fn catch_tick_runs_normal_body_and_swallows_panic() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let ran = Arc::new(AtomicBool::new(false));
+        let r = ran.clone();
+        super::catch_tick("test-ok", move || r.store(true, Ordering::SeqCst));
+        assert!(ran.load(Ordering::SeqCst), "正常循环体必须被执行");
+        // 走到这里即 panic 未逃逸（否则本测试线程已死、用例报失败）
+        super::catch_tick("test-panic", || panic!("必须被吞掉的自愈测试"));
     }
 }

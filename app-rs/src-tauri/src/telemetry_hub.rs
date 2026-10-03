@@ -111,74 +111,77 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
             // 避免启动后头 5 秒的流量全归到「以太网/未知」桶。
             let mut wifi = crate::wifi::WifiInfo::disconnected();
             while !hub.stopped() {
-                if tickno % WIFI_EVERY_TICKS == 0 {
-                    // 带超时的后台读取：wlanapi 的 RPC 在 WLAN 服务异常时可能
-                    // 阻塞数分钟（真机实测 65 分钟，16:09→17:14）——绝不能让
-                    // 遥测主循环被它拖住（刷盘/事件全部停摆）。超时沿用上一拍
-                    // 数据；挂起的读取线程等它自然返回后自行消亡。
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    std::thread::Builder::new()
-                        .name("sk-wifi-read".into())
-                        .spawn(move || {
-                            let _ = tx.send(crate::wifi::read());
-                        })
-                        .expect("wifi 读取线程启动失败");
-                    match rx.recv_timeout(std::time::Duration::from_secs(3)) {
-                        Ok(info) => {
-                            wifi = info;
-                            // SSID 归因：决定流量进哪个桶（未连接时空串 → 「以太网/未知」）
-                            hub.set_ssid(&wifi.ssid);
-                        }
-                        Err(_) => {
-                            log::warn!("wifi 读取超时（3s），沿用上一拍数据");
+                // 自愈：单拍 panic 记 ERROR 后继续（采样线程死 = 遥测/流量全静默消失）
+                crate::catch_tick("telemetry", || {
+                    if tickno % WIFI_EVERY_TICKS == 0 {
+                        // 带超时的后台读取：wlanapi 的 RPC 在 WLAN 服务异常时可能
+                        // 阻塞数分钟（真机实测 65 分钟，16:09→17:14）——绝不能让
+                        // 遥测主循环被它拖住（刷盘/事件全部停摆）。超时沿用上一拍
+                        // 数据；挂起的读取线程等它自然返回后自行消亡。
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::Builder::new()
+                            .name("sk-wifi-read".into())
+                            .spawn(move || {
+                                let _ = tx.send(crate::wifi::read());
+                            })
+                            .expect("wifi 读取线程启动失败");
+                        match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+                            Ok(info) => {
+                                wifi = info;
+                                // SSID 归因：决定流量进哪个桶（未连接时空串 → 「以太网/未知」）
+                                hub.set_ssid(&wifi.ssid);
+                            }
+                            Err(_) => {
+                                log::warn!("wifi 读取超时（3s），沿用上一拍数据");
+                            }
                         }
                     }
-                }
-                tickno += 1;
+                    tickno += 1;
 
-                let today = hub.today_traffic();
-                let tick = sampler.sample(today);
+                    let today = hub.today_traffic();
+                    let tick = sampler.sample(today);
 
-                // 速率增量入流量统计（上行/下行分开传，与 Python 调用顺序一致）
-                if tick.down > 0 || tick.up > 0 {
-                    hub.traffic
-                        .lock()
-                        .expect("流量锁中毒")
-                        .add(tick.up as i64, tick.down as i64);
-                    hub.rates.lock().expect("流量桶锁中毒").add(
-                        tick.up as i64,
-                        tick.down as i64,
-                        Some(&wifi.ssid),
-                    );
-                }
+                    // 速率增量入流量统计（上行/下行分开传，与 Python 调用顺序一致）
+                    if tick.down > 0 || tick.up > 0 {
+                        hub.traffic
+                            .lock()
+                            .expect("流量锁中毒")
+                            .add(tick.up as i64, tick.down as i64);
+                        hub.rates.lock().expect("流量桶锁中毒").add(
+                            tick.up as i64,
+                            tick.down as i64,
+                            Some(&wifi.ssid),
+                        );
+                    }
 
-                // 今日累计要在入账之后取，前端看到的数才自洽
-                let (sent, recv) = hub.today_traffic();
-                let mut tick = tick;
-                tick.today_sent = sent;
-                tick.today_recv = recv;
+                    // 今日累计要在入账之后取，前端看到的数才自洽
+                    let (sent, recv) = hub.today_traffic();
+                    let mut tick = tick;
+                    tick.today_sent = sent;
+                    tick.today_recv = recv;
 
-                // 信号/tick 一起带给前端（概览页信号曲线用）
-                tick.wifi_signal = wifi.signal;
-                tick.wifi_ssid = wifi.ssid.clone();
-                *hub.latest.lock().expect("遥测锁中毒") = Some(tick.clone());
-                let _ = app.emit("sk://tick", &tick);
-                // 托盘悬浮显示实时速率（内部去重 + 尊重 tray_rate_enabled 设置；
-                // 状态灯暂固定 offline，M3 的网络监控接管）
-                crate::tray::apply_rate(&app, tick.down, tick.up, "offline");
+                    // 信号/tick 一起带给前端（概览页信号曲线用）
+                    tick.wifi_signal = wifi.signal;
+                    tick.wifi_ssid = wifi.ssid.clone();
+                    *hub.latest.lock().expect("遥测锁中毒") = Some(tick.clone());
+                    let _ = app.emit("sk://tick", &tick);
+                    // 托盘悬浮显示实时速率（内部去重 + 尊重 tray_rate_enabled 设置；
+                    // 状态灯暂固定 offline，M3 的网络监控接管）
+                    crate::tray::apply_rate(&app, tick.down, tick.up, "offline");
 
-                since_save += 1;
-                if since_save >= SAVE_EVERY_TICKS {
-                    hub.flush();
-                    since_save = 0;
-                }
-                // 剪贴板历史独立 10s 落盘（对齐 Python QTimer 10_000；
-                // 60s 太久——崩溃丢窗口内全部历史，真机冒烟发现）
-                since_clip_save += 1;
-                if since_clip_save >= 10 {
-                    crate::clipboard_history::with(|h| h.flush_if_dirty());
-                    since_clip_save = 0;
-                }
+                    since_save += 1;
+                    if since_save >= SAVE_EVERY_TICKS {
+                        hub.flush();
+                        since_save = 0;
+                    }
+                    // 剪贴板历史独立 10s 落盘（对齐 Python QTimer 10_000；
+                    // 60s 太久——崩溃丢窗口内全部历史，真机冒烟发现）
+                    since_clip_save += 1;
+                    if since_clip_save >= 10 {
+                        crate::clipboard_history::with(|h| h.flush_if_dirty());
+                        since_clip_save = 0;
+                    }
+                });
                 std::thread::sleep(std::time::Duration::from_secs(SAMPLE_INTERVAL_SECS));
             }
             // 退出前最后一拍务必落盘（Python 靠 atexit；这里靠线程收尾）
