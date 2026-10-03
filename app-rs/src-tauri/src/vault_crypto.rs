@@ -55,16 +55,6 @@ pub const AAD_FIELD: &[u8] = b"field";
 /// DPAPI 的说明文本（Python 用 "SysKit vault key"）。
 pub const DPAPI_DESCRIPTION: &str = "SysKit vault key";
 
-/// 密码条目存取不可用时的统一说明。
-///
-/// 本阶段（按用户决定）**不实现数据层**，所以存取入口必须明确失败——绝不能
-/// 假装保存成功：用户会以为密码已存好，之后发现什么都没有，而密码这种数据
-/// 丢了就是丢了。加密层已完成且与 Python 版双向互通。
-pub const STORAGE_UNAVAILABLE: &str =
-    "密码条目存取尚未实现：数据层（vault.db / SQLite）按决定暂不引入。\
-加密层已完成且与 Python 版双向互通（vault.key），但缺少存储层意味着无法真正保存/读取密码条目。\
-后续启用需引入 SQLite 依赖（如 rusqlite）。";
-
 /// `vault.key` 的 metadata。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultMeta {

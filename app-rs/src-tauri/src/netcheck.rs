@@ -1014,6 +1014,22 @@ pub fn mac_randomization_enabled(settings_text: &str) -> bool {
 ///
 /// 数据来源是网卡驱动注册表（`...\Control\Class\{4d36e972-...}\<NNNN>`），
 /// 只对物理网卡判定；读不到时返回 skip（对应 Python 的 `scan is None` 分支）。
+/// PnPCapabilities 原始值 → 节电态标签（纯函数，回归锁核心）。
+///
+/// 与 Python `winregread.pnp_states` 同口径：**24 (0x18) = 电源管理已被禁用
+/// =「已禁止断电」**——这正是 `repairs::run_power_off` 写入的目标态（它遇到
+/// 已是 24 的键会跳过不改）；**其它值（含缺省 0）=「允许断电」**，才是风险项。
+/// 诊断若把 24 报成"允许断电"，用户跑完 power_off 修复后诊断页会永远 WARN
+/// 并反复推荐同一个"没有可改项"的修复——修复与诊断互相打脸。
+/// `None` = 该描述在类键里找不到（跳过，不计入两种状态）。
+pub fn pnp_power_label(cap: Option<u32>) -> Option<&'static str> {
+    match cap {
+        None => None,
+        Some(24) => Some("已禁止断电"),
+        Some(_) => Some("允许断电"),
+    }
+}
+
 pub fn chk_power_mgmt(snap: &Snapshot) -> CheckResult {
     let mut r = CheckResult::new("power_mgmt", "网卡节电（允许系统关闭设备以节约电源）", INFO);
     let scan = pnp_capabilities_scan();
@@ -1022,17 +1038,9 @@ pub fn chk_power_mgmt(snap: &Snapshot) -> CheckResult {
         if a.virtual_ || a.desc.is_empty() {
             continue;
         }
-        match pnp_capabilities(&a.desc, &scan) {
-            // 24 = PnPCapabilities 里「允许系统关闭设备以节约电源」的位组合
-            Some(24) => {
-                let short: String = a.desc.chars().take(24).collect();
-                items.push(format!("{}({short}): 允许断电", a.name));
-            }
-            Some(_) => {
-                let short: String = a.desc.chars().take(24).collect();
-                items.push(format!("{}({short}): 已禁止断电", a.name));
-            }
-            None => continue,
+        if let Some(label) = pnp_power_label(pnp_capabilities(&a.desc, &scan)) {
+            let short: String = a.desc.chars().take(24).collect();
+            items.push(format!("{}({short}): {label}", a.name));
         }
     }
     if scan.is_empty() && items.is_empty() {
@@ -1355,6 +1363,20 @@ mod tests {
         assert_eq!(status_mark(SKIP), "-");
         assert_eq!(status_mark(INFO), "·");
         assert_eq!(status_mark("weird"), "?");
+    }
+
+    #[test]
+    fn pnp_power_label_matches_python_and_repairs() {
+        // Python winregread.pnp_states：str(PnPCapabilities)=="24" → disabled（已禁止断电），
+        // 其余（含缺省 0）→ enabled_off（允许断电）。repairs::run_power_off 同口径
+        // （PnPCapabilities 已是 24 的键跳过不改 = 24 是修复目标态）。
+        // 回归：初版把 Some(24) 报成"允许断电"——修完的网卡永远 WARN，
+        // 真正有风险的缺省网卡反而显示"已禁止断电"（双向颠倒）。
+        assert_eq!(pnp_power_label(Some(24)), Some("已禁止断电"));
+        assert_eq!(pnp_power_label(Some(0)), Some("允许断电"));
+        assert_eq!(pnp_power_label(Some(16)), Some("允许断电"));
+        assert_eq!(pnp_power_label(Some(0x18 | 0x20)), Some("允许断电"));
+        assert_eq!(pnp_power_label(None), None, "类键里找不到的描述应跳过");
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! M1 阶段托盘负责「打开主界面 / 立即检测 / 快速修复 / 呼出两个面板 / 退出」；
 //! 状态灯与实时速率 tooltip 属 M2 遥测，接口（set_state / update_rate）先留好。
 
+use std::sync::Mutex;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -202,6 +203,30 @@ pub fn base_tooltip(state: &str) -> String {
     format!("{} — {}", crate::paths::DISPLAY_NAME, what)
 }
 
+/// 最近一次写进托盘的速率 tooltip（去重缓存）。
+///
+/// 遥测每秒回调一次 apply_rate，空闲时速率文本不变——`tooltip_text` 的去重
+/// 只有拿到**上一份真实写过的文本**才有意义。初版把 `last` 传死空串，去重恒
+/// 不命中，每秒一次 NIM_MODIFY 跨进程 shell 调用挂机空转（约 86400 次/天），
+/// 正是 Python `TrayHost._refresh_tip` 去重要避免的事。
+static LAST_RATE_TOOLTIP: Mutex<String> = Mutex::new(String::new());
+
+/// 速率 tooltip 去重：与上一份相同返回 None（无需重挂），不同则记账并返回。
+fn dedupe_rate_tooltip(candidate: String) -> Option<String> {
+    let mut last = LAST_RATE_TOOLTIP.lock().expect("托盘 tooltip 锁中毒");
+    if *last == candidate {
+        return None;
+    }
+    *last = candidate.clone();
+    Some(candidate)
+}
+
+/// 清空速率 tooltip 缓存（apply_state 直接改写 tooltip 后调用，
+/// 让下一拍速率行能带着新基础文案重新生效）。
+fn reset_rate_tooltip_cache() {
+    *LAST_RATE_TOOLTIP.lock().expect("托盘 tooltip 锁中毒") = String::new();
+}
+
 /// 按状态更新托盘图标与悬浮提示（由网络监控/M3 调用）。
 pub fn apply_state<R: Runtime>(app: &AppHandle<R>, state: &str) {
     let Some(tray) = app.tray_by_id("sk_tray") else {
@@ -210,6 +235,8 @@ pub fn apply_state<R: Runtime>(app: &AppHandle<R>, state: &str) {
     let (rgba, size) = state_icon_rgba(state, 64);
     let _ = tray.set_icon(Some(tauri::image::Image::new_owned(rgba, size, size)));
     let _ = tray.set_tooltip(Some(base_tooltip(state)));
+    // 基础文案已换：速率缓存作废，否则下一拍同速率会被旧缓存误判为"没变"
+    reset_rate_tooltip_cache();
 }
 
 /// 更新实时速率悬浮提示（尊重 tray_rate_enabled 设置；去重后写入）。
@@ -220,8 +247,8 @@ pub fn apply_rate<R: Runtime>(app: &AppHandle<R>, down_bps: u64, up_bps: u64, st
     let Some(tray) = app.tray_by_id("sk_tray") else {
         return;
     };
-    let text = tooltip_text(&base_tooltip(state), Some(&rate_line(down_bps, up_bps)), "");
-    if !text.is_empty() {
+    let candidate = tooltip_text(&base_tooltip(state), Some(&rate_line(down_bps, up_bps)), "");
+    if let Some(text) = dedupe_rate_tooltip(candidate) {
         let _ = tray.set_tooltip(Some(text));
     }
 }
@@ -284,6 +311,30 @@ mod tests {
         // 速率变了就要更新
         let rate2 = rate_line(2048, 512);
         assert!(!tooltip_text(&base, Some(&rate2), &first).is_empty());
+    }
+
+    #[test]
+    fn rate_tooltip_dedupe_cache_suppresses_repeats() {
+        // 回归（apply_rate 去重失效）：初版把 tooltip_text 的 last 传死 ""，
+        // 缓存从未生效，遥测每秒都真发一次 NIM_MODIFY（跨进程 shell 调用）。
+        // 现在生产调用与测试共用 dedupe_rate_tooltip 记账。
+        reset_rate_tooltip_cache();
+        let base = base_tooltip("offline");
+        let idle = tooltip_text(&base, Some(&rate_line(0, 0)), "");
+        assert!(
+            dedupe_rate_tooltip(idle.clone()).is_some(),
+            "第一拍必须真的写入"
+        );
+        assert!(
+            dedupe_rate_tooltip(idle).is_none(),
+            "同速率第二拍必须被缓存拦下（空闲时每秒重挂 = 86400 次/天空转）"
+        );
+        let busy = tooltip_text(&base, Some(&rate_line(1024, 128)), "");
+        assert!(dedupe_rate_tooltip(busy).is_some(), "速率变了必须放行");
+        // apply_state 改写 tooltip 后缓存作废：同速率重新生效
+        reset_rate_tooltip_cache();
+        let again = tooltip_text(&base, Some(&rate_line(1024, 128)), "");
+        assert!(dedupe_rate_tooltip(again).is_some(), "状态切换后必须重挂");
     }
 
     #[test]

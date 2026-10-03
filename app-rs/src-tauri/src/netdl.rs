@@ -10,8 +10,9 @@ use std::time::Instant;
 
 use windows::core::HSTRING;
 use windows::Win32::Networking::WinInet::{
-    InternetCloseHandle, InternetOpenUrlW, InternetOpenW, InternetReadFile, INTERNET_FLAG_RELOAD,
-    INTERNET_OPEN_TYPE_PRECONFIG,
+    InternetCloseHandle, InternetOpenUrlW, InternetOpenW, InternetReadFile, InternetSetOptionW,
+    INTERNET_FLAG_RELOAD, INTERNET_OPEN_TYPE_PRECONFIG, INTERNET_OPTION_CONNECT_TIMEOUT,
+    INTERNET_OPTION_RECEIVE_TIMEOUT, INTERNET_OPTION_SEND_TIMEOUT,
 };
 
 /// 与 Python `TEST_URLS` 逐字一致（大文件直链，下载即断不落盘）。
@@ -20,6 +21,15 @@ pub const TEST_URLS: [&str; 3] = [
     "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_250avis_x64.exe",
     "https://mirrors.aliyun.com/debian-cd/current/amd64/iso-cd/debian-12.9.0-amd64-netinst.iso",
 ];
+
+/// 单请求超时（毫秒）：连接/发送/接收统一 10s，对齐 Python
+/// `urllib.request.urlopen(req, timeout=10)`。
+///
+/// **为什么必须有**：`InternetReadFile` 是阻塞读，CANCEL 标志只在两次读之间
+/// 检查——黑洞连接（TCP 建立后服务器不发数据，中间设备也会造成）会让读永不
+/// 返回，测速页永远转圈且「停止」按钮无效。Python 版靠 socket 超时把这种
+/// 连接变成异常跳过下一个 URL；Rust 版不设超时就丢了这个保护。
+pub const REQUEST_TIMEOUT_MS: u32 = 10_000;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UrlResult {
@@ -68,6 +78,21 @@ fn probe_url(url: &str, seconds: u64) -> UrlResult {
         if hinternet.is_null() {
             out.err = "InternetOpen 失败".into();
             return out;
+        }
+        // 超时必须设在 session 句柄上（InternetOpenUrl 之前才对后续请求生效）：
+        // 连接/发送/接收三处都按 Python timeout=10s 收口，防黑洞连接永久挂住
+        for opt in [
+            INTERNET_OPTION_CONNECT_TIMEOUT,
+            INTERNET_OPTION_SEND_TIMEOUT,
+            INTERNET_OPTION_RECEIVE_TIMEOUT,
+        ] {
+            let v = REQUEST_TIMEOUT_MS;
+            let _ = InternetSetOptionW(
+                Some(hinternet as *const core::ffi::c_void),
+                opt,
+                Some(&v as *const u32 as *const core::ffi::c_void),
+                std::mem::size_of::<u32>() as u32,
+            );
         }
         // RELOAD：禁缓存，保证测的是真网络
         let hurl = InternetOpenUrlW(
@@ -121,4 +146,27 @@ fn probe_url(url: &str, seconds: u64) -> UrlResult {
 pub fn run_probe_all(seconds: u64) -> Vec<UrlResult> {
     reset_cancel();
     TEST_URLS.iter().map(|u| probe_url(u, seconds)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_timeout_matches_python_urlopen() {
+        // Python: urllib.request.urlopen(req, timeout=10)——10 秒覆盖连接/读全程。
+        // 回归：初版未设任何 WinInet 超时，黑洞连接（TCP 建立后无数据）会让
+        // InternetReadFile 永久阻塞，CANCEL 只在两次读之间检查、救不了已阻塞的读。
+        assert_eq!(REQUEST_TIMEOUT_MS, 10_000);
+    }
+
+    #[test]
+    fn cancel_flag_round_trip() {
+        reset_cancel();
+        assert!(!CANCEL.load(Ordering::SeqCst));
+        cancel();
+        assert!(CANCEL.load(Ordering::SeqCst));
+        reset_cancel();
+        assert!(!CANCEL.load(Ordering::SeqCst));
+    }
 }

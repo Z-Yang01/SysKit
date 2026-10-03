@@ -509,12 +509,6 @@ pub fn resolve_executable(name: &str) -> Option<String> {
     None
 }
 
-/// 执行一个可执行文件并捕获输出。
-///
-/// **为什么重定向到临时文件而不是管道**：管道要求父进程继承/读取句柄，在受限
-/// 沙箱下会被拒（与 `spawn EPERM` 同源）；文件重定向只依赖 CreateFile，
-/// 任何模式下都成立。代价是一次临时文件往返——修复动作都是秒级操作，可接受。
-///
 /// 读取注册表值（字符串 / DWORD / 多字符串 / 二进制）；键或值不存在返回 None。
 ///
 /// 对应 Python `winregread.value(path, name, default)`。路径形如
@@ -1341,8 +1335,57 @@ pub fn clipboard_get_dib() -> Option<Vec<u8>> {
     clipboard_get_dib_format(CF_DIBV5).or_else(|| clipboard_get_dib_format(CF_DIB))
 }
 
+/// 由 DIB 头 40 字节推算布局（纯函数，越界审计核心）。
+///
+/// 返回 `(bi_size, 掩码+调色板字节数, 像素字节数 u64)`；头字段非法返回 None。
+/// 像素长度全程 u64（i32 极值下 `stride*height` 可达 2^64 边界，usize 溢出即
+/// 回绕成小值——读越界的同时还绕过 512MB 上限检查，双倍危险）。
+pub fn dib_layout_from_header(hdr: &[u8; 40]) -> Option<(usize, usize, u64)> {
+    let bi_size = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
+    let width = i32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
+    let height = i32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
+    let bit_count = u16::from_le_bytes([hdr[14], hdr[15]]) as usize;
+    let compression = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
+    let clr_used = u32::from_le_bytes([hdr[32], hdr[33], hdr[34], hdr[35]]) as u64;
+    let size_image = u32::from_le_bytes([hdr[20], hdr[21], hdr[22], hdr[23]]) as u64;
+    if bi_size < 40 || width <= 0 || height == 0 || bit_count == 0 {
+        return None;
+    }
+    let w = width as usize;
+    let hgt = height.unsigned_abs() as usize;
+    // 掩码 + 调色板长度
+    let mut extra = match compression {
+        3 => 12, // BI_BITFIELDS：3 个 DWORD 掩码
+        6 => 16, // BI_ALPHABITFIELDS：4 个
+        _ => 0,
+    };
+    let entries: u64 = if bit_count <= 8 {
+        if clr_used > 0 {
+            clr_used
+        } else {
+            1u64 << bit_count
+        }
+    } else {
+        clr_used
+    };
+    extra += (entries * 4) as usize;
+    let stride: u64 = (bit_count as u64 * w as u64).div_ceil(32) * 4;
+    let pixel_bytes = size_image.max(stride.saturating_mul(hgt as u64));
+    Some((bi_size, extra, pixel_bytes))
+}
+
+/// 理论总长按实际分配截断后的安全读取长度（纯函数）。
+///
+/// `avail` 来自 `GlobalSize`——剪贴板句柄携带的唯一可靠读边界。截断后连
+/// 「头+掩码/调色板」都不完整的载荷没有解析价值，返回 None（调用方按无图处理）。
+pub fn dib_read_len(total: usize, avail: usize, header_bytes: usize) -> Option<usize> {
+    let read = total.min(avail);
+    (read >= header_bytes).then_some(read)
+}
+
 fn clipboard_get_dib_format(format: u32) -> Option<Vec<u8>> {
     use windows::Win32::System::DataExchange::GetClipboardData;
+    use windows::Win32::System::Memory::GlobalSize;
     // SAFETY: 剪贴板在 open/close 成对之间访问；句柄由系统持有，不释放
     unsafe {
         if OpenClipboard(null_hwnd()).is_err() {
@@ -1359,48 +1402,33 @@ fn clipboard_get_dib_format(format: u32) -> Option<Vec<u8>> {
         if p.is_null() {
             return None;
         }
-        // 剪贴板句柄**不携带可靠长度**：必须按 BITMAPINFOHEADER 里的字段精确算。
-        // 前 40 字节一定存在（上面已确认是 CF_DIB），但若内容异常短则本函数
-        // 会在读到非法值后返回 None——不能假设 p 指向 40 字节以上。
-        let hdr = std::slice::from_raw_parts(p as *const u8, 40);
-        let bi_size = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
-        let width = i32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
-        let height = i32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]);
-        let bit_count = u16::from_le_bytes([hdr[14], hdr[15]]) as usize;
-        let compression = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
-        let clr_used = u32::from_le_bytes([hdr[32], hdr[33], hdr[34], hdr[35]]) as usize;
-        let size_image = u32::from_le_bytes([hdr[20], hdr[21], hdr[22], hdr[23]]) as usize;
+        // GlobalSize = 这块全局内存**实际分配**的大小，是不可信头之外唯一
+        // 可靠的读边界。回归（新鲜眼审计 2026-10-04）：初版完全不看它——
+        // ① 头部无条件读 40 字节；② 按（可能谎报的）头字段推算 total 后直接
+        // `from_raw_parts(p, total)` 整块拷贝。畸形/截断 DIB（biSizeImage 远大于
+        // 分配）会让监听线程越界读，最坏直接 access violation 崩掉整个进程。
+        let avail = GlobalSize(HGLOBAL(h.0));
+        if avail < 40 {
+            let _ = GlobalUnlock(HGLOBAL(h.0));
+            return None;
+        }
+        let hdr: [u8; 40] = std::slice::from_raw_parts(p as *const u8, 40)
+            .try_into()
+            .expect("长度已判 40");
+        let layout = dib_layout_from_header(&hdr);
         let _ = GlobalUnlock(HGLOBAL(h.0));
-
-        if bi_size < 40 || width <= 0 || height == 0 || bit_count == 0 {
+        let (bi_size, extra, pixel_bytes) = layout?;
+        // 上限保护：错乱的头部可能声明巨大长度。u64 判定 + 溢出即视为超限
+        //（usize 回绕会让荒谬头伪装成小 total 绕过检查）
+        let total64 = (bi_size as u64)
+            .checked_add(extra as u64)
+            .and_then(|t| t.checked_add(pixel_bytes))
+            .unwrap_or(u64::MAX);
+        if total64 > 512 * 1024 * 1024 {
             return None;
         }
-        let w = width as usize;
-        let hgt = height.unsigned_abs() as usize;
-        // 掩码 + 调色板长度
-        let mut extra = match compression {
-            3 => 12, // BI_BITFIELDS：3 个 DWORD 掩码
-            6 => 16, // BI_ALPHABITFIELDS：4 个
-            _ => 0,
-        };
-        let entries = if bit_count <= 8 {
-            if clr_used > 0 {
-                clr_used
-            } else {
-                1usize << bit_count
-            }
-        } else {
-            clr_used
-        };
-        extra += entries * 4;
-        let stride = (bit_count * w).div_ceil(32) * 4;
-        let pixel_bytes = size_image.max(stride * hgt);
-        let total = bi_size + extra + pixel_bytes;
-        // 上限保护：错乱的头部可能声明巨大长度
-        if total > 512 * 1024 * 1024 {
-            return None;
-        }
-        Some(std::slice::from_raw_parts(p as *const u8, total).to_vec())
+        let read_len = dib_read_len(total64 as usize, avail, bi_size + extra)?;
+        Some(std::slice::from_raw_parts(p as *const u8, read_len).to_vec())
     }
 }
 
@@ -1467,6 +1495,7 @@ pub fn clipboard_sequence() -> u32 {
 /// 读取剪贴板文本（`CF_UNICODETEXT`）。无文本返回 None。
 pub fn clipboard_get_text() -> Option<String> {
     use windows::Win32::System::DataExchange::GetClipboardData;
+    use windows::Win32::System::Memory::GlobalSize;
     // SAFETY: 剪贴板在 open/close 成对之间访问；句柄由系统持有，不释放
     unsafe {
         if OpenClipboard(null_hwnd()).is_err() {
@@ -1492,14 +1521,14 @@ pub fn clipboard_get_text() -> Option<String> {
         if p.is_null() {
             return None;
         }
-        // 按 NUL 结尾扫描（CF_UNICODETEXT 保证以 NUL 结尾）
+        // 按 NUL 结尾扫描（CF_UNICODETEXT 保证以 NUL 结尾）；上限取
+        // GlobalSize/2 与 8M 字符中较小者：分配边界内必安全，防异常内容
+        // （无 NUL）时越界扫到邻近内存。
+        let avail = GlobalSize(HGLOBAL(h.0));
+        let max_chars = (avail / 2).min(8_000_000);
         let mut len = 0usize;
-        while *p.add(len) != 0 {
+        while len < max_chars && *p.add(len) != 0 {
             len += 1;
-            // 防御：异常巨型内容不至于无限扫描（真实剪贴板远达不到）
-            if len > 8_000_000 {
-                break;
-            }
         }
         let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
         let _ = GlobalUnlock(HGLOBAL(h.0));
@@ -1783,6 +1812,78 @@ mod tests {
         // 不在引号前的反斜杠原样保留
         assert_eq!(quote_arg("C:\\a\\b"), "C:\\a\\b");
         assert_eq!(quote_arg("na me\\"), "\"na me\\\\\"");
+    }
+
+    /// 40 字节 DIB 头构造器：按偏移填字段，便于逐例表达。
+    fn dib_hdr(
+        bi_size: u32,
+        w: i32,
+        height: i32,
+        bpp: u16,
+        comp: u32,
+        image: u32,
+        clr: u32,
+    ) -> [u8; 40] {
+        let mut h = [0u8; 40];
+        h[0..4].copy_from_slice(&bi_size.to_le_bytes());
+        h[4..8].copy_from_slice(&w.to_le_bytes());
+        h[8..12].copy_from_slice(&height.to_le_bytes());
+        h[14..16].copy_from_slice(&bpp.to_le_bytes());
+        h[16..20].copy_from_slice(&comp.to_le_bytes());
+        h[20..24].copy_from_slice(&image.to_le_bytes());
+        h[32..36].copy_from_slice(&clr.to_le_bytes());
+        h
+    }
+
+    #[test]
+    fn dib_layout_matches_manual_math() {
+        // 32bpp 4×3 BI_RGB：头 40 + 像素 4*3*4=48（sizeImage 谎报更大取更大者）
+        let (bi, extra, px) =
+            dib_layout_from_header(&dib_hdr(40, 4, 3, 32, 0, 48, 0)).expect("合法头");
+        assert_eq!((bi, extra, px), (40, 0, 48));
+        // BI_BITFIELDS(3) 加 12 字节掩码；8bpp 全调色板 256*4=1024
+        let (_, extra2, _) =
+            dib_layout_from_header(&dib_hdr(40, 2, 2, 8, 3, 0, 0)).expect("合法头");
+        assert_eq!(extra2, 12 + 1024);
+        // 底朝上负高：像素字节按 |height| 算
+        let (_, _, px3) =
+            dib_layout_from_header(&dib_hdr(40, 4, -3, 32, 0, 0, 0)).expect("负高合法");
+        assert_eq!(px3, 48);
+        // 非法头：biSize<40 / 宽 0 / bpp 0
+        assert!(dib_layout_from_header(&dib_hdr(12, 4, 3, 32, 0, 0, 0)).is_none());
+        assert!(dib_layout_from_header(&dib_hdr(40, 0, 3, 32, 0, 0, 0)).is_none());
+        assert!(dib_layout_from_header(&dib_hdr(40, 4, 3, 0, 0, 0, 0)).is_none());
+    }
+
+    #[test]
+    fn dib_layout_no_usize_overflow_on_absurd_head() {
+        // 变异验证目标：极端头（宽高 i32 近满 + sizeImage 满值）像素长度在 u64
+        // 下计算，绝不回绕成小值绕过 512MB 上限检查。
+        let hdr = dib_hdr(40, i32::MAX, i32::MAX, 32, 0, u32::MAX, u32::MAX);
+        let (_, extra, px) = dib_layout_from_header(&hdr).expect("尺寸字段本身合法");
+        let total = 40u64
+            .checked_add(extra as u64)
+            .and_then(|t| t.checked_add(px))
+            .unwrap_or(u64::MAX);
+        assert!(total > 512 * 1024 * 1024, "荒谬头必须撞上限被拒（px={px}）");
+    }
+
+    #[test]
+    fn dib_read_len_clamps_to_allocation() {
+        // 回归（越界读）：读取长度必须被 GlobalSize(avail) 截断——
+        // 初版直接按（可谎报的）total 拷贝，畸形 DIB 让监听线程越界读崩进程。
+        assert_eq!(dib_read_len(88, 88, 40), Some(88), "正常：total==avail");
+        assert_eq!(
+            dib_read_len(1 << 30, 4096, 40),
+            Some(4096),
+            "谎报头被截到分配大小"
+        );
+        assert_eq!(dib_read_len(88, 30, 40), None, "连头都不完整 → 拒绝");
+        assert_eq!(
+            dib_read_len(88, 50, 50),
+            Some(50),
+            "头+掩码齐、像素不足 → 截断交解析层判"
+        );
     }
 
     #[test]
