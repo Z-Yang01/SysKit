@@ -1907,3 +1907,38 @@ pub fn acquire_single_instance_mutex(name: &str) -> bool {
         GetLastError() != ERROR_ALREADY_EXISTS
     }
 }
+
+/// 是否有 SysKit 实例（syskit-rs.exe / SysKit.exe）在运行——
+/// 真实剪贴板测试与运行中实例的 500ms 轮询竞争，有实例时跳过。
+pub fn syskit_instance_running() -> bool {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS, PROCESSENTRY32W,
+    };
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return false;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = false;
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(0)],
+                );
+                if name.eq_ignore_ascii_case("syskit-rs.exe") || name.eq_ignore_ascii_case("syskit.exe") {
+                    found = true;
+                    break;
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snap);
+        found
+    }
+}
