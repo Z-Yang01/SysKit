@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { CommandPalette } from "./CommandPalette";
 import { ClipPanel } from "./ClipPanel";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { applyTheme } from "./theme";
 import "./base.css";
 
@@ -43,5 +44,8 @@ const root =
   label === "paste" ? <ClipPanel /> : label === "palette" ? <CommandPalette /> : <App />;
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>{root}</React.StrictMode>,
+  <React.StrictMode>
+    {/* 三种窗口都兜：任一页面渲染抛错显示兜底界面+上报日志，而不是白屏 */}
+    <ErrorBoundary>{root}</ErrorBoundary>
+  </React.StrictMode>,
 );

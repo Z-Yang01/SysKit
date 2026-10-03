@@ -362,6 +362,7 @@ pub fn run() {
             commands::sk_clip_detect,
             commands::sk_clip_action_run,
             commands::sk_clip_qr_svg,
+            commands::sk_frontend_error,
             commands::sk_clip_copy_sensitive,
             commands::sk_clip_sensitive_pending,
             commands::sk_wifi_profile_password,

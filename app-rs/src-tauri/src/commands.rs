@@ -129,6 +129,13 @@ pub fn sk_clip_purge(days: Option<i64>) -> usize {
     hist::with(|h| h.purge_older_than(d))
 }
 
+/// 前端错误上报（ErrorBoundary 兜底时调用）：落文件日志，让"前端崩了"
+/// 从 devtools 独白变成可诊断的日志事件。fire-and-forget，前端不等回执。
+#[tauri::command]
+pub fn sk_frontend_error(message: String) {
+    log::error!("[frontend] {}", message.trim());
+}
+
 /// 当前粘贴链序号（前端把它带进 `sk_paste`，防陈旧请求覆盖新链）。
 #[tauri::command]
 pub fn sk_paste_seq() -> u64 {
@@ -2512,6 +2519,22 @@ mod tests {
             idx: None,
         };
         assert_eq!(ClipRow::from_item(&it).idx, 0);
+    }
+
+    #[test]
+    fn frontend_error_lands_in_syskit_log() {
+        // ErrorBoundary 的上报端：错误必须进文件日志（release 下 devtools 不可见，
+        // 文件日志是前端崩溃的唯一可诊断出口）
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        crate::logging::init();
+        sk_frontend_error("boundary-marker-上抛测试".into());
+        let dir = crate::paths::log_dir();
+        let syskit = std::fs::read_to_string(dir.join("syskit.log")).unwrap_or_default();
+        assert!(
+            syskit.contains("[frontend] boundary-marker-上抛测试"),
+            "前端错误未落 syskit.log"
+        );
     }
 
     #[test]
