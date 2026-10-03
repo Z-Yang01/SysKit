@@ -528,7 +528,7 @@ easyconnect/sangfor/nekoray/hysteria/utun 等）。VPN 护栏依赖它——**�
    转换）。**不调用第三方二维码服务**——复制的链接不出本机；外圈静区取 4 模块
    （Python 版 border=2 偏紧，4 是扫码可靠性推荐值，只影响留白不影响内容）。
 2. **IP 归属地查询不代查**：同上，避免静默把你的 IP 发给第三方服务。
-3. ~~`minimize_to_tray`~~ ✅ 已接线：关窗按设置隐藏到托盘（真退出走托盘菜单-退出，`app.exit` 不触发关闭请求，两路径互不干扰）。**需真机复核**。
+3. ~~`minimize_to_tray`~~ ✅ 已接线且**真机复核通过**（2026-10-04 02:37：起真实实例→主窗发 WM_CLOSE→进程存活+日志出现「窗口关闭：按设置最小化到托盘」；真退出仍走托盘菜单-退出，`app.exit` 不触发关闭请求，两路径互不干扰）。
 4. ~~`sound_alert_enabled`~~ ✅ 已接线：状态切换发声（winmm PlaySound 别名异步，ok=SystemAsterisk/其余=SystemExclamation，首态与同态不响；测试运行静默）。**需真机复核**。
 5. ~~`vault_autolock_min` / `vault_trust_min`~~ ✅ 已随 M6 数据层接线（会话超窗自动收锁 / 验证后续期窗口）。
 
