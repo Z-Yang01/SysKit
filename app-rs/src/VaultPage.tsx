@@ -1,16 +1,10 @@
 /**
- * 密码库页（M6：加密层 + 界面骨架）。
+ * 密码库页（M6：数据层 + 加密层 + 条目管理）。
  *
- * ## 当前阶段的诚实边界
- *
- * 数据层（`vault.db` / SQLite）按决定**未实现**，所以本页：
- * - **不渲染任何密码条目，也不提供添加表单**——显示一个永远为空的列表看起来像
- *   "还没有条目"，而不是"功能没做"；
- * - 数据层不可用时，存取相关按钮禁用并显示明确原因；
- * - 后端 `sk_vault_store_unavailable` 是唯一的"存取入口"，它**明确失败**。
- *
- * 已可用的部分：`vault.key` 的创建/解锁/锁定，以及主密码的设置/校验/移除——
- * 这些是加密层的真实能力，且已通过双向跨语言验证。
+ * 数据层已实现（rusqlite，schema/格式与 Python 版逐字对齐、跨语言双向互开）：
+ * 渲染真实条目（站点/账号两级），复制密码/TOTP 走 `sk_vault_copy_secret`——
+ * 解密与剪贴板写入都在后端完成（明文不过 JS），并带三重敏感防护。
+ * `vault.key` 的创建/解锁/锁定与主密码管理为加密层能力，同样双向验证。
  */
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -39,7 +33,6 @@ import {
   setupConfirmText,
   statusSummary,
   storageAvailable,
-  storageNotice,
   vaultPhase,
   type AccountRow,
   type SiteRow,
@@ -268,8 +261,6 @@ export function VaultPage() {
 
   const addAccountModal = useCallback(() => accountModal(), [accountModal]);
 
-
-  const notice = storageNotice(status);
   const setPwCheck = canSetMasterPassword(status);
 
   const setup = useCallback(() => {
@@ -400,13 +391,6 @@ export function VaultPage() {
 
   return (
     <Space direction="vertical" size={12} style={{ width: "100%" }}>
-      <Alert
-        type="warning"
-        showIcon
-        message="密码条目存取尚未实现（数据层未引入）"
-        description={notice}
-      />
-
       <Card
         size="small"
         className="sk-card"
@@ -539,12 +523,12 @@ export function VaultPage() {
         }
       >
         {!storageAvailable(status) ? (
-          // 数据层不可用：不渲染空列表（那看起来像"还没有条目"，而非"功能没做"）
+          // capability 门兜底（正常恒走解锁分支）：仅在后端异常时出现
           <Alert
-            type="info"
+            type="warning"
             showIcon
-            message="此处不会显示任何条目"
-            description={notice || "数据层未引入，因此本页既不展示条目也不提供添加表单。"}
+            message="密码库存取暂不可用"
+            description="后端数据层异常，请查看日志并重启应用。"
           />
         ) : phase !== "unlocked" ? (
           <Alert
