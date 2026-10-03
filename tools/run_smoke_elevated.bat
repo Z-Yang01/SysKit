@@ -30,7 +30,13 @@ rem ---- pre 1: the Rust app must be running (start if not) ----
 tasklist /FI "IMAGENAME eq syskit-rs.exe" 2>nul | find /I "syskit-rs.exe" >nul
 if %errorlevel% neq 0 (
     echo [pre] starting SysKit Rust app...
-    start "" "E:\Code\project\SysKit\app-rs\src-tauri\target\release\syskit-rs.exe"
+    rem target-deploy = current verified artifact (QR build); falls back to
+    rem the regular release path when the side-target dir does not exist
+    if exist "E:\Code\project\SysKit\app-rs\src-tauri\target-deploy\release\syskit-rs.exe" (
+        start "" "E:\Code\project\SysKit\app-rs\src-tauri\target-deploy\release\syskit-rs.exe"
+    ) else (
+        start "" "E:\Code\project\SysKit\app-rs\src-tauri\target\release\syskit-rs.exe"
+    )
     timeout /t 6 /nobreak >nul
 )
 tasklist /FI "IMAGENAME eq syskit-rs.exe" 2>nul | find /I "syskit-rs.exe" >nul

@@ -9,9 +9,9 @@ r"""真机冒烟：Rust+Tauri 重写版（rust-rewrite 分支）——8 靶 + 2 
 运行说明
 --------
 1. 前置（一次性）：
-   - 运行【Rust 版】exe：app-rs/src-tauri/target/release/SysKit.exe
-     （npx tauri build 产物）。**Python 版与 Rust 版严禁同时运行**
-     （共用数据目录）；冒烟前退出一切 SysKit 实例，只启动 Rust 版。
+   - 运行【Rust 版】exe：优先 target-deploy/release/syskit-rs.exe（当前已验证产物），
+     否则 target/release/syskit-rs.exe（npx tauri build 产物）。**Python 版与 Rust
+     版严禁同时运行**（共用数据目录）；冒烟前退出一切 SysKit 实例，只启动 Rust 版。
    - 设置页开启「监听剪贴板」（脚本靠真实复制让 Rust 版记录历史）。
    - pip install uiautomation pywin32（缺哪个，对应靶自动 skip）。
    - 可选环境变量 SYSKIT_DATA_DIR 指向数据目录（便携默认
