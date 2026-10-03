@@ -109,8 +109,34 @@ def press_quick_paste():
     press_hotkey([VK_CTRL, VK_MENU], VK_V)
 
 
+def configured_panel_hotkey():
+    """settings.json 实配的面板热键 → (mods, vk)；未设/非法回退 Ctrl+Win+V。"""
+    mods, vk = 0x000A, VK_V  # Ctrl+Win+V 默认
+    p = _find_settings_file()
+    if p:
+        try:
+            import json as _json
+            text = str(_json.load(open(p, encoding="utf-8")).get("clip_paste_hotkey", "") or "")
+            for part in text.split("+"):
+                pp = part.strip().lower()
+                if pp in ("ctrl", "control"):
+                    mods |= 0x0002
+                elif pp == "alt":
+                    mods |= 0x0001
+                elif pp == "shift":
+                    mods |= 0x0004
+                elif pp == "win":
+                    mods |= 0x0008
+                elif pp and pp.isalnum() and len(pp) == 1:
+                    vk = ord(pp.upper())
+        except Exception:
+            pass
+    return mods, vk
+
+
 def press_panel_paste():
-    press_hotkey([VK_CTRL, VK_WIN], VK_V)
+    mods, vk = configured_panel_hotkey()
+    press_hotkey([m for m in (VK_CTRL, VK_MENU, VK_SHIFT, VK_WIN) if mods & m], vk)
 
 
 def hold_quick_paste_v(hold_sec=0.5):
@@ -267,9 +293,9 @@ def copy_and_wait_recorded(token, settle=1.2):
     """真实复制 token → 等待 SysKit 监听入库；入库失败立刻 FAIL 并指明原因
     （监听未开启是最常见根因——本轮 7 靶连挂的教训，不再让它级联）。"""
     clip_set_text(token)
-    ok = wait_until(lambda: token in recorded_tokens(), timeout=4.0, step=0.2,
+    ok = wait_until(lambda: token in recorded_tokens(), timeout=12.0, step=0.2,
                     desc="监听入库")
-    if not ok and not wait_until(lambda: token in recorded_tokens(), timeout=3.0, step=0.2):
+    if not ok and not wait_until(lambda: token in recorded_tokens(), timeout=12.0, step=0.2):
         pytest.fail(
             f"复制的内容 {token!r} 没有进入剪贴板历史——**监听未开启**。"
             "请到「工具箱→剪贴板历史」点「开启监听」后重跑（全部粘贴靶都依赖它）。"
@@ -449,7 +475,10 @@ def word_session():
         import win32com.client                      # noqa: F401
     except ImportError:
         pytest.skip("需要 pywin32（pip install pywin32）")
-    app = win32com.client.Dispatch("Word.Application")
+    try:
+        app = win32com.client.Dispatch("Word.Application")
+    except Exception as e:
+        pytest.skip(f"Word 不可用（未安装 Office？）：{e}")
     app.Visible = True
     doc = app.Documents.Add()
     hwnd = int(app.ActiveWindow.Hwnd)
@@ -463,7 +492,10 @@ def excel_session():
         import win32com.client
     except ImportError:
         pytest.skip("需要 pywin32")
-    app = win32com.client.Dispatch("Excel.Application")
+    try:
+        app = win32com.client.Dispatch("Excel.Application")
+    except Exception as e:
+        pytest.skip(f"Excel 不可用（未安装 Office？）：{e}")
     app.Visible = True
     wb = app.Workbooks.Add()
     hwnd = int(app.ActiveWindow.Hwnd)
@@ -561,6 +593,8 @@ class TestPanelFlowTargets:
 
     @staticmethod
     def _panel_paste_and_read(setup_target, reader, tag):
+        if not panel_hotkey_configured():
+            pytest.skip("面板热键未配置（settings.json clip_paste_hotkey 为空）")
         require_syskit_running()
         hwnd, _extra = setup_target()
         token = unique_token(tag)
@@ -613,6 +647,17 @@ class TestPanelFlowTargets:
         token = self._panel_paste_and_read(lambda: (hwnd, None),
                                            lambda h: read_terminal(h), "wt")
         assert token and token in (read_terminal(hwnd) or "") and token not in (before or "")
+
+
+def panel_hotkey_configured() -> bool:
+    p = _find_settings_file()
+    if not p:
+        return True
+    try:
+        import json as _json
+        return bool(str(_json.load(open(p, encoding="utf-8")).get("clip_paste_hotkey", "")).strip())
+    except Exception:
+        return True
 
 
 def _panel_visible():
@@ -675,6 +720,8 @@ class TestTarget7Explorer:
     """靶 7：资源管理器——file 条目粘出真文件（uri-list，非路径文本）。"""
 
     def test_file_entry_true_paste(self, tmp_path):
+        if not panel_hotkey_configured():
+            pytest.skip("面板热键未配置")
         require_syskit_running()
         src = tmp_path / "smoke_src.txt"
         src.write_text("smoke-payload", encoding="utf-8")

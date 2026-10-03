@@ -131,6 +131,8 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
         MENU_PASTE => crate::input_panel::toggle_paste_panel(app),
         MENU_PALETTE => crate::input_panel::toggle_palette(app),
         MENU_QUIT => {
+            // 退出前刷盘：防抖窗口内的剪贴板历史不能丢（对齐 Python quit 链）
+            crate::clipboard_history::with(|h| h.flush_if_dirty());
             app.exit(0);
         }
         // M2/M3 落地前：告诉前端「尚未实现」，绝不静默什么都不做

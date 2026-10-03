@@ -104,6 +104,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
         .spawn(move || {
             let mut sampler = Sampler::new();
             let mut since_save = 0u64;
+            let mut since_clip_save = 0u64;
             let mut tickno: u64 = 0;
             // WiFi 每 5 秒读一次（Python 同为 5 秒周期），但**SSID 归因每次入账都要用**，
             // 所以读数缓存在这里而不是每次重读；0 号 tick 立即读一次，
@@ -152,6 +153,13 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                 if since_save >= SAVE_EVERY_TICKS {
                     hub.flush();
                     since_save = 0;
+                }
+                // 剪贴板历史独立 10s 落盘（对齐 Python QTimer 10_000；
+                // 60s 太久——崩溃丢窗口内全部历史，真机冒烟发现）
+                since_clip_save += 1;
+                if since_clip_save >= 10 {
+                    crate::clipboard_history::with(|h| h.flush_if_dirty());
+                    since_clip_save = 0;
                 }
                 std::thread::sleep(std::time::Duration::from_secs(SAMPLE_INTERVAL_SECS));
             }
