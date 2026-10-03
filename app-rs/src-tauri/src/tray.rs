@@ -132,13 +132,46 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
         MENU_PASTE => crate::input_panel::toggle_paste_panel(app),
         MENU_PALETTE => crate::input_panel::toggle_palette(app),
         MENU_QUIT => {
-            // 退出前刷盘：防抖窗口内的剪贴板历史不能丢（对齐 Python quit 链）
+            // 退出前刷盘（对齐 Python quit 链的 tele.stop→落盘语义）：
+            // 1) 流量/多粒度桶——遥测 60s 才落一次盘，且其循环收尾 flush 在
+            //    进程退出（线程被杀）时不会执行，不在这里补就直接丢最近一分钟；
+            // 2) 剪贴板历史——防抖窗口内的条目。
+            if let Some(hub) = app.try_state::<std::sync::Arc<crate::telemetry_hub::Hub>>() {
+                hub.flush();
+            }
             crate::clipboard_history::with(|h| h.flush_if_dirty());
             app.exit(0);
         }
-        // M2/M3 落地前：告诉前端「尚未实现」，绝不静默什么都不做
-        MENU_CHECK => notify(app, "立即检测", "网络检测将在 M2 遥测里程碑提供"),
-        MENU_FIX => notify(app, "快速修复", "修复动作将在 M3 里程碑提供"),
+        // M2/M3 已交付，占位提示是过期行为：接线到真实能力（绝不静默什么都不做）。
+        // 立即检测：唤醒监控循环立刻探一轮，托盘状态灯/监控页随之刷新；
+        // 完整诊断页驱动（Python run_diagnosis 的 UI 部分）留前端事件通道——见上报决策。
+        MENU_CHECK => {
+            crate::monitor::force_check();
+            notify(
+                app,
+                "立即检测",
+                "已触发一次连通性检测，状态见托盘图标/悬浮提示",
+            );
+        }
+        MENU_FIX => {
+            // 对齐 Python act_fix → run_repair("flush_dns")：SAFE 动作直接执行，
+            // 免确认。执行在阻塞线程池做（ipconfig /flushdns 秒级，不占主线程）。
+            let h = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let Some(a) = crate::repairs::get_action("flush_dns") else {
+                    return;
+                };
+                let out = a.execute(&std::collections::BTreeMap::new());
+                notify(
+                    &h,
+                    "快速修复",
+                    &format!(
+                        "刷新 DNS 缓存：{}",
+                        if out.success { "完成" } else { "失败" }
+                    ),
+                );
+            });
+        }
         _ => {}
     }
 }

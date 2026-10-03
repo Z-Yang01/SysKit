@@ -186,7 +186,9 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                 });
                 std::thread::sleep(std::time::Duration::from_secs(SAMPLE_INTERVAL_SECS));
             }
-            // 退出前最后一拍务必落盘（Python 靠 atexit；这里靠线程收尾）
+            // 收尾兜底 flush：仅在线程被优雅停止时可达（进程退出时线程直接被杀，
+            // 走不到这里）——真正的退出落盘在托盘「退出」菜单里做（tray.rs MENU_QUIT），
+            // 否则最近一个落盘周期（≤60s）的流量统计会每次退出都丢。
             hub.flush();
         })
         .expect("遥测线程启动失败");
@@ -238,5 +240,52 @@ mod tests {
     fn cadence_constants_match_python() {
         assert_eq!(SAMPLE_INTERVAL_SECS, 1);
         assert_eq!(SAVE_EVERY_TICKS, 60, "Python: save_counter >= 60");
+    }
+
+    #[test]
+    fn hub_flush_persists_dirty_traffic_and_rates() {
+        // 退出落盘通路（托盘「退出」调 hub.flush()）：脏的流量/多粒度桶必须
+        // 一次 flush 全部落盘，重开实例能读回。丢了这一步 = 每次退出丢
+        // 最近一个落盘周期（≤60s）的统计。
+        let _g = crate::test_support::serial();
+        crate::test_support::reset_persistent_files();
+        let dir = crate::test_support::isolate();
+        let hub = Hub::new();
+        {
+            let mut t = hub.traffic.lock().expect("流量锁中毒");
+            t.add(111, 222);
+        }
+        {
+            let mut r = hub.rates.lock().expect("流量桶锁中毒");
+            r.set_ssid("HomeWiFi");
+            r.add(11, 22, None);
+        }
+        hub.flush();
+        let tf = crate::paths::traffic_file();
+        let nf = crate::paths::netstats_file();
+        assert!(
+            tf.starts_with(&dir) && nf.starts_with(&dir),
+            "必须落在隔离目录"
+        );
+        let t2 = crate::rate_store::TrafficStore::with_path(tf);
+        assert_eq!(
+            t2.days()
+                .get(&crate::timefmt::today())
+                .map(|d| (d.sent, d.recv)),
+            Some((111, 222)),
+            "traffic.json 必须含退出前增量"
+        );
+        let r2 = RateStatsStore::with_path(nf);
+        assert_eq!(
+            r2.snapshot()
+                .days
+                .get(&crate::timefmt::today())
+                .map(|b| (b.sent, b.recv)),
+            Some((11, 22)),
+            "netstats_buckets.json 必须含退出前增量"
+        );
+        // 收尾清盘：隔离目录是进程级共享（首设赢家），本用例写下的 traffic/
+        // netstats 文件必须清掉，否则排序在后的「空 Hub」断言会读到残留数据。
+        crate::test_support::reset_persistent_files();
     }
 }

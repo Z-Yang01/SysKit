@@ -623,6 +623,19 @@ mod tests {
     }
 
     #[test]
+    fn force_check_wakes_the_loop_immediately() {
+        // 托盘「立即检测」走的就是这条路：置 FORCE 后轮询等待在 100ms 粒度内
+        // 醒来（不必等满 poll_interval）。标志位丢了 = 菜单点了没反应。
+        FORCE.store(false, Ordering::SeqCst);
+        force_check();
+        assert!(
+            FORCE.swap(false, Ordering::SeqCst),
+            "force_check 必须置起唤醒标志"
+        );
+        assert!(!FORCE.load(Ordering::SeqCst), "swap 后应被清掉（单次生效）");
+    }
+
+    #[test]
     fn tunnel_detection_covers_vpn_products() {
         // 护栏依赖它：漏检一个产品，用户挂着 VPN 就会被自动修复踢下线
         for desc in [
