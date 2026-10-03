@@ -18,8 +18,10 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 /// `Run` 键相对路径（HKCU 与 HKLM 同名）。
+#[cfg(test)]
 pub const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 /// 已禁用项的存放键（HKCU）。**必须是 `NetTool`**——见模块文档。
+#[cfg(test)]
 pub const DISABLED_KEY: &str = r"Software\NetTool\DisabledRun";
 /// 启动文件夹项禁用后的后缀。
 pub const DISABLED_SUFFIX: &str = ".disabled";
@@ -89,6 +91,7 @@ pub fn decode_disabled(raw: &str) -> Option<(StartupLoc, String)> {
 }
 
 /// 判断启动文件夹里的文件名是否是"已禁用"形态。
+#[cfg(test)]
 pub fn is_disabled_filename(name: &str) -> bool {
     name.ends_with(DISABLED_SUFFIX)
 }
@@ -558,12 +561,6 @@ mod tests {
             match loc {
                 StartupLoc::HklmRun => &self.hklm,
                 _ => &self.hkcu,
-            }
-        }
-        fn run_mut(&mut self, loc: StartupLoc) -> &mut Vec<(String, String)> {
-            match loc {
-                StartupLoc::HklmRun => &mut self.hklm,
-                _ => &mut self.hkcu,
             }
         }
     }

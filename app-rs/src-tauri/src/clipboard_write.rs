@@ -310,6 +310,7 @@ pub fn md5_hex(data: &[u8]) -> String {
 }
 
 /// 把面板选择结果整理成给前端的载荷（图片/文件/HTML 各自带 data）。
+#[allow(dead_code)] // 面板/前端载荷构造的预留 API，测试覆盖中
 pub fn item_payload(item: &ClipItem) -> serde_json::Value {
     json!({
         "kind": item.kind,

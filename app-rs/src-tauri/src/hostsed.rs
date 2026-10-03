@@ -53,19 +53,6 @@ pub struct HostEntry {
 }
 
 impl HostEntry {
-    fn blank(raw: &str, had_content: bool) -> Self {
-        Self {
-            raw: raw.to_string(),
-            kind: EntryKind::Comment,
-            ip: String::new(),
-            host: String::new(),
-            aliases: Vec::new(),
-            comment: String::new(),
-            enabled: false,
-            had_content,
-        }
-    }
-
     /// 是否为主机映射（启用或被注释的映射）。
     pub fn is_mapping(&self) -> bool {
         matches!(self.kind, EntryKind::Entry | EntryKind::Disabled)
@@ -189,6 +176,7 @@ pub fn serialize(entries: &[HostEntry]) -> String {
 }
 
 /// 按主机名（不区分大小写）查找下标；给定 ip 时需同时匹配。无则 None。
+#[cfg(test)]
 pub fn find_entry(entries: &[HostEntry], host: &str, ip: Option<&str>) -> Option<usize> {
     let host = host.to_lowercase();
     entries.iter().position(|e| {

@@ -101,10 +101,6 @@ impl RateStatsStore {
         self.ssid = ssid.trim().to_string();
     }
 
-    pub fn ssid(&self) -> &str {
-        &self.ssid
-    }
-
     /// 规范化网络名：空 → "以太网/未知"（与 Python `_norm_ssid` 一致）。
     pub fn norm_ssid(ssid: &str) -> String {
         let s = ssid.trim();
@@ -190,6 +186,7 @@ impl RateStatsStore {
         }
     }
 
+    #[cfg(test)]
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }

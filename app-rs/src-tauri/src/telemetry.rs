@@ -152,6 +152,7 @@ impl Sampler {
         }
     }
 
+    #[cfg(test)]
     pub fn tickno(&self) -> u64 {
         self.tickno
     }

@@ -39,6 +39,7 @@ impl DriveInfo {
     }
 
     /// 可移动介质不该用来做"磁盘空间不足"告警（U 盘经常是满的）。
+    #[allow(dead_code)] // 目录/驱动器统计工具箱预留面（dir_size 套件）
     pub fn is_fixed(&self) -> bool {
         !self.removable
     }
@@ -78,6 +79,7 @@ pub fn human_size(bytes: u64) -> String {
 
 /// 目录大小扫描结果的一行。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(dead_code)] // 目录/驱动器统计工具箱预留面（dir_size 套件）
 pub struct DirSize {
     pub path: String,
     /// 字节数
@@ -90,6 +92,7 @@ pub struct DirSize {
 
 impl DirSize {
     /// 是否完全没扫到（可能路径不存在）。
+    #[allow(dead_code)] // 同上
     pub fn is_empty(&self) -> bool {
         self.bytes == 0 && self.files == 0
     }
@@ -99,6 +102,7 @@ impl DirSize {
 ///
 /// `skipped` 必须单独计数：**只报"清理了多少"而不报"跳过了多少"会让用户以为
 /// 清干净了**，实际还在用着的文件一个没动。
+#[allow(dead_code)] // 同上
 pub fn accumulate(results: &[DirSize]) -> DirSize {
     DirSize {
         path: String::new(),
@@ -109,6 +113,7 @@ pub fn accumulate(results: &[DirSize]) -> DirSize {
 }
 
 /// 递归统计目录大小。跳过符号链接/重解析点以免重复计数与死循环。
+#[allow(dead_code)] // 同上
 pub fn dir_size(path: &std::path::Path) -> DirSize {
     let mut out = DirSize {
         path: path.to_string_lossy().to_string(),

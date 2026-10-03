@@ -4,7 +4,6 @@
 //! （手改/被其他工具写坏，如 poll_interval_sec="很快"）会原样穿透到消费方。
 //! 只校验 DEFAULTS 已知键：last_page / modes_prev_volume 等动态键原样保留。
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -513,11 +512,6 @@ pub fn save_to(path: &Path, patch: &Map<String, Value>) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(&Value::Object(merged))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     crate::stores::atomic_write(path, text.as_bytes())
-}
-
-/// 序列化后的键值对（BTreeMap 仅用于稳定比较，不作为写盘格式）。
-pub fn as_sorted(data: &Map<String, Value>) -> BTreeMap<String, Value> {
-    data.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
 }
 
 #[cfg(test)]

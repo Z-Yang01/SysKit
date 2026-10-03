@@ -39,10 +39,12 @@ impl Risk {
     }
 
     /// 组合内是否免确认自动执行。
+    #[cfg(test)]
     pub fn auto_ok(self) -> bool {
         matches!(self, Risk::Safe)
     }
 
+    #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             Risk::Safe => "safe",
@@ -112,6 +114,7 @@ impl RepairOutcome {
     }
 
     /// 「尚未接入」：明确的失败，**不是**成功。
+    #[allow(dead_code)] // 延迟执行器机制（DEFERRED 清单复用时必需）
     pub fn unimplemented(id: &str, why: &str) -> Self {
         Self::fail(format!(
             "{id} 尚未在 Rust 版接入（{why}）；请暂用 Python 版执行，或等待后续里程碑"
@@ -280,6 +283,7 @@ fn run_renew_dhcp(_p: &BTreeMap<String, String>) -> RepairOutcome {
 ///
 /// **为什么统一给一个「显式失败」的执行器**：修复链里的假成功（例如返回 ok 但
 /// 什么都没做）会让用户以为问题已经处理，比「明确说尚未接入」危险得多。
+#[allow(dead_code)] // 延迟执行器机制——显式失败执行器，新增暂缓动作时接回
 fn run_deferred(_p: &BTreeMap<String, String>) -> RepairOutcome {
     RepairOutcome::unimplemented(
         "该动作",
@@ -296,9 +300,11 @@ fn run_deferred(_p: &BTreeMap<String, String>) -> RepairOutcome {
 ///
 /// **已清空**：19 个动作的执行器全部接入（批次 0 + A + B）。
 /// 新增动作若暂不实现执行器，把 id 加回这里并让测试断言它显式失败。
+#[allow(dead_code)] // 延迟执行器机制——完成度断言消费
 pub const DEFERRED_ACTION_IDS: [&str; 0] = [];
 
 /// 该动作是否尚未接入执行器。
+#[allow(dead_code)] // 延迟执行器机制——判定入口
 pub fn is_deferred(id: &str) -> bool {
     DEFERRED_ACTION_IDS.contains(&id)
 }
@@ -309,6 +315,7 @@ pub fn is_deferred(id: &str) -> bool {
 pub const INTERNET_SETTINGS_KEY: &str =
     r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 /// 持久路由的权威来源键。
+#[allow(dead_code)] // 持久路由注册表键（对齐面，执行器暂未用）
 pub const PERSISTENT_ROUTES_KEY: &str =
     r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\PersistentRoutes";
 
@@ -771,6 +778,7 @@ fn require_admin(id: &str) -> Option<RepairOutcome> {
 }
 
 /// 非管理员时该动作是否会被跳过（与 `combo_plan` 同一判据，前端也用它做提示）。
+#[allow(dead_code)] // 动作元数据 API 面
 pub fn requires_admin(id: &str) -> bool {
     get_action(id)
         .map(|a| a.risk != Risk::Safe)
@@ -1263,6 +1271,7 @@ pub fn set_mac_random(profile: &str, enable: bool) -> (usize, String, String) {
 }
 
 /// 读取指定配置文件的 MAC 随机化状态：Some(true/false) 或 None（未知）。
+#[allow(dead_code)] // MAC 随机化状态读取（对齐面，当前诊断走另一路径）
 pub fn mac_random_state(profile: &str) -> Option<bool> {
     for f in find_wlan_profile_files(profile) {
         let Ok(content) = std::fs::read_to_string(&f) else {
@@ -1274,6 +1283,7 @@ pub fn mac_random_state(profile: &str) -> Option<bool> {
 }
 
 /// 从配置 XML 解析 EnableRandomization（纯函数）。
+#[allow(dead_code)] // 同上
 pub fn mac_randomization_state_xml(content: &str) -> Option<bool> {
     let lower = content.to_lowercase();
     let start = lower.find("<macrandomization")?;
@@ -1561,6 +1571,7 @@ pub fn get_action(id: &str) -> Option<&'static RepairAction> {
 }
 
 /// 全部动作 id（顺序同 Python `ACTION_IDS`）。
+#[allow(dead_code)] // 完成度断言消费
 pub fn action_ids() -> Vec<&'static str> {
     catalog().iter().map(|a| a.id).collect()
 }

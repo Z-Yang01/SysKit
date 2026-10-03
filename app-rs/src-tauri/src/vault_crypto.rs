@@ -53,6 +53,7 @@ pub const AAD_VERIFY: &[u8] = b"vault-verify";
 /// 字段加解密的 aad。
 pub const AAD_FIELD: &[u8] = b"field";
 /// DPAPI 的说明文本（Python 用 "SysKit vault key"）。
+#[allow(dead_code)] // DPAPI 描述头（解密兼容旧数据的文档化常量）
 pub const DPAPI_DESCRIPTION: &str = "SysKit vault key";
 
 /// `vault.key` 的 metadata。
@@ -427,6 +428,7 @@ impl VaultCrypto {
     }
 
     /// 改主密码（数据密钥不变）。
+    #[allow(dead_code)] // M6 规划面：主密码更改已实现待接命令/UI（见夜间日志）
     pub fn change_master_password(&mut self, new_password: &str) -> Result<(), String> {
         self.set_master_password(new_password)
     }

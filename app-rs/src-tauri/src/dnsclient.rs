@@ -22,9 +22,11 @@ pub const DEFAULT_TIMEOUT_SECS: f64 = 3.0;
 /// 超时重发次数；对应 Python `attempts=3`。
 pub const DEFAULT_ATTEMPTS: u32 = 3;
 /// 系统解析器等待上限（秒）；对应 Python `resolve_system(timeout=4.0)`。
+#[allow(dead_code)] // 协议参数文档化（对齐 Python timeout=10），解析路径用 Duration 硬值
 pub const SYSTEM_TIMEOUT_SECS: f64 = 4.0;
 
 pub const QTYPE_A: u16 = 1;
+#[allow(dead_code)] // DNS 协议常量对齐面（AAAA=28），当前仅查 A 记录
 pub const QTYPE_AAAA: u16 = 28;
 
 /// DNS 查询/应答错误（人话，直接进诊断详情）。

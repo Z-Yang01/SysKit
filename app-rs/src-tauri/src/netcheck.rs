@@ -30,6 +30,7 @@ pub const SKIP: &str = "skip";
 pub const INFO: &str = "info";
 
 /// 状态符号（与 Python `STATUS_MARK` 逐字一致）。
+#[cfg(test)]
 pub fn status_mark(status: &str) -> &'static str {
     match status {
         PASS => "√",
@@ -68,12 +69,8 @@ impl CheckResult {
         self
     }
 
-    pub fn with_fixes(mut self, ids: &[&'static str]) -> Self {
-        self.fix_ids = ids.to_vec();
-        self
-    }
-
-    /// 单行展示（对齐 Python `CheckResult.line()`）。
+    /// 单行展示（对齐 Python `CheckResult.line()`）。测试断言专用。
+    #[cfg(test)]
     pub fn line(&self) -> String {
         format!(
             "[{}] {}\n      {}",
@@ -1163,6 +1160,7 @@ pub fn chk_proxy() -> CheckResult {
 /// 一项检查的注册信息。
 pub struct CheckDef {
     pub id: &'static str,
+    #[allow(dead_code)] // 结构体完整性：name 为定义面字段，展示路径未读取
     pub name: &'static str,
     /// quick 模式（监控轮询）是否跳过：对应 Python 的慢速外网探测集合。
     pub slow: bool,
@@ -1277,6 +1275,7 @@ pub fn all_checks() -> &'static [CheckDef] {
 ///
 /// 对应 Python `icmp.default_gateway()`，但后者走 PowerShell。这里解析
 /// `route print -4` 的默认路由段：0.0.0.0/0 行的「网关」列。
+#[cfg(test)]
 pub fn default_gateway_v4() -> Option<String> {
     let out = w32::run_capture(&["route".into(), "print".into(), "-4".into()], 15).ok()?;
     for line in out.stdout.lines() {

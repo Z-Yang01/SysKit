@@ -18,6 +18,7 @@ pub const DNS_SERVER_PRESETS: [(&str, &str); 5] = [
 ];
 
 /// 由下拉显示文本取服务器地址；"系统默认" 返回空串（表示走系统解析器）。
+#[cfg(test)]
 pub fn server_from_label(label: &str) -> &str {
     DNS_SERVER_PRESETS
         .iter()
@@ -103,6 +104,7 @@ pub fn is_private_v4(addr: Ipv4Addr) -> bool {
 }
 
 /// 由 IP + 前缀求网络地址字符串（便于 UI 直接展示）。
+#[cfg(test)]
 pub fn network_of(ip: &str, prefix: u8) -> Result<String, String> {
     subnet_info(ip, prefix).map(|s| s.network)
 }

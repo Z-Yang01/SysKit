@@ -204,6 +204,7 @@ fn site_rows(
     rows.collect()
 }
 
+#[allow(dead_code)] // M6 数据层 API 面（站点列表聚合由 search/get_secrets_bulk 承担）
 pub fn list_sites() -> rusqlite::Result<Vec<SiteRow>> {
     let conn = conn()?;
     site_rows(&conn, "", &[])
@@ -232,6 +233,7 @@ pub fn search_sites(q: &str) -> rusqlite::Result<Vec<SiteRow>> {
 
 /// 按域名精确匹配（自动填充预留边界）。别名「逗号分词精确相等」，
 /// 拒绝子串——子串会让 mail.com 命中 gmail.com 别名（凭据授错域）。
+#[allow(dead_code)] // M6 数据层 API 面（站点聚合由 search/get_secrets_bulk 承担）
 pub fn find_by_domain(domain: &str) -> rusqlite::Result<Option<SiteRow>> {
     let domain = domain.trim().to_lowercase();
     if domain.is_empty() {
@@ -263,6 +265,7 @@ pub fn find_by_domain(domain: &str) -> rusqlite::Result<Option<SiteRow>> {
     Ok(None)
 }
 
+#[allow(dead_code)] // 同上
 pub fn get_site(site_id: i64) -> rusqlite::Result<Option<SiteRow>> {
     let conn = conn()?;
     let mut stmt = conn.prepare("SELECT * FROM sites WHERE id=?")?;

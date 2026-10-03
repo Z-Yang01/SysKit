@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use serde::Serialize;
 
 use crate::clipboard_history as hist;
+#[cfg(test)]
 use crate::clipboard_write::png_to_dib;
 use crate::w32;
 
@@ -98,6 +99,7 @@ pub fn decide_capture(snap: &ClipSnapshot, capture_images: bool) -> Option<Captu
 ///
 /// **必须与去重共用同一次判定**：黑名单命中时要把内容记为 `_last`，
 /// 否则用户切走焦点后会"补录"刚才在密码管理器里复制的东西。
+#[cfg(test)]
 pub fn should_capture(blacklist: &str, text: &str, last: &str) -> bool {
     if text == last {
         return false;
@@ -286,6 +288,7 @@ pub fn capture_image() -> Result<Option<String>, String> {
 }
 
 /// 把已有 PNG 字节入库（供"另存/导入"路径复用）。
+#[cfg(test)]
 pub fn store_png(png: &[u8], label: &str) -> bool {
     if png_to_dib(png).is_none() {
         return false; // 不是可用的 PNG

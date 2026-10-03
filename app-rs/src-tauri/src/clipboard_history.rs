@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 use crate::paths;
 use crate::secure_store;
 
+#[allow(dead_code)] // Python 侧同名默认值的对齐基准，实际默认值由 settings 层提供
 pub const DEFAULT_BLACKLIST: &str = "keepass,bitwarden,1password,enpass";
 
 /// 一条剪贴板历史（字段名与 Python schema 完全一致）。
@@ -266,6 +267,7 @@ impl History {
         self.items.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

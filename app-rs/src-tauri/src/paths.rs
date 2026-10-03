@@ -25,6 +25,7 @@ fn portable_data_dir() -> Option<PathBuf> {
 static APPDATA_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// 设置数据目录覆盖；已设置时忽略（幂等，测试并发安全）。
+#[cfg(test)]
 pub fn set_appdata_override(dir: PathBuf) {
     let _ = APPDATA_OVERRIDE.set(dir);
 }

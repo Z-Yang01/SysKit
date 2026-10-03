@@ -5,7 +5,9 @@
 //! 键格式一旦漂移，同一份文件在两版眼里就成了两套互不相认的数据。
 //! 全部格式串集中在此，改一处即可全局对齐。
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timelike};
+#[cfg(test)]
+use chrono::Datelike;
+use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone};
 
 /// `%Y-%m-%d` —— traffic.json 的日键、netstats 的 days 桶键。
 pub const FMT_DAY: &str = "%Y-%m-%d";
@@ -102,18 +104,9 @@ pub fn hour_of_minute_key(minute_key: &str) -> String {
 }
 
 /// 本地日历日序号（用于按天归组比较）。
+#[cfg(test)]
 pub fn day_ordinal(dt: &DateTime<Local>) -> i32 {
     dt.date_naive().num_days_from_ce()
-}
-
-/// 本地年份与月份（月份键派生用）。
-pub fn year_month(dt: &DateTime<Local>) -> (i32, u32) {
-    (dt.year(), dt.month())
-}
-
-/// 本地时分秒（无其他用途，供测试断言可读性）。
-pub fn hms(dt: &DateTime<Local>) -> (u32, u32, u32) {
-    (dt.hour(), dt.minute(), dt.second())
 }
 
 #[cfg(test)]

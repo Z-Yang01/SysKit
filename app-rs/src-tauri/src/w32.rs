@@ -33,18 +33,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// 注入标记："SYKT" —— 便于识别 SysKit 注入的输入（硬约束）。
 pub const PASTE_MAGIC: usize = 0x5359_4B54;
 
+#[allow(dead_code)] // RegisterHotKey 修饰键对齐面（与 windows crate 常量语义重复，保留作文档）
 pub const MOD_ALT: u32 = 0x0001;
+#[allow(dead_code)] // RegisterHotKey 修饰键对齐面（与 windows crate 常量语义重复，保留作文档）
 pub const MOD_CONTROL: u32 = 0x0002;
+#[allow(dead_code)] // RegisterHotKey 修饰键对齐面（与 windows crate 常量语义重复，保留作文档）
 pub const MOD_SHIFT: u32 = 0x0004;
+#[allow(dead_code)] // RegisterHotKey 修饰键对齐面（与 windows crate 常量语义重复，保留作文档）
 pub const MOD_WIN: u32 = 0x0008;
 /// 按住不重复触发（Win7+）；恒置（规格书硬约束）。
 pub const MOD_NOREPEAT: u32 = 0x4000;
 
+#[cfg(test)]
 pub const VK_SHIFT_C: u32 = 0x10;
+#[cfg(test)]
 pub const VK_CONTROL_C: u32 = 0x11;
+#[cfg(test)]
 pub const VK_MENU_C: u32 = 0x12;
+#[cfg(test)]
 pub const VK_LWIN_C: u32 = 0x5B;
+#[cfg(test)]
 pub const VK_RWIN_C: u32 = 0x5C;
+#[cfg(test)]
 pub const VK_V_C: u32 = 0x56;
 
 /// 剪贴板无主窗口（`RegisterHotKey(NULL, …)` / `OpenClipboard(NULL)` 同款）。
@@ -425,6 +435,7 @@ fn tail_chars(s: &str, n: usize) -> String {
 ///
 /// 规则同 Python `subprocess.list2cmdline`：反斜杠只在引号前成对转义，
 /// 参数末尾的反斜杠在加引号时要翻倍。
+#[cfg(test)]
 pub fn quote_arg(arg: &str) -> String {
     if !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
         return arg.to_string();
@@ -455,6 +466,7 @@ pub fn quote_arg(arg: &str) -> String {
 }
 
 /// 把参数表拼成命令行。
+#[cfg(test)]
 pub fn build_command_line(args: &[String]) -> String {
     args.iter()
         .map(|a| quote_arg(a))
@@ -513,6 +525,7 @@ pub fn resolve_executable(name: &str) -> Option<String> {
 ///
 /// 对应 Python `winregread.value(path, name, default)`。路径形如
 /// `HKLM\SYSTEM\CurrentControlSet\Services\NlaSvc\Parameters\Internet`。
+#[allow(dead_code)] // 注册表读写 API 对齐面（winregread 语义）
 pub fn reg_value(path: &str, name: &str) -> Option<RegValue> {
     let hkey = reg_open(path)?;
     let out = reg_query(hkey, name);
@@ -574,6 +587,7 @@ pub fn reg_set_string(path: &str, name: &str, value: &str) -> bool {
 ///
 /// 与 `reg_set_string` 的区别在于**先删同名旧值再写**：改路由时规格串本身是键名，
 /// 不先删会留下旧路由（两条并存 → 依然劫持流量）。
+#[allow(dead_code)] // 注册表读写 API 对齐面（winregread 语义）
 pub fn reg_write_named_value(path: &str, name: &str, data: &str) -> bool {
     let _ = reg_delete_value(path, name);
     reg_set_string(path, name, data)
@@ -763,6 +777,7 @@ fn split_reg_path(path: &str) -> Option<(&str, &str)> {
     (!root.is_empty()).then_some((root, sub))
 }
 
+#[allow(dead_code)] // 注册表读写 API 对齐面（winregread 语义）
 fn reg_query(hkey: windows::Win32::System::Registry::HKEY, name: &str) -> Option<RegValue> {
     use windows::Win32::System::Registry::{RegQueryValueExW, REG_VALUE_TYPE};
     let mut ty = REG_VALUE_TYPE(0);
@@ -1667,6 +1682,7 @@ pub fn acquire_single_instance_mutex(name: &str) -> bool {
 
 /// 是否有 SysKit 实例（syskit-rs.exe / SysKit.exe）在运行——
 /// 真实剪贴板测试与运行中实例的 500ms 轮询竞争，有实例时跳过。
+#[cfg(test)]
 pub fn syskit_instance_running() -> bool {
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,

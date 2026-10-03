@@ -110,6 +110,7 @@ impl TrafficStore {
         }
     }
 
+    #[cfg(test)]
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -173,10 +174,12 @@ impl EventStore {
         self.data.iter().take(n).cloned().collect()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
