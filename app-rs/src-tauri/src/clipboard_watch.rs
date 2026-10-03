@@ -162,60 +162,87 @@ pub fn spawn() {
     );
     std::thread::Builder::new()
         .name("sk-clipwatch".into())
-        .spawn(move || {
-            let mut last_seq = w32::clipboard_sequence();
-            let mut last_text = String::new();
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
-                // 敏感内容到期清空搭在同一个循环里：不另起定时器，
-                // 且清空会改剪贴板内容——同循环内更新序号基线，不会把
-                // "我们自己清空"当成一次新复制。
-                if crate::sensitive::tick_clear() {
-                    last_seq = w32::clipboard_sequence();
-                    last_text.clear();
-                }
-                // 暂停时只更新序号基线：恢复后不会把暂停期间的内容补录进来
-                let seq = w32::clipboard_sequence();
-                if seq == last_seq {
-                    continue;
-                }
-                last_seq = seq;
-                if !is_enabled() {
-                    continue;
-                }
-                let blacklist = crate::settings::get_str("clip_process_blacklist");
-                let capture_images = crate::settings::get_bool("clip_capture_images");
-                let snap = read_snapshot();
-                let candidate = snap.text.clone().unwrap_or_default();
-                // 去重与黑名单共用一次判定
-                if candidate == last_text && !snap.has_image && snap.files.is_none() {
-                    SKIPPED_DUP.fetch_add(1, Ordering::SeqCst);
-                    continue;
-                }
-                if !hist::should_record_now(&blacklist) {
-                    // 关键：把内容记为 last，避免切走焦点后补录
-                    last_text = candidate;
-                    SKIPPED_BL.fetch_add(1, Ordering::SeqCst);
-                    continue;
-                }
-                let Some(cap) = decide_capture(&snap, capture_images) else {
-                    continue;
-                };
-                last_text = candidate;
-                if cap.kind == "image" {
-                    // 图片走完整搬运路径（DIB → PNG → 落盘）：失败要记日志，
-                    // 不能让图片捕获悄悄失效
-                    match capture_image() {
-                        Ok(Some(label)) => log::debug!("已捕获剪贴板图片 {label}"),
-                        Ok(None) => {}
-                        Err(e) => log::warn!("剪贴板图片捕获失败: {e}"),
-                    }
-                } else {
-                    store(&cap);
-                }
-            }
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+            capture_pass();
         })
         .expect("剪贴板监听线程启动失败");
+}
+
+/// 轮询与同步预捕获共用的单趟捕获逻辑。
+fn capture_pass() {
+    // 敏感内容到期清空搭在同一趟里：不另起定时器，且清空会改剪贴板内容——
+    // 趟内更新序号基线，不会把"我们自己清空"当成一次新复制。
+    if crate::sensitive::tick_clear() {
+        let mut st = seq_state();
+        st.last_seq = w32::clipboard_sequence();
+        st.last_text.clear();
+        return;
+    }
+    // 暂停时只更新序号基线：恢复后不会把暂停期间的内容补录进来
+    let seq = w32::clipboard_sequence();
+    let mut st = seq_state();
+    if seq == st.last_seq {
+        return;
+    }
+    st.last_seq = seq;
+    if !is_enabled() {
+        return;
+    }
+    let blacklist = crate::settings::get_str("clip_process_blacklist");
+    let capture_images = crate::settings::get_bool("clip_capture_images");
+    let snap = read_snapshot();
+    let candidate = snap.text.clone().unwrap_or_default();
+    // 去重与黑名单共用一次判定
+    if candidate == st.last_text && !snap.has_image && snap.files.is_none() {
+        SKIPPED_DUP.fetch_add(1, Ordering::SeqCst);
+        return;
+    }
+    if !hist::should_record_now(&blacklist) {
+        // 关键：把内容记为 last，避免切走焦点后补录
+        st.last_text = candidate;
+        SKIPPED_BL.fetch_add(1, Ordering::SeqCst);
+        return;
+    }
+    let Some(cap) = decide_capture(&snap, capture_images) else {
+        return;
+    };
+    st.last_text = candidate;
+    drop(st); // 图片搬运（DIB→PNG→落盘）不在状态锁内做
+    if cap.kind == "image" {
+        // 图片走完整搬运路径：失败要记日志，不能让图片捕获悄悄失效
+        match capture_image() {
+            Ok(Some(label)) => log::debug!("已捕获剪贴板图片 {label}"),
+            Ok(None) => {}
+            Err(e) => log::warn!("剪贴板图片捕获失败: {e}"),
+        }
+    } else {
+        store(&cap);
+    }
+}
+
+/// 轮询基线（last_seq/last_text）：轮询线程与快速粘贴的同步预捕获共享。
+#[derive(Default)]
+struct SeqState {
+    last_seq: u32,
+    last_text: String,
+}
+
+fn seq_state() -> std::sync::MutexGuard<'static, SeqState> {
+    static SEQ: std::sync::OnceLock<std::sync::Mutex<SeqState>> = std::sync::OnceLock::new();
+    SEQ.get_or_init(|| std::sync::Mutex::new(SeqState::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 同步预捕获：序号有变化就地跑一趟捕获（零时延，事件驱动等效）。
+///
+/// 用途：Ctrl+Alt+V 在取历史**之前**调用——轮询间隔内「复制后立刻粘贴」
+/// 时，内存历史还是上一条，直接读会把旧内容贴出去（对齐 Python 事件驱动的
+/// 即时语义）。图片路径含 PNG 编码，可能占当前线程几十毫秒：调用方须在
+/// 阻塞线程池内执行。
+pub fn capture_pending_sync() {
+    capture_pass();
 }
 
 /// 入库（图片与文本都直接进历史；图片的 PNG 已在调用方落盘）。

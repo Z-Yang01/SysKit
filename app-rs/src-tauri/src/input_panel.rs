@@ -203,6 +203,13 @@ pub async fn quick_paste_latest<R: Runtime>(app: AppHandle<R>) -> PasteResult {
     let target = w32::foreground_hwnd_value();
     set_target_hwnd(target);
     let seq = bump_seq();
+    // 同步预捕获：轮询间隔内「复制后立刻粘贴」时，内存历史还是上一条——
+    // 先就地跑一趟捕获（序号没变则零开销），保证贴出的是当前剪贴板。
+    // 阻塞池执行：图片路径含 PNG 编码，不占异步 worker。
+    let _ = tauri::async_runtime::spawn_blocking(|| {
+        crate::clipboard_watch::capture_pending_sync();
+    })
+    .await;
     let latest = hist::with(|h| h.by_index(0));
     let Some(item) = latest else {
         return PasteResult {
