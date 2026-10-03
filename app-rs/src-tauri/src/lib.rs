@@ -33,6 +33,7 @@ mod dnsclient;
 mod dnsspeed;
 mod hostsed;
 mod hotkey;
+mod icmp;
 mod input;
 mod input_panel;
 mod logging;
@@ -188,6 +189,20 @@ pub fn run() {
             // M6 密码库会话：解锁后的数据密钥只驻留在托管会话里
             app.manage(commands::VaultSession(std::sync::Mutex::new(None)));
             app.manage(commands::VaultTrust(std::sync::Mutex::new(None)));
+            // minimize_to_tray（Step4 接线）：关窗 = 隐藏到托盘（真退出走托盘菜单-退出，
+            // app.exit 不触发 CloseRequested，两条路径互不干扰）
+            if let Some(win) = app.get_webview_window("main") {
+                let w = win.clone();
+                win.on_window_event(move |e| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                        if crate::settings::get_bool("minimize_to_tray") {
+                            api.prevent_close();
+                            let _ = w.hide();
+                            log::info!("窗口关闭：按设置最小化到托盘（退出请用托盘菜单）");
+                        }
+                    }
+                });
+            }
             // 后台监控 + 保守自动修复梯度（消费那六项 auto_repair_* 设置）
             monitor::spawn();
             Ok(())

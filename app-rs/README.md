@@ -360,7 +360,7 @@ CIDR 换算）；持久路由走注册表 `Tcpip\Parameters\PersistentRoutes`（
 **两处相对 Python 的降级（代码与界面都标注）**：
 - **HTTPS 只验证 TCP 可达**（Rust 标准库无 TLS）。`real_conn` 详情明确写
   「TCP可达(未校验证书)」，不把「未验证」写成「已验证」。
-- **`ping` 走 `ping.exe`** 而非 `IcmpSendEcho`（后者属 M4 工具箱）。
+- **诊断热路径已换原生 ICMP**（`icmp.rs` IcmpSendEcho，无本地化/无子进程）；工具箱的持续 ping 与局域网扫描仍走 `ping.exe`（流式输出语义不同，属工具行为本身），后续可按需换原生。
 
 **测试里逮到的两个自己的错（都是静默失败型）**：
 1. `RawRoot` 漏了 `#[serde(rename_all = "camelCase")]` —— serde 把不认识的键
@@ -527,9 +527,9 @@ easyconnect/sangfor/nekoray/hysteria/utun 等）。VPN 护栏依赖它——**�
    二维码服务**（那等于把用户复制的链接发出去）。界面给出可复制地址，让用户自己选
    信任的工具。要内置需引入二维码生成依赖（待定）。
 2. **IP 归属地查询不代查**：同上，避免静默把你的 IP 发给第三方服务。
-3. `minimize_to_tray` 未接线（窗口关闭行为固定）。
-4. `sound_alert_enabled` 未接线（声音提醒未实现）。
-5. `vault_autolock_min` / `vault_trust_min` 未接线（密码库数据层按要求未实现）。
+3. ~~`minimize_to_tray`~~ ✅ 已接线：关窗按设置隐藏到托盘（真退出走托盘菜单-退出，`app.exit` 不触发关闭请求，两路径互不干扰）。**需真机复核**。
+4. ~~`sound_alert_enabled`~~ ✅ 已接线：状态切换发声（winmm PlaySound 别名异步，ok=SystemAsterisk/其余=SystemExclamation，首态与同态不响；测试运行静默）。**需真机复核**。
+5. ~~`vault_autolock_min` / `vault_trust_min`~~ ✅ 已随 M6 数据层接线（会话超窗自动收锁 / 验证后续期窗口）。
 
 **✅ 已闭环：敏感内容剪贴板 + WiFi 密码查看**（`sensitive.rs` / `wifi.rs`）。
 新增系统助手页「WiFi 密码」分页：枚举已保存配置、读取明文密钥（需管理员）、

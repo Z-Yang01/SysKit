@@ -19,6 +19,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::dnsclient;
+use crate::icmp;
 use crate::snapshot::{RouteEntry, Snapshot};
 use crate::w32::{self, RegValue};
 
@@ -505,25 +506,25 @@ pub fn chk_gateway(snap: &Snapshot) -> CheckResult {
     for a in ups {
         // 每张网卡只测第一个网关（对应 Python `a.gw4[:1]`）
         for gw in a.gw4.iter().take(1) {
-            let p = w32::run_capture(
-                &[
-                    "ping".into(),
-                    "-n".into(),
-                    "3".into(),
-                    "-w".into(),
-                    "1000".into(),
-                    gw.clone(),
-                ],
-                12,
-            );
-            let loss = p.as_ref().ok().and_then(|o| ping_loss(&o.combined()));
-            let ok = loss.map(|l| l < 100).unwrap_or(false);
+            // 原生 ICMP ×3（换掉 ping.exe：无本地化解析、无子进程开销）
+            let mut lost = 0u32;
+            for _ in 0..3 {
+                if icmp::ping(gw, 1000).is_none() {
+                    lost += 1;
+                }
+            }
+            let loss = lost * 100 / 3;
+            let ok = loss < 100;
             any_ok |= ok;
             any_fail |= !ok;
             lines.push(format!(
-                "{} 网关 {gw}: 丢包 {}%",
+                "{} 网关 {gw}: 丢包 {loss}%{}",
                 a.name,
-                loss.map(|l| l.to_string()).unwrap_or_else(|| "??".into())
+                if lost == 3 {
+                    "（全丢，疑似二层拦截）"
+                } else {
+                    ""
+                }
             ));
         }
     }

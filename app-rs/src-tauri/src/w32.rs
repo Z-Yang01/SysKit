@@ -1853,3 +1853,25 @@ mod tests {
         );
     }
 }
+
+/// 断网/恢复提示音（winmm PlaySound，SND_ALIAS|SND_ASYNC——异步不阻塞调用线程，
+/// 别名与 Python winsound 同表：ok=SystemAsterisk，其余=SystemExclamation）。
+/// 仅限真实构建调用（测试运行静默，见 monitor.rs 调用点）。
+#[cfg(all(windows, not(test)))]
+pub fn play_alert_sound(ok: bool) {
+    use windows::core::HSTRING;
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
+    let name = HSTRING::from(if ok {
+        "SystemAsterisk"
+    } else {
+        "SystemExclamation"
+    });
+    unsafe {
+        // 失败静默：提示音是锦上添花，不为此上报错误
+        let _ = PlaySoundW(
+            windows::core::PCWSTR(name.as_ptr()),
+            None,
+            SND_ALIAS | SND_ASYNC,
+        );
+    }
+}

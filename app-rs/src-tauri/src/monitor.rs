@@ -181,9 +181,24 @@ static LAST_STATE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new(
 static LAST_DETAIL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 static LAST_LADDER: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+/// 断网/恢复提示音判定（对齐 Python main_window._on_monitor_state）：
+/// 仅**状态切换**发声；首态（prev 为空）不发声——启动时的初始状态不算事件。
+fn should_alert(prev: &str, new: &str) -> bool {
+    !prev.is_empty() && prev != new
+}
+
 fn set_status(state: NetState, detail: &str) {
+    let prev = LAST_STATE.lock().expect("状态锁中毒").clone();
     *LAST_STATE.lock().expect("状态锁中毒") = state.as_str().to_string();
     *LAST_DETAIL.lock().expect("状态锁中毒") = detail.to_string();
+    // 断网/恢复提示音：sound_alert_enabled 门控（默认开）；
+    // 测试运行静默（cfg 门）——FFI 本身平凡，判定逻辑另有单测
+    if should_alert(&prev, state.as_str()) && crate::settings::get_bool("sound_alert_enabled") {
+        #[cfg(not(test))]
+        crate::w32::play_alert_sound(state.as_str() == "ok");
+        #[cfg(test)]
+        let _ = state.as_str() == "ok";
+    }
     LAST_CHECK.store(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -546,6 +561,13 @@ mod tests {
     }
 
     #[test]
+    fn should_alert_only_on_transition() {
+        assert!(!should_alert("", "ok"), "首态不发声");
+        assert!(should_alert("ok", "no_net"), "断网切换发声");
+        assert!(should_alert("no_net", "ok"), "恢复发声");
+        assert!(!should_alert("ok", "ok"), "同态不发声");
+    }
+
     fn net_state_strings_match_python() {
         assert_eq!(NetState::Ok.as_str(), "ok");
         assert_eq!(NetState::NoNet.as_str(), "no_net");
