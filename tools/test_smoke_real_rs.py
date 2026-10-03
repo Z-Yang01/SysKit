@@ -246,10 +246,34 @@ def clip_text() -> str:
     return qapp().clipboard().text()
 
 
+def recorded_tokens() -> set:
+    """从运行实例的 clipboard.json 读已记录条目文本（DPAPI 同用户可解）。"""
+    p = _find_settings_file()
+    if not p:
+        return set()
+    base = os.path.dirname(p)
+    cj = os.path.join(base, "clipboard.json")
+    if not os.path.exists(cj):
+        return set()
+    try:
+        from syskit import secure_store
+        data, _ = secure_store.load_sealed_json(cj, [])
+        return {str(it.get("text", "")) for it in data if isinstance(it, dict)}
+    except Exception:
+        return set()
+
+
 def copy_and_wait_recorded(token, settle=1.2):
-    """真实复制 token → 等一拍让运行中的 SysKit 监听入库（前置：监听已开启）。"""
+    """真实复制 token → 等待 SysKit 监听入库；入库失败立刻 FAIL 并指明原因
+    （监听未开启是最常见根因——本轮 7 靶连挂的教训，不再让它级联）。"""
     clip_set_text(token)
-    time.sleep(settle)
+    ok = wait_until(lambda: token in recorded_tokens(), timeout=4.0, step=0.2,
+                    desc="监听入库")
+    if not ok and not wait_until(lambda: token in recorded_tokens(), timeout=3.0, step=0.2):
+        pytest.fail(
+            f"复制的内容 {token!r} 没有进入剪贴板历史——**监听未开启**。"
+            "请到「工具箱→剪贴板历史」点「开启监听」后重跑（全部粘贴靶都依赖它）。"
+        )
 
 
 # ---------------------------------------------------------------- 日志采集
@@ -542,7 +566,10 @@ class TestPanelFlowTargets:
         token = unique_token(tag)
         copy_and_wait_recorded(token)
         press_panel_paste()
-        assert wait_until(lambda: _panel_visible(), 5), "快捷粘贴面板未弹出"
+        if not wait_until(lambda: _panel_visible(), 5):
+            log_tail = chr(10).join(LogWatcher().new_lines()[-6:])
+            hint = "面板热键被占用已禁用（见日志「被占，已回退为禁用」）——请在设置页改用其他组合"                 if "被占" in log_tail else "面板未弹出（热键未生效？）"
+            pytest.fail(f"快捷粘贴面板未弹出：{hint}；日志尾部：{log_tail[-300:]}")
         time.sleep(0.4)
         tap(VK_RETURN)                                # 行 0 = 最新（刚复制的 token）
         ok = wait_until(lambda: token in (reader(hwnd) or ""), 6)
@@ -768,11 +795,14 @@ class TestEdgeAFallbackChain:
         occupier = _Occupier()
         ahk = shutil.which("AutoHotkey.exe") or shutil.which("AutoHotkeyU64.exe")
         if ahk:
+            import subprocess as _sp
             ahk_script = tmp_path / "occupy.ahk"
             ahk_script.write_text("^#v::Return" + chr(10), encoding="utf-8")
-            os.startfile(f'"{ahk}" "{ahk_script}"')
+            ahk_proc = _sp.Popen([ahk, str(ahk_script)])
             time.sleep(1.0)
-            release = lambda: None
+            def release():
+                ahk_proc.terminate()   # 旧实现 startfile 起的 AHK 永不退出，
+                                       # 占住 Ctrl+Win+V 毒化后续每一次运行
         else:
             occupier.acquire()
             release = occupier.release
