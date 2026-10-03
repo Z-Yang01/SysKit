@@ -34,6 +34,9 @@ import {
   pauseHint,
   purgeConfirmText,
   relativeTime,
+  watchEnableConfirmText,
+  watchResumeConfirmText,
+  watchToggleLabel,
   type ClipRow,
   type ClipSummary,
 } from "./cliphistory";
@@ -87,6 +90,48 @@ export function ClipboardHistoryPanel() {
       message.error(`读取剪贴板历史失败：${String(e)}`);
     }
   }, [keyword, kind]);
+
+  // 监听开关三态：关→开启（确认框）；开且未暂停→暂停（直接）；已暂停→恢复（确认不补录）
+  const watchToggleModal = useCallback(() => {
+    const enabled = summary?.watch_enabled ?? false;
+    const paused = summary?.watch_paused ?? false;
+    const apply = async (target: boolean) => {
+      try {
+        const r = await invoke<{ message: string }>("sk_clip_watch_set", {
+          enabled: target,
+        });
+        message.success(r.message);
+        await load();
+      } catch (e) {
+        message.error(String(e));
+      }
+    };
+    if (!enabled) {
+      Modal.confirm({
+        title: "开启剪贴板监听",
+        width: 540,
+        content: (
+          <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+            {watchEnableConfirmText()}
+          </Typography.Paragraph>
+        ),
+        okText: "开启",
+        cancelText: "取消",
+        onOk: () => apply(true),
+      });
+    } else if (paused) {
+      Modal.confirm({
+        title: "恢复记录",
+        content: watchResumeConfirmText(),
+        okText: "恢复",
+        cancelText: "保持暂停",
+        onOk: () => apply(true),
+      });
+    } else {
+      void apply(false);
+      message.info("已暂停记录（历史保留）");
+    }
+  }, [summary, load]);
 
   useEffect(() => {
     void load();
@@ -248,6 +293,15 @@ export function ClipboardHistoryPanel() {
         showIcon
         message="剪贴板监听"
         description={pauseHint(summary?.watch_paused ?? false, summary?.watch_enabled ?? false)}
+        action={
+          <Button
+            size="small"
+            type={summary?.watch_enabled ? "default" : "primary"}
+            onClick={watchToggleModal}
+          >
+            {watchToggleLabel(summary?.watch_enabled ?? false, summary?.watch_paused ?? false)}
+          </Button>
+        }
       />
 
       <Space wrap>

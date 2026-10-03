@@ -132,10 +132,33 @@ export function purgeConfirmText(days: number): string {
 
 /** 隐私暂停的说明（避免用户以为恢复后会补录）。 */
 export function pauseHint(paused: boolean, enabled: boolean): string {
-  if (!enabled) return "监听已关闭，无「暂停」可言——需要先在设置里开启剪贴板监听。";
+  if (!enabled) return "监听已关闭——点「开启监听」开始记录。";
   return paused
     ? "已暂停记录；恢复后**不会**补录暂停期间的内容（隐私考虑）。"
     : "暂停记录后，期间复制的内容不会被保存；恢复后也不会补录。";
+}
+
+/** 监听开关按钮的标签（三态：关→开；开且未暂停→暂停；已暂停→恢复）。 */
+export function watchToggleLabel(enabled: boolean, paused: boolean): string {
+  if (!enabled) return "开启监听";
+  return paused ? "恢复记录" : "暂停记录";
+}
+
+/** 开启监听的确认文案（对齐 Python 版确认框：把记录范围一次说清）。 */
+export function watchEnableConfirmText(): string {
+  const nl = String.fromCharCode(10);
+  return [
+    "开启后将自动记录复制的：",
+    "· 文本 / 图片 / 文件路径 / HTML；",
+    "· 前台进程在黑名单内（如密码管理器）时**不记录**；",
+    "· 密码库或本应用标记的敏感内容不进历史、不进 Win+V、到期自动清空；",
+    "· 历史按保留天数自动清理，可随时暂停或一键清空。",
+  ].join(nl);
+}
+
+/** 恢复记录的确认文案（不补录是隐私语义，必须说清）。 */
+export function watchResumeConfirmText(): string {
+  return "恢复记录后，暂停期间复制的内容**不会**补录（隐私考虑）。";
 }
 
 /** 另存为按钮是否可用（图片文件可能已被外部删除）。 */

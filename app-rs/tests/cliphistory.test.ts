@@ -18,6 +18,9 @@ import {
   pauseHint,
   purgeConfirmText,
   relativeTime,
+  watchEnableConfirmText,
+  watchResumeConfirmText,
+  watchToggleLabel,
   type ClipRow,
   type ClipSummary,
 } from "../src/cliphistory";
@@ -195,5 +198,25 @@ describe("canSaveAs", () => {
     const r = canSaveAs(row({ kind: "text", text: "" }));
     expect(r.ok).toBe(false);
     expect(r.reason).toContain("为空");
+  });
+});
+
+describe("监听开关（M6 后补的界面入口）", () => {
+  it("三态按钮标签", () => {
+    expect(watchToggleLabel(false, false)).toBe("开启监听");
+    expect(watchToggleLabel(true, false)).toBe("暂停记录");
+    expect(watchToggleLabel(true, true)).toBe("恢复记录");
+  });
+
+  it("开启确认文案覆盖记录范围与黑名单豁免", () => {
+    const t = watchEnableConfirmText();
+    expect(t).toContain("文本 / 图片 / 文件路径 / HTML");
+    expect(t).toContain("不记录");
+    expect(t).toContain("到期自动清空");
+  });
+
+  it("恢复确认文案必须说明不补录", () => {
+    expect(watchResumeConfirmText()).toContain("不会");
+    expect(watchResumeConfirmText()).toContain("补录");
   });
 });
