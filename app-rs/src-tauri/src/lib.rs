@@ -111,9 +111,12 @@ pub(crate) fn catch_tick<F: FnOnce()>(name: &str, f: F) {
 /// 注册/重挂三个全局热键。`previous` 提供各键保存前旧值（回退步来源）；
 /// 启动路径传 get_str 本身 → 旧值==当前值 → 无回退步。
 ///
+/// 返回是否全部链注册成功（false = 有键处于「不可用/回退」态）。
+///
 /// 回退生效时：持久化实际生效值到设置 + 发 `sk://hotkey-reverted` 事件
 /// （前端刷新组合框），语义对齐 Python `_rehook_hotkey/_rehook_paste_hotkey`。
-pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) {
+pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) -> bool {
+    let mut all_ok = true;
     let chains = hotkey::build_chains(settings::get_str, previous);
     let handle = app.clone();
     {
@@ -154,6 +157,7 @@ pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) 
     }
     for r in &results {
         if !r.ok {
+            all_ok = false;
             log::warn!(
                 "全局热键 {} 全链注册失败（可能被占用），功能可经托盘菜单呼出",
                 r.key
@@ -186,12 +190,30 @@ pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) 
             );
         }
     }
+    all_ok
 }
 
 /// 注册三个全局热键；任一条被占用按链回退（对齐 Python _rehook 语义）。
+///
+/// 启动注册失败（真机实证 06:36：瞬时占用者让三个 Ctrl+Alt 组合同时失败、
+/// 半分钟后全部空闲）会让热键死到下次设置保存——与 Python 行为一致但体验差，
+/// 因此做一次**有界自动重试**：30 秒后重挂（幂等，先卸旧再挂新），仅此一次，
+/// 不循环。重试仍失败则保持回退态，托盘菜单永远可用。
 fn start_hotkeys(app: &tauri::AppHandle) {
     app.manage(HotkeyHosts(std::sync::Mutex::new(Vec::new())));
-    apply_hotkeys(app, &settings::get_str);
+    let ok = apply_hotkeys(app, &settings::get_str);
+    if ok {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::Builder::new()
+        .name("sk-hotkey-retry".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            log::info!("热键启动注册存在失败，30s 后自动重挂一次");
+            apply_hotkeys(&handle, &settings::get_str);
+        })
+        .expect("热键重试线程启动失败");
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
