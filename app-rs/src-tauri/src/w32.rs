@@ -1470,13 +1470,22 @@ pub fn clipboard_get_text() -> Option<String> {
     // SAFETY: 剪贴板在 open/close 成对之间访问；句柄由系统持有，不释放
     unsafe {
         if OpenClipboard(null_hwnd()).is_err() {
+            if std::env::var("SK_WATCH_TRACE").is_ok() {
+                eprintln!("[cb-dbg] get_text: OpenClipboard 失败");
+            }
             return None;
         }
         let _guard = ClipboardGuard;
         let Ok(h) = GetClipboardData(CF_UNICODETEXT) else {
+            if std::env::var("SK_WATCH_TRACE").is_ok() {
+                eprintln!("[cb-dbg] get_text: GetClipboardData Err");
+            }
             return None;
         };
         if h.is_invalid() {
+            if std::env::var("SK_WATCH_TRACE").is_ok() {
+                eprintln!("[cb-dbg] get_text: 句柄 invalid");
+            }
             return None;
         }
         let p = GlobalLock(HGLOBAL(h.0)) as *const u16;
@@ -1548,9 +1557,13 @@ pub fn clipboard_get_files() -> Option<Vec<String>> {
 pub fn clipboard_has_image() -> bool {
     use windows::Win32::System::DataExchange::IsClipboardFormatAvailable;
     // SAFETY: 无副作用查询
-    unsafe {
+    let r = unsafe {
         IsClipboardFormatAvailable(CF_DIB).is_ok() || IsClipboardFormatAvailable(CF_DIBV5).is_ok()
+    };
+    if std::env::var("SK_WATCH_TRACE").is_ok() {
+        eprintln!("[cb-dbg] has_image={r}");
     }
+    r
 }
 
 /// 剪贴板里是否有 HTML（`HTML Format` 注册格式）。
