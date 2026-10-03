@@ -124,7 +124,7 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
    BCrypt 做 NUL 结尾比较，少一个 NUL 就返回 `STATUS_INVALID_PARAMETER`
    （本机实测就是这样失败的）。不设的话默认链模式是 CBC，完全不是 GCM。
 
-### M5 交付状态（进行中）
+### M5 交付状态（✅ 全部 8 个分页已交付）
 
 **性能监控 + WiFi + Top 进程 + 启动项 + 磁盘空间 + 垃圾清理 + 电池健康 + 场景模式
 + 剪贴板历史**已交付（`wifi.rs` / `portscan.rs` / `startup.rs` / `disk.rs` /
