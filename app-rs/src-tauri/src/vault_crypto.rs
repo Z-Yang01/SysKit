@@ -427,12 +427,6 @@ impl VaultCrypto {
         Ok(true)
     }
 
-    /// 改主密码（数据密钥不变）。
-    #[allow(dead_code)] // M6 规划面：主密码更改已实现待接命令/UI（见夜间日志）
-    pub fn change_master_password(&mut self, new_password: &str) -> Result<(), String> {
-        self.set_master_password(new_password)
-    }
-
     /// 加密一个字段（aad = `field`）。
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
         let key = self
