@@ -28,8 +28,38 @@ export interface DnsSpeedResult {
 /** 后端 `sk_speedtest_status`。 */
 export interface SpeedtestStatus {
   available: boolean;
-  reason: string;
-  python_urls: string[];
+  urls: string[];
+}
+
+/** 后端 `sk_download_test` 单 URL 结果。 */
+export interface DownloadUrlResult {
+  url: string;
+  ok: boolean;
+  err: string;
+  bytes: number;
+  avg_bps: number;
+  peak_bps: number;
+}
+
+export interface DownloadTestResult {
+  results: DownloadUrlResult[];
+  ok_count: number;
+  best_peak_bps: number;
+}
+
+/** 字节/秒 → 人类可读速率（MB/s 级测速用 MB 展示更直观）。 */
+export function formatBps(bps: number): string {
+  if (bps >= 1024 * 1024) return `${(bps / 1024 / 1024).toFixed(1)} MB/s`;
+  if (bps >= 1024) return `${(bps / 1024).toFixed(0)} KB/s`;
+  return `${bps.toFixed(0)} B/s`;
+}
+
+/** 峰值速率 → 语义色 token：≥10MB/s 好、≥1MB/s 中、有值差、无值中性。 */
+export function peakToken(peakBps: number): string {
+  if (peakBps <= 0) return "sub";
+  if (peakBps >= 10 * 1024 * 1024) return "ok";
+  if (peakBps >= 1024 * 1024) return "warn";
+  return "err";
 }
 
 /** 成功率（0~1）。 */
@@ -93,9 +123,8 @@ export function downloadSpeedAvailable(status: SpeedtestStatus | null): boolean 
   return status?.available === true;
 }
 
-/** 未接入说明文案（保证不会空白）。 */
+/** 能力异常说明（恒可用后仅剩读取失败的兜底文案）。 */
 export function downloadSpeedNotice(status: SpeedtestStatus | null): string {
   if (!status) return "正在读取测速能力状态…";
-  if (status.available) return "";
-  return status.reason || "下载测速尚未接入";
+  return "";
 }

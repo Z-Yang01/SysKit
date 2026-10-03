@@ -40,6 +40,7 @@ mod logging;
 mod modes;
 mod monitor;
 mod netcheck;
+mod netdl;
 mod netstats;
 mod palette;
 mod paths;
@@ -260,6 +261,7 @@ pub fn run() {
             commands::sk_tracert,
             commands::sk_dns_speed,
             commands::sk_speedtest_status,
+            commands::sk_download_test,
             commands::sk_appnet_list,
             commands::sk_appnet_add,
             commands::sk_appnet_remove,

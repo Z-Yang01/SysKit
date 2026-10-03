@@ -754,18 +754,34 @@ pub async fn sk_dns_speed(domain: String, times: Option<u32>) -> Result<serde_js
     .map_err(|e| format!("测速线程失败: {e}"))?
 }
 
-/// 下载测速的**未实现说明**（前端据此显示明确提示，而不是给假结果）。
+/// 下载测速能力状态（WinInet 接入后恒可用）。
 #[tauri::command]
 pub fn sk_speedtest_status() -> serde_json::Value {
     serde_json::json!({
-        "available": false,
-        "reason": "Rust 版尚无 HTTPS 下载能力（标准库不提供 TLS，需引入 rustls/native-tls 并做依赖决策）；Python 版的测速源全是 https。为避免给出假结果，下载测速暂未接入。",
-        "python_urls": [
-            "https://dldir1.qq.com/weixin/Windows/WeChatSetup.exe",
-            "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_250avis_x64.exe",
-            "https://mirrors.aliyun.com/debian-cd/current/amd64/iso-cd/debian-12.9.0-amd64-netinst.iso"
-        ],
+        "available": true,
+        "urls": crate::netdl::TEST_URLS,
     })
+}
+
+/// 下载测速：逐 URL 独立开窗 `seconds` 秒（WinInet 系统栈，零新依赖）。
+/// 阻塞池执行；`netdl::cancel()` 支持中止（已计量 URL 照常返回）。
+#[tauri::command]
+pub async fn sk_download_test(seconds: u64) -> Result<serde_json::Value, String> {
+    let secs = seconds.clamp(2, 30);
+    let results = tauri::async_runtime::spawn_blocking(move || crate::netdl::run_probe_all(secs))
+        .await
+        .map_err(|e| format!("测速线程失败: {e}"))?;
+    let ok = results.iter().filter(|r| r.ok).count();
+    let best = results
+        .iter()
+        .filter(|r| r.ok)
+        .map(|r| r.peak_bps)
+        .fold(0.0f64, f64::max);
+    Ok(serde_json::json!({
+        "results": results,
+        "ok_count": ok,
+        "best_peak_bps": best,
+    }))
 }
 
 // ---------------- M4 工具箱：应用联网 ----------------

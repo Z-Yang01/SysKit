@@ -1,10 +1,8 @@
 /**
- * 工具箱：DNS 测速 + 下载测速状态（对应 Python 侧 DnsSpeedTab / SpeedTestTab）。
+ * 工具箱：DNS 测速 + 下载测速（对应 Python 侧 DnsSpeedTab / SpeedTestTab）。
  *
- * **下载测速在 Rust 版尚未接入**：Python 版的三个测速源全是 https，而 Rust 侧
- * 目前没有 TLS 能力（标准库不提供，需引入 rustls/native-tls 并做依赖决策）。
- * 本页如实显示未接入说明与原因，不做"假装测速"——一个假的速率数字会让用户
- * 据此误判网络好坏。
+ * 下载测速走 WinInet（系统 TLS + 系统根证书 + 跟随系统代理），与 Python 版
+ * urllib 同构：逐源独立开窗下载、峰值/平均速率、下载即断不落盘。
  */
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -12,28 +10,30 @@ import {
   Alert,
   Button,
   Card,
-  Descriptions,
   Empty,
   Input,
   InputNumber,
   Space,
   Table,
   Tag,
-  Typography,
   message,
 } from "antd";
 
 import {
   downloadSpeedAvailable,
   downloadSpeedNotice,
+  formatBps,
   formatLatency,
   formatRate,
   latencyToken,
+  peakToken,
   rateToken,
   recommendedProbe,
   speedStats,
   type DnsProbe,
   type DnsSpeedResult,
+  type DownloadTestResult,
+  type DownloadUrlResult,
   type SpeedtestStatus,
 } from "./speed";
 
@@ -175,6 +175,9 @@ function DnsSpeedPanel() {
 }
 
 function DownloadSpeedPanel() {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<DownloadTestResult | null>(null);
+  const [err, setErr] = useState("");
   const [status, setStatus] = useState<SpeedtestStatus | null>(null);
 
   useEffect(() => {
@@ -183,42 +186,83 @@ function DownloadSpeedPanel() {
       .catch(() => setStatus(null));
   }, []);
 
+  const start = useCallback(async () => {
+    setRunning(true);
+    setErr("");
+    setResult(null);
+    try {
+      setResult(await invoke<DownloadTestResult>("sk_download_test", { seconds: 8 }));
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setRunning(false);
+    }
+  }, []);
+
   const available = downloadSpeedAvailable(status);
+  const best = result ? formatBps(result.best_peak_bps) : "—";
 
   return (
     <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      {available ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="下载测速已接入" />
-      ) : (
+      {!available ? (
         <>
           <Alert
             type="warning"
             showIcon
-            message="下载测速尚未接入（Rust 版缺 HTTPS 能力）"
+            message="下载测速尚未接入"
             description={downloadSpeedNotice(status)}
           />
-          <Card size="small" title="Python 版使用的测速源（供对照）">
-            <Typography.Paragraph type="secondary" className="sk-hint">
-              {status?.python_urls?.length
-                ? "以下地址均为 https，需要 TLS 支持："
-                : "正在读取…"}
-            </Typography.Paragraph>
-            {status?.python_urls?.map((u) => (
-              <div key={u} className="sk-hint" style={{ fontFamily: "Consolas, monospace" }}>
-                {u}
-              </div>
-            ))}
-            <Descriptions
-              size="small"
-              column={1}
-              style={{ marginTop: 10 }}
-              items={[
-                { key: "a", label: "为什么不做假结果", children: "速率数字会被用来判断网络好坏；假的数字比没有更糟。" },
-                { key: "b", label: "接入条件", children: "引入 rustls 或 native-tls（并确认与 WebView2/系统根证书的配合）。" },
-                { key: "c", label: "替代手段", children: "当前可用「网络监控」页看实时速率与多粒度流量统计。" },
-              ]}
-            />
-          </Card>
+        </>
+      ) : (
+        <>
+          <Space wrap>
+            <Button type="primary" size="small" loading={running} onClick={() => void start()}>
+              {running ? "测速中…（每源 8 秒，下载即断不落盘）" : "开始下载测速"}
+            </Button>
+            <Tag color={peakToken(result?.best_peak_bps ?? 0)}>
+              峰值 {best}
+            </Tag>
+            {err && <span style={{ color: "var(--sk-err)" }}>{err}</span>}
+          </Space>
+          <Table<DownloadUrlResult>
+            size="small"
+            rowKey="url"
+            loading={running}
+            columns={[
+              {
+                title: "测速源",
+                dataIndex: "url",
+                ellipsis: true,
+                render: (v: string, r) => (
+                  <Space size={4}>
+                    <span>{v}</span>
+                    {!r.ok && r.err && <span style={{ color: "var(--sk-err)" }}>{r.err}</span>}
+                  </Space>
+                ),
+              },
+              {
+                title: "下载量",
+                dataIndex: "bytes",
+                width: 110,
+                render: (v: number) => formatBps(v),
+              },
+              {
+                title: "平均",
+                dataIndex: "avg_bps",
+                width: 110,
+                render: (v: number) => formatBps(v),
+              },
+              {
+                title: "峰值",
+                dataIndex: "peak_bps",
+                width: 110,
+                render: (v: number) => <Tag color={peakToken(v)}>{formatBps(v)}</Tag>,
+              },
+            ]}
+            dataSource={result?.results ?? []}
+            pagination={false}
+            locale={{ emptyText: "点「开始下载测速」——依次对 3 个测速源各下载 8 秒（约消耗几十 MB 流量）" }}
+          />
         </>
       )}
     </Space>

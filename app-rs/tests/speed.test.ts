@@ -17,9 +17,10 @@ import {
   recommendedProbe,
   speedStats,
   successRate,
+  formatBps,
+  peakToken,
   type DnsProbe,
   type DnsSpeedResult,
-  type SpeedtestStatus,
 } from "../src/speed";
 
 const probe = (over: Partial<DnsProbe> = {}): DnsProbe => ({
@@ -140,32 +141,27 @@ describe("recommendedProbe", () => {
   });
 });
 
-describe("下载测速诚实性", () => {
-  const unavailable: SpeedtestStatus = {
-    available: false,
-    reason: "Rust 版尚无 HTTPS 下载能力",
-    python_urls: ["https://example.com/a.iso"],
-  };
-
-  it("未接入时必须 false", () => {
-    expect(downloadSpeedAvailable(unavailable)).toBe(false);
+describe("下载测速", () => {
+  it("WinInet 接入后恒可用", () => {
+    expect(downloadSpeedAvailable({ available: true, urls: [] })).toBe(true);
     expect(downloadSpeedAvailable(null)).toBe(false);
   });
 
-  it("只有 available=true 才算可用", () => {
-    expect(downloadSpeedAvailable({ available: true, reason: "", python_urls: [] })).toBe(true);
-  });
-
-  it("未接入时说明文案不得为空", () => {
-    expect(downloadSpeedNotice(unavailable)).toBe("Rust 版尚无 HTTPS 下载能力");
+  it("异常兜底文案不为空", () => {
     expect(downloadSpeedNotice(null)).toContain("正在读取");
-    // reason 为空串时也要有兜底，不能显示空白
-    expect(
-      downloadSpeedNotice({ available: false, reason: "", python_urls: [] }),
-    ).toContain("尚未接入");
+    expect(downloadSpeedNotice({ available: true, urls: [] })).toBe("");
   });
 
-  it("可用时说明为空（界面不显示警告）", () => {
-    expect(downloadSpeedNotice({ available: true, reason: "x", python_urls: [] })).toBe("");
+  it("formatBps 分级展示", () => {
+    expect(formatBps(0)).toBe("0 B/s");
+    expect(formatBps(2048)).toBe("2 KB/s");
+    expect(formatBps(3 * 1024 * 1024)).toBe("3.0 MB/s");
+  });
+
+  it("peakToken 按量分级", () => {
+    expect(peakToken(0)).toBe("sub");
+    expect(peakToken(512 * 1024)).toBe("err");
+    expect(peakToken(2 * 1024 * 1024)).toBe("warn");
+    expect(peakToken(20 * 1024 * 1024)).toBe("ok");
   });
 });
