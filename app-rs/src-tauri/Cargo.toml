@@ -12,6 +12,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# 生产构建（tauri build / cargo build --release --features custom-protocol）
+# 必须启用：否则应用退回 devUrl（localhost:5173）——真机实测 ERR_CONNECTION_REFUSED
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-clipboard-manager = "2"
