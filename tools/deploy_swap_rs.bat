@@ -3,7 +3,7 @@ setlocal EnableExtensions
 rem ============================================================
 rem SysKit Rust deploy swap (Step 5)
 rem   Swaps E:\Software\SysKit\syskit-rs.exe with the freshly
-rem   built target-deploy exe (QR feature build).
+rem   bundled exe (npx tauri build product, SysKit.exe).
 rem
 rem Usage:
 rem   deploy_swap_rs.bat             exe swap only
@@ -16,7 +16,11 @@ rem Guards: aborts if any instance is running (two versions must
 rem never run simultaneously; also the exe file would be locked).
 rem ============================================================
 
-set "SRC=E:\Code\project\SysKit\app-rs\src-tauri\target-deploy\release\syskit-rs.exe"
+rem canonical standalone = bundle output (npx tauri build): embedded frontend,
+rem verified end-to-end by the bundler. 2026-10-04: bundle renames the artifact
+rem to SysKit.exe (productName) — this script intentionally keeps the deployed
+rem NAME as syskit-rs.exe so it never collides with the Python SysKit.exe.
+set "SRC=E:\Code\project\SysKit\app-rs\src-tauri\target\release\SysKit.exe"
 set "DSTDIR=E:\Software\SysKit"
 set "DST=%DSTDIR%\syskit-rs.exe"
 set "APPDATA_SK=%APPDATA%\SysKit"
@@ -24,7 +28,7 @@ set "PORTABLE_SK=%DSTDIR%\data\config"
 
 if not exist "%SRC%" (
   echo [ABORT] source exe missing: %SRC%
-  echo Build it first:  cd app-rs\src-tauri ^&^& set CARGO_TARGET_DIR=target-deploy ^&^& cargo build --release
+  echo Build it first:  cd app-rs ^&^& npx tauri build
   exit /b 1
 )
 

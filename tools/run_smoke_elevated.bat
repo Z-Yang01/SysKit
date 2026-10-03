@@ -27,12 +27,16 @@ powershell -NoProfile -Command ^
 echo [pre] settings preset: panel=Ctrl+Alt+B quick=Ctrl+Alt+V watch=on
 
 rem ---- pre 1: the Rust app must be running (start if not) ----
+rem 2026-10-04: tauri bundle renames the artifact to SysKit.exe (productName);
+rem the instance guard must cover BOTH names or a bundled instance is invisible.
 tasklist /FI "IMAGENAME eq syskit-rs.exe" 2>nul | find /I "syskit-rs.exe" >nul
+if %errorlevel% neq 0 tasklist /FI "IMAGENAME eq SysKit.exe" 2>nul | find /I "SysKit.exe" >nul
 if %errorlevel% neq 0 (
     echo [pre] starting SysKit Rust app...
-    rem target-deploy = current verified artifact (QR build); falls back to
-    rem the regular release path when the side-target dir does not exist
-    if exist "E:\Code\project\SysKit\app-rs\src-tauri\target-deploy\release\syskit-rs.exe" (
+    rem bundled exe = embedded frontend (custom-protocol), the canonical standalone
+    if exist "E:\Code\project\SysKit\app-rs\src-tauri\target\release\SysKit.exe" (
+        start "" "E:\Code\project\SysKit\app-rs\src-tauri\target\release\SysKit.exe"
+    ) else if exist "E:\Code\project\SysKit\app-rs\src-tauri\target-deploy\release\syskit-rs.exe" (
         start "" "E:\Code\project\SysKit\app-rs\src-tauri\target-deploy\release\syskit-rs.exe"
     ) else (
         start "" "E:\Code\project\SysKit\app-rs\src-tauri\target\release\syskit-rs.exe"
@@ -40,6 +44,7 @@ if %errorlevel% neq 0 (
     timeout /t 6 /nobreak >nul
 )
 tasklist /FI "IMAGENAME eq syskit-rs.exe" 2>nul | find /I "syskit-rs.exe" >nul
+if %errorlevel% neq 0 tasklist /FI "IMAGENAME eq SysKit.exe" 2>nul | find /I "SysKit.exe" >nul
 if %errorlevel% neq 0 (
     echo [ERROR] SysKit not running and failed to start. Abort.
     pause
