@@ -662,6 +662,47 @@ mod chain_tests {
     }
 
     #[test]
+    fn rehook_succeeds_after_stop_releases_registration() {
+        // 回归（真机日志实证 2026-10-03）：apply_hotkeys 曾先起新泵线程注册、
+        // 后停旧宿主——RegisterHotKey 全系统互斥，旧宿主还持着同组合时新注册
+        // 必失败，把自己的键误报成"被占"（真机上 palette+quick 成对"全链注册
+        // 失败"，重启才恢复）。本测试锁住底层语义：同一组合，stop() 阻塞返回
+        // 后必须能立刻被再次注册。
+        //
+        // 组合特意用 Ctrl+Alt+Shift+F24：开发机上用户实例的真实组合
+        // （Ctrl+Alt+V / Ctrl+Alt+K 等）正被运行中的实例持有，不能用于本测试。
+        let combo = "Ctrl+Alt+Shift+F24";
+        let make_chains = || {
+            vec![HotkeyChain {
+                key: "clip_quick_hotkey",
+                id: ID_QUICK_PASTE,
+                action: "quick_paste",
+                requested: combo.to_string(),
+                steps: vec![ChainStep::Register {
+                    value: combo.to_string(),
+                    binding: HotkeyBinding {
+                        id: ID_QUICK_PASTE,
+                        // MOD_ALT|MOD_CONTROL|MOD_SHIFT，VK_F24=0x87（几乎无人占用的键）
+                        mods: 0x01 | 0x02 | 0x04,
+                        vk: 0x87,
+                        action: "quick_paste",
+                    },
+                }],
+            }]
+        };
+        let (mut host_a, res_a) = HotkeyHost::start_chains(make_chains(), |_, _| {});
+        assert!(res_a[0].ok, "首次注册应成功: {:?}", res_a[0]);
+        host_a.stop();
+        let (mut host_b, res_b) = HotkeyHost::start_chains(make_chains(), |_, _| {});
+        assert!(
+            res_b[0].ok,
+            "stop 释放后同组合重挂必须成功（回归：误报被占）: {:?}",
+            res_b[0]
+        );
+        host_b.stop();
+    }
+
+    #[test]
     fn chains_cover_three_keys_with_ids() {
         let (cur, prev) = fixtures(&[], &[]);
         let chains = build_chains(cur, prev);

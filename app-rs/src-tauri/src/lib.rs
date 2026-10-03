@@ -98,6 +98,17 @@ pub struct HotkeyHosts(pub std::sync::Mutex<Vec<hotkey::HotkeyHost>>);
 pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) {
     let chains = hotkey::build_chains(settings::get_str, previous);
     let handle = app.clone();
+    {
+        // 先卸旧再挂新（对齐 Python _rehook 的卸载重挂序）：RegisterHotKey
+        // 全系统互斥，旧宿主还持着同组合时新注册必失败——会把自己的键误报成
+        // "被占"。真机日志实证过：palette+quick 成对"全链注册失败"，重启才恢复。
+        let state = app.state::<HotkeyHosts>();
+        let mut hosts = state.0.lock().expect("热键宿主锁中毒");
+        for h in hosts.drain(..) {
+            let mut h = h;
+            h.stop(); // 阻塞到泵线程收尾、热键已反注册
+        }
+    }
     let (host, results) = hotkey::HotkeyHost::start_chains(chains, move |id, action| {
         log::info!("热键命中 id={id} action={action}");
         match action {
@@ -121,10 +132,6 @@ pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) 
     {
         let state = app.state::<HotkeyHosts>();
         let mut hosts = state.0.lock().expect("热键宿主锁中毒");
-        for h in hosts.drain(..) {
-            let mut h = h;
-            h.stop();
-        }
         hosts.push(host);
     }
     for r in &results {
