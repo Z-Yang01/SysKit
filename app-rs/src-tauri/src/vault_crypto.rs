@@ -813,7 +813,7 @@ mod tests {
     fn change_password_makes_old_one_invalid() {
         let mut v = fresh("change");
         v.setup(Some("old")).unwrap();
-        v.change_master_password("new").unwrap();
+        v.set_master_password("new").unwrap();
         assert!(v.verify_password("new"));
         assert!(!v.verify_password("old"), "旧密码必须失效");
         v.lock();
