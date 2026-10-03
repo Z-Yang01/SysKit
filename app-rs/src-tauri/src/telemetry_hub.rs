@@ -112,9 +112,27 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
             let mut wifi = crate::wifi::WifiInfo::disconnected();
             while !hub.stopped() {
                 if tickno % WIFI_EVERY_TICKS == 0 {
-                    wifi = crate::wifi::read();
-                    // SSID 归因：决定流量进哪个桶（未连接时空串 → 「以太网/未知」）
-                    hub.set_ssid(&wifi.ssid);
+                    // 带超时的后台读取：wlanapi 的 RPC 在 WLAN 服务异常时可能
+                    // 阻塞数分钟（真机实测 65 分钟，16:09→17:14）——绝不能让
+                    // 遥测主循环被它拖住（刷盘/事件全部停摆）。超时沿用上一拍
+                    // 数据；挂起的读取线程等它自然返回后自行消亡。
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::Builder::new()
+                        .name("sk-wifi-read".into())
+                        .spawn(move || {
+                            let _ = tx.send(crate::wifi::read());
+                        })
+                        .expect("wifi 读取线程启动失败");
+                    match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+                        Ok(info) => {
+                            wifi = info;
+                            // SSID 归因：决定流量进哪个桶（未连接时空串 → 「以太网/未知」）
+                            hub.set_ssid(&wifi.ssid);
+                        }
+                        Err(_) => {
+                            log::warn!("wifi 读取超时（3s），沿用上一拍数据");
+                        }
+                    }
                 }
                 tickno += 1;
 
