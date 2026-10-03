@@ -180,7 +180,7 @@ def syskit_pids() -> list:
         pe.dwSize = ctypes.sizeof(_PE)
         ok = k32.Process32FirstW(snap, ctypes.byref(pe))
         while ok:
-            if pe.szExeFile.lower() == "syskit.exe":
+            if pe.szExeFile.lower() in ("syskit.exe", "syskit-rs.exe"):
                 pids.append(pe.th32ProcessID)
             ok = k32.Process32NextW(snap, ctypes.byref(pe))
     finally:
