@@ -578,16 +578,16 @@ def unique_token(tag):
 class TestTarget1Notepad:
     """靶 1：记事本——直贴 + 触发次数语义（NOREPEAT 相关，含规格校正说明）。"""
 
-    def test_quick_paste_direct(self):
+    def test_quick_paste_direct(self, tmp_path):
         require_syskit_running()
         token = unique_token("np")
-        hwnd = launch_notepad()
+        hwnd = launch_notepad(tmp_path / "smoke.txt")
         copy_and_wait_recorded(token)
         press_quick_paste()
         assert wait_until(lambda: token in read_notepad(hwnd), 5), \
             f"直贴失败：目标未见 token（剪贴板={clip_text()!r}）"
 
-    def test_single_trigger_pastes_once(self):
+    def test_single_trigger_pastes_once(self, tmp_path):
         """单次触发恰好一次粘贴（防 double-SendInput / 双信号回归）。
 
         规格校正：SendInput 注入的 keydown **不会**产生硬件自动重复（重复由
@@ -597,7 +597,7 @@ class TestTarget1Notepad:
         """
         require_syskit_running()
         token = unique_token("nr")
-        hwnd = launch_notepad()
+        hwnd = launch_notepad(tmp_path / "smoke.txt")
         copy_and_wait_recorded(token)
         hold_quick_paste_v(0.3)                      # 注入语义：仅一次 keydown
         assert wait_until(lambda: token in read_notepad(hwnd), 5)
@@ -606,13 +606,13 @@ class TestTarget1Notepad:
         assert text.count(token) == 1, \
             f"单次触发出现 {text.count(token)} 次（预期恰好 1 次）"
 
-    def test_triple_discrete_press_pastes_thrice(self):
+    def test_triple_discrete_press_pastes_thrice(self, tmp_path):
         """规格校正用例：修饰键按住期间**离散**连按 V 三次 = 三次独立 WM_HOTKEY
         （NOREPEAT 只抑制按住自动重复，不抑制离散重按）→ 恰好粘 3 次。
         若实现误把 NOREPEAT 当「全局去重」，此用例会以 count==1 失败。"""
         require_syskit_running()
         token = unique_token("tp")
-        hwnd = launch_notepad()
+        hwnd = launch_notepad(tmp_path / "smoke.txt")
         copy_and_wait_recorded(token)
         for _ in range(3):
             press_hotkey([VK_CTRL, VK_MENU], VK_V)

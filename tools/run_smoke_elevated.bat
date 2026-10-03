@@ -16,6 +16,16 @@ if %errorlevel% neq 0 (
 
 cd /d E:\Code\project\SysKit
 
+rem ---- pre 0: preset hotkeys/watch in settings (guards against poisoned values) ----
+powershell -NoProfile -Command ^
+ "$p='%APPDATA%\SysKit\settings.json';" ^
+ "$s=(Get-Content $p -Raw | ConvertFrom-Json);" ^
+ "$s.clip_paste_hotkey='Ctrl+Alt+B';" ^
+ "$s.clip_quick_hotkey='Ctrl+Alt+V';" ^
+ "$s.clipboard_watch=$true;" ^
+ "$s | ConvertTo-Json -Depth 5 | Set-Content $p -Encoding UTF8"
+echo [pre] settings preset: panel=Ctrl+Alt+B quick=Ctrl+Alt+V watch=on
+
 rem ---- pre 1: the Rust app must be running (start if not) ----
 tasklist /FI "IMAGENAME eq syskit-rs.exe" 2>nul | find /I "syskit-rs.exe" >nul
 if %errorlevel% neq 0 (

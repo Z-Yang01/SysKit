@@ -108,6 +108,8 @@ pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) 
                 let h = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let r = input_panel::quick_paste_latest(h.clone()).await;
+                    // 粘贴结果可观测性：真机排障的关键证据（成功/降级原因）
+                    log::info!("[quick-paste] {}", r.message);
                     if !r.message.is_empty() {
                         let _ = h.emit("sk://paste-result", &r);
                     }
