@@ -1595,6 +1595,84 @@ impl Drop for ClipboardGuard {
     }
 }
 
+/// 断网/恢复提示音（winmm PlaySound，SND_ALIAS|SND_ASYNC——异步不阻塞调用线程，
+/// 别名与 Python winsound 同表：ok=SystemAsterisk，其余=SystemExclamation）。
+/// 仅限真实构建调用（测试运行静默，见 monitor.rs 调用点）。
+#[cfg(all(windows, not(test)))]
+pub fn play_alert_sound(ok: bool) {
+    use windows::core::HSTRING;
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
+    let name = HSTRING::from(if ok {
+        "SystemAsterisk"
+    } else {
+        "SystemExclamation"
+    });
+    unsafe {
+        // 失败静默：提示音是锦上添花，不为此上报错误
+        let _ = PlaySoundW(
+            windows::core::PCWSTR(name.as_ptr()),
+            None,
+            SND_ALIAS | SND_ASYNC,
+        );
+    }
+}
+
+/// 单实例互斥：创建命名互斥量并立即持有关闭句柄的能力由调用方决定——
+/// 这里只创建；若 ERROR_ALREADY_EXISTS 则返回 false（已有实例）。
+/// 句柄有意泄漏（与进程同寿），进程退出时系统自动回收。
+pub fn acquire_single_instance_mutex(name: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+    unsafe {
+        let w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let h = CreateMutexW(None, false, PCWSTR(w.as_ptr()));
+        if h.is_err() {
+            return false;
+        }
+        // 不 CloseHandle：互斥量必须与进程同寿（释放即失去单实例保护）
+        std::mem::forget(h);
+        GetLastError() != ERROR_ALREADY_EXISTS
+    }
+}
+
+/// 是否有 SysKit 实例（syskit-rs.exe / SysKit.exe）在运行——
+/// 真实剪贴板测试与运行中实例的 500ms 轮询竞争，有实例时跳过。
+pub fn syskit_instance_running() -> bool {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return false;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = false;
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(0)],
+                );
+                if name.eq_ignore_ascii_case("syskit-rs.exe")
+                    || name.eq_ignore_ascii_case("syskit.exe")
+                {
+                    found = true;
+                    break;
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snap);
+        found
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1864,81 +1942,5 @@ mod tests {
             "ASCII 部分必须可读: {:?}",
             out.stdout
         );
-    }
-}
-
-/// 断网/恢复提示音（winmm PlaySound，SND_ALIAS|SND_ASYNC——异步不阻塞调用线程，
-/// 别名与 Python winsound 同表：ok=SystemAsterisk，其余=SystemExclamation）。
-/// 仅限真实构建调用（测试运行静默，见 monitor.rs 调用点）。
-#[cfg(all(windows, not(test)))]
-pub fn play_alert_sound(ok: bool) {
-    use windows::core::HSTRING;
-    use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};
-    let name = HSTRING::from(if ok {
-        "SystemAsterisk"
-    } else {
-        "SystemExclamation"
-    });
-    unsafe {
-        // 失败静默：提示音是锦上添花，不为此上报错误
-        let _ = PlaySoundW(
-            windows::core::PCWSTR(name.as_ptr()),
-            None,
-            SND_ALIAS | SND_ASYNC,
-        );
-    }
-}
-
-/// 单实例互斥：创建命名互斥量并立即持有关闭句柄的能力由调用方决定——
-/// 这里只创建；若 ERROR_ALREADY_EXISTS 则返回 false（已有实例）。
-/// 句柄有意泄漏（与进程同寿），进程退出时系统自动回收。
-pub fn acquire_single_instance_mutex(name: &str) -> bool {
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows::Win32::System::Threading::CreateMutexW;
-    unsafe {
-        let w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-        let h = CreateMutexW(None, false, PCWSTR(w.as_ptr()));
-        if h.is_err() {
-            return false;
-        }
-        // 不 CloseHandle：互斥量必须与进程同寿（释放即失去单实例保护）
-        std::mem::forget(h);
-        GetLastError() != ERROR_ALREADY_EXISTS
-    }
-}
-
-/// 是否有 SysKit 实例（syskit-rs.exe / SysKit.exe）在运行——
-/// 真实剪贴板测试与运行中实例的 500ms 轮询竞争，有实例时跳过。
-pub fn syskit_instance_running() -> bool {
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS, PROCESSENTRY32W,
-    };
-    unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return false;
-        };
-        let mut entry = PROCESSENTRY32W {
-            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        let mut found = false;
-        if Process32FirstW(snap, &mut entry).is_ok() {
-            loop {
-                let name = String::from_utf16_lossy(
-                    &entry.szExeFile[..entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(0)],
-                );
-                if name.eq_ignore_ascii_case("syskit-rs.exe") || name.eq_ignore_ascii_case("syskit.exe") {
-                    found = true;
-                    break;
-                }
-                if Process32NextW(snap, &mut entry).is_err() {
-                    break;
-                }
-            }
-        }
-        let _ = windows::Win32::Foundation::CloseHandle(snap);
-        found
     }
 }
