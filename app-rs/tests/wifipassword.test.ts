@@ -312,8 +312,8 @@ describe("扫描状态与失败提示", () => {
     expect(s).toBe("共发现 5 个 BSSID　08:05:09");
   });
 
-  it("自动刷新周期为 10 秒", () => {
-    expect(WIFI_SCAN_INTERVAL_MS).toBe(10_000);
+  it("自动刷新周期为 8 秒（对齐 Python tick）", () => {
+    expect(WIFI_SCAN_INTERVAL_MS).toBe(8_000);
   });
 
   it("位置服务错误原样转述（后端已给可操作指引）", () => {
