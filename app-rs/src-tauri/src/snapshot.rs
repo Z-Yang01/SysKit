@@ -96,6 +96,29 @@ $out.gw = Get-NetIPConfiguration | ForEach-Object {
 ConvertTo-Json -InputObject $out -Depth 5 -Compress
 "#;
 
+/// PowerShell 对"空值"输出显式 `null`（如断开网卡的 MAC/描述）——serde 的
+/// `String` 不容 null，整份快照解析崩掉（真机实锤 2026-10-04：断开的
+/// 「以太网 2」让 adapters 表全空，局域网扫描跟着报"无网卡"）。所有采集
+/// String 字段统一走这里：null / 缺键 → 空串。
+fn null_to_empty<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = serde::Deserialize::deserialize(d)?;
+    Ok(opt.unwrap_or_default())
+}
+
+/// `Vec<String>` 同款容错：外层数组在（PowerShell 总输出 `@()`），但元素是
+/// null——`gw=[null]`（无默认网关的网卡，真机实证 2026-10-04，列 5431）。
+/// serde 的 `Vec<String>` 碰 null 元素整份快照崩。null 元素 → 剔除。
+fn null_elements_to_empty<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<Option<String>> = Vec::deserialize(d)?;
+    Ok(raw.into_iter().flatten().collect())
+}
+
 /// PowerShell JSON 形状（字段名与采集脚本一一对应）。
 ///
 /// `rename_all = "camelCase"` 是必需的：采集脚本给的是 `ifIndex` / `nextHop` /
@@ -124,15 +147,15 @@ struct RawRoot {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawAdapter {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     desc: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     status: String,
     #[serde(default)]
     if_index: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     mac: String,
     #[serde(default)]
     r#virtual: bool,
@@ -143,7 +166,7 @@ struct RawAdapter {
 struct RawIp {
     #[serde(default)]
     if_index: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     ip: String,
 }
 
@@ -152,9 +175,9 @@ struct RawIp {
 struct RawRoute {
     #[serde(default)]
     if_index: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     dest: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     next_hop: String,
     #[serde(default)]
     metric: u32,
@@ -174,7 +197,7 @@ struct RawMetric {
 struct RawDns {
     #[serde(default)]
     if_index: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_elements_to_empty")]
     servers: Vec<String>,
 }
 
@@ -183,7 +206,7 @@ struct RawDns {
 struct RawGw {
     #[serde(default)]
     if_index: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_elements_to_empty")]
     gw: Vec<String>,
 }
 
@@ -455,6 +478,35 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn parse_collect_tolerates_nulls_from_powershell() {
+        // 回归（真机 2026-10-04）：PowerShell 对空值输出显式 null——
+        // 断开网卡的 mac=null、无网关网卡 gw=[null]。serde 的 String/Vec<String>
+        // 碰 null 整份快照崩（"采集输出解析失败: invalid type: null, expected
+        // a string at column 5431"），快照空表 → 局域网扫描报"无网卡"、诊断
+        // 全表盲。null 必须≈空串/剔除。
+        let js = r#"{"adapters":[
+            {"name":"WLAN","desc":"Intel Wi-Fi","status":"Up","ifIndex":12,"mac":null,"virtual":false},
+            {"name":"以太网 2","desc":"Realtek","status":"Disconnected","ifIndex":4,"mac":null,"virtual":false}],
+            "ip4":[{"ifIndex":12,"ip":"192.168.18.238"},{"ifIndex":4,"ip":"169.254.56.18"}],
+            "routes":[],
+            "ifMetrics":[],
+            "dns":[],
+            "gw":[{"ifIndex":12,"gw":["192.168.18.1"]},{"ifIndex":4,"gw":[null]}]}"#;
+        let snap = parse_collect(js).expect("null 容错后必须可解析");
+        assert_eq!(snap.adapters.len(), 2);
+        let wlan = snap.adapter_by_index(12).unwrap();
+        assert_eq!(wlan.ipv4, vec!["192.168.18.238"]);
+        assert_eq!(wlan.gw4, vec!["192.168.18.1"]);
+        let eth2 = snap.adapter_by_index(4).unwrap();
+        assert!(eth2.mac.is_empty(), "null mac → 空串");
+        assert!(eth2.gw4.is_empty(), "gw=[null] → 空数组");
+        assert!(
+            !snap.physical_up_adapters().is_empty(),
+            "WLAN 必须被判为物理在用网卡（回归：快照崩掉后本断言恒空）"
+        );
+    }
+
     fn parse_collect_builds_adapters_and_joins_by_ifindex() {
         let json = r#"{
             "adapters": [

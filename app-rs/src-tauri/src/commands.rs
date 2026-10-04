@@ -2373,7 +2373,18 @@ pub async fn sk_lan_scan(prefix: Option<String>) -> Result<serde_json::Value, St
                     .physical_up_adapters()
                     .first()
                     .and_then(|a| a.ipv4.first().cloned())
-                    .ok_or_else(|| "未找到可用的本机 IPv4 地址，无法推断网段".to_string())?;
+                    .ok_or_else(|| {
+                        // 带上采集自身错误：快照失败（PowerShell 异常/解析失败）
+                        // 与"真的没有物理网卡"是两回事，混在一起没法排障
+                        format!(
+                            "未找到可用的本机 IPv4 地址，无法推断网段（快照：{}）",
+                            if snap.error.is_empty() {
+                                "无错误，快照正常"
+                            } else {
+                                &snap.error
+                            }
+                        )
+                    })?;
                 crate::portscan::subnet24_of(&ip)
                     .ok_or_else(|| format!("无法从 {ip} 推断 /24 网段"))?
             }
