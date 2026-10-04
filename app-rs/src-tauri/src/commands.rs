@@ -1935,8 +1935,8 @@ pub async fn sk_clip_image_thumb(index: usize) -> Result<String, String> {
                 .map(|i| i.data.clone())
         })
         .ok_or_else(|| format!("找不到第 {index} 条图片历史（可能已被淘汰）"))?;
-        let src = crate::paths::image_path(&name)
-            .ok_or_else(|| format!("图片文件名非法: {name}"))?;
+        let src =
+            crate::paths::image_path(&name).ok_or_else(|| format!("图片文件名非法: {name}"))?;
         let bytes = std::fs::read(&src)
             .map_err(|e| format!("图片读取失败（{}）: {e}", src.to_string_lossy()))?;
         let img = image::load_from_memory(&bytes).map_err(|e| format!("图片解码失败: {e}"))?;
