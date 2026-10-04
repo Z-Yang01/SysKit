@@ -61,6 +61,17 @@ function Pending({
   );
 }
 
+/** 页名 ↔ Python stack 索引（last_page 往返契约，顺序勿动）。 */
+const ORDER_KEYS = [
+  "overview",
+  "clipboard",
+  "diagnose",
+  "toolbox",
+  "system",
+  "vault",
+  "settings",
+];
+
 export function App() {
   const [dark, setDark] = useState(false);
   // 深色偏好持久化：启动读 dark_mode 设置，切换写回（此前每次启动都回浅色）
@@ -83,10 +94,21 @@ export function App() {
           quick: q || "（未设）",
           palette: p || "（未设）",
         });
+        const idx = Number(all["last_page"] ?? 0);
+        if (Number.isInteger(idx) && idx >= 0 && idx < ORDER_KEYS.length) {
+          setPageState(ORDER_KEYS[idx]);
+        }
       })
       .catch(() => {});
   }, []);
-  const [page, setPage] = useState("overview");
+  // 启动恢复上次页面（对齐 Python main_window 的 last_page 往返：索引起步、
+  // 切页写回）。未知索引回落概览。
+  const [page, setPageState] = useState("overview");
+  const setPage = (key: string) => {
+    setPageState(key);
+    const idx = ORDER_KEYS.indexOf(key);
+    if (idx >= 0) void invoke("sk_settings_set", { key: "last_page", value: idx }).catch(() => {});
+  };
   // 侧栏底部热键速查：读真实配置（用户可改键，不能写死）
   const [hotkeys, setHotkeys] = useState<{ quick: string; palette: string }>({
     quick: "",
