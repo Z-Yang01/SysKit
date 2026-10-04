@@ -1096,33 +1096,99 @@ pub fn pnp_capabilities(driver_desc: &str, scan: &BTreeMap<String, u32>) -> Opti
     scan.get(driver_desc).copied()
 }
 
-/// NlaSvc 服务状态（id=nlasvc）：只靠 sc query 即可判断，不依赖快照。
-pub fn chk_nlasvc() -> CheckResult {
-    // NlaSvc 是否运行可以只靠 sc query 判断——是 Snapshot 检查里唯一能独立实现的一项
+/// `sc qc` 的 START_TYPE 数字 → PowerShell `StartType` 风格的英文标签。
+///
+/// Python 侧快照直接拿 Get-Service 的 StartType（"Automatic"/"Manual"/"Disabled"），
+/// 判定分支都按这些字符串比较；Rust 走 `sc qc` 拿到的是数字，必须映射到同一套
+/// 标签再进判定，否则「手动启动无触发器」这个核心场景永远匹配不上。
+pub fn start_type_label(raw: &str) -> String {
+    // split_whitespace 自带首尾空白容忍，无需再 trim
+    let first = raw.split_whitespace().next().unwrap_or("");
+    match first {
+        "0" => "Boot".to_string(),
+        "1" => "System".to_string(),
+        "2" => "Automatic".to_string(),
+        "3" => "Manual".to_string(),
+        "4" => "Disabled".to_string(),
+        _ => raw.trim().to_string(),
+    }
+}
+
+/// NlaSvc 判定（纯函数，对应 Python `chk_nlasvc` 的全部分支）。
+///
+/// 分级是硬对齐：停止态在 Python 是 **FAIL**（必然误报「无网络」），
+/// 「运行中但手动启动+无触发器」是 WARN——那是本工具的核心目标场景
+/// （重启后复发，必须建议 fix_nlasvc 而不只是 start_nlasvc）。
+pub fn nlasvc_result(running: bool, start_type: &str, has_trigger: bool) -> CheckResult {
     let mut r = CheckResult::new(
         "nlasvc",
         "NlaSvc 网络位置感知服务（画'有网/无网'标记的服务）",
         PASS,
     );
-    match service_state("NlaSvc") {
-        Some(s) => {
-            if s.status == "RUNNING" {
-                r.detail = format!("NlaSvc={}/{}", s.status, s.start_type);
-            } else {
-                r.status = WARN;
-                r.detail = format!(
-                    "NlaSvc 未运行（{}/{}）：Windows 无法判断网络位置，可能误报'无网络'",
-                    s.status, s.start_type
-                );
-                r.fix_ids = vec!["start_nlasvc", "fix_nlasvc"];
-            }
+    if running {
+        r.detail = format!(
+            "运行中; 启动类型={start_type}; 触发器={}",
+            if has_trigger { "有" } else { "无" }
+        );
+        if start_type == "Manual" && !has_trigger {
+            // 三字段（状态/详情/fix_ids）必须一起更新：二元解包曾在这里炸过
+            r.status = WARN;
+            r.detail
+                .push_str("；本机被改为手动启动且无触发器（非原版配置，重启后仍不会自启）");
+            r.fix_ids = vec!["fix_nlasvc"];
         }
-        None => {
-            r.status = SKIP;
-            r.detail = "无法查询 NlaSvc（sc query 无输出）".to_string();
-        }
+        return r;
+    }
+    if start_type == "Disabled" {
+        r.status = FAIL;
+        r.detail = "已禁用 —— NCSI 探测无人执行，必然误报'无网络'".to_string();
+        r.fix_ids = vec!["fix_nlasvc"];
+    } else if start_type == "Manual" && !has_trigger {
+        r.status = FAIL;
+        r.detail = ("已停止，且启动类型=手动 + 无任何触发器 —— 无人拉起它，自开机起从未运行。\
+             这是'已连接却显示无网络'的直接原因之一")
+            .to_string();
+        r.fix_ids = vec!["fix_nlasvc"];
+    } else {
+        r.status = FAIL;
+        r.detail = format!("已停止(启动类型={start_type})");
+        r.fix_ids = vec!["start_nlasvc"];
     }
     r
+}
+
+/// NlaSvc 是否配置了触发器（`TriggerInfo` 子键非空即有）。
+///
+/// 子键按数字命名（0/1/…），逐个探测非空值表即可；读不到（权限/精简系统）
+/// 按无触发器处理——与 Python `subkeys()` 失败返回空表同口径，绝不误报有触发器。
+fn nlasvc_has_trigger() -> bool {
+    const TRIGGER_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Services\NlaSvc\TriggerInfo";
+    for i in 0..8 {
+        if !w32::reg_values(&format!("{TRIGGER_KEY}\\{i}")).is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+/// NlaSvc 服务状态（id=nlasvc）：只靠 sc query 即可判断，不依赖快照。
+pub fn chk_nlasvc() -> CheckResult {
+    match service_state("NlaSvc") {
+        Some(s) => {
+            let running = s.status.eq_ignore_ascii_case("RUNNING");
+            let start = start_type_label(&s.start_type);
+            nlasvc_result(running, &start, nlasvc_has_trigger())
+        }
+        None => {
+            let mut r = CheckResult::new(
+                "nlasvc",
+                "NlaSvc 网络位置感知服务（画'有网/无网'标记的服务）",
+                SKIP,
+            );
+            r.detail = "无法查询 NlaSvc（sc query 无输出）".to_string();
+            r
+        }
+    }
 }
 
 pub fn chk_proxy() -> CheckResult {
@@ -1611,6 +1677,72 @@ mod tests {
     fn check_line_format_matches_python() {
         let r = CheckResult::new("x", "测试项", FAIL).with_detail("细节");
         assert_eq!(r.line(), "[×] 测试项\n      细节");
+    }
+
+    #[test]
+    fn start_type_label_maps_sc_qc_numbers() {
+        // 与 Python Get-Service 的 StartType 标签同集（判定按字符串比较）
+        assert_eq!(start_type_label("2     AUTO_START"), "Automatic");
+        assert_eq!(start_type_label("3   DEMAND_START"), "Manual");
+        assert_eq!(start_type_label("4     DISABLED"), "Disabled");
+        assert_eq!(start_type_label("0  BOOT_START"), "Boot");
+        assert_eq!(start_type_label("1  SYSTEM_START"), "System");
+        // 认不出的原样透出（不硬造标签）
+        assert_eq!(start_type_label("9  WEIRD"), "9  WEIRD");
+        assert_eq!(start_type_label(""), "");
+    }
+
+    #[test]
+    fn nlasvc_result_follows_python_branches() {
+        // 运行中 + 自动启动 + 有触发器 → PASS（原版形态）
+        let ok = nlasvc_result(true, "Automatic", true);
+        assert_eq!(ok.status, PASS);
+        assert!(ok.fix_ids.is_empty());
+        assert!(ok.detail.contains("运行中") && ok.detail.contains("触发器=有"));
+
+        // 运行中 + 手动启动 + 无触发器 → WARN（本机核心场景：重启后复发）
+        let warn = nlasvc_result(true, "Manual", false);
+        assert_eq!(warn.status, WARN);
+        assert_eq!(warn.fix_ids, vec!["fix_nlasvc"]);
+        assert!(
+            warn.detail.contains("手动启动且无触发器"),
+            "{}",
+            warn.detail
+        );
+
+        // 运行中 + 手动但有触发器 → PASS（有触发器拉起，非原版但能自启）
+        assert_eq!(nlasvc_result(true, "Manual", true).status, PASS);
+
+        // 停止 + 已禁用 → FAIL
+        let dis = nlasvc_result(false, "Disabled", false);
+        assert_eq!(dis.status, FAIL);
+        assert_eq!(dis.fix_ids, vec!["fix_nlasvc"]);
+        assert!(dis.detail.contains("已禁用"));
+
+        // 停止 + 手动无触发器 → FAIL（自开机起从未运行）
+        let manual = nlasvc_result(false, "Manual", false);
+        assert_eq!(manual.status, FAIL);
+        assert_eq!(manual.fix_ids, vec!["fix_nlasvc"]);
+        assert!(manual.detail.contains("无任何触发器"), "{}", manual.detail);
+
+        // 停止 + 其它启动类型 → FAIL + 建议 start_nlasvc
+        let stopped = nlasvc_result(false, "Automatic", true);
+        assert_eq!(stopped.status, FAIL);
+        assert_eq!(stopped.fix_ids, vec!["start_nlasvc"]);
+        assert!(stopped.detail.contains("已停止(启动类型=Automatic)"));
+    }
+
+    #[test]
+    fn nlasvc_check_runs_on_real_machine_with_python_severity() {
+        // 真机上只断言形状；停止态必须是 FAIL 而不是 WARN（Python 分级是硬契约）
+        let r = chk_nlasvc();
+        assert!(!r.detail.is_empty());
+        if r.id == "nlasvc"
+            && r.status != SKIP
+            && (r.detail.starts_with("已停止") || r.detail.starts_with("已禁用"))
+        {
+            assert_eq!(r.status, FAIL, "停止/禁用的 NlaSvc 是 FAIL: {}", r.detail);
+        }
     }
 
     #[test]

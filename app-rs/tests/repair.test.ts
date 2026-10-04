@@ -9,15 +9,23 @@ import { describe, expect, it } from "vitest";
 
 import {
   RISK_ORDER,
+  REPORT_STORAGE_KEY,
   actionableFixes,
+  clipText,
   confirmText,
   formatCheckForCopy,
+  formatMonitorEvent,
+  formatReportForCopy,
   groupByRisk,
+  hhmmss,
+  loadReportFrom,
   needsConfirm,
   outcomeLevel,
   outcomeTag,
+  pushRecord,
   riskLabel,
   riskToken,
+  saveReportTo,
   skipReason,
   sortBySeverity,
   statusLabel,
@@ -31,7 +39,9 @@ import {
   type CheckResult,
   type ComboStep,
   type DiagReport,
+  type MonitorEvent,
   type RepairAction,
+  type RepairRecord,
 } from "../src/repair";
 
 function action(over: Partial<RepairAction> = {}): RepairAction {
@@ -337,5 +347,156 @@ describe("复制详情文本（formatCheckForCopy）", () => {
       check({ status: "warn", detail: "静态 DNS 与 DHCP 下发不一致", fix_ids: ["dns_auto", "flush_dns"] }),
     );
     expect(t).toBe("【警告】真实连通性：静态 DNS 与 DHCP 下发不一致\n建议动作：dns_auto、flush_dns");
+  });
+});
+
+// ---------------- 报告全文复制（对齐 Python _report_lines） ----------------
+
+describe("报告全文复制（formatReportForCopy）", () => {
+  it("格式与 Python 逐行同构：报告头 / [符号] 名称 / 缩进详情 / 结论", () => {
+    const r = report({
+      results: [
+        check({ status: "pass", name: "真实连通性", detail: "204探测:OK" }),
+        check({ status: "fail", name: "持久路由", detail: "存在持久默认路由 → 172.16.2.1" }),
+      ],
+      verdict_text: "外网不可达；失败项: 1 个",
+    });
+    const text = formatReportForCopy(r, new Date(2026, 9, 3, 14, 5));
+    const lines = text.split("\n");
+    expect(lines[0]).toBe("SysKit 诊断报告  2026-10-03 14:05");
+    expect(lines[1]).toBe("-".repeat(50));
+    expect(lines[2]).toBe("[√] 真实连通性");
+    expect(lines[3]).toBe("      204探测:OK");
+    expect(lines[4]).toBe("[×] 持久路由");
+    expect(lines[5]).toBe("      存在持久默认路由 → 172.16.2.1");
+    expect(lines[6]).toBe("-".repeat(50));
+    expect(lines[7]).toBe("结论：外网不可达；失败项: 1 个");
+  });
+
+  it("时间戳两位数补零（凌晨/早盘不出现 9:5 这种歧义时间）", () => {
+    const r = report();
+    const text = formatReportForCopy(r, new Date(2026, 0, 2, 3, 4));
+    expect(text).toContain("2026-01-02 03:04");
+  });
+
+  it("空报告也能出完整骨架（结论行来自 verdict_text）", () => {
+    const text = formatReportForCopy(report({ results: [] }), new Date(2026, 0, 1));
+    expect(text).toContain("结论：网络正常");
+  });
+});
+
+// ---------------- 修复记录 / 后台监控事件 ----------------
+
+describe("监控事件格式化（formatMonitorEvent）", () => {
+  const ev = (over: Partial<MonitorEvent>): MonitorEvent => ({
+    kind: "action",
+    id: "flush_dns",
+    title: "刷新 DNS 解析缓存",
+    ok: true,
+    message: "已刷新",
+    ...over,
+  });
+
+  it("成功/失败动作分别打 √/×，正文为「标题 — 摘要」", () => {
+    expect(formatMonitorEvent(ev({ ok: true }))).toEqual({
+      mark: "√",
+      text: "刷新 DNS 解析缓存 — 已刷新",
+    });
+    expect(formatMonitorEvent(ev({ ok: false, message: "需要管理员权限" }))).toEqual({
+      mark: "×",
+      text: "刷新 DNS 解析缓存 — 需要管理员权限",
+    });
+  });
+
+  it("建议事件打 ! 并注明「建议手动修复」（绝不与已执行动作混淆）", () => {
+    const out = formatMonitorEvent(
+      ev({ kind: "suggest", id: "dns_auto", title: "DNS 恢复为 DHCP 自动获取", ok: false, message: "多次自动修复无效" }),
+    );
+    expect(out.mark).toBe("!");
+    expect(out.text).toContain("（建议手动修复）");
+    expect(out.text).toContain("多次自动修复无效");
+  });
+
+  it("恢复事件打 √，直接展示恢复详情（后台自动修复成功的可见反馈）", () => {
+    const out = formatMonitorEvent(
+      ev({ kind: "recovered", id: "", title: "", ok: true, message: "自动修复成功（重启 WLAN 服务并重连 WiFi）" }),
+    );
+    expect(out.mark).toBe("√");
+    expect(out.text).toContain("自动修复成功");
+  });
+
+  it("长摘要按字符截到 90（对齐 Python message[:90]，中文按 1 字符计）", () => {
+    const long = "长".repeat(120);
+    const out = formatMonitorEvent(ev({ message: long }));
+    expect(out.text.endsWith("长")).toBe(true);
+    expect([...out.text].length).toBeLessThanOrEqual("刷新 DNS 解析缓存 — ".length + 90);
+  });
+});
+
+describe("记录列表（pushRecord / hhmmss）", () => {
+  const rec = (t: string): RepairRecord => ({ time: t, mark: "√", text: t });
+
+  it("新的在前（对齐 Python insertItem(0, …)）", () => {
+    const out = pushRecord([rec("a")], rec("b"));
+    expect(out.map((r) => r.time)).toEqual(["b", "a"]);
+  });
+
+  it("默认上限 60 条（挂机几天也不撑爆列表）", () => {
+    let list: RepairRecord[] = [];
+    for (let i = 0; i < 70; i++) {
+      list = pushRecord(list, rec(`t${i}`));
+    }
+    expect(list).toHaveLength(60);
+    expect(list[0].time).toBe("t69");
+  });
+
+  it("自定义上限生效（截断发生在最新在前之后）", () => {
+    // ["c","a","b"] 截到 2 → ["c","a"]：b 是最旧的，先被淘汰
+    expect(pushRecord([rec("a"), rec("b")], rec("c"), 2).map((r) => r.time)).toEqual(["c", "a"]);
+  });
+
+  it("hhmmss 两位数补零", () => {
+    expect(hhmmss(new Date(2026, 0, 1, 3, 4, 5))).toBe("03:04:05");
+    expect(hhmmss(new Date(2026, 0, 1, 23, 59, 59))).toBe("23:59:59");
+  });
+});
+
+describe("clipText", () => {
+  it("按字符截断（Python [:n] 语义）", () => {
+    expect(clipText("你好世界", 2)).toBe("你好");
+    expect(clipText("abc", 10)).toBe("abc");
+    expect(clipText("", 5)).toBe("");
+  });
+});
+
+// ---------------- 「上次结果」的会话保存 ----------------
+
+describe("诊断报告会话保存（saveReportTo / loadReportFrom）", () => {
+  it("写入后能原样读回（切页/重挂载后恢复上次结论）", () => {
+    const store = new Map<string, string>();
+    const r = report({ verdict: "no_internet", verdict_text: "外网不可达" });
+    saveReportTo(r, (k, v) => void store.set(k, v));
+    expect(store.has(REPORT_STORAGE_KEY)).toBe(true);
+    const back = loadReportFrom((k) => store.get(k) ?? null);
+    expect(back?.verdict).toBe("no_internet");
+    expect(back?.results).toHaveLength(1);
+  });
+
+  it("没存过返回 null", () => {
+    expect(loadReportFrom(() => null)).toBeNull();
+  });
+
+  it("损坏的 JSON / 缺字段一律返回 null（绝不把脏数据当报告）", () => {
+    expect(loadReportFrom(() => "not-json{")).toBeNull();
+    expect(loadReportFrom(() => JSON.stringify({ verdict: "x" }))).toBeNull();
+    expect(loadReportFrom(() => JSON.stringify({ results: "nope", verdict: "x" }))).toBeNull();
+  });
+
+  it("writer 抛错被吞掉（存储不可用不拖垮诊断流程）", () => {
+    expect(() =>
+      saveReportTo(report(), () => {
+        throw new Error("quota");
+      }),
+    ).not.toThrow();
   });
 });

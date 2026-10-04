@@ -3,14 +3,21 @@
  *
  * 三块内容全部走后端真实命令：
  * - 网络体检：`sk_diag_run` 跑 15 项检查，问题行的「建议动作」可直接跳到下方对应修复动作；
- * - 组合修复：`sk_repair_plan` 出计划 → 确认 → 逐步 `sk_repair_run`（执行中有进度条）；
+ * - 组合修复：`sk_repair_plan` 出计划 → 确认 → 逐步 `sk_repair_run`（执行中有进度条），
+ *   完成后静默快速复检刷新旧结论（Python 同款收尾）；
  * - 动作库：`sk_repair_list`，按风险三级折叠展示，改配置/强力类先确认再执行。
+ *
+ * 会话内可见性（对齐 Python 诊断/修复页）：
+ * - 体检报告经 sessionStorage 保存，切页回来结论还在；「复制报告」出全文存档；
+ * - 手动 / 组合 / 后台监控自动修复统一记入「修复记录」——后台监控的事件
+ *   （`sk://monitor-event`）实时出现在列表里，不再是只有日志的黑盒。
  *
  * 体验纪律：非管理员提前标注跳过；执行中防重复触发；加载失败给重试入口
  * 而不是永远停在「正在读取」。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Alert,
   Button,
@@ -33,14 +40,21 @@ import {
 
 import {
   actionableFixes,
+  clipText,
   confirmText,
   formatCheckForCopy,
+  formatMonitorEvent,
+  formatReportForCopy,
   groupByRisk,
+  hhmmss,
+  loadReport,
   needsConfirm,
   outcomeLevel,
   outcomeTag,
+  pushRecord,
   riskLabel,
   riskToken,
+  saveReport,
   skipReason,
   sortBySeverity,
   statusMark,
@@ -55,9 +69,11 @@ import {
   type Combo,
   type ComboStep,
   type DiagReport,
+  type MonitorEvent,
   type RepairAction,
   type RepairList,
   type RepairOutcome,
+  type RepairRecord,
 } from "./repair";
 
 import { statusLabel } from "./repair";
@@ -85,6 +101,8 @@ export function Diagnose() {
   );
   /** 三个风险分组的 Collapse 共用的展开集合（key = 动作 id，跨组唯一）。 */
   const [openIds, setOpenIds] = useState<string[]>([]);
+  /** 修复记录（手动/组合/后台监控自动修复共用，最新在前，上限 60 条）。 */
+  const [records, setRecords] = useState<RepairRecord[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -102,26 +120,63 @@ export function Diagnose() {
     void load();
   }, [load]);
 
+  // 「上次结果」会话恢复 + 后台监控事件订阅。
+  // Python 侧诊断结果与修复记录在窗口存活期间常驻（切页不丢）；这里组件切页
+  // 会卸载，用 sessionStorage 恢复报告、用事件流续记自动修复（对齐
+  // main_window._on_monitor_action/_on_monitor_suggest 的可见反馈）。
+  useEffect(() => {
+    setReport(loadReport());
+    const un = listen<MonitorEvent>("sk://monitor-event", (e) => {
+      const { mark, text } = formatMonitorEvent(e.payload);
+      setRecords((list) => pushRecord(list, { time: hhmmss(new Date()), mark, text }));
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+
   const isAdmin = data?.is_admin ?? false;
 
-  /** 运行诊断（quick=true 跳过慢速外网探测）。 */
+  /** 运行诊断（quick=true 跳过慢速外网探测；silent=true 只刷新不弹提示）。 */
   const runDiag = useCallback(
-    async (quick: boolean) => {
+    async (quick: boolean, silent = false) => {
       if (comboRun) return; // 组合修复会改网络配置，中途探测结果不可信
       setDiagBusy(quick ? "quick" : "full");
       try {
         const r = await invoke<DiagReport>("sk_diag_run", { quick });
         setReport(r);
-        const lvl = r.verdict === "normal" ? "success" : "warning";
-        message[lvl](r.verdict_text);
+        saveReport(r); // 会话内保存：切页回来结论还在（对齐 Python 常驻结果）
+        if (!silent) {
+          const lvl = r.verdict === "normal" ? "success" : "warning";
+          message[lvl](r.verdict_text);
+        }
       } catch (e) {
-        message.error(`诊断失败：${String(e)}`);
+        if (!silent) message.error(`诊断失败：${String(e)}`);
       } finally {
         setDiagBusy("");
       }
     },
     [comboRun],
   );
+
+  /**
+   * 组合修复后的静默快速复检（对齐 Python 组合完成后的
+   * `run_diagnosis(quick=True, silent=True)`）：组合刚改过网络配置，屏幕上
+   * 留着旧结论会误导下一步判断；silent 是 Python 同名语义——刷新但不打扰。
+   * 独立于 runDiag：不读 comboRun 闭包值（执行中的旧闭包会误判成「正忙」直接返回）。
+   */
+  const refreshAfterCombo = useCallback(async () => {
+    setDiagBusy("quick");
+    try {
+      const r = await invoke<DiagReport>("sk_diag_run", { quick: true });
+      setReport(r);
+      saveReport(r);
+    } catch {
+      // 静默复检失败不打扰：旧报告仍在，用户可手动再点检测
+    } finally {
+      setDiagBusy("");
+    }
+  }, []);
 
   /** 执行一个动作（改配置/强力类先确认）。 */
   const run = useCallback(
@@ -137,6 +192,14 @@ export function Diagnose() {
             params: paramValues[action.id] ?? {},
           });
           setOutcomes((m) => ({ ...m, [action.id]: out }));
+          // 修复记录（对齐 Python _add_repair_record：手动执行同样入账）
+          setRecords((list) =>
+            pushRecord(list, {
+              time: hhmmss(new Date()),
+              mark: out.success ? "√" : "×",
+              text: `${action.title} — ${clipText(out.message || (out.success ? "完成" : "失败"), 90)}`,
+            }),
+          );
           const lvl = outcomeLevel(out);
           const rebootHint = out.success && out.need_reboot ? "（需重启后生效）" : "";
           message[lvl === "success" ? "success" : lvl === "warning" ? "warning" : "error"](
@@ -150,6 +213,13 @@ export function Diagnose() {
             output: "",
           };
           setOutcomes((m) => ({ ...m, [action.id]: out }));
+          setRecords((list) =>
+            pushRecord(list, {
+              time: hhmmss(new Date()),
+              mark: "×",
+              text: `${action.title} — ${clipText(String(e), 90)}`,
+            }),
+          );
           message.error(`${action.title}：${String(e)}`);
         } finally {
           setBusy("");
@@ -198,6 +268,14 @@ export function Diagnose() {
             params: paramValues[action.id] ?? {},
           });
           setOutcomes((m) => ({ ...m, [action.id]: out }));
+          // 每步入账（对齐 Python：组合内的每项结果都进修复记录）
+          setRecords((list) =>
+            pushRecord(list, {
+              time: hhmmss(new Date()),
+              mark: out.success ? "√" : "×",
+              text: `${action.title} — ${clipText(out.message || (out.success ? "完成" : "失败"), 90)}`,
+            }),
+          );
           if (out.success) {
             ok += 1;
           } else {
@@ -206,6 +284,13 @@ export function Diagnose() {
           }
         } catch (e) {
           fail += 1;
+          setRecords((list) =>
+            pushRecord(list, {
+              time: hhmmss(new Date()),
+              mark: "×",
+              text: `${action.title} — ${clipText(String(e), 90)}`,
+            }),
+          );
           message.error(`${action.title}：${String(e)}`);
         } finally {
           setBusy("");
@@ -220,8 +305,10 @@ export function Diagnose() {
       } else {
         message.warning(`${combo.title} 执行完毕：${ok} 成功 / ${fail} 失败（详见各动作面板）`);
       }
+      // 组合改了网络配置，用快速静默复检刷新旧结论（Python 同款收尾）
+      void refreshAfterCombo();
     },
-    [data, paramValues],
+    [data, paramValues, refreshAfterCombo],
   );
 
   /** 组合修复：先取计划（含跳过项），确认后逐步执行。 */
@@ -376,6 +463,19 @@ export function Diagnose() {
         title="网络诊断"
         extra={
           <Space>
+            <Button
+              size="small"
+              disabled={!report || diagBusy !== ""}
+              onClick={() => {
+                if (!report || diagBusy) return;
+                navigator.clipboard
+                  .writeText(formatReportForCopy(report))
+                  .then(() => message.success("诊断报告已复制到剪贴板"))
+                  .catch(() => message.error("复制失败：剪贴板不可用"));
+              }}
+            >
+              复制报告
+            </Button>
             <Button
               size="small"
               onClick={() => void runDiag(true)}
@@ -687,6 +787,44 @@ export function Diagnose() {
           ]}
         />
       )}
+
+      <Card
+        size="small"
+        className="sk-card"
+        title="修复记录（本次运行）"
+        extra={
+          <span className="sk-hint">
+            手动 / 组合 / 后台监控自动修复统一入账（最新在前，最多 60 条）
+          </span>
+        }
+      >
+        {records.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="暂无记录。执行修复动作，或等待后台监控自动修复后这里会实时出现条目。"
+          />
+        ) : (
+          // 后台自动修复原本只写日志：用户完全看不见「后台动过系统」，这里补上可见性
+          <div style={{ maxHeight: 200, overflowY: "auto" }}>
+            {records.map((r, i) => (
+              <div key={`${r.time}-${i}`} style={{ padding: "2px 0" }}>
+                <span
+                  style={{
+                    color: `var(--sk-${r.mark === "√" ? "ok" : r.mark === "!" ? "warn" : "err"})`,
+                    fontWeight: 600,
+                  }}
+                >
+                  {r.mark}
+                </span>
+                <span className="sk-hint" style={{ marginLeft: 8 }}>
+                  {r.time}
+                </span>
+                <span style={{ marginLeft: 8 }}>{r.text}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
     </Space>
   );
 }

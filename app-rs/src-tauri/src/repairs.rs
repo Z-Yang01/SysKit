@@ -631,70 +631,200 @@ fn run_dns_preset(p: &BTreeMap<String, String>) -> RepairOutcome {
     }
 }
 
-/// 删除劫持流量的持久路由（改前导出路由表存档）。
-fn run_del_persistent_route(p: &BTreeMap<String, String>) -> RepairOutcome {
-    let dest = p
-        .get("dest")
-        .filter(|s| !s.trim().is_empty())
-        .cloned()
-        .or_else(|| {
-            // 未指定则自动检测持久默认路由
-            crate::snapshot::persistent_routes()
-                .into_iter()
-                .find(|r| r.dest == "0.0.0.0/0")
-                .map(|r| r.dest)
-        });
-    let Some(dest) = dest else {
-        return RepairOutcome::fail("未指定目标网段，且未检测到持久默认路由");
+// ---------------- 持久路由：纯逻辑辅助（与 Python repairs.py 对齐） ----------------
+
+/// CIDR 前缀 → 子网掩码（对应 Python `_prefix_to_mask`）。
+///
+/// legacy `route.exe` 不认 `0.0.0.0/0` 这类写法，删除/还原都必须拆成
+/// 「IP + mask」；解析失败回退 `255.255.255.0`（Python except 分支同款）。
+pub fn prefix_to_mask(prefix: &str) -> String {
+    let bits: u32 = match prefix.split_once('/') {
+        Some((_, b)) => match b.trim().parse::<u32>() {
+            Ok(n) if n <= 32 => n,
+            _ => return "255.255.255.0".to_string(),
+        },
+        None => return "255.255.255.0".to_string(),
     };
-    let gw = p
+    // bits=0 时 `1u32 << 32` 会溢出 panic，必须特判（Python 大整数无此坑）；
+    // u32 左移后高位自然丢弃，无需再 & 0xFFFF_FFFF
+    let m: u32 = if bits == 0 {
+        0
+    } else {
+        0xFFFF_FFFFu32 << (32 - bits)
+    };
+    format!(
+        "{}.{}.{}.{}",
+        m >> 24,
+        (m >> 16) & 0xFF,
+        (m >> 8) & 0xFF,
+        m & 0xFF
+    )
+}
+
+/// 备份文件里的还原命令（对应 Python 备份文本里的 `route -p add ...`）。
+///
+/// metric=0（注册表里「未指定跃点」）按 1 写——还原命令必须可直接粘贴执行。
+pub fn route_restore_command(dest: &str, gw: &str, metric: u32) -> String {
+    let ip = dest.split('/').next().unwrap_or(dest);
+    format!(
+        "route -p add {ip} mask {} {gw} metric {}",
+        prefix_to_mask(dest),
+        if metric == 0 { 1 } else { metric }
+    )
+}
+
+/// legacy `route delete` 的完整参数：CIDR 拆成 ip + mask。
+pub fn route_delete_args(dest: &str, gw: &str) -> Vec<String> {
+    let ip = dest.split('/').next().unwrap_or(dest);
+    let mask = prefix_to_mask(dest);
+    args(&["route", "delete", ip, "mask", &mask, gw])
+}
+
+/// 从 `route print -4` 输出解析全部活动默认路由的网关。
+///
+/// 删除后复核用：不再全量 `snapshot::take()`（秒级 PowerShell 采集），
+/// 复用同一条 `route print` 的解析即可回答同一个问题——「该网关还在不在活动表」。
+/// 行形如 `0.0.0.0  0.0.0.0  192.168.1.1  192.168.1.100  25`；`On-link` 行被
+/// 「恰 3 个点」的 IPv4 检查过滤掉。
+pub fn parse_active_default_gws(route_print: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in route_print.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() >= 3 && cols[0] == "0.0.0.0" && cols[1] == "0.0.0.0" {
+            let gw = cols[2];
+            if gw.matches('.').count() == 3 {
+                out.push(gw.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 删除后复核（对应 Python 的 gone_p/gone_a）：持久表按 (dest, next_hop) 精确匹配，
+/// 活动表按网关匹配。返回 (持久表已清, 活动表已清)。
+pub fn route_gone(
+    persistent: &[crate::snapshot::RouteEntry],
+    active_gws: &[String],
+    dest: &str,
+    gw: &str,
+) -> (bool, bool) {
+    let gone_p = !persistent
+        .iter()
+        .any(|r| r.dest == dest && r.next_hop == gw);
+    let gone_a = !active_gws.iter().any(|g| g == gw);
+    (gone_p, gone_a)
+}
+
+/// 删除劫持流量的持久路由（改前导出路由表存档）。
+///
+/// 与 Python `DelPersistentRoute` 逐步对齐：route delete 只动**活动表**，
+/// 持久副本在 PolicyStore 里重启即复活——必须再补一刀
+/// `Remove-NetRoute -PolicyStore PersistentStore`，并复核两张表后才能报成功。
+/// 第一版只看 route delete 的退出码，会把「活动表删了、持久表还在」谎报成功。
+fn run_del_persistent_route(p: &BTreeMap<String, String>) -> RepairOutcome {
+    let dest_param = p
+        .get("dest")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let gw_param = p
         .get("gw")
-        .filter(|s| !s.trim().is_empty())
-        .cloned()
-        .or_else(|| {
-            crate::snapshot::persistent_routes()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // 目标解析（与 Python 同分支）：只给 dest 时必须沿该网段反查网关——
+    // 绝不回落到自动检测，否则用户想删 10.0.0.0/8，实际删掉的却是默认路由
+    let (dest, gw, metric) = match (dest_param, gw_param) {
+        (Some(dest), Some(gw)) => (dest, gw, 1u32),
+        (Some(dest), None) => {
+            match crate::snapshot::persistent_routes()
                 .into_iter()
                 .find(|r| r.dest == dest)
-                .map(|r| r.next_hop)
-        });
-    let Some(gw) = gw else {
-        return RepairOutcome::fail(format!("未找到 {dest} 对应的持久路由网关"));
+            {
+                Some(r) => (r.dest, r.next_hop, r.metric), // 携带真实 metric 供还原命令
+                None => {
+                    return RepairOutcome::fail(format!(
+                        "持久路由中未找到目标网段 {dest}，未删除任何路由"
+                    ))
+                }
+            }
+        }
+        (None, _) => match crate::snapshot::persistent_routes()
+            .into_iter()
+            .find(|r| r.dest == "0.0.0.0/0")
+        {
+            Some(r) => (r.dest, r.next_hop, r.metric),
+            // 与 Python 一致：没有可删对象是「无需处理」的正常结束（幂等），不是失败
+            None => return RepairOutcome::ok("未发现持久默认路由，无需处理"),
+        },
     };
+    let dest_ip = dest.split('/').next().unwrap_or(&dest).to_string();
+    let mask = prefix_to_mask(&dest);
 
     let session = match crate::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
     };
-    // 删除前把完整路由表存档（还原命令也在里面）
+    // 删除前把完整路由表存档（还原命令必须是可直接粘贴执行的完整形态）
     let table = w32::run_capture(&args(&["route", "print", "-4"]), 20)
         .map(|o| o.stdout)
         .unwrap_or_default();
     let note = format!(
-        "持久路由删除记录\n目标: {dest}\n网关: {gw}\n还原命令: route -p add {dest} mask <掩码> {gw} metric <跃点>\n\n===== route print -4 =====\n{table}"
+        "还原命令:\n  {}\n\n删除前完整路由表:\n{table}",
+        route_restore_command(&dest, &gw, metric)
     );
     let backup = match session.save_note("route_backup.txt", &note) {
         Ok(p) => p,
         Err(e) => return RepairOutcome::fail(format!("路由表备份失败，未做修改: {e}")),
     };
 
-    let r = w32::run_capture(&args(&["route", "delete", &dest, &gw]), 15);
-    match r {
-        Ok(o) if o.ok => RepairOutcome {
-            success: true,
-            message: format!("已删除持久路由 {dest} → {gw}；路由表存档: {backup}"),
-            need_reboot: false,
-            output: o.combined(),
-        },
-        Ok(o) => RepairOutcome {
-            success: false,
-            message: format!(
-                "删除持久路由失败（可能需要管理员）: {}",
-                o.tail(0, 120).trim()
-            ),
-            need_reboot: false,
-            output: o.combined(),
-        },
-        Err(e) => RepairOutcome::fail(format!("route 无法执行: {e}")),
+    // ① 活动表：route.exe 不认 CIDR，必须 ip + mask。
+    //    失败不在此处早退：目标可能只在持久表（接口已断开时活动表本就没有），
+    //    成败交由下方双表复核统一裁决——Python 即此语义
+    let r = w32::run_capture(&route_delete_args(&dest, &gw), 15);
+    if let Ok(o) = &r {
+        if !o.ok {
+            log::warn!(
+                "route delete 返回失败（{}），以双表复核为准",
+                o.tail(0, 80).trim()
+            );
+        }
+    }
+    // ② 持久表：route.exe 的 -p 路由真正存放在 PolicyStore，必须用 NetRoute 清除
+    //    （Python 同款兜底；失败不在此处报错，由下方双表复核统一裁决）
+    let ps = format!(
+        "Remove-NetRoute -DestinationPrefix {dest} -NextHop {gw} -PolicyStore PersistentStore \
+         -Confirm:$false -ErrorAction SilentlyContinue; 'done'"
+    );
+    let _ = w32::run_capture(
+        &[
+            "powershell".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            ps,
+        ],
+        20,
+    );
+
+    // ③ 双表复核：持久表读注册表（权威源），活动表复用 route print 解析
+    let persistent_now = crate::snapshot::persistent_routes();
+    let active_gws = w32::run_capture(&args(&["route", "print", "-4"]), 15)
+        .map(|o| parse_active_default_gws(&o.stdout))
+        .unwrap_or_default();
+    let (gone_p, gone_a) = route_gone(&persistent_now, &active_gws, &dest, &gw);
+    if gone_p && gone_a {
+        RepairOutcome::ok(format!(
+            "已删除持久路由 {dest} → {gw}（活动表+持久表）；备份/还原命令: {backup}"
+        ))
+    } else {
+        // 格式化不支持内联表达式，先落成局部变量（对应 Python `not gone_a`）
+        let residue_a = !gone_a;
+        let residue_p = !gone_p;
+        RepairOutcome::fail(format!(
+            "删除未完全（活动表残留:{residue_a} 持久表残留:{residue_p}），请手动执行: \
+             route delete {dest_ip} mask {mask} {gw} 及 \
+             Remove-NetRoute -DestinationPrefix {dest} -NextHop {gw} -PolicyStore PersistentStore"
+        ))
     }
 }
 
@@ -2212,5 +2342,145 @@ mod tests {
                 "静态 DNS 网卡必须真实存在: {name}"
             );
         }
+    }
+
+    // ---------------- 持久路由清理（与 Python DelPersistentRoute 对齐） ----------------
+
+    #[test]
+    fn prefix_to_mask_matches_python() {
+        // Python _prefix_to_mask：0→0.0.0.0、8→255.0.0.0、24→255.255.255.0、32→255.255.255.255
+        assert_eq!(prefix_to_mask("0.0.0.0/0"), "0.0.0.0");
+        assert_eq!(prefix_to_mask("10.0.0.0/8"), "255.0.0.0");
+        assert_eq!(prefix_to_mask("172.16.2.0/24"), "255.255.255.0");
+        assert_eq!(prefix_to_mask("1.2.3.4/32"), "255.255.255.255");
+        assert_eq!(prefix_to_mask("10.1.2.3/16"), "255.255.0.0");
+        // 非法/缺前缀 → 回退 /24 掩码（Python except 分支）
+        assert_eq!(prefix_to_mask("10.0.0.0"), "255.255.255.0");
+        assert_eq!(prefix_to_mask("10.0.0.0/33"), "255.255.255.0");
+        assert_eq!(prefix_to_mask("10.0.0.0/abc"), "255.255.255.0");
+    }
+
+    #[test]
+    fn route_delete_args_split_cidr_for_legacy_route_exe() {
+        // route.exe 不认 CIDR：0.0.0.0/0 必须拆成 0.0.0.0 + mask 0.0.0.0
+        // （Vec<String> == Vec<&str> 成立，直接比字符串切片即可）
+        assert_eq!(
+            route_delete_args("0.0.0.0/0", "172.16.2.1"),
+            [
+                "route",
+                "delete",
+                "0.0.0.0",
+                "mask",
+                "0.0.0.0",
+                "172.16.2.1"
+            ]
+        );
+        assert_eq!(
+            route_delete_args("10.0.0.0/8", "10.1.1.1"),
+            [
+                "route",
+                "delete",
+                "10.0.0.0",
+                "mask",
+                "255.0.0.0",
+                "10.1.1.1"
+            ]
+        );
+    }
+
+    #[test]
+    fn route_restore_command_is_directly_executable() {
+        // 备份文件里的还原命令必须可直接粘贴执行，不允许 <掩码>/<跃点> 占位符
+        assert_eq!(
+            route_restore_command("0.0.0.0/0", "172.16.2.1", 1),
+            "route -p add 0.0.0.0 mask 0.0.0.0 172.16.2.1 metric 1"
+        );
+        // metric=0（注册表「未指定」）按 1 写
+        assert_eq!(
+            route_restore_command("10.0.0.0/8", "10.1.1.1", 0),
+            "route -p add 10.0.0.0 mask 255.0.0.0 10.1.1.1 metric 1"
+        );
+        assert_eq!(
+            route_restore_command("192.168.50.0/24", "172.16.2.1", 7),
+            "route -p add 192.168.50.0 mask 255.255.255.0 172.16.2.1 metric 7"
+        );
+    }
+
+    #[test]
+    fn parse_active_default_gws_reads_route_print() {
+        let out = "\
+===========================================================================
+Active Routes:
+Network Destination        Netmask          Gateway       Interface  Metric
+          0.0.0.0          0.0.0.0      172.16.2.1     172.16.2.10     25
+          0.0.0.0          0.0.0.0     192.168.1.1      192.168.1.5     30
+         10.0.0.0        255.0.0.0      172.16.2.1     172.16.2.10     25
+  255.255.255.255  255.255.255.255      172.16.2.1     172.16.2.10     25
+      0.0.0.0  0.0.0.0      On-link      192.168.1.5     5000
+===========================================================================";
+        let gws = parse_active_default_gws(out);
+        assert_eq!(
+            gws,
+            vec!["172.16.2.1", "192.168.1.1"],
+            "只取默认路由行的网关列"
+        );
+        // On-link 不是可删除的网关，不能混进来
+        assert!(!gws.iter().any(|g| g.contains("On-link")));
+        assert!(parse_active_default_gws("garbage").is_empty());
+        assert!(parse_active_default_gws("").is_empty());
+    }
+
+    #[test]
+    fn route_gone_checks_both_tables() {
+        use crate::snapshot::RouteEntry;
+        let persistent = vec![RouteEntry {
+            dest: "0.0.0.0/0".into(),
+            next_hop: "172.16.2.1".into(),
+            metric: 1,
+            if_index: 0,
+            if_metric: 0,
+        }];
+        let active = vec!["172.16.2.1".to_string()];
+        // 两表都在 → 都没删掉
+        assert_eq!(
+            route_gone(&persistent, &active, "0.0.0.0/0", "172.16.2.1"),
+            (false, false)
+        );
+        // 持久表清了、活动表还在
+        assert_eq!(
+            route_gone(&[], &active, "0.0.0.0/0", "172.16.2.1"),
+            (true, false)
+        );
+        // 活动表清了、持久表还在（第一版假成功的场景：route delete 换不来持久表清除）
+        assert_eq!(
+            route_gone(&persistent, &[], "0.0.0.0/0", "172.16.2.1"),
+            (false, true)
+        );
+        // 都清了
+        assert_eq!(
+            route_gone(&[], &[], "0.0.0.0/0", "172.16.2.1"),
+            (true, true)
+        );
+        // 不同网关的其它路由不算残留
+        assert_eq!(
+            route_gone(&persistent, &active, "0.0.0.0/0", "10.9.9.9"),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn del_persistent_route_no_target_is_successful_noop() {
+        // 对齐 Python：给一个不存在的 dest 显式失败；未指定 dest 且系统无持久默认路由
+        // 时是「无需处理」的幂等成功——此断言只覆盖显式 dest 分支（无路由分支依赖
+        // 真机路由状态，不在单测里赌环境）
+        let mut p = BTreeMap::new();
+        p.insert("dest".to_string(), "198.51.100.0/24".to_string());
+        let out = get_action("del_persistent_route").unwrap().execute(&p);
+        assert!(!out.success, "显式给不存在的 dest 必须失败而不是乱删");
+        assert!(
+            out.message.contains("未删除任何路由"),
+            "失败要说明没动系统: {}",
+            out.message
+        );
     }
 }

@@ -23,11 +23,20 @@
 //!    "探测失败"不等于断网，计进 streak 会触发无意义的自动修复。
 //! 3. **L3 时间戳必须用单调时钟**：Python 注释专门警示过——写入 epoch 秒会让
 //!    与单调时钟的差值为巨负，L3 冷却**永久命中**，自动修复被静默降级到 L2。
+//!
+//! ## 可见反馈（对齐 Python main_window 的监控回调）
+//!
+//! Python 的 `_on_monitor_action`/`_on_monitor_suggest`/`_on_monitor_status` 把
+//! 自动修复过程送进 UI（修复记录列表 + 托盘气泡）。Rust 等价实现：
+//! 每个动作/建议/恢复都 emit `sk://monitor-event`（诊断页记入「修复记录」），
+//! 失败、恢复、建议另发托盘气泡（`tray::notify`）。只有日志的自动修复对用户
+//! 等于不存在——「网络自己好了/坏了」必须能对上「后台做过什么」。
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use tauri::Emitter;
 
 /// 网络状态码（与 Python 同名，便于日志对照）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -157,6 +166,79 @@ fn probe_quick() -> bool {
     crate::netcheck::probe_204(4.0).0
 }
 
+/// 后台监控 → 前端的事件载荷（`sk://monitor-event`）。
+///
+/// Python 侧经 Qt 信号（sig_action/sig_suggest）直达 UI 线程；Rust 用事件通道
+/// 等价替代，诊断页据此把自动修复过程记进「修复记录」——只写日志的话，后台
+/// 做了什么用户完全看不见（对齐 main_window._on_monitor_action/_on_monitor_suggest）。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EventPayload {
+    /// "action"（自动修复动作已执行）| "suggest"（建议手动修复）| "recovered"（修复后恢复）
+    pub kind: &'static str,
+    pub id: String,
+    pub title: String,
+    pub ok: bool,
+    pub message: String,
+}
+
+/// 按字符数截断（Python `message[:80]` 语义：中文按 1 字符计）。
+pub fn clip(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
+fn action_title(id: &str) -> String {
+    crate::repairs::get_action(id)
+        .map(|a| a.title.to_string())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// 自动修复动作事件（title 从动作库取，前端不用再查一遍）。
+pub fn action_event(id: &str, ok: bool, message: &str) -> EventPayload {
+    EventPayload {
+        kind: "action",
+        id: id.to_string(),
+        title: action_title(id),
+        ok,
+        message: message.to_string(),
+    }
+}
+
+/// 「建议手动修复」事件（只建议，绝不自动执行）。
+pub fn suggest_event(id: &str, reason: &str) -> EventPayload {
+    EventPayload {
+        kind: "suggest",
+        id: id.to_string(),
+        title: action_title(id),
+        ok: false,
+        message: reason.to_string(),
+    }
+}
+
+/// 修复后恢复事件（正文与 set_status 的恢复详情同文）。
+pub fn recovered_event(message: &str) -> EventPayload {
+    EventPayload {
+        kind: "recovered",
+        id: String::new(),
+        title: String::new(),
+        ok: true,
+        message: message.to_string(),
+    }
+}
+
+/// 广播给前端（APP_HANDLE 未注入时静默跳过——单元测试进程不连 Tauri）。
+fn publish(ev: &EventPayload) {
+    if let Some(app) = APP_HANDLE.get() {
+        let _ = app.emit("sk://monitor-event", ev);
+    }
+}
+
+/// 托盘气泡 + 前端提示（tray::notify 会同时 emit `sk://notify`）。
+fn notify_tray(title: &str, body: &str) {
+    if let Some(app) = APP_HANDLE.get() {
+        crate::tray::notify(app, title, body);
+    }
+}
+
 /// 监控线程的运行状态（供界面显示）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MonitorState {
@@ -210,6 +292,12 @@ fn set_status(state: NetState, detail: &str) {
         crate::w32::play_alert_sound(state.as_str() == "ok");
         #[cfg(test)]
         let _ = state.as_str() == "ok";
+    }
+    // 恢复通知：Python 仅在 state==ok 且 message 非空（=「自动修复成功」路径）时
+    // 托盘气泡（main_window._on_monitor_status）；健康轮询的 ok 详情为空，不打扰
+    if state == NetState::Ok && !detail.is_empty() {
+        publish(&recovered_event(detail));
+        notify_tray("SysKit", detail);
     }
     LAST_CHECK.store(
         std::time::SystemTime::now()
@@ -341,6 +429,11 @@ fn tick(
     let (ladder, skipped) = build_ladder(level, vpn_up);
     if !skipped.is_empty() {
         log::warn!("检测到 VPN/隧道在线，自动修复跳过: {}", skipped.join(", "));
+        // 护栏触发要可见（Python on_suggest → 托盘「建议手动修复」）：
+        // 用户挂着 VPN 时梯度被削减，静默跳过会让人误以为「修过了还是没好」
+        let ev = suggest_event("flush_dns", vpn_guard_note());
+        notify_tray("建议手动修复", &format!("{}：{}", ev.title, ev.message));
+        publish(&ev);
     }
     log::info!("自动修复触发, 级别 L{level}, 梯度 {:?}", ladder);
     *LAST_LADDER.lock().expect("梯度锁中毒") = ladder.join(",");
@@ -353,7 +446,21 @@ fn tick(
             continue;
         };
         let result = action.execute(&std::collections::BTreeMap::new());
-        log::info!("自动修复 [{id}] -> {}: {}", result.success, result.message);
+        log::info!(
+            "自动修复 [{id}] -> {}: {}",
+            result.success,
+            clip(&result.message, 120)
+        );
+        // 动作级可见反馈（对齐 main_window._on_monitor_action）：
+        // 进前端修复记录；失败另发托盘气泡——只写日志用户根本不知道后台动过系统
+        let ev = action_event(id, result.success, &result.message);
+        publish(&ev);
+        if !result.success {
+            notify_tray(
+                "自动修复失败",
+                &format!("{}: {}", ev.title, clip(&result.message, 80)),
+            );
+        }
         REPAIR_COUNT.fetch_add(1, Ordering::SeqCst);
         if *id == "toggle_adapter" {
             // 与 Python 同理：必须用单调时钟
@@ -373,6 +480,12 @@ fn tick(
         }
     }
     set_status(NetState::NoNet, "自动修复梯度执行完毕仍未恢复");
+    // 保守模式：建议（不自动执行）改配置类修复——Python on_suggest 的两条固定建议
+    for (fid, why) in suggestions() {
+        let ev = suggest_event(fid, why);
+        publish(&ev);
+        notify_tray("建议手动修复", &format!("{}：{why}", ev.title));
+    }
     Ok(())
 }
 
@@ -540,6 +653,73 @@ mod tests {
                 "{id} 是自动执行项，不该同时作为'建议'"
             );
         }
+    }
+
+    #[test]
+    fn action_event_pulls_title_from_catalog() {
+        // 前端直接展示 title；这里丢了标题，修复记录里就只剩 id
+        let ev = action_event("flush_dns", true, "成功");
+        assert_eq!(ev.kind, "action");
+        assert_eq!(ev.id, "flush_dns");
+        assert_eq!(ev.title, "刷新 DNS 解析缓存");
+        assert!(ev.ok);
+        // 未知 id 退化为 id 本身（不得 panic/空标题）
+        let ev2 = action_event("no_such_action", false, "失败");
+        assert_eq!(ev2.title, "no_such_action");
+        assert!(!ev2.ok);
+    }
+
+    #[test]
+    fn suggest_event_marks_kind_and_not_ok() {
+        let ev = suggest_event("dns_auto", "多次自动修复无效，建议检查 DNS 配置");
+        assert_eq!(ev.kind, "suggest");
+        assert_eq!(ev.title, "DNS 恢复为 DHCP 自动获取");
+        assert!(!ev.ok, "建议不是已完成的动作，ok 必须为 false");
+        assert_eq!(ev.message, "多次自动修复无效，建议检查 DNS 配置");
+    }
+
+    #[test]
+    fn recovered_event_carries_success_message() {
+        let ev = recovered_event("自动修复成功（重启 WLAN 服务并重连 WiFi）");
+        assert_eq!(ev.kind, "recovered");
+        assert!(ev.ok);
+        assert!(ev.message.contains("自动修复成功"));
+    }
+
+    #[test]
+    fn event_payload_serializes_frontend_contract() {
+        // 字段名是前后端契约（Diagnose.tsx 按 kind/title/ok/message 消费）
+        let j = serde_json::to_string(&action_event("flush_dns", true, "OK")).unwrap();
+        for k in [
+            "\"kind\":\"action\"",
+            "\"id\":\"flush_dns\"",
+            "\"ok\":true",
+            "\"title\"",
+            "\"message\"",
+        ] {
+            assert!(j.contains(k), "序列化应含 {k}: {j}");
+        }
+        let kinds = ["action", "suggest", "recovered"];
+        for (ev, kind) in [
+            (action_event("flush_dns", true, "OK"), "action"),
+            (suggest_event("dns_auto", "why"), "suggest"),
+            (recovered_event("自动修复成功"), "recovered"),
+        ] {
+            let s = serde_json::to_string(&ev).unwrap();
+            assert!(s.contains(&format!("\"kind\":\"{kind}\"")));
+            assert!(kinds.contains(&kind));
+        }
+    }
+
+    #[test]
+    fn clip_truncates_by_chars_not_bytes() {
+        // Python message[:80] 按字符截：中文一个字就是一个字符
+        assert_eq!(clip("你好世界", 2), "你好");
+        assert_eq!(clip("abc", 10), "abc");
+        assert_eq!(clip("", 5), "");
+        assert_eq!(clip("完整", 0), "");
+        let long = "测".repeat(100);
+        assert_eq!(clip(&long, 80).chars().count(), 80);
     }
 
     #[test]

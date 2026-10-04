@@ -334,3 +334,120 @@ export function formatCheckForCopy(r: CheckResult): string {
   return lines.join("\n");
 }
 
+/**
+ * 整份报告 → 复制到剪贴板的纯文本（对齐 Python `_report_lines` 的格式）。
+ *
+ * 时间戳可注入便于测试；格式与 Python 逐行一致（报告头 / [√] 标题 / 缩进详情 /
+ * 分隔线 / 结论行），用户把 Rust 版报告贴进旧的求助帖也不违和。
+ */
+export function formatReportForCopy(report: DiagReport, now: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(
+    now.getHours(),
+  )}:${p(now.getMinutes())}`;
+  const lines = [`SysKit 诊断报告  ${stamp}`, "-".repeat(50)];
+  for (const r of report.results) {
+    lines.push(`[${statusMark(r.status)}] ${r.name}`);
+    lines.push(`      ${r.detail}`);
+  }
+  lines.push("-".repeat(50));
+  lines.push(`结论：${report.verdict_text}`);
+  return lines.join("\n");
+}
+
+// ---------------- 修复记录（手动 / 组合 / 后台监控自动修复共用） ----------------
+
+/** 后端 monitor.rs `sk://monitor-event` 的事件载荷。 */
+export interface MonitorEvent {
+  /** action=自动修复动作已执行；suggest=建议手动修复；recovered=修复后恢复 */
+  kind: "action" | "suggest" | "recovered";
+  id: string;
+  title: string;
+  ok: boolean;
+  message: string;
+}
+
+/** 按字符数截断（对齐 Python `message[:90]` 的展示纪律，中文按 1 字符计）。 */
+export function clipText(s: string, maxChars: number): string {
+  return [...s].slice(0, maxChars).join("");
+}
+
+/** 修复记录条目。 */
+export interface RepairRecord {
+  /** HH:MM:SS */
+  time: string;
+  mark: "√" | "×" | "!";
+  text: string;
+}
+
+/** 事件 → 记录行（mark 语义与 Python `_add_repair_record` 一致：√成 ×败 !建议）。 */
+export function formatMonitorEvent(ev: MonitorEvent): { mark: "√" | "×" | "!"; text: string } {
+  if (ev.kind === "suggest") {
+    return { mark: "!", text: `${ev.title}（建议手动修复）：${clipText(ev.message, 90)}` };
+  }
+  if (ev.kind === "recovered") {
+    return { mark: "√", text: clipText(ev.message || ev.title, 90) };
+  }
+  return { mark: ev.ok ? "√" : "×", text: `${ev.title} — ${clipText(ev.message, 90)}` };
+}
+
+/** 本地时钟 → HH:MM:SS（记录行前缀，注入 Date 便于测试）。 */
+export function hhmmss(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * 追加一条记录（新的在前）并截断到 max 条。
+ *
+ * 上限 60 对齐 Python `list_repair_log`：无上限的话挂机几天的记录会把列表
+ * 撑到卡顿，而排查只关心最近发生了什么。
+ */
+export function pushRecord(list: RepairRecord[], rec: RepairRecord, max = 60): RepairRecord[] {
+  const next = [rec, ...list];
+  return next.length > max ? next.slice(0, max) : next;
+}
+
+// ---------------- 「上次结果」的会话内保存 ----------------
+
+/**
+ * 诊断报告的 sessionStorage 键。
+ *
+ * Python 侧 `_diag_results` 在窗口存活期间一直保留（切页不丢）；Rust 前端切页
+ * 会卸载组件，用 sessionStorage 补上同语义——关窗即清，不把诊断结论（含内网
+ * 信息）写进持久存储。
+ */
+export const REPORT_STORAGE_KEY = "syskit.diag.report.v1";
+
+/** 序列化报告到注入的 writer（Node 测试环境没有 sessionStorage，注入便于测试）。 */
+export function saveReportTo(report: DiagReport, set: (key: string, value: string) => void): void {
+  try {
+    set(REPORT_STORAGE_KEY, JSON.stringify(report));
+  } catch {
+    // 存不进就算了：「上次结果」是便利性恢复，不值得为它打扰用户
+  }
+}
+
+/** 从注入的 reader 恢复报告；损坏/缺字段一律返回 null（绝不把脏数据当报告）。 */
+export function loadReportFrom(get: (key: string) => string | null): DiagReport | null {
+  try {
+    const raw = get(REPORT_STORAGE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw) as DiagReport;
+    if (!Array.isArray(obj.results) || typeof obj.verdict !== "string") return null;
+    return obj;
+  } catch {
+    return null;
+  }
+}
+
+/** 会话保存（webview 的 sessionStorage）。 */
+export function saveReport(report: DiagReport): void {
+  saveReportTo(report, (k, v) => sessionStorage.setItem(k, v));
+}
+
+/** 会话恢复（webview 的 sessionStorage）。 */
+export function loadReport(): DiagReport | null {
+  return loadReportFrom((k) => sessionStorage.getItem(k));
+}
+
