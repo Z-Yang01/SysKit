@@ -54,6 +54,24 @@ export function formatBps(bps: number): string {
   return `${bps.toFixed(0)} B/s`;
 }
 
+/** 字节数 → 人类可读大小。与 formatBps 同刻度但不带 /s——下载量是累计值，
+ * 标成速率会把「这次下了多少」误报成「跑得多快」。 */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes.toFixed(0)} B`;
+}
+
+/** URL → 展示用的主机名（去掉协议/路径/参数）。测速表里完整 URL 又长又重复，
+ * 主机名已足够辨认；解析失败就原文返回，绝不为展示吞掉真实来源。 */
+export function urlHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
 /** 峰值速率 → 语义色 token：≥10MB/s 好、≥1MB/s 中、有值差、无值中性。 */
 export function peakToken(peakBps: number): string {
   if (peakBps <= 0) return "sub";

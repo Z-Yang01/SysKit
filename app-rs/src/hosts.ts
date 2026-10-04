@@ -40,6 +40,43 @@ export function mappingRows(entries: HostEntry[]): HostRow[] {
     .filter((e) => e.kind === "entry" || e.kind === "disabled");
 }
 
+/** 条目筛选维度。`comment` 仅在「显示注释行」打开时提供——注释被隐藏时选它必然筛出空表。 */
+export type HostFilter = "all" | "enabled" | "disabled" | "comment";
+
+/**
+ * 在已构建的行上做筛选 + 关键字过滤。
+ *
+ * 与 `filterPorts` 同思路：筛选放前端是为了**即时**反馈（hosts 大文件上百行，
+ * 等后端往返的筛选体验不可接受）。关键字匹配「IP 主机名 别名 备注」整行文本，
+ * 大小写不敏感——主机名本身不区分大小写，筛选也应一致。
+ */
+export function filterHostRows(rows: HostRow[], filter: HostFilter, keyword: string): HostRow[] {
+  const kw = keyword.trim().toLowerCase();
+  return rows.filter((r) => {
+    if (filter === "enabled" && r.kind !== "entry") return false;
+    if (filter === "disabled" && r.kind !== "disabled") return false;
+    if (filter === "comment" && r.kind !== "comment") return false;
+    if (!kw) return true;
+    const hay = [r.raw, r.ip, r.host, r.aliases.join(" "), r.comment]
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(kw);
+  });
+}
+
+/**
+ * 该映射是否已存在（新增去重）。
+ *
+ * hosts 里同一 `IP 主机名` 重复一行不会报错，但语义混乱且难排查；
+ * 主机名不区分大小写（`Dev.local` 与 `dev.local` 是同一条），IP 按原文比对
+ * （IP 本身无大小写问题，宽松比对反而可能放过 `010.0.0.1` 这类边界形态）。
+ */
+export function isDuplicateMapping(entries: HostEntry[], ip: string, host: string): boolean {
+  const h = host.trim().toLowerCase();
+  const i = ip.trim();
+  return entries.some((e) => e.host.trim().toLowerCase() === h && e.ip.trim() === i);
+}
+
 /** 行的显示文本：`IP 主机名 别名…`。 */
 export function rowText(row: HostRow): string {
   const parts = [row.ip, row.host, ...row.aliases];

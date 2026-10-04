@@ -95,6 +95,12 @@ export function ToolboxAppNet() {
 
   const apply = useCallback(
     async (program: string, blocked: boolean) => {
+      // 非管理员时防火墙写入必然失败——前置拦截给出可读原因，而不是让用户
+      // 对着后端的原始报错猜（顶部 Alert 只是静态提示，点击时的反馈更直接）
+      if (list && !list.is_admin) {
+        message.warning(adminMsg);
+        return;
+      }
       setBusy(true);
       try {
         const r = await invoke<{ message: string }>("sk_appnet_add", { program, blocked });
@@ -107,7 +113,7 @@ export function ToolboxAppNet() {
         setBusy(false);
       }
     },
-    [load],
+    [load, list, adminMsg],
   );
 
   const add = useCallback(() => {
@@ -132,6 +138,11 @@ export function ToolboxAppNet() {
 
   const remove = useCallback(
     (row: AppNetRow) => {
+      // 同 apply：删除规则也要写防火墙，非管理员时前置拦截
+      if (list && !list.is_admin) {
+        message.warning(adminMsg);
+        return;
+      }
       Modal.confirm({
         title: "移除联网控制",
         content: `将删除 ${baseName(row.program)} 的防火墙规则并从台账移除。`,
@@ -148,7 +159,7 @@ export function ToolboxAppNet() {
         },
       });
     },
-    [load],
+    [load, list, adminMsg],
   );
 
   return (

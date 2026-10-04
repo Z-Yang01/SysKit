@@ -7,7 +7,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  filterHostRows,
   hostsStats,
+  isDuplicateMapping,
   isValidHost,
   isValidIp,
   isValidIpv4,
@@ -20,6 +22,7 @@ import {
   validateNewEntry,
   type HostEntry,
   type HostsInfo,
+  type HostRow,
 } from "../src/hosts";
 
 function entry(over: Partial<HostEntry> = {}): HostEntry {
@@ -264,5 +267,68 @@ describe("hostsStats", () => {
 
   it("空列表全 0", () => {
     expect(hostsStats([])).toEqual({ total: 0, enabled: 0, disabled: 0, comments: 0 });
+  });
+});
+
+describe("filterHostRows", () => {
+  const rows: HostRow[] = [
+    { ...entry({ ip: "10.0.0.1", host: "api.local", comment: "后端" }), idx: 0 },
+    { ...entry({ kind: "disabled", enabled: false, ip: "10.0.0.2", host: "dev.local" }), idx: 1 },
+    { ...entry({ kind: "comment", host: "", ip: "", raw: "# 临时屏蔽" }), idx: 2 },
+  ];
+
+  it("all 返回全部", () => {
+    expect(filterHostRows(rows, "all", "")).toHaveLength(3);
+  });
+
+  it("enabled 只留启用行，disabled 只留禁用行", () => {
+    expect(filterHostRows(rows, "enabled", "").map((r) => r.idx)).toEqual([0]);
+    expect(filterHostRows(rows, "disabled", "").map((r) => r.idx)).toEqual([1]);
+  });
+
+  it("comment 只留注释行", () => {
+    expect(filterHostRows(rows, "comment", "").map((r) => r.idx)).toEqual([2]);
+  });
+
+  it("关键字匹配 IP/主机名/别名/备注/原文，大小写不敏感", () => {
+    expect(filterHostRows(rows, "all", "api").map((r) => r.idx)).toEqual([0]);
+    expect(filterHostRows(rows, "all", "10.0.0.2").map((r) => r.idx)).toEqual([1]);
+    expect(filterHostRows(rows, "all", "后端").map((r) => r.idx)).toEqual([0]);
+    expect(filterHostRows(rows, "all", "临时屏蔽").map((r) => r.idx)).toEqual([2]);
+    expect(filterHostRows(rows, "all", "API.LOCAL").map((r) => r.idx)).toEqual([0]);
+  });
+
+  it("筛选与关键字叠加", () => {
+    // "local" 三行都命中，限定 enabled 后只剩启用那条
+    expect(filterHostRows(rows, "enabled", "local").map((r) => r.idx)).toEqual([0]);
+  });
+
+  it("无匹配返回空数组；关键字两侧空白被忽略", () => {
+    expect(filterHostRows(rows, "all", "不存在")).toEqual([]);
+    expect(filterHostRows(rows, "all", "  dev  ").map((r) => r.idx)).toEqual([1]);
+  });
+});
+
+describe("isDuplicateMapping", () => {
+  it("同 IP 同主机名判重", () => {
+    const entries = [entry({ ip: "10.0.0.1", host: "api.local" })];
+    expect(isDuplicateMapping(entries, "10.0.0.1", "api.local")).toBe(true);
+    expect(isDuplicateMapping(entries, "10.0.0.2", "api.local")).toBe(false);
+    expect(isDuplicateMapping(entries, "10.0.0.1", "other.local")).toBe(false);
+  });
+
+  it("主机名大小写不敏感（hosts 语义里是同一条）", () => {
+    const entries = [entry({ ip: "10.0.0.1", host: "Dev.Local" })];
+    expect(isDuplicateMapping(entries, "10.0.0.1", "dev.local")).toBe(true);
+  });
+
+  it("禁用行也算重复（它还在文件里）", () => {
+    const entries = [entry({ kind: "disabled", enabled: false, ip: "10.0.0.9", host: "x.local" })];
+    expect(isDuplicateMapping(entries, "10.0.0.9", "x.local")).toBe(true);
+  });
+
+  it("空输入不误判", () => {
+    expect(isDuplicateMapping([], "", "")).toBe(false);
+    expect(isDuplicateMapping([entry()], "", "")).toBe(false);
   });
 });

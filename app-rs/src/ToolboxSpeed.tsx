@@ -16,6 +16,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   message,
 } from "antd";
 
@@ -23,6 +24,7 @@ import {
   downloadSpeedAvailable,
   downloadSpeedNotice,
   formatBps,
+  formatBytes,
   formatLatency,
   formatRate,
   latencyToken,
@@ -30,6 +32,7 @@ import {
   rateToken,
   recommendedProbe,
   speedStats,
+  urlHost,
   type DnsProbe,
   type DnsSpeedResult,
   type DownloadTestResult,
@@ -55,6 +58,16 @@ function DnsSpeedPanel() {
   const [times, setTimes] = useState(3);
   const [result, setResult] = useState<DnsSpeedResult | null>(null);
   const [busy, setBusy] = useState(false);
+  // 已用时（秒）。6 台服务器并发、每台串行 times 次，最坏也要十几秒，
+  // 只转圈的按钮分不清是在测还是卡死
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!busy) return;
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
 
   const run = useCallback(async () => {
     setBusy(true);
@@ -91,6 +104,7 @@ function DnsSpeedPanel() {
         <Button size="small" type="primary" loading={busy} onClick={() => void run()}>
           开始测速
         </Button>
+        {busy && <span className="sk-hint">测速中… 已用时 {elapsed} 秒</span>}
         {result && (
           <>
             <Tag color="green">可用 {stats.usable}</Tag>
@@ -179,6 +193,15 @@ function DownloadSpeedPanel() {
   const [result, setResult] = useState<DownloadTestResult | null>(null);
   const [err, setErr] = useState("");
   const [status, setStatus] = useState<SpeedtestStatus | null>(null);
+  // 已用时（秒）。整轮 = 源数 × 8 秒，是用户自己能预估的真实进度上限
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!running) return;
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [running]);
 
   useEffect(() => {
     void invoke<SpeedtestStatus>("sk_speedtest_status")
@@ -201,6 +224,8 @@ function DownloadSpeedPanel() {
 
   const available = downloadSpeedAvailable(status);
   const best = result ? formatBps(result.best_peak_bps) : "—";
+  // 源数以后端能力为准（status 未到时按 3 兜底，仅用于进度预估文案）
+  const estimate = (status?.urls.length || 3) * 8;
 
   return (
     <Space direction="vertical" size={10} style={{ width: "100%" }}>
@@ -217,8 +242,11 @@ function DownloadSpeedPanel() {
         <>
           <Space wrap>
             <Button type="primary" size="small" loading={running} onClick={() => void start()}>
-              {running ? "测速中…（每源 8 秒，下载即断不落盘）" : "开始下载测速"}
+              {running ? `测速中… ${elapsed} / 约 ${estimate} 秒` : "开始下载测速"}
             </Button>
+            <span className="sk-hint">
+              {status?.urls.length ?? 3} 个源 × 8 秒，下载即断不落盘（约消耗几十 MB 流量）
+            </span>
             <Tag color={peakToken(result?.best_peak_bps ?? 0)}>
               峰值 {best}
             </Tag>
@@ -235,7 +263,10 @@ function DownloadSpeedPanel() {
                 ellipsis: true,
                 render: (v: string, r) => (
                   <Space size={4}>
-                    <span>{v}</span>
+                    {/* 主机名足够辨认来源，完整 URL 放悬浮提示；失败原因跟着行内显示 */}
+                    <Tooltip title={v}>
+                      <span style={{ fontFamily: "Consolas, monospace" }}>{urlHost(v)}</span>
+                    </Tooltip>
                     {!r.ok && r.err && <span style={{ color: "var(--sk-err)" }}>{r.err}</span>}
                   </Space>
                 ),
@@ -244,7 +275,8 @@ function DownloadSpeedPanel() {
                 title: "下载量",
                 dataIndex: "bytes",
                 width: 110,
-                render: (v: number) => formatBps(v),
+                // 下载量是累计字节数，之前误用速率格式标成「xx/s」
+                render: (v: number) => formatBytes(v),
               },
               {
                 title: "平均",

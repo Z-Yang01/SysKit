@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   downloadSpeedAvailable,
   downloadSpeedNotice,
+  formatBytes,
   formatLatency,
   formatRate,
   isUsable,
@@ -19,6 +20,7 @@ import {
   successRate,
   formatBps,
   peakToken,
+  urlHost,
   type DnsProbe,
   type DnsSpeedResult,
 } from "../src/speed";
@@ -156,6 +158,25 @@ describe("下载测速", () => {
     expect(formatBps(0)).toBe("0 B/s");
     expect(formatBps(2048)).toBe("2 KB/s");
     expect(formatBps(3 * 1024 * 1024)).toBe("3.0 MB/s");
+  });
+
+  it("formatBytes 同刻度但不带 /s（下载量是累计值不是速率）", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(2048)).toBe("2 KB");
+    expect(formatBytes(3 * 1024 * 1024)).toBe("3.0 MB");
+    // 与 formatBps 的差别正是单位后缀——回归用例防再次标错
+    expect(formatBytes(2048)).not.toBe(formatBps(2048));
+  });
+
+  it("urlHost 取主机名，失败原文返回", () => {
+    expect(urlHost("https://speed.cloudflare.com/__down?bytes=10000000")).toBe(
+      "speed.cloudflare.com",
+    );
+    expect(urlHost("http://ipv4.speedtest.sjtu.edu.cn:8080/path/file")).toBe(
+      "ipv4.speedtest.sjtu.edu.cn",
+    );
+    expect(urlHost("not a url")).toBe("not a url");
+    expect(urlHost("")).toBe("");
   });
 
   it("peakToken 按量分级", () => {

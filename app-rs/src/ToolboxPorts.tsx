@@ -129,6 +129,7 @@ function PortPanel() {
         rowKey={(r) => `${r.proto}-${r.local}-${r.remote}-${r.pid}`}
         pagination={{ pageSize: 20, showSizeChanger: false }}
         dataSource={shown}
+        loading={busy}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配连接" /> }}
         columns={[
           { title: "协议", dataIndex: "proto", width: 70 },
@@ -169,6 +170,16 @@ function PortPanel() {
 function LanPanel() {
   const [result, setResult] = useState<LanResult | null>(null);
   const [scanning, setScanning] = useState(false);
+  // 扫描已用时（秒）。后端是一次 invoke 拿全量结果、没有进度事件，百分比只能是编的；
+  // 真实秒数同样能回答「卡住了吗」——预期 8~15 秒，超过就该怀疑网络而不是界面
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!scanning) return;
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [scanning]);
 
   const scan = useCallback(async () => {
     setScanning(true);
@@ -196,7 +207,9 @@ function LanPanel() {
         <Button size="small" type="primary" loading={scanning} onClick={() => void scan()}>
           扫描局域网
         </Button>
-        <span className="sk-hint">{scanning ? "扫描中…" : lanSummary(result)}</span>
+        <span className="sk-hint">
+          {scanning ? `扫描中… 已用时 ${elapsed} 秒（并发 ping 254 个地址 + 读 ARP，约 8~15 秒）` : lanSummary(result)}
+        </span>
       </Space>
 
       {devices.length === 0 ? (

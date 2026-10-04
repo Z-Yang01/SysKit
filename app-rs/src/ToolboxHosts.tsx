@@ -13,6 +13,7 @@ import {
   Empty,
   Input,
   Modal,
+  Segmented,
   Space,
   Switch,
   Table,
@@ -23,6 +24,8 @@ import {
 
 import {
   hostsStats,
+  filterHostRows,
+  isDuplicateMapping,
   mappingRows,
   parseAliases,
   rowText,
@@ -30,6 +33,7 @@ import {
   summarizeChanges,
   validateNewEntry,
   type HostEntry,
+  type HostFilter,
   type HostRow,
   type HostsInfo,
 } from "./hosts";
@@ -40,6 +44,9 @@ export function ToolboxHosts() {
   const [info, setInfo] = useState<HostsInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [showComments, setShowComments] = useState(false);
+  // 条目筛选：全部/启用/禁用（+注释行）与关键字。hosts 大文件上百行，没有筛选基本不可用
+  const [filter, setFilter] = useState<HostFilter>("all");
+  const [keyword, setKeyword] = useState("");
 
   // 新增表单
   const [newIp, setNewIp] = useState("127.0.0.1");
@@ -66,9 +73,13 @@ export function ToolboxHosts() {
   }, [load]);
 
   const stats = useMemo(() => hostsStats(entries), [entries]);
-  const rows = useMemo(
+  const allRows = useMemo(
     () => (showComments ? entries.map((e, idx) => ({ ...e, idx })) : mappingRows(entries)),
     [entries, showComments],
+  );
+  const rows = useMemo(
+    () => filterHostRows(allRows, filter, keyword),
+    [allRows, filter, keyword],
   );
   const changes = useMemo(() => summarizeChanges(original, entries), [original, entries]);
   const warnings = useMemo(() => saveWarnings(info), [info]);
@@ -81,6 +92,11 @@ export function ToolboxHosts() {
     const v = validateNewEntry(newIp, newHost, aliases);
     if (!v.ok) {
       v.errors.forEach((e) => message.error(e));
+      return;
+    }
+    // 重复映射不报错但语义混乱（同名两条时解析顺序难推断），在录入时拦下
+    if (isDuplicateMapping(entries, newIp, newHost)) {
+      message.warning(`映射已存在：${newIp.trim()} ${newHost.trim()}（禁用行也算）`);
       return;
     }
     setEntries((prev) => [
@@ -99,11 +115,33 @@ export function ToolboxHosts() {
     setNewHost("");
     setNewAliases("");
     setNewComment("");
-  }, [newIp, newHost, newAliases, newComment]);
+  }, [newIp, newHost, newAliases, newComment, entries]);
 
   const remove = useCallback((idx: number) => {
     setEntries((prev) => prev.filter((_, i) => i !== idx));
   }, []);
+
+  /**
+   * 删除也要确认：虽然只是内存改动、写回前仍有一次确认，但列表里翻了几页后
+   * 误删一条想恢复，只能「重新读取」丢掉全部未保存改动——确认框成本低得多。
+   */
+  const removeWithConfirm = useCallback(
+    (r: HostRow) => {
+      Modal.confirm({
+        title: "删除该映射",
+        content: (
+          <Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>
+            {`${rowText(r)}${r.comment ? `  # ${r.comment}` : ""}\n\n仅从列表移除，点「写回文件」后才会真正改动 hosts。`}
+          </Typography.Paragraph>
+        ),
+        okText: "删除",
+        okButtonProps: { danger: true },
+        cancelText: "取消",
+        onOk: () => remove(r.idx),
+      });
+    },
+    [remove],
+  );
 
   const toggle = useCallback((idx: number) => {
     setEntries((prev) =>
@@ -243,10 +281,53 @@ export function ToolboxHosts() {
       </Card>
 
       <Card size="small" className="sk-card" title="条目">
+        {allRows.length > 0 && (
+          <Space wrap style={{ marginBottom: 10 }}>
+            <Segmented
+              size="small"
+              value={filter}
+              onChange={(v) => setFilter(v as HostFilter)}
+              options={(
+                showComments
+                  ? (["all", "enabled", "disabled", "comment"] as const)
+                  : (["all", "enabled", "disabled"] as const)
+              ).map((v) => ({
+                label:
+                  v === "all"
+                    ? "全部"
+                    : v === "enabled"
+                      ? "启用"
+                      : v === "disabled"
+                        ? "禁用"
+                        : "注释",
+                value: v,
+              }))}
+            />
+            <Input
+              size="small"
+              allowClear
+              style={{ width: 220 }}
+              placeholder="筛选：IP / 主机名 / 备注…"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+            />
+            {(filter !== "all" || keyword) && (
+              <span className="sk-hint">
+                筛出 {rows.length} / {allRows.length} 条
+              </span>
+            )}
+          </Space>
+        )}
         {rows.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={info?.exists ? "hosts 里没有主机映射（可能全是注释）" : "hosts 文件不存在"}
+            description={
+              allRows.length === 0
+                ? info?.exists
+                  ? "hosts 里没有主机映射（可能全是注释）"
+                  : "hosts 文件不存在"
+                : "无匹配条目——换个筛选条件或清空关键字"
+            }
           />
         ) : (
           <Table<HostRow>
@@ -289,7 +370,7 @@ export function ToolboxHosts() {
                       <Button size="small" type="link" onClick={() => toggle(r.idx)}>
                         {r.enabled ? "禁用" : "启用"}
                       </Button>
-                      <Button size="small" type="link" danger onClick={() => remove(r.idx)}>
+                      <Button size="small" type="link" danger onClick={() => removeWithConfirm(r)}>
                         删除
                       </Button>
                     </Space>

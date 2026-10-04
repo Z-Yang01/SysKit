@@ -25,7 +25,6 @@ import {
   PREFIX_MAX,
   PREFIX_MIN,
   dnsLevel,
-  dnsSummary,
   formatCount,
   formatHopHost,
   formatHopLatencies,
@@ -47,6 +46,9 @@ function DnsPanel() {
   const [presets, setPresets] = useState<{ label: string; server: string }[]>([]);
   const [answer, setAnswer] = useState<DnsAnswer | null>(null);
   const [busy, setBusy] = useState(false);
+  // 会话内的查询历史（去重、最新在前，最多 8 条）。换 DNS 服务器对比解析结果时
+  // 要反复查同几个域名，历史条一点就能重查，不用重新敲
+  const [history, setHistory] = useState<string[]>([]);
 
   useEffect(() => {
     // 预设列表随后端提供（避免前端硬编码与 Rust 常量分叉）
@@ -55,22 +57,32 @@ function DnsPanel() {
       .catch(() => setPresets([{ label: "系统默认", server: "" }]));
   }, []);
 
-  const query = useCallback(async () => {
-    setBusy(true);
-    try {
-      const server = presets.find((p) => p.label === serverLabel)?.server ?? "";
-      const r = await invoke<DnsAnswer>("sk_dns_query", { domain, server: server || null });
-      setAnswer(r);
-      const lvl = dnsLevel(r);
-      message[lvl === "success" ? "success" : lvl === "warning" ? "warning" : "error"](
-        r.message,
-      );
-    } catch (e) {
-      message.error(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }, [domain, serverLabel, presets]);
+  const query = useCallback(
+    async (d?: string) => {
+      // 历史条会带域名进来，参数优先于输入框当前值
+      const target = (d ?? domain).trim();
+      if (!target) {
+        message.warning("请输入要查询的域名");
+        return;
+      }
+      setBusy(true);
+      try {
+        const server = presets.find((p) => p.label === serverLabel)?.server ?? "";
+        const r = await invoke<DnsAnswer>("sk_dns_query", { domain: target, server: server || null });
+        setAnswer(r);
+        setHistory((prev) => [target, ...prev.filter((h) => h !== target)].slice(0, 8));
+        const lvl = dnsLevel(r);
+        message[lvl === "success" ? "success" : lvl === "warning" ? "warning" : "error"](
+          r.message,
+        );
+      } catch (e) {
+        message.error(String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [domain, serverLabel, presets],
+  );
 
   return (
     <Space direction="vertical" size={10} style={{ width: "100%" }}>
@@ -96,11 +108,31 @@ function DnsPanel() {
         <span className="sk-hint">回车即可查询</span>
       </Space>
 
+      {history.length > 0 && (
+        <Space wrap size={4}>
+          <span className="sk-hint">最近:</span>
+          {history.map((h) => (
+            <Tag
+              key={h}
+              style={{ cursor: "pointer" }}
+              onClick={() => {
+                setDomain(h);
+                void query(h);
+              }}
+            >
+              {h}
+            </Tag>
+          ))}
+        </Space>
+      )}
+
       {answer ? (
         <>
-          <Space>
+          <Space wrap>
             <Tag color={answer.ok ? "green" : "red"}>{answer.ok ? "成功" : "失败"}</Tag>
-            <span className="sk-hint">{dnsSummary(answer)}</span>
+            {answer.ok && <Tag color="blue">服务器 {answer.server || "系统默认"}</Tag>}
+            {answer.ok && <Tag>{answer.ms} ms</Tag>}
+            <span className="sk-hint">{answer.message}</span>
           </Space>
           {answer.ips.length > 0 && (
             <Table
@@ -109,8 +141,20 @@ function DnsPanel() {
               pagination={false}
               dataSource={answer.ips}
               columns={[
-                { title: "解析结果", dataIndex: "", render: (_: unknown, ip: string) => ip },
-                { title: "类型", width: 90, render: (_: unknown, ip: string) => (ip.includes(":") ? "AAAA" : "A") },
+                {
+                  title: "解析结果",
+                  render: (_: unknown, ip: string) => (
+                    // IP 常被拿去填到别处（诊断工单/其他工具），一键复制省得选中拖拽
+                    <Typography.Text copyable={{ tooltips: ["复制", "已复制"] }}>
+                      <span style={{ fontFamily: "Consolas, monospace" }}>{ip}</span>
+                    </Typography.Text>
+                  ),
+                },
+                {
+                  title: "类型",
+                  width: 90,
+                  render: (_: unknown, ip: string) => (ip.includes(":") ? "AAAA" : "A"),
+                },
               ]}
             />
           )}
@@ -168,14 +212,21 @@ function SubnetPanel() {
           size="small"
           bordered
           column={2}
-          items={subnetRows(result).map(([label, value]) => ({
-            key: label,
-            label,
-            children:
-              label === "可用主机数" || label === "地址总数"
-                ? formatCount(Number(value))
-                : value,
-          }))}
+          items={subnetRows(result).map(([label, value]) => {
+            const isCount = label === "可用主机数" || label === "地址总数";
+            return {
+              key: label,
+              label,
+              children: isCount ? (
+                formatCount(Number(value))
+              ) : (
+                // 网段信息常被复制到别的工具/工单里，一键复制比手动选中可靠
+                <Typography.Text copyable={{ text: value, tooltips: ["复制", "已复制"] }}>
+                  {value}
+                </Typography.Text>
+              ),
+            };
+          })}
         />
       ) : (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="输入 IP 与前缀长度后计算" />
@@ -189,8 +240,22 @@ function PingPanel() {
   const [ping, setPing] = useState<PingResult | null>(null);
   const [trace, setTrace] = useState<TraceResult | null>(null);
   const [busy, setBusy] = useState<"" | "ping" | "trace">("");
+  // 执行已用时（秒）。tracert 15 跳要 15~30 秒以上，只转圈的按钮让用户分不清
+  // 是在跑还是卡死；秒数是真实信息（后端一次 invoke 没有进度事件，百分比只能编）
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!busy) return;
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
 
   const doPing = useCallback(async () => {
+    if (!host.trim()) {
+      message.warning("请输入主机名或 IP");
+      return;
+    }
     setBusy("ping");
     try {
       const r = await invoke<PingResult>("sk_ping", { host, count: 4 });
@@ -204,6 +269,10 @@ function PingPanel() {
   }, [host]);
 
   const doTrace = useCallback(async () => {
+    if (!host.trim()) {
+      message.warning("请输入主机名或 IP");
+      return;
+    }
     setBusy("trace");
     try {
       const r = await invoke<TraceResult>("sk_tracert", { host, maxHops: 15 });
@@ -233,7 +302,12 @@ function PingPanel() {
         <Button size="small" loading={busy === "trace"} onClick={() => void doTrace()}>
           路由跟踪
         </Button>
-        {ping && (
+        {busy && (
+          <span className="sk-hint">
+            {busy === "trace" ? "跟踪中… 已用时" : "Ping 中… 已用时"} {elapsed} 秒
+          </span>
+        )}
+        {ping && !busy && (
           <Tag color={lossToken(ping.loss_percent) === "ok" ? "green" : lossToken(ping.loss_percent) === "err" ? "red" : "orange"}>
             {pingSummary(ping)}
           </Tag>
@@ -245,6 +319,7 @@ function PingPanel() {
           size="small"
           rowKey="hop"
           pagination={false}
+          loading={busy === "trace"}
           dataSource={trace.hops}
           columns={[
             { title: "跃点", dataIndex: "hop", width: 70 },
@@ -267,7 +342,13 @@ function PingPanel() {
       ) : (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={busy === "trace" ? "跟踪中…（最多 15 跳）" : "点 Ping 或路由跟踪"}
+          description={
+            busy === "trace"
+              ? "跟踪中…（最多 15 跳）"
+              : busy === "ping"
+                ? "Ping 中…"
+                : "点 Ping 或路由跟踪"
+          }
         />
       )}
 
@@ -277,6 +358,17 @@ function PingPanel() {
           type="secondary"
         >
           {ping.raw}
+        </Typography.Paragraph>
+      )}
+
+      {/* tracert 的原始输出后端一直有返回但从未展示；逐跳表格丢掉了 TTL/中间路由细节，
+          疑难排查时要对照原样输出，所以补上（样式与 ping 原始输出一致） */}
+      {trace?.raw && (
+        <Typography.Paragraph
+          style={{ whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 200, overflow: "auto" }}
+          type="secondary"
+        >
+          {trace.raw}
         </Typography.Paragraph>
       )}
     </Space>
