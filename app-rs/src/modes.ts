@@ -33,6 +33,8 @@ export interface ModesInfo {
   whitelist: string[];
   is_admin: boolean;
   notes: Record<string, string>;
+  /** 后端持久化的当前生效模式（run 全部步骤成功才置位，退出即清） */
+  active_mode?: ModeActive;
 }
 
 export type ModeKey = "office" | "office_exit" | "game" | "game_exit";

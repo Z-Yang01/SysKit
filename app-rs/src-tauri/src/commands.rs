@@ -2094,6 +2094,11 @@ pub fn sk_modes_info() -> serde_json::Value {
         "office_default_apps": crate::modes::OFFICE_DEFAULT_APPS,
         "whitelist": crate::modes::BACKGROUND_CLOSE_WHITELIST,
         "is_admin": crate::w32::is_elevated(),
+        // 当前生效模式（settings 动态键；run 全部步骤成功才置位，退出即清）
+        "active_mode": {
+            "office": crate::settings::get_str("modes_active") == "office",
+            "game": crate::settings::get_str("modes_active") == "game",
+        },
         "notes": {
             "office": "勿扰（关通知）+ 静音 + 打开常用软件 + 备份当前配置。退出模式会恢复通知并取消静音。",
             "game": "关通知 + 高性能电源 + 暂停 Windows 更新 + 清理白名单后台。退出模式会恢复通知、平衡电源与更新策略。",
@@ -2119,6 +2124,21 @@ pub async fn sk_modes_run(
             other => return Err(format!("未知模式: {other}")),
         };
         let summary = outcome.summary();
+        // 当前模式持久化：跨会话可见（settings 动态键）。仅全部步骤成功才
+        // 置位——部分失败时系统真实状态未知，标错会让用户以为暂停更新已
+        // 生效；退出模式成功即清除。
+        let entered = match mode.as_str() {
+            "office" | "game" => outcome.fail_count == 0,
+            _ => false,
+        };
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "modes_active".to_string(),
+            serde_json::Value::String(if entered { mode.clone() } else { String::new() }),
+        );
+        if let Err(e) = crate::settings::save(&patch) {
+            log::warn!("模式状态持久化失败（不影响本次执行）: {e}");
+        }
         Ok(serde_json::json!({
             "outcome": outcome,
             "summary": summary,

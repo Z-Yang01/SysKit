@@ -49,7 +49,11 @@ export function ModesPanel() {
 
   useEffect(() => {
     void invoke<ModesInfo>("sk_modes_info")
-      .then(setInfo)
+      .then((info) => {
+        setInfo(info);
+        // 后端持久化的当前模式优先（跨会话真值）；缺字段回落全 false
+        if (info.active_mode) setActive(info.active_mode);
+      })
       .catch(() => setInfo(null));
   }, []);
 
@@ -64,7 +68,20 @@ export function ModesPanel() {
         });
         setResult(r);
         // 只有全部步骤成功才更新"进行中"推断；部分失败时状态未知，不改
-        setActive((prev) => applyModeRun(prev, key, r.outcome.fail_count === 0));
+        const ok = r.outcome.fail_count === 0;
+        if (!ok) {
+          // 部分失败时系统真实状态未知——保持原标记不动
+          setActive((prev) => applyModeRun(prev, key, false));
+        } else {
+          setActive(
+            key === "office"
+              ? { office: true, game: false }
+              : key === "game"
+                ? { office: false, game: true }
+                : // 退出动作成功 = 清除对应标记（后端已持久化为空）
+                  { office: false, game: false },
+          );
+        }
         const lvl = outcomeLevel(r.outcome);
         message[lvl === "success" ? "success" : "warning"](r.summary);
       } catch (e) {
@@ -112,8 +129,8 @@ export function ModesPanel() {
         title="办公模式"
         extra={
           active.office && (
-            <Tooltip title="按本次会话内最近一次成功执行推断；后端不持久化模式状态，重启应用后此标记消失。">
-              <Tag color="green">进行中 · 本次会话</Tag>
+            <Tooltip title="以后端持久化记录为准（全部步骤成功才标记）；退出模式即清除。">
+              <Tag color="green">进行中</Tag>
             </Tooltip>
           )
         }
@@ -154,8 +171,8 @@ export function ModesPanel() {
         title="游戏模式"
         extra={
           active.game && (
-            <Tooltip title="按本次会话内最近一次成功执行推断；后端不持久化模式状态，重启应用后此标记消失。">
-              <Tag color="green">进行中 · 本次会话</Tag>
+            <Tooltip title="以后端持久化记录为准（全部步骤成功才标记）；退出模式即清除。">
+              <Tag color="green">进行中</Tag>
             </Tooltip>
           )
         }
