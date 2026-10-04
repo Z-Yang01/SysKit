@@ -1,7 +1,8 @@
 /**
  * 修复动作库展示逻辑测试。
  *
- * 重点：风险分级标签/配色、非管理员跳过标注、确认框触发条件、组合计划摘要。
+ * 重点：风险分级标签/配色、非管理员跳过标注、确认框触发条件、组合计划摘要、
+ * 结果 Tag 收口、复制详情文本、体检建议的动作入口过滤。
  * 这些都是「用户点之前就该看清楚」的信息，错了会让用户误执行高危动作。
  */
 import { describe, expect, it } from "vitest";
@@ -10,9 +11,11 @@ import {
   RISK_ORDER,
   actionableFixes,
   confirmText,
+  formatCheckForCopy,
   groupByRisk,
   needsConfirm,
   outcomeLevel,
+  outcomeTag,
   riskLabel,
   riskToken,
   skipReason,
@@ -153,6 +156,26 @@ describe("结果级别", () => {
   });
 });
 
+describe("结果 Tag 收口（outcomeTag）", () => {
+  it("三档结果对应 绿已成功 / 橙未接入 / 红失败", () => {
+    expect(outcomeTag({ success: true, message: "完成", need_reboot: false, output: "" })).toEqual({
+      color: "green",
+      text: "已成功",
+    });
+    expect(
+      outcomeTag({
+        success: false,
+        message: "restart_wlan 尚未在 Rust 版接入",
+        need_reboot: false,
+        output: "",
+      }),
+    ).toEqual({ color: "orange", text: "未接入" });
+    expect(
+      outcomeTag({ success: false, message: "sc config 失败", need_reboot: false, output: "" }),
+    ).toEqual({ color: "red", text: "失败" });
+  });
+});
+
 describe("组合计划摘要", () => {
   const step = (id: string, risk: ComboStep["risk"], skipped: string | null = null): ComboStep => ({
     id,
@@ -281,8 +304,38 @@ describe("可执行修复建议", () => {
     expect(fixes).toContain("dns_auto");
   });
 
+  it("传已知动作时过滤掉没入口的 id（体检可能指向未移植动作）", () => {
+    const r = report({
+      results: [check({ status: "fail", fix_ids: ["flush_dns", "restart_wlan"] })],
+    });
+    expect(actionableFixes(r, ["flush_dns", "dns_auto"])).toEqual(["flush_dns"]);
+  });
+
+  it("不传已知动作时保持原行为（全量去重）", () => {
+    const r = report({
+      results: [check({ status: "fail", fix_ids: ["flush_dns", "restart_wlan"] })],
+    });
+    expect(actionableFixes(r)).toHaveLength(2);
+  });
+
   it("空报告返回空数组", () => {
     expect(actionableFixes(null)).toEqual([]);
     expect(actionableFixes(report({ results: [] }))).toEqual([]);
+  });
+});
+
+describe("复制详情文本（formatCheckForCopy）", () => {
+  it("带状态标签与详情，自包含成一段可贴出去的信息", () => {
+    const t = formatCheckForCopy(
+      check({ status: "fail", name: "真实连通性", detail: "204探测:全部超时", fix_ids: [] }),
+    );
+    expect(t).toBe("【失败】真实连通性：204探测:全部超时");
+  });
+
+  it("有建议动作时追加一行", () => {
+    const t = formatCheckForCopy(
+      check({ status: "warn", detail: "静态 DNS 与 DHCP 下发不一致", fix_ids: ["dns_auto", "flush_dns"] }),
+    );
+    expect(t).toBe("【警告】真实连通性：静态 DNS 与 DHCP 下发不一致\n建议动作：dns_auto、flush_dns");
   });
 });

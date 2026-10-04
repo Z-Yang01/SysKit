@@ -132,6 +132,22 @@ export function outcomeLevel(outcome: RepairOutcome): "success" | "warning" | "e
   return "error";
 }
 
+/**
+ * 动作结果 → 折叠面板标签上的 Tag 颜色与文案。
+ *
+ * 统一收口「尚未接入显示橙色『未接入』」的判定——此前这段 includes("尚未")
+ * 散落在组件里写了两遍，改文案时容易漏改一处。
+ */
+export function outcomeTag(outcome: RepairOutcome): {
+  color: "green" | "orange" | "red";
+  text: string;
+} {
+  const level = outcomeLevel(outcome);
+  if (level === "success") return { color: "green", text: "已成功" };
+  if (level === "warning") return { color: "orange", text: "未接入" };
+  return { color: "red", text: "失败" };
+}
+
 /** 组合计划摘要：执行/跳过计数。 */
 export function summarizePlan(steps: ComboStep[]): {
   run: number;
@@ -282,13 +298,39 @@ export function sortBySeverity(results: CheckResult[]): CheckResult[] {
   return [...results].sort((a, b) => rank[a.status] - rank[b.status]);
 }
 
-/** 报告里是否有值得用户去点的修复建议。 */
-export function actionableFixes(report: DiagReport | null): string[] {
+/**
+ * 报告里是否有值得用户去点的修复建议。
+ *
+ * 传入 `knownIds`（动作库里确实存在的 id）时只返回有入口可跳的——
+ * 体检的 fix_ids 可能指向尚未移植的动作（如 restart_wlan），
+ * 这种给个链接点进去是空的，不如直接不推荐。
+ */
+export function actionableFixes(
+  report: DiagReport | null,
+  knownIds?: Iterable<string>,
+): string[] {
   if (!report) return [];
+  const known = knownIds ? new Set(knownIds) : null;
   const seen = new Set<string>();
   for (const r of report.results) {
-    for (const id of r.fix_ids) seen.add(id);
+    for (const id of r.fix_ids) {
+      if (known && !known.has(id)) continue;
+      seen.add(id);
+    }
   }
   return [...seen];
+}
+
+/**
+ * 单条检查结果 → 复制到剪贴板的纯文本（表格行里的「复制」按钮用）。
+ *
+ * 带上状态与建议动作，贴给别人才是自包含的一段信息，而不是光秃秃的 detail。
+ */
+export function formatCheckForCopy(r: CheckResult): string {
+  const lines = [`【${statusLabel(r.status)}】${r.name}：${r.detail}`];
+  if (r.fix_ids.length > 0) {
+    lines.push(`建议动作：${r.fix_ids.join("、")}`);
+  }
+  return lines.join("\n");
 }
 

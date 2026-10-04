@@ -1,11 +1,13 @@
 /**
  * 诊断 / 修复页。
  *
- * 本页当前交付的是**修复动作库**（20 项分级 + 组合 + 管理员门禁），
- * 数据来自后端 `sk_repair_list` / `sk_repair_plan` / `sk_repair_run`。
+ * 三块内容全部走后端真实命令：
+ * - 网络体检：`sk_diag_run` 跑 15 项检查，问题行的「建议动作」可直接跳到下方对应修复动作；
+ * - 组合修复：`sk_repair_plan` 出计划 → 确认 → 逐步 `sk_repair_run`（执行中有进度条）；
+ * - 动作库：`sk_repair_list`，按风险三级折叠展示，改配置/强力类先确认再执行。
  *
- * 网络诊断 15 项检查（netcheck）尚未移植到 Rust，故「诊断结果」区显示明确的
- * 待接入说明而不是空表——按 M3 计划那一批在下一步落地。
+ * 体验纪律：非管理员提前标注跳过；执行中防重复触发；加载失败给重试入口
+ * 而不是永远停在「正在读取」。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -18,10 +20,13 @@ import {
   Empty,
   Input,
   Modal,
+  Progress,
   Row,
   Space,
+  Spin,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
@@ -29,9 +34,11 @@ import {
 import {
   actionableFixes,
   confirmText,
+  formatCheckForCopy,
   groupByRisk,
   needsConfirm,
   outcomeLevel,
+  outcomeTag,
   riskLabel,
   riskToken,
   skipReason,
@@ -57,18 +64,37 @@ import { statusLabel } from "./repair";
 
 export function Diagnose() {
   const [data, setData] = useState<RepairList | null>(null);
+  const [loadError, setLoadError] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
   const [outcomes, setOutcomes] = useState<Record<string, RepairOutcome>>({});
   const [paramValues, setParamValues] = useState<Record<string, Record<string, string>>>({});
   const [plan, setPlan] = useState<{ key: string; steps: ComboStep[] } | null>(null);
   const [report, setReport] = useState<DiagReport | null>(null);
   const [diagBusy, setDiagBusy] = useState<"" | "quick" | "full">("");
+  /** 组合修复执行中的进度（null = 空闲）；total 只数真正会跑的步。 */
+  const [comboRun, setComboRun] = useState<{
+    key: string;
+    title: string;
+    total: number;
+    done: number;
+    current: string;
+  } | null>(null);
+  /** 最近一次组合执行的结果摘要（成功/失败各几步）。 */
+  const [comboResult, setComboResult] = useState<{ title: string; ok: number; fail: number } | null>(
+    null,
+  );
+  /** 三个风险分组的 Collapse 共用的展开集合（key = 动作 id，跨组唯一）。 */
+  const [openIds, setOpenIds] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     try {
       setData(await invoke<RepairList>("sk_repair_list"));
-    } catch {
+      setLoadError("");
+    } catch (e) {
+      // 必须区分「还在加载」和「加载失败」：失败若也停在 data=null，
+      // 界面会永远显示「正在读取修复动作库…」骗人
       setData(null);
+      setLoadError(String(e));
     }
   }, []);
 
@@ -79,23 +105,30 @@ export function Diagnose() {
   const isAdmin = data?.is_admin ?? false;
 
   /** 运行诊断（quick=true 跳过慢速外网探测）。 */
-  const runDiag = useCallback(async (quick: boolean) => {
-    setDiagBusy(quick ? "quick" : "full");
-    try {
-      const r = await invoke<DiagReport>("sk_diag_run", { quick });
-      setReport(r);
-      const lvl = r.verdict === "normal" ? "success" : "warning";
-      message[lvl](r.verdict_text);
-    } catch (e) {
-      message.error(`诊断失败：${String(e)}`);
-    } finally {
-      setDiagBusy("");
-    }
-  }, []);
+  const runDiag = useCallback(
+    async (quick: boolean) => {
+      if (comboRun) return; // 组合修复会改网络配置，中途探测结果不可信
+      setDiagBusy(quick ? "quick" : "full");
+      try {
+        const r = await invoke<DiagReport>("sk_diag_run", { quick });
+        setReport(r);
+        const lvl = r.verdict === "normal" ? "success" : "warning";
+        message[lvl](r.verdict_text);
+      } catch (e) {
+        message.error(`诊断失败：${String(e)}`);
+      } finally {
+        setDiagBusy("");
+      }
+    },
+    [comboRun],
+  );
 
   /** 执行一个动作（改配置/强力类先确认）。 */
   const run = useCallback(
     async (action: RepairAction) => {
+      // 单飞守卫：组合修复执行中或已有动作在跑时不再并发触发——
+      // 两支修复命令同时改系统配置，结果互相踩
+      if (busy || comboRun) return;
       const doRun = async () => {
         setBusy(action.id);
         try {
@@ -105,8 +138,9 @@ export function Diagnose() {
           });
           setOutcomes((m) => ({ ...m, [action.id]: out }));
           const lvl = outcomeLevel(out);
+          const rebootHint = out.success && out.need_reboot ? "（需重启后生效）" : "";
           message[lvl === "success" ? "success" : lvl === "warning" ? "warning" : "error"](
-            `${action.title}：${out.message || (out.success ? "完成" : "失败")}`,
+            `${action.title}：${out.message || (out.success ? "完成" : "失败")}${rebootHint}`,
           );
         } catch (e) {
           const out: RepairOutcome = {
@@ -138,12 +172,62 @@ export function Diagnose() {
         await doRun();
       }
     },
-    [paramValues],
+    [paramValues, busy, comboRun],
+  );
+
+  /** 组合修复：逐步执行并把进度刷到 comboRun，完成后落一条摘要。 */
+  const executeCombo = useCallback(
+    async (combo: Combo, steps: ComboStep[]) => {
+      const runnable = steps.filter((s) => !s.skipped_reason);
+      // 全被跳过（如非管理员点深度修复）就不算一次"执行"，直接说明原因
+      if (runnable.length === 0) {
+        message.info(`${combo.title}：没有可执行的步骤（全部被跳过）`);
+        return;
+      }
+      let ok = 0;
+      let fail = 0;
+      setComboRun({ key: combo.key, title: combo.title, total: runnable.length, done: 0, current: "" });
+      for (const st of runnable) {
+        const action = data?.actions.find((a) => a.id === st.id);
+        if (!action) continue;
+        setComboRun((r) => (r ? { ...r, current: st.title } : r));
+        setBusy(action.id); // 卡片里对应动作的按钮同步转圈，能看出正在跑哪一步
+        try {
+          const out = await invoke<RepairOutcome>("sk_repair_run", {
+            id: action.id,
+            params: paramValues[action.id] ?? {},
+          });
+          setOutcomes((m) => ({ ...m, [action.id]: out }));
+          if (out.success) {
+            ok += 1;
+          } else {
+            fail += 1;
+            message.warning(`${action.title} 未成功：${out.message}`);
+          }
+        } catch (e) {
+          fail += 1;
+          message.error(`${action.title}：${String(e)}`);
+        } finally {
+          setBusy("");
+          setComboRun((r) => (r ? { ...r, done: r.done + 1, current: "" } : r));
+        }
+      }
+      setComboRun(null);
+      setComboResult({ title: combo.title, ok, fail });
+      // 有失败就不能报 success：之前无条件 message.success 会掩盖部分失败
+      if (fail === 0) {
+        message.success(`${combo.title} 执行完毕：${ok} 步全部成功`);
+      } else {
+        message.warning(`${combo.title} 执行完毕：${ok} 成功 / ${fail} 失败（详见各动作面板）`);
+      }
+    },
+    [data, paramValues],
   );
 
   /** 组合修复：先取计划（含跳过项），确认后逐步执行。 */
   const runCombo = useCallback(
     async (combo: Combo) => {
+      if (comboRun || busy) return; // 与单动作互斥，见 run 的单飞守卫
       let steps: ComboStep[] = [];
       try {
         steps = await invoke<ComboStep[]>("sk_repair_plan", { combo: combo.key, isAdmin });
@@ -172,34 +256,56 @@ export function Diagnose() {
         ),
         okText: "开始执行",
         cancelText: "取消",
-        onOk: async () => {
-          for (const st of steps) {
-            if (st.skipped_reason) continue;
-            const action = data?.actions.find((a) => a.id === st.id);
-            if (!action) continue;
-            // 组合内逐步执行：安全类直接跑，改配置类已在组合确认里一并确认
-            setBusy(action.id);
-            try {
-              const out = await invoke<RepairOutcome>("sk_repair_run", {
-                id: action.id,
-                params: paramValues[action.id] ?? {},
-              });
-              setOutcomes((m) => ({ ...m, [action.id]: out }));
-              if (!out.success) {
-                message.warning(`${action.title} 未成功：${out.message}`);
-              }
-            } catch (e) {
-              message.error(`${action.title}：${String(e)}`);
-            } finally {
-              setBusy("");
-            }
-          }
-          message.success(`${combo.title} 执行完毕`);
+        // 故意不把 executeCombo 的 promise 返回给 Modal：返回了确认框会一直
+        // 转圈挡住页面，关掉它才能看到页面上的逐步进度条
+        onOk: () => {
+          void executeCombo(combo, steps);
         },
       });
     },
-    [data, isAdmin, paramValues],
+    [comboRun, busy, isAdmin, executeCombo],
   );
+
+  /**
+   * 从体检结果/清单跳到对应修复动作：展开折叠项并滚动定位。
+   *
+   * 等 260ms 再滚是为了让折叠展开动画先走完——否则目标在滚动途中还在移动。
+   */
+  const focusAction = useCallback((id: string) => {
+    setOpenIds((keys) => (keys.includes(id) ? keys : [...keys, id]));
+    window.setTimeout(() => {
+      document.getElementById(`repair-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 260);
+  }, []);
+
+  /** 体检建议里真正有入口可跳的动作（fix_ids 可能指向尚未移植的动作）。 */
+  const fixableIds = useMemo(
+    () => (report ? actionableFixes(report, (data?.actions ?? []).map((a) => a.id)) : []),
+    [report, data],
+  );
+
+  /** 体检行的建议动作渲染：有入口的做成链接，没接入的标注原因。 */
+  const renderFixLinks = useCallback(
+    (fixIds: string[]) => (
+      <span className="sk-hint">
+        建议动作：
+        {fixIds.map((fid, i) => (
+          <span key={fid}>
+            {i > 0 ? "、" : ""}
+            {(data?.actions ?? []).some((a) => a.id === fid) ? (
+              <Typography.Link onClick={() => focusAction(fid)}>{fid}</Typography.Link>
+            ) : (
+              <Tooltip title="该动作尚未在 Rust 版接入，暂无执行入口">{fid}</Tooltip>
+            )}
+          </span>
+        ))}
+      </span>
+    ),
+    [data, focusAction],
+  );
+
+  /** 最近一次出过的组合计划摘要（只算一次，别在 JSX 里重复调）。 */
+  const planSummary = plan ? summarizePlan(plan.steps) : null;
 
   const groups = useMemo(() => groupByRisk(data?.actions ?? []), [data]);
 
@@ -220,20 +326,46 @@ export function Diagnose() {
         title="组合修复"
         extra={<span className="sk-hint">按 Python COMBOS 的定义逐步执行</span>}
       >
-        <Space wrap>
-          {(data?.combos ?? []).map((c) => (
-            <Button key={c.key} onClick={() => void runCombo(c)} loading={busy !== ""}>
-              {c.title}
-              <span className="sk-hint" style={{ marginLeft: 6 }}>
-                {c.actions.length} 步
+        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+          <Space wrap>
+            {(data?.combos ?? []).map((c) => (
+              <Button
+                key={c.key}
+                onClick={() => void runCombo(c)}
+                loading={comboRun?.key === c.key}
+                disabled={(comboRun !== null && comboRun.key !== c.key) || busy !== ""}
+              >
+                {c.title}
+                <span className="sk-hint" style={{ marginLeft: 6 }}>
+                  {c.actions.length} 步
+                </span>
+              </Button>
+            ))}
+            {!comboRun && plan && planSummary && (
+              <span className="sk-hint">
+                最近计划：{plan.steps.length} 步（{planSummary.run} 执行 / {planSummary.skipped} 跳过）
               </span>
-            </Button>
-          ))}
-          {plan && (
-            <span className="sk-hint">
-              最近计划：{plan.steps.length} 步（{summarizePlan(plan.steps).run} 执行 /{" "}
-              {summarizePlan(plan.steps).skipped} 跳过）
-            </span>
+            )}
+            {!comboRun && comboResult && (
+              <span className="sk-hint">
+                上次组合「{comboResult.title}」：{comboResult.ok} 成功
+                {comboResult.fail > 0 ? ` / ${comboResult.fail} 失败` : "（全部成功）"}
+              </span>
+            )}
+          </Space>
+          {comboRun && (
+            // 执行进度：之前是黑盒等待，用户不知道组合跑到第几步、还剩几步
+            <div>
+              <Progress
+                size="small"
+                status="active"
+                percent={comboRun.total === 0 ? 100 : Math.round((comboRun.done / comboRun.total) * 100)}
+              />
+              <Typography.Text type="secondary" className="sk-hint">
+                正在执行「{comboRun.title}」：第 {Math.min(comboRun.done + 1, comboRun.total)}/
+                {comboRun.total} 步{comboRun.current ? ` —— ${comboRun.current}` : ""}
+              </Typography.Text>
+            </div>
           )}
         </Space>
       </Card>
@@ -248,6 +380,7 @@ export function Diagnose() {
               size="small"
               onClick={() => void runDiag(true)}
               loading={diagBusy === "quick"}
+              disabled={diagBusy === "full" || comboRun !== null}
             >
               快速检测
             </Button>
@@ -256,6 +389,7 @@ export function Diagnose() {
               size="small"
               onClick={() => void runDiag(false)}
               loading={diagBusy === "full"}
+              disabled={diagBusy === "quick" || comboRun !== null}
             >
               完整检测
             </Button>
@@ -278,11 +412,24 @@ export function Diagnose() {
                 </span>
               </Space>
 
-              {actionableFixes(report).length > 0 && (
+              {fixableIds.length > 0 && (
                 <Alert
                   type="info"
                   showIcon
-                  message={`诊断建议修复：${actionableFixes(report).join("、")}（可在下方对应动作里执行）`}
+                  message={
+                    <span>
+                      诊断建议修复：
+                      {fixableIds.map((fid, i) => (
+                        <span key={fid}>
+                          {i > 0 ? "、" : ""}
+                          <Typography.Link onClick={() => focusAction(fid)}>
+                            {fid}
+                          </Typography.Link>
+                        </span>
+                      ))}
+                      （点击展开并定位到对应动作）
+                    </span>
+                  }
                 />
               )}
 
@@ -316,24 +463,43 @@ export function Diagnose() {
                     dataIndex: "detail",
                     render: (v: string, row) => (
                       <Space direction="vertical" size={2}>
-                        <span className="sk-hint">{v}</span>
-                        {row.fix_ids.length > 0 && (
-                          <span className="sk-hint">建议动作：{row.fix_ids.join("、")}</span>
-                        )}
+                        <Space size={4} wrap>
+                          <span className="sk-hint">{v}</span>
+                          {/* 复制详情：贴给别人排查时需要自包含的一段信息 */}
+                          <Button
+                            size="small"
+                            type="text"
+                            className="sk-hint"
+                            style={{ height: "auto", padding: "0 4px" }}
+                            onClick={() => {
+                              navigator.clipboard
+                                .writeText(formatCheckForCopy(row))
+                                .then(() => message.success(`已复制「${row.name}」详情`))
+                                .catch(() => message.error("复制失败：剪贴板不可用"));
+                            }}
+                          >
+                            复制
+                          </Button>
+                        </Space>
+                        {row.fix_ids.length > 0 && renderFixLinks(row.fix_ids)}
                       </Space>
                     ),
                   },
                 ]}
               />
             </>
+          ) : diagBusy ? (
+            // 首次检测没有 report：用 Spin 而不是一条静态文案，让"在跑"看得见
+            <div style={{ textAlign: "center", padding: "28px 0" }}>
+              <Spin />
+              <div className="sk-hint" style={{ marginTop: 10 }}>
+                正在检测…（含 ping / HTTP / DNS 查询与网卡采集，完整检测约需数秒）
+              </div>
+            </div>
           ) : (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                diagBusy
-                  ? "正在检测…（含 ping / HTTP / DNS 查询与网卡采集，完整检测约需数秒）"
-                  : "尚未检测。点「完整检测」运行全部 15 项网络检查（NlaSvc / 持久路由 / 静态 DNS / 代理 / 网关 / DNS 对比 / NCSI / 服务 / 路由 / IPv6 / WLAN …）；「快速检测」跳过 5 项慢速项。"
-              }
+              description="尚未检测。点「完整检测」运行全部 15 项网络检查（NlaSvc / 持久路由 / 静态 DNS / 代理 / 网关 / DNS 对比 / NCSI / 服务 / 路由 / IPv6 / WLAN …）；「快速检测」跳过 5 项慢速项。"
             />
           )}
         </Space>
@@ -355,6 +521,17 @@ export function Diagnose() {
         >
           <Collapse
             accordion={false}
+            activeKey={openIds}
+            onChange={(k) => {
+              // 三个分组的 Collapse 共用 openIds；onChange 回传的数组可能只含
+              // 本组的 key，必须并回全集，否则收起 A 组会把 B 组展开的项一起收掉
+              const arr = (Array.isArray(k) ? k : [k]).map(String);
+              const groupKeys = new Set(g.items.map((a) => a.id));
+              setOpenIds((prev) => [
+                ...prev.filter((x) => !groupKeys.has(x) && !arr.includes(x)),
+                ...arr,
+              ]);
+            }}
             items={g.items.map((a) => {
               const out = outcomes[a.id];
               const skip = skipReason(a, isAdmin);
@@ -362,14 +539,11 @@ export function Diagnose() {
                 key: a.id,
                 label: (
                   <Space>
-                    <span>{a.title}</span>
+                    {/* 锚点：体检「建议动作」/清单「定位」滚动到这里 */}
+                    <span id={`repair-${a.id}`}>{a.title}</span>
                     {a.need_reboot && <Tag color="red">需重启</Tag>}
                     {skip && <Tag color="default">将被跳过</Tag>}
-                    {out && (
-                      <Tag color={out.success ? "green" : out.message.includes("尚未") ? "orange" : "red"}>
-                        {out.success ? "已成功" : out.message.includes("尚未") ? "未接入" : "失败"}
-                      </Tag>
-                    )}
+                    {out && <Tag color={outcomeTag(out).color}>{outcomeTag(out).text}</Tag>}
                   </Space>
                 ),
                 children: (
@@ -404,21 +578,33 @@ export function Diagnose() {
                         ))}
                       </Row>
                     )}
-                    <Space>
+                    <Space wrap>
                       <Button
                         type="primary"
                         size="small"
                         loading={busy === a.id}
+                        disabled={(busy !== "" || comboRun !== null) && busy !== a.id}
                         onClick={() => void run(a)}
                       >
                         执行
                       </Button>
-                      {out?.output && (
-                        <Typography.Text type="secondary" className="sk-hint">
-                          输出：{out.output.slice(0, 160)}
-                        </Typography.Text>
+                      {out?.need_reboot && (
+                        // 执行成功但需重启时给持久提醒，光靠一次性 message 会被错过
+                        <Tag color="red">需重启后生效</Tag>
                       )}
                     </Space>
+                    {out?.output && (
+                      // 完整输出可展开+可复制，替代原来静默截断 160 字符
+                      <Typography.Paragraph
+                        type="secondary"
+                        className="sk-hint"
+                        style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}
+                        ellipsis={{ rows: 3, expandable: true, symbol: "展开全部" }}
+                        copyable={{ text: out.output, tooltips: ["复制完整输出", "已复制"] }}
+                      >
+                        {out.output}
+                      </Typography.Paragraph>
+                    )}
                     {out && !out.output && out.message && (
                       <Typography.Text type="secondary" className="sk-hint">
                         {out.message}
@@ -434,7 +620,28 @@ export function Diagnose() {
 
       {!data && (
         <Card size="small" className="sk-card">
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取修复动作库…" />
+          {loadError ? (
+            // 加载失败 ≠ 加载中：给出原因和重试入口，而不是永远显示「正在读取」
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                <Space direction="vertical" size={8}>
+                  <span>修复动作库加载失败：{loadError}</span>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setLoadError("");
+                      void load();
+                    }}
+                  >
+                    重试
+                  </Button>
+                </Space>
+              }
+            />
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取修复动作库…" />
+          )}
         </Card>
       )}
 
@@ -468,6 +675,14 @@ export function Diagnose() {
               title: "非管理员",
               width: 100,
               render: (_: unknown, row) => (willBeSkipped(row, isAdmin) ? "跳过" : "可执行"),
+            },
+            {
+              title: "操作",
+              width: 90,
+              render: (_: unknown, row) => (
+                // 平铺清单看不到分组结构，给个直达入口省得在上三组折叠里翻找
+                <Typography.Link onClick={() => focusAction(row.id)}>展开定位</Typography.Link>
+              ),
             },
           ]}
         />
