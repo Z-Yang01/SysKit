@@ -188,6 +188,36 @@ pub fn hwnd_from_value(v: isize) -> Option<HWND> {
 }
 
 /// 把焦点还给 hwnd（最小化先还原），返回其是否确实成为前台窗口。
+/// 光标所在显示器的可用区域（工作区，扣任务栏）——多显示器下弹出面板
+/// 应居中在**鼠标所在屏**（Python popup() 同语义；副屏呼出时面板钉主屏
+/// 会"消失"，真机实锤）。
+pub fn cursor_monitor_workarea() -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+        if GetCursorPos(&mut pt).is_err() {
+            return None;
+        }
+        let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        let r = info.rcWork;
+        Some((r.left, r.top, r.right - r.left, r.bottom - r.top))
+    }
+}
+
 pub fn focus_window(hwnd: HWND) -> bool {
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {

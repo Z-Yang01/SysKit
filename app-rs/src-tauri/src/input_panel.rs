@@ -102,6 +102,12 @@ pub fn toggle_paste_panel<R: Runtime>(app: &AppHandle<R>) {
     set_target_hwnd(w32::foreground_hwnd_value());
     // ② 作废在途链
     bump_seq();
+    if let Some((mx, my, mw, mh)) = w32::cursor_monitor_workarea() {
+        let size = win.outer_size().unwrap_or_default();
+        let x = mx + (mw - size.width as i32) / 2;
+        let y = my + (mh - size.height as i32) / 3;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x.max(mx), y.max(my)));
+    }
     let _ = win.show();
     let _ = win.set_focus();
     let _ = app.emit("sk://panel-shown", serde_json::json!({ "panel": "paste" }));
@@ -115,6 +121,12 @@ pub fn toggle_palette<R: Runtime>(app: &AppHandle<R>) {
     if win.is_visible().unwrap_or(false) {
         let _ = win.hide();
         return;
+    }
+    if let Some((mx, my, mw, mh)) = w32::cursor_monitor_workarea() {
+        let size = win.outer_size().unwrap_or_default();
+        let x = mx + (mw - size.width as i32) / 2;
+        let y = my + (mh - size.height as i32) / 3;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x.max(mx), y.max(my)));
     }
     let _ = win.show();
     let _ = win.set_focus();

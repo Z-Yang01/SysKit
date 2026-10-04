@@ -114,6 +114,20 @@ fn restore_migrated_files() {
 /// 后端就绪后要一起处理的一次性维护：migrated 退役态自愈 + 历史按天过期 + 图片载荷孤儿清扫。
 fn startup_maintenance() {
     restore_migrated_files();
+    run_history_maintenance();
+    // 24h 周期重跑过期清理（对齐 Python 每 24h 重跑 purge_expired）：长驻会话
+    // 只在启动清一次的话，跨天使用的过期条目永远清不掉
+    std::thread::Builder::new()
+        .name("sk-daily-maintenance".into())
+        .spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(24 * 3600));
+            catch_tick("daily-maintenance", run_history_maintenance);
+        })
+        .expect("日常维护线程启动失败");
+}
+
+/// 历史按天过期 + 图片孤儿清扫（启动与每 24h 共用）。
+fn run_history_maintenance() {
     let (removed, orphans) = clipboard_history::with(|h| {
         let days = settings::get_int("clipboard_retain_days");
         let removed = h.purge_older_than(days);
@@ -128,7 +142,7 @@ fn startup_maintenance() {
         (removed, orphans)
     });
     if removed > 0 || orphans > 0 {
-        log::info!("启动维护：过期条目 {removed} 条，孤儿图片 {orphans} 个");
+        log::info!("历史维护：过期条目 {removed} 条，孤儿图片 {orphans} 个");
     }
 }
 
@@ -444,6 +458,8 @@ pub fn run() {
             commands::sk_clip_sensitive_pending,
             commands::sk_wifi_profile_password,
             commands::sk_wifi_profiles,
+            commands::sk_wifi_scan,
+            commands::sk_wifi_qr_svg,
         ])
         .run(tauri::generate_context!())
         .expect("SysKit 启动失败");
