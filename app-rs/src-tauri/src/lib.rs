@@ -104,12 +104,10 @@ fn restore_migrated_files() {
     }
     // LOCALAPPDATA 侧（当前机制只在 APPDATA 侧发生，兜一手同规则）
     let local = localappdata_dir();
-    for name in ["crash.log"] {
-        let cur = local.join(name);
-        let old = local.join(format!("{name}.migrated"));
-        if !cur.exists() && old.exists() {
-            let _ = std::fs::rename(&old, &cur);
-        }
+    let cur = local.join("crash.log");
+    let old = local.join("crash.log.migrated");
+    if !cur.exists() && old.exists() {
+        let _ = std::fs::rename(&old, &cur);
     }
 }
 
