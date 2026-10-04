@@ -38,6 +38,7 @@ import {
   humanLogSize,
   isChanged,
   isUnwired,
+  groupKey,
   ladderSummary,
   monitorNeedsAttention,
   monitorStateLabel,
@@ -245,7 +246,21 @@ function SettingsPanel() {
   );
 
   const items = all?.items ?? [];
-  const grouped = useMemo(() => groupSettings(items), [items]);
+  // 设置搜索：24 项平铺难找——键名/描述/分组/当前值文本全参与匹配（大小写不敏感）
+  const [query, setQuery] = useState("");
+  const grouped = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? items.filter(
+          (it) =>
+            it.key.toLowerCase().includes(q) ||
+            (it.description ?? "").toLowerCase().includes(q) ||
+            groupKey(it.key).toLowerCase().includes(q) ||
+            String(displayValue(it)).toLowerCase().includes(q),
+        )
+      : items;
+    return groupSettings(filtered);
+  }, [items, query]);
   const changed = changedCount(items);
   const unwired = unwiredCount(items);
 
@@ -293,6 +308,14 @@ function SettingsPanel() {
           共 {all?.count ?? 0} 项
           {changed > 0 ? ` · ${changed} 项已改动` : " · 全部为默认值"}
         </span>
+        <Input
+          size="small"
+          allowClear
+          style={{ width: 220 }}
+          placeholder="搜索设置：键名 / 描述 / 值…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
         <Button size="small" onClick={() => void load()}>
           重新读取
         </Button>
@@ -300,6 +323,10 @@ function SettingsPanel() {
           恢复默认
         </Button>
       </Space>
+
+      {grouped.length === 0 && query.trim() && (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`没有匹配「${query.trim()}」的设置`} />
+      )}
 
       {grouped.map((g) => (
         <Card key={g.group} size="small" className="sk-card" title={g.group}>
