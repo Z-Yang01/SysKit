@@ -1921,6 +1921,40 @@ pub fn sk_vault_totp_code(
 /// 文本文件名做**路径分隔符消毒**：条目内容不可信，直接拼进默认文件名里
 /// 可能带 `..\` 之类的片段；虽然最终路径由用户在对话框里确认，默认值也不该
 /// 指向目录之外。
+/// 图片条目缩略图（base64 PNG data URL）：列表内嵌显示用。
+///
+/// 用 image crate 缩到最长边 96px 再编码——历史里可能几十张截图，
+/// 原图直出会把列表内存/传输量顶到几十 MB。点击放大由前端 AntD Image 预览承担。
+#[tauri::command]
+pub async fn sk_clip_image_thumb(index: usize) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = hist::with(|h| {
+            h.search(None, None)
+                .get(index)
+                .filter(|i| i.kind == "image")
+                .map(|i| i.data.clone())
+        })
+        .ok_or_else(|| format!("找不到第 {index} 条图片历史（可能已被淘汰）"))?;
+        let src = crate::paths::image_path(&name)
+            .ok_or_else(|| format!("图片文件名非法: {name}"))?;
+        let bytes = std::fs::read(&src)
+            .map_err(|e| format!("图片读取失败（{}）: {e}", src.to_string_lossy()))?;
+        let img = image::load_from_memory(&bytes).map_err(|e| format!("图片解码失败: {e}"))?;
+        let thumb = img.thumbnail(96, 96);
+        let mut out = std::io::Cursor::new(Vec::new());
+        thumb
+            .write_to(&mut out, image::ImageFormat::Png)
+            .map_err(|e| format!("缩略图编码失败: {e}"))?;
+        use base64::Engine as _;
+        Ok(format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(out.into_inner())
+        ))
+    })
+    .await
+    .map_err(|e| format!("缩略图线程失败: {e}"))?
+}
+
 #[tauri::command]
 pub async fn sk_clip_save_as(index: usize) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {

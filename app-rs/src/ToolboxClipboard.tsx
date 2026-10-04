@@ -10,6 +10,7 @@ import {
   Alert,
   Button,
   Empty,
+  Image as AntImage,
   Input,
   InputNumber,
   Modal,
@@ -54,6 +55,38 @@ import {
   type DetectResult,
 } from "./cliprules";
 import { svgDataUrl } from "./qr";
+
+/** 图片条目缩略图：按需拉取后端 base64 缩略图；AntD Image 点击放大。 */
+function ClipImageThumb({ index }: { index: number }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    invoke<string>("sk_clip_image_thumb", { index: index })
+      .then((url) => {
+        if (alive) setSrc(url);
+      })
+      .catch(() => {
+        if (alive) setFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [index]);
+
+  if (failed) return <span className="sk-hint">图片缺失</span>;
+  if (!src) return <span className="sk-hint">…</span>;
+  return (
+    <AntImage
+      src={src}
+      width={44}
+      height={44}
+      style={{ objectFit: "cover", borderRadius: 4 }}
+      preview={{ mask: "预览" }}
+    />
+  );
+}
 
 export function ClipboardHistoryPanel() {
   const [rows, setRows] = useState<ClipRow[]>([]);
@@ -445,7 +478,11 @@ export function ClipboardHistoryPanel() {
               render: (v: string, r) => (
                 <Space size={6}>
                   {r.pinned && <Tag color="gold">置顶</Tag>}
-                  <span>{v || r.text || (r.kind === "image" ? "[图片]" : "—")}</span>
+                  {r.kind === "image" ? (
+                    <ClipImageThumb index={r.idx} />
+                  ) : (
+                    <span>{v || r.text || "—"}</span>
+                  )}
                 </Space>
               ),
             },
