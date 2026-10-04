@@ -1187,6 +1187,37 @@ pub async fn sk_wifi_profile_password(name: String) -> Result<serde_json::Value,
     .map_err(|e| format!("读取线程失败: {e}"))?
 }
 
+/// 扫描周边 WiFi（`netsh wlan show networks mode=bssid`，BSSID 级）。
+///
+/// netsh 扫描可达秒级：走阻塞线程，不占住命令线程（与 sk_wifi_profiles 同款）。
+#[tauri::command]
+pub async fn sk_wifi_scan() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let aps = crate::wifi::scan_networks()?;
+        Ok(serde_json::json!({ "aps": aps, "count": aps.len() }))
+    })
+    .await
+    .map_err(|e| format!("扫描线程失败: {e}"))?
+}
+
+/// 生成 WiFi 分享二维码 SVG（标准 `WIFI:T:..;S:..;P:..;;` 格式）。
+///
+/// **纪律：`password` 实参绝不进任何日志**——本函数与 `wifi::wifi_qr_string` /
+/// `wifi::render_qr_svg` 都不 log，错误串也只有二维码库的静态错误名，不回带密码。
+/// 展示与导出 PNG 全在前端完成，后端只回 SVG 文本。
+///
+/// `auth` 传 netsh 认证原文（如 `WPA2-Personal` / `开放式`）或手输模式直接传
+/// `WPA`/`SAE`/`WEP`/`nopass`；空串时按 nopass 处理（与 Python `_qr_ready` 同口径）。
+#[tauri::command]
+pub fn sk_wifi_qr_svg(
+    ssid: String,
+    password: String,
+    auth: Option<String>,
+) -> Result<String, String> {
+    let data = crate::wifi::wifi_qr_string(&ssid, &password, auth.as_deref().unwrap_or(""));
+    crate::wifi::render_qr_svg(&data)
+}
+
 // ---------------- 后台监控 / 自动修复 ----------------
 
 /// 监控状态（状态码、失败连击、已执行修复次数、最近梯度）。
