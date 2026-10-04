@@ -66,8 +66,56 @@ mod wifi;
 
 use tauri::{Emitter, Manager};
 
-/// 后端就绪后要一起处理的一次性维护：历史按天过期 + 图片载荷孤儿清扫。
+/// 启动自愈：`X` 缺失而 `X.json.migrated` 存在时改回原名。
+///
+/// 背景（真机事故 2026-10-04）：Python 便携迁移把 `%APPDATA%\SysKit` 的
+/// clipboard/traffic/events/settings/vault.db/vault.key 全部改成 `.migrated`
+/// 退役（重命名无损，数据都在），而新格式文件又没落到本目录——正在运行的
+/// 实例从此读到空历史/空密码库。Python 侧设计意图是"保守可逆：改回原名即可
+/// 回退"；这里把回退自动化：**仅当原名文件缺失**（绝不覆盖新数据）才改回。
+/// 两边今后谁做迁移都必须遵守这条不变式：退役改名前确保数据已可用。
+fn restore_migrated_files() {
+    use crate::paths::{appdata_dir, localappdata_dir};
+    let mut restored = Vec::new();
+    let appdata = appdata_dir();
+    for name in [
+        "clipboard.json",
+        "traffic.json",
+        "events.json",
+        "netstats_buckets.json",
+        "settings.json",
+        "vault.db",
+        "vault.key",
+    ] {
+        let cur = appdata.join(name);
+        let old = appdata.join(format!("{name}.migrated"));
+        if !cur.exists() && old.exists() {
+            match std::fs::rename(&old, &cur) {
+                Ok(()) => restored.push(name.to_string()),
+                Err(e) => log::warn!("[migrated 自愈] {name} 改回失败: {e}"),
+            }
+        }
+    }
+    if !restored.is_empty() {
+        log::warn!(
+            "[migrated 自愈] 检测到数据文件处于 .migrated 退役态且原名缺失，已改回: {}",
+            restored.join(", ")
+        );
+    }
+    // LOCALAPPDATA 侧（当前机制只在 APPDATA 侧发生，兜一手同规则）
+    let local = localappdata_dir();
+    for name in ["crash.log"] {
+        let cur = local.join(name);
+        let old = local.join(format!("{name}.migrated"));
+        if !cur.exists() && old.exists() {
+            let _ = std::fs::rename(&old, &cur);
+        }
+    }
+}
+
+/// 后端就绪后要一起处理的一次性维护：migrated 退役态自愈 + 历史按天过期 + 图片载荷孤儿清扫。
 fn startup_maintenance() {
+    restore_migrated_files();
     let (removed, orphans) = clipboard_history::with(|h| {
         let days = settings::get_int("clipboard_retain_days");
         let removed = h.purge_older_than(days);
@@ -399,6 +447,35 @@ mod tests {
     #[test]
     fn ping_is_pong() {
         assert_eq!(super::commands::ping(), "pong");
+    }
+
+    #[test]
+    fn restore_migrated_brings_back_missing_data_files() {
+        let _g = crate::test_support::serial();
+        let dir = crate::test_support::isolate();
+        let appdata = crate::paths::appdata_dir();
+        std::fs::create_dir_all(&appdata).unwrap();
+        // 场景 1：X 缺失 + X.migrated 在 → 改回
+        std::fs::write(appdata.join("clipboard.json.migrated"), b"[1]").unwrap();
+        std::fs::write(appdata.join("vault.key.migrated"), b"K").unwrap();
+        // 场景 2：X 已在（新数据）→ 绝不覆盖，.migrated 原样保留
+        std::fs::write(appdata.join("settings.json"), b"{\"new\":true}").unwrap();
+        std::fs::write(appdata.join("settings.json.migrated"), b"{\"old\":true}").unwrap();
+        super::restore_migrated_files();
+        assert_eq!(
+            std::fs::read(appdata.join("clipboard.json")).unwrap(),
+            b"[1]",
+            "退役态数据必须改回原名"
+        );
+        assert!(!appdata.join("clipboard.json.migrated").exists());
+        assert_eq!(std::fs::read(appdata.join("vault.key")).unwrap(), b"K");
+        assert_eq!(
+            std::fs::read(appdata.join("settings.json")).unwrap(),
+            b"{\"new\":true}",
+            "原名已存在的（更新）数据绝不能被 .migrated 覆盖"
+        );
+        assert!(appdata.join("settings.json.migrated").exists());
+        let _ = dir;
     }
 
     #[test]

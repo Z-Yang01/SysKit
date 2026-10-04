@@ -308,10 +308,74 @@ pub fn sample_memory() -> Option<(f64, f64)> {
     }
 }
 
-/// 取磁盘累计 (读字节, 写字节)。用 `IOCTL_DISK_PERFORMANCE` 逐物理盘累加。
+/// 取磁盘累计 (读字节, 写字节)。主路径 PDH 原始计数器，兜底 IOCTL_DISK_PERFORMANCE。
 ///
-/// 失败返回 None（调用方按「本拍无磁盘数据」处理，不清零既有基线）。
+/// 为什么主路径换 PDH：IOCTL 逐盘打开 `\\.\PhysicalDriveN`，真机实证（2026-10-04，
+/// Win11 + NVMe，非提权）打开即被拒（err=2），采样恒 None → 概览页磁盘读写恒
+/// 「0 B」；Python 版用 psutil（性能数据层，非提权可用）显示正常——同语义的
+/// Rust 可靠源是 PDH 的 `\PhysicalDisk(_Total)\Disk Read/Write Bytes/sec`
+/// **原始值**（PERF_COUNTER_BULK_COUNT 的 RawValue = 开机以来累计字节，
+/// 恰好是这里要的语义，调用方按拍差分）。失败返回 None（调用方不清基线）。
 pub fn sample_disk_io() -> Option<(u64, u64)> {
+    sample_disk_io_pdh().or_else(sample_disk_io_ioctl)
+}
+
+/// PDH 主路径：每拍开-取-关（1s 周期下开销可忽略，不持有全局查询句柄）。
+fn sample_disk_io_pdh() -> Option<(u64, u64)> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Performance::{
+        PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetRawCounterValue,
+        PdhOpenQueryW, PDH_HQUERY, PDH_RAW_COUNTER,
+    };
+    const PDH_MORE_DATA: u32 = 0x8000_07D5; // 不出现于本流程，占位不读
+    let _ = PDH_MORE_DATA;
+    unsafe {
+        let mut query = PDH_HQUERY(std::ptr::null_mut());
+        if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != 0 {
+            return None;
+        }
+        let mut read_counter = None;
+        let mut write_counter = None;
+        for (path, slot) in [
+            (
+                "\\PhysicalDisk(_Total)\\Disk Read Bytes/sec",
+                &mut read_counter,
+            ),
+            (
+                "\\PhysicalDisk(_Total)\\Disk Write Bytes/sec",
+                &mut write_counter,
+            ),
+        ] {
+            let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut counter =
+                windows::Win32::System::Performance::PDH_HCOUNTER(std::ptr::null_mut());
+            if PdhAddEnglishCounterW(query, PCWSTR(wide.as_ptr()), 0, &mut counter) == 0 {
+                *slot = Some(counter);
+            }
+        }
+        let (Some(rc), Some(wc)) = (read_counter, write_counter) else {
+            let _ = PdhCloseQuery(query);
+            return None;
+        };
+        if PdhCollectQueryData(query) != 0 {
+            let _ = PdhCloseQuery(query);
+            return None;
+        }
+        let grab = |counter: windows::Win32::System::Performance::PDH_HCOUNTER| -> Option<u64> {
+            let mut raw = PDH_RAW_COUNTER::default();
+            if PdhGetRawCounterValue(counter, None, &mut raw) != 0 {
+                return None;
+            }
+            (raw.FirstValue >= 0).then_some(raw.FirstValue as u64)
+        };
+        let out = grab(rc).zip(grab(wc));
+        let _ = PdhCloseQuery(query);
+        out
+    }
+}
+
+/// 兜底：`IOCTL_DISK_PERFORMANCE` 逐物理盘累加（PDH 不可用时才走到）。
+fn sample_disk_io_ioctl() -> Option<(u64, u64)> {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{

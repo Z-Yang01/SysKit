@@ -220,6 +220,10 @@ mod tests {
 
     #[test]
     fn hub_daily_report_defaults_to_empty_zeroes() {
+        // 必须隔离：TrafficStore/EventStore::new() 会读真实数据目录——
+        // 桌面上恰有实例在跑时（它每 60s 刷盘），不加隔离本测试就随环境假红
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
         let hub = Hub::new();
         let r = hub.daily_report(7);
         assert_eq!(r.len(), 7);
