@@ -195,9 +195,22 @@ export function ClipPanel() {
         {state.loading ? (
           <Typography.Text type="secondary">正在读取历史…</Typography.Text>
         ) : visible.length === 0 ? (
-          <Typography.Text type="secondary">
-            {state.all.length === 0 ? "剪贴板历史为空" : "没有匹配的条目"}
-          </Typography.Text>
+          <div style={{ padding: "16px 4px" }}>
+            {state.all.length === 0 && init && !init.watch_enabled ? (
+              <>
+                <Typography.Text type="secondary">
+                  剪贴板监听未开启，还没有可粘贴的历史。
+                </Typography.Text>
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 6 }}>
+                  到主窗口「剪贴板历史」页点「开启监听」——之后复制的文本会自动出现在这里。
+                </Typography.Paragraph>
+              </>
+            ) : (
+              <Typography.Text type="secondary">
+                {state.all.length === 0 ? "剪贴板历史为空" : "没有匹配的条目"}
+              </Typography.Text>
+            )}
+          </div>
         ) : (
           <List
             size="small"

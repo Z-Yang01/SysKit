@@ -133,31 +133,68 @@ export function VaultPage() {
 
   const showTotp = useCallback(
     (a: AccountRow) => {
-      let info = message.open({
+      // 到期自动滚动到下一个码：TOTP 30s 一轮，静态显示会让用户抄到过期码
+      // （真机走查实锤）。同时提供「复制」按钮——动态码的价值就是贴到别处。
+      let info: ReturnType<typeof message.open> | null = message.open({
         type: "loading",
         content: "正在生成动态码…",
         duration: 0,
       });
-      const tick = () => {
+      let timer: number | undefined;
+      const stop = () => {
+        if (timer !== undefined) window.clearInterval(timer);
+        timer = undefined;
+        info?.();
+        info = null;
+      };
+      const render = () => {
         void invoke<string>("sk_vault_totp_code", { accountId: a.id })
           .then((code) => {
             if (!code) {
+              stop();
               message.error("TOTP 密钥无效（含字母表外字符？）");
               return;
             }
-            info();
             const remain = 30 - (Math.floor(Date.now() / 1000) % 30);
+            info?.();
             info = message.open({
+              key: `totp-${a.id}`,
               type: "info",
-              content: `${accountTitle(a)} 动态码：${code}（${remain}s 后刷新）`,
-              duration: Math.max(remain, 1),
+              duration: 0,
+              content: (
+                <Space size={8}>
+                  <span>
+                    {accountTitle(a)} 动态码：
+                    <Typography.Text code style={{ fontSize: 15, fontWeight: 600 }}>
+                      {code}
+                    </Typography.Text>
+                    <span className="sk-hint">（{remain}s 后滚动）</span>
+                  </span>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      void invoke("sk_clip_copy_plain", { text: code })
+                        .then(() => message.success("动态码已复制"))
+                        .catch((e) => message.error(String(e)));
+                    }}
+                  >
+                    复制
+                  </Button>
+                </Space>
+              ),
             });
+            if (timer === undefined) {
+              timer = window.setInterval(() => render(), Math.max(remain, 1) * 1000);
+            }
           })
           .catch((e) => {
+            stop();
             message.error(String(e));
           });
       };
-      tick();
+      render();
+      // 兜底清理：90s 后若用户没关，停止滚动避免无限轮询（再点「动态码」重启）
+      window.setTimeout(stop, 90_000);
     },
     [],
   );
