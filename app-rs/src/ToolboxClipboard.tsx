@@ -59,6 +59,7 @@ export function ClipboardHistoryPanel() {
   const [rows, setRows] = useState<ClipRow[]>([]);
   const [summary, setSummary] = useState<ClipSummary | null>(null);
   const [keyword, setKeyword] = useState("");
+  // 防抖后的查询词：输入框即时回显，300ms 停顿才发后端（每键一发会连续打断）
   const [kind, setKind] = useState("");
   const [purgeDays, setPurgeDays] = useState(30);
   const [busy, setBusy] = useState(false);
@@ -71,12 +72,18 @@ export function ClipboardHistoryPanel() {
   const [qrOf, setQrOf] = useState("");
   const [qrSvg, setQrSvg] = useState("");
   const [colorOf, setColorOf] = useState("");
+  const [debouncedKeyword, setDebouncedKeyword] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedKeyword(keyword), 300);
+    return () => clearTimeout(t);
+  }, [keyword]);
 
   const load = useCallback(async () => {
     try {
       const [list, sum] = await Promise.all([
         invoke<ClipRow[]>("sk_clip_list", {
-          keyword: keyword.trim() || null,
+          keyword: debouncedKeyword.trim() || null,
           kind: kind || null,
         }),
         invoke<ClipSummary>("sk_clip_summary"),
@@ -91,7 +98,7 @@ export function ClipboardHistoryPanel() {
     } catch (e) {
       message.error(`读取剪贴板历史失败：${String(e)}`);
     }
-  }, [keyword, kind]);
+  }, [debouncedKeyword, kind]);
 
   // 二维码：qrOf 是要编码的文本，SVG 由后端本地渲染（qrcode crate）。
   // 失败必须把整个二维码区收起——不能留着"复制地址"让用户以为图还在。

@@ -73,7 +73,25 @@ export function App() {
     setDark(v);
     void invoke("sk_settings_set", { key: "dark_mode", value: v }).catch(() => {});
   };
+
+  useEffect(() => {
+    void invoke<Record<string, unknown>>("sk_settings_all")
+      .then((all) => {
+        const q = String(all["clip_quick_hotkey"] ?? "");
+        const p = String(all["palette_hotkey"] ?? "");
+        setHotkeys({
+          quick: q || "（未设）",
+          palette: p || "（未设）",
+        });
+      })
+      .catch(() => {});
+  }, []);
   const [page, setPage] = useState("overview");
+  // 侧栏底部热键速查：读真实配置（用户可改键，不能写死）
+  const [hotkeys, setHotkeys] = useState<{ quick: string; palette: string }>({
+    quick: "",
+    palette: "",
+  });
   const [pong, setPong] = useState("—");
   const [version, setVersion] = useState<string>("");
 
@@ -139,7 +157,7 @@ export function App() {
   return (
     <ConfigProvider theme={antdTheme}>
       <Layout style={{ minHeight: "100vh", background: pal.bg }}>
-        <Layout.Sider theme="light" width={168} style={{ borderRight: `1px solid ${pal.border}` }}>
+        <Layout.Sider theme="light" width={168} style={{ position: "relative", borderRight: `1px solid ${pal.border}` }}>
           <div style={{ padding: "12px 16px" }}>
             <Typography.Text strong>SysKit</Typography.Text>
             <div className="sk-hint">{version ? `v${version}` : ""}</div>
@@ -159,6 +177,21 @@ export function App() {
               { key: "settings", label: "设置 / 日志" },
             ]}
           />
+          <div
+            style={{
+              position: "absolute",
+              bottom: 12,
+              left: 16,
+              right: 16,
+              fontSize: 11,
+              lineHeight: 1.7,
+              color: pal.border === "#303030" ? "#8a8a8a" : "#999",
+            }}
+          >
+            <div>快速粘贴：{hotkeys.quick}</div>
+            <div>命令面板：{hotkeys.palette}</div>
+            <div style={{ marginTop: 4, opacity: 0.7 }}>可在「设置 / 日志」改键</div>
+          </div>
         </Layout.Sider>
 
         <Layout style={{ background: pal.bg }}>
