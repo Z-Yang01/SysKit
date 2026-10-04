@@ -676,10 +676,20 @@ mod tests {
         let mut c = VaultCrypto::new(); // 默认路径随 override 隔离
         if !c.is_provisioned() {
             c.setup(None).expect("dpapi 初始化"); // None = DPAPI 模式
-        } else {
-            c.unlock(None).expect("dpapi 自动解锁");
+            return c;
         }
-        c
+        // 文件已在：大概率本测试此前跑过留下的 DPAPI 密钥，直接解锁。
+        // 但共享隔离目录里也可能是**其他测试**留下的主密码模式残件——
+        // unlock(None) 解不开就删掉重建（顺序依赖因此消失；真机实锤
+        // 2026-10-04：全量套件顺序下 bulk_decrypt/crud 撞残留密钥报
+        // "wrapped_key 缺失"，单跑却全绿）。
+        if c.unlock(None).is_ok() {
+            return c;
+        }
+        let _ = std::fs::remove_file(c.path());
+        let mut fresh = VaultCrypto::new();
+        fresh.setup(None).expect("dpapi 残件清理后重建");
+        fresh
     }
 
     #[test]

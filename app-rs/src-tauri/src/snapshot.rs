@@ -478,7 +478,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn parse_collect_tolerates_nulls_from_powershell() {
         // 回归（真机 2026-10-04）：PowerShell 对空值输出显式 null——
         // 断开网卡的 mac=null、无网关网卡 gw=[null]。serde 的 String/Vec<String>
@@ -507,6 +506,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn parse_collect_builds_adapters_and_joins_by_ifindex() {
         let json = r#"{
             "adapters": [
