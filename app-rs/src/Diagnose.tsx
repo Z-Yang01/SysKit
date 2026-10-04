@@ -86,6 +86,8 @@ export function Diagnose() {
   const [paramValues, setParamValues] = useState<Record<string, Record<string, string>>>({});
   const [plan, setPlan] = useState<{ key: string; steps: ComboStep[] } | null>(null);
   const [report, setReport] = useState<DiagReport | null>(null);
+  // 单项重查进行中的检查 id（"" = 空闲）；替换该行结果而不是整轮重跑
+  const [recheckId, setRecheckId] = useState("");
   const [diagBusy, setDiagBusy] = useState<"" | "quick" | "full">("");
   /** 组合修复执行中的进度（null = 空闲）；total 只数真正会跑的步。 */
   const [comboRun, setComboRun] = useState<{
@@ -557,6 +559,45 @@ export function Diagnose() {
                     render: (s: CheckStatus) => (
                       <Tag color={statusTagColor(s)}>{statusLabel(s)}</Tag>
                     ),
+                  },
+                  {
+                    title: "重查",
+                    key: "recheck",
+                    width: 60,
+                    render: (_: unknown, row) => {
+                      // 单项重查（sk_diag_one）：某项异常时不用整轮重跑
+                      const busy = recheckId !== "";
+                      return (
+                        <Button
+                          size="small"
+                          type="text"
+                          className="sk-hint"
+                          style={{ height: "auto", padding: "0 4px" }}
+                          disabled={busy || diagBusy !== ""}
+                          loading={recheckId === row.id}
+                          onClick={() => {
+                            setRecheckId(row.id);
+                            invoke<CheckResult>("sk_diag_one", { id: row.id })
+                              .then((fresh) => {
+                                setReport((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        results: prev.results.map((x) =>
+                                          x.id === fresh.id ? fresh : x,
+                                        ),
+                                      }
+                                    : prev,
+                                );
+                              })
+                              .catch((e) => message.error(`重查失败：${String(e)}`))
+                              .finally(() => setRecheckId(""));
+                          }}
+                        >
+                          重查
+                        </Button>
+                      );
+                    },
                   },
                   {
                     title: "详情",
