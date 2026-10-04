@@ -18,6 +18,7 @@ import {
   Space,
   Switch,
   Tabs,
+  theme as antdThemeApi,
   Tag,
   Typography,
   message,
@@ -62,6 +63,16 @@ function Pending({
 
 export function App() {
   const [dark, setDark] = useState(false);
+  // 深色偏好持久化：启动读 dark_mode 设置，切换写回（此前每次启动都回浅色）
+  useEffect(() => {
+    void invoke<Record<string, unknown>>("sk_settings_all")
+      .then((all) => setDark(all["dark_mode"] === true))
+      .catch(() => {});
+  }, []);
+  const toggleDark = (v: boolean) => {
+    setDark(v);
+    void invoke("sk_settings_set", { key: "dark_mode", value: v }).catch(() => {});
+  };
   const [page, setPage] = useState("overview");
   const [pong, setPong] = useState("—");
   const [version, setVersion] = useState<string>("");
@@ -92,6 +103,9 @@ export function App() {
   const pal: Palette = palette(dark);
 
   const antdTheme = {
+    // 深浅算法必须跟着切：只叠深色 token 不够——AntD 组件（Alert/表格/弹窗）
+    // 仍按亮色算法推导派生色，出现浅蓝底配暗字的不可读组合（真机实锤）
+    algorithm: dark ? antdThemeApi.darkAlgorithm : antdThemeApi.defaultAlgorithm,
     token: {
       colorPrimary: pal.accent,
       colorBgBase: pal.bg,
@@ -162,7 +176,7 @@ export function App() {
           >
             <Space>
               <span className="sk-hint">深色主题</span>
-              <Switch checked={dark} onChange={setDark} />
+              <Switch checked={dark} onChange={toggleDark} />
               <Button
                 size="small"
                 onClick={async () => {
