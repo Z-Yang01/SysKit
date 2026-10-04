@@ -65,6 +65,16 @@ export function filterHostRows(rows: HostRow[], filter: HostFilter, keyword: str
 }
 
 /**
+ * 实际生效的筛选：`comment` 只在「显示注释行」打开时可选，但状态会残留——
+ * 选中「注释」后关掉开关，Segmented 的 value 就不在可见选项里（无选中态渲染）
+ * 且必然筛出空表。这里把不可表达的组合回落到 `all`：推导而非清状态，
+ * 重新打开开关时用户选过的「注释」还会回来。
+ */
+export function effectiveFilter(filter: HostFilter, showComments: boolean): HostFilter {
+  return filter === "comment" && !showComments ? "all" : filter;
+}
+
+/**
  * 该映射是否已存在（新增去重）。
  *
  * hosts 里同一 `IP 主机名` 重复一行不会报错，但语义混乱且难排查；

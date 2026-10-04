@@ -70,6 +70,9 @@ function DnsSpeedPanel() {
   }, [busy]);
 
   const run = useCallback(async () => {
+    // 输入框回车没有 loading 态挡重复触发；并发两轮会互相覆盖 result，
+    // 且先完成的 finally 提前关 busy，用时反馈就会中途消失
+    if (busy) return;
     setBusy(true);
     try {
       const r = await invoke<DnsSpeedResult>("sk_dns_speed", { domain, times });
@@ -83,7 +86,7 @@ function DnsSpeedPanel() {
     } finally {
       setBusy(false);
     }
-  }, [domain, times]);
+  }, [domain, times, busy]);
 
   const rec = recommendedProbe(result);
   const stats = speedStats(result);

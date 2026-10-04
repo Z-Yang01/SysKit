@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  effectiveFilter,
   filterHostRows,
   hostsStats,
   isDuplicateMapping,
@@ -330,5 +331,34 @@ describe("isDuplicateMapping", () => {
   it("空输入不误判", () => {
     expect(isDuplicateMapping([], "", "")).toBe(false);
     expect(isDuplicateMapping([entry()], "", "")).toBe(false);
+  });
+});
+
+describe("effectiveFilter", () => {
+  it("注释筛选在隐藏注释行时回落到 all（Segmented 选中值必须始终在可见选项里）", () => {
+    expect(effectiveFilter("comment", false)).toBe("all");
+  });
+
+  it("显示注释行时注释筛选原样保留", () => {
+    expect(effectiveFilter("comment", true)).toBe("comment");
+  });
+
+  it("其余筛选不受开关影响", () => {
+    expect(effectiveFilter("all", false)).toBe("all");
+    expect(effectiveFilter("enabled", false)).toBe("enabled");
+    expect(effectiveFilter("disabled", false)).toBe("disabled");
+    expect(effectiveFilter("all", true)).toBe("all");
+    expect(effectiveFilter("enabled", true)).toBe("enabled");
+    expect(effectiveFilter("disabled", true)).toBe("disabled");
+  });
+
+  it("回落的 all 与 filterHostRows 组合不再筛出空表", () => {
+    // 回归场景：选中「注释」→关掉「显示注释行」→条目表不得变成不可解释的空表
+    const rows: HostRow[] = [
+      { ...entry({ ip: "10.0.0.1", host: "api.local" }), idx: 0 },
+      { ...entry({ kind: "comment", host: "", ip: "", raw: "# 注释" }), idx: 1 },
+    ];
+    const visible = filterHostRows(rows, effectiveFilter("comment", false), "");
+    expect(visible.map((r) => r.idx)).toEqual([0, 1]);
   });
 });

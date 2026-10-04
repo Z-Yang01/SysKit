@@ -65,6 +65,9 @@ function DnsPanel() {
         message.warning("请输入要查询的域名");
         return;
       }
+      // 历史标签没有 loading 态挡点击；并发查询会互相覆盖 answer，
+      // 且先完成的 finally 会提前关掉 busy（查询按钮的用时/转圈随之消失）
+      if (busy) return;
       setBusy(true);
       try {
         const server = presets.find((p) => p.label === serverLabel)?.server ?? "";
@@ -81,7 +84,7 @@ function DnsPanel() {
         setBusy(false);
       }
     },
-    [domain, serverLabel, presets],
+    [domain, serverLabel, presets, busy],
   );
 
   return (
@@ -256,6 +259,9 @@ function PingPanel() {
       message.warning("请输入主机名或 IP");
       return;
     }
+    // busy 是 ping/trace 共享的单值：Ping 跑着又点「路由跟踪」（或输入框回车），
+    // 先完成者的 finally 会清掉 busy——仍在跑的那个就失去了 spinner 和用时反馈
+    if (busy) return;
     setBusy("ping");
     try {
       const r = await invoke<PingResult>("sk_ping", { host, count: 4 });
@@ -266,13 +272,14 @@ function PingPanel() {
     } finally {
       setBusy("");
     }
-  }, [host]);
+  }, [host, busy]);
 
   const doTrace = useCallback(async () => {
     if (!host.trim()) {
       message.warning("请输入主机名或 IP");
       return;
     }
+    if (busy) return;
     setBusy("trace");
     try {
       const r = await invoke<TraceResult>("sk_tracert", { host, maxHops: 15 });
@@ -283,7 +290,7 @@ function PingPanel() {
     } finally {
       setBusy("");
     }
-  }, [host]);
+  }, [host, busy]);
 
   return (
     <Space direction="vertical" size={10} style={{ width: "100%" }}>
@@ -296,10 +303,21 @@ function PingPanel() {
           onChange={(e) => setHost(e.target.value)}
           onPressEnter={() => void doPing()}
         />
-        <Button size="small" type="primary" loading={busy === "ping"} onClick={() => void doPing()}>
+        <Button
+          size="small"
+          type="primary"
+          loading={busy === "ping"}
+          disabled={busy === "trace"}
+          onClick={() => void doPing()}
+        >
           Ping
         </Button>
-        <Button size="small" loading={busy === "trace"} onClick={() => void doTrace()}>
+        <Button
+          size="small"
+          loading={busy === "trace"}
+          disabled={busy === "ping"}
+          onClick={() => void doTrace()}
+        >
           路由跟踪
         </Button>
         {busy && (

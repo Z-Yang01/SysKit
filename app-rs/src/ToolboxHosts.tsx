@@ -24,6 +24,7 @@ import {
 
 import {
   hostsStats,
+  effectiveFilter,
   filterHostRows,
   isDuplicateMapping,
   mappingRows,
@@ -77,9 +78,12 @@ export function ToolboxHosts() {
     () => (showComments ? entries.map((e, idx) => ({ ...e, idx })) : mappingRows(entries)),
     [entries, showComments],
   );
+  // 实际生效的筛选：选中「注释」后关掉显示注释行，状态残留会让 Segmented
+  // 无选中态且必然空表——回落到 all（重新打开时所选筛选还会回来）
+  const activeFilter = effectiveFilter(filter, showComments);
   const rows = useMemo(
-    () => filterHostRows(allRows, filter, keyword),
-    [allRows, filter, keyword],
+    () => filterHostRows(allRows, activeFilter, keyword),
+    [allRows, activeFilter, keyword],
   );
   const changes = useMemo(() => summarizeChanges(original, entries), [original, entries]);
   const warnings = useMemo(() => saveWarnings(info), [info]);
@@ -285,7 +289,7 @@ export function ToolboxHosts() {
           <Space wrap style={{ marginBottom: 10 }}>
             <Segmented
               size="small"
-              value={filter}
+              value={activeFilter}
               onChange={(v) => setFilter(v as HostFilter)}
               options={(
                 showComments
@@ -311,7 +315,7 @@ export function ToolboxHosts() {
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
             />
-            {(filter !== "all" || keyword) && (
+            {(activeFilter !== "all" || keyword) && (
               <span className="sk-hint">
                 筛出 {rows.length} / {allRows.length} 条
               </span>
