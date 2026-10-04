@@ -220,6 +220,20 @@ pub fn subnet24_of(ip: &str) -> Option<String> {
     Some(format!("{}.{}.{}", o[0], o[1], o[2]))
 }
 
+/// 前缀归一化：接受 "192.168.18"（三段）或 "192.168.18.0/24"（CIDR），
+/// 统一为三段式（hosts_in_subnet24 / ARP 过滤都按三段拼接）。
+/// 此前 CIDR 直通会让 `starts_with("192.168.18.0/24.")` 永不匹配——
+/// ARP 表再满也报 0 设备（真机功能扫实锤 2026-10-04）。
+pub fn normalize_prefix(input: &str) -> String {
+    let base = input.split('/').next().unwrap_or(input).trim();
+    let octets: Vec<&str> = base.split('.').collect();
+    if octets.len() == 4 && octets[3] == "0" {
+        format!("{}.{}.{}", octets[0], octets[1], octets[2])
+    } else {
+        base.to_string()
+    }
+}
+
 /// 生成 /24 网段的全部主机地址（1..=254）——批量扫描的输入。
 pub fn hosts_in_subnet24(prefix: &str) -> Vec<String> {
     (1..=254).map(|i| format!("{prefix}.{i}")).collect()
@@ -562,6 +576,15 @@ mod tests {
         assert_eq!(hosts.len(), 254);
         assert_eq!(hosts[0], "192.168.1.1");
         assert_eq!(hosts[253], "192.168.1.254");
+    }
+
+    #[test]
+    fn normalize_prefix_accepts_cidr_and_bare() {
+        // 回归：CIDR 直通曾让 ARP 过滤 starts_with("x.x.x.0/24.") 永不匹配
+        assert_eq!(normalize_prefix("192.168.18.0/24"), "192.168.18");
+        assert_eq!(normalize_prefix("192.168.18.0/24 "), "192.168.18");
+        assert_eq!(normalize_prefix("192.168.18"), "192.168.18");
+        assert_eq!(normalize_prefix("10.0.5.1/8"), "10.0.5.1");
     }
 
     #[test]

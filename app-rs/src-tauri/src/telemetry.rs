@@ -243,6 +243,8 @@ pub fn sample_interfaces() -> BTreeMap<String, IfCounters> {
 }
 
 /// 名称是否属于「物理且已连接」的网卡（M3 的「无活动网络连接」判定用）。
+/// 测试专用（原局域网扫描入口已改用快照自洽源；速率计算走 is_physical）。
+#[cfg(test)]
 pub fn physical_up_adapters() -> Vec<String> {
     use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
     use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;

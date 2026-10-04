@@ -2363,18 +2363,16 @@ pub fn sk_wifi_info() -> serde_json::Value {
 pub async fn sk_lan_scan(prefix: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let prefix = match prefix.filter(|p| !p.trim().is_empty()) {
-            Some(p) => p.trim().to_string(),
+            Some(p) => crate::portscan::normalize_prefix(p.trim()),
             None => {
-                let up = crate::telemetry::physical_up_adapters();
+                // 用快照自洽的物理网卡（单一 PowerShell 数据源，IP 归并天然一致）。
+                // 此前跨源 join（GetIfTable2 别名 ↔ 快照按名相等）在本机对不上，
+                // 有 IPv4 也报"未找到"——真机功能扫实锤 2026-10-04。
                 let snap = crate::snapshot::take();
-                let ip = up
-                    .iter()
-                    .find_map(|name| {
-                        snap.adapters
-                            .iter()
-                            .find(|a| &a.name == name)
-                            .and_then(|a| a.ipv4.first().cloned())
-                    })
+                let ip = snap
+                    .physical_up_adapters()
+                    .first()
+                    .and_then(|a| a.ipv4.first().cloned())
                     .ok_or_else(|| "未找到可用的本机 IPv4 地址，无法推断网段".to_string())?;
                 crate::portscan::subnet24_of(&ip)
                     .ok_or_else(|| format!("无法从 {ip} 推断 /24 网段"))?
