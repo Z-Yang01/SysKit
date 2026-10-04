@@ -194,11 +194,23 @@ pub fn sk_clip_summary() -> serde_json::Value {
         let items = h.items();
         let pinned = items.iter().filter(|i| i.pinned).count();
         let images = items.iter().filter(|i| i.kind == "image").count();
+        // by_kind：类型筛选徽标消费（clipSummaryText 拼接「文本 N · HTML M」）
+        let mut by_kind = std::collections::BTreeMap::new();
+        for i in &items {
+            *by_kind.entry(i.kind.clone()).or_insert(0u64) += 1;
+        }
         serde_json::json!({
             "total": items.len(),
+            // count：前端 ClipSummary.count（剪贴板页统计行「共 N/M 条」）——
+            // 真机走查实锤 undefined（字段名漂移），total 保留给骨架期调用方
+            "count": items.len(),
             "pinned": pinned,
             "images": images,
             "max_items": h.max_items,
+            "by_kind": by_kind,
+            "watch_enabled": crate::clipboard_watch::is_enabled(),
+            // 后端暂停=关闭（sk_clip_watch_set 二态合并），无独立暂停态
+            "watch_paused": false,
         })
     })
 }
