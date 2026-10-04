@@ -453,6 +453,7 @@ pub fn run() {
             commands::sk_clip_action_run,
             commands::sk_clip_qr_svg,
             commands::sk_clip_image_thumb,
+            commands::sk_download_test_one,
             commands::sk_frontend_error,
             commands::sk_clip_copy_sensitive,
             commands::sk_clip_sensitive_pending,

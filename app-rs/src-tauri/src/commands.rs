@@ -782,6 +782,19 @@ pub fn sk_speedtest_status() -> serde_json::Value {
     })
 }
 
+/// 单源下载测速（前端逐源调用实现真进度：每源完成即点亮一行）。
+#[tauri::command]
+pub async fn sk_download_test_one(
+    url: String,
+    seconds: u64,
+) -> Result<crate::netdl::UrlResult, String> {
+    let secs = seconds.clamp(2, 30);
+    let r = tauri::async_runtime::spawn_blocking(move || crate::netdl::probe_one(&url, secs))
+        .await
+        .map_err(|e| format!("测速线程失败: {e}"))?;
+    Ok(r)
+}
+
 /// 下载测速：逐 URL 独立开窗 `seconds` 秒（WinInet 系统栈，零新依赖）。
 /// 阻塞池执行；`netdl::cancel()` 支持中止（已计量 URL 照常返回）。
 #[tauri::command]

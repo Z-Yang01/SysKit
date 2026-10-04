@@ -57,6 +57,11 @@ pub fn reset_cancel() {
 }
 
 /// 单 URL 开窗下载。`seconds` 为窗口时长；返回该 URL 的计量结果。
+/// 单源公开入口（前端逐源调用实现真进度）。
+pub fn probe_one(url: &str, seconds: u64) -> UrlResult {
+    probe_url(url, seconds)
+}
+
 fn probe_url(url: &str, seconds: u64) -> UrlResult {
     let mut out = UrlResult {
         url: url.to_string(),

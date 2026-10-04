@@ -212,18 +212,41 @@ function DownloadSpeedPanel() {
       .catch(() => setStatus(null));
   }, []);
 
+  // 逐源调用（真进度）：每源完成即入表——原来一次 invoke 3 源，用户盯
+  // 空表格 24 秒不知道在干嘛。失败的单源照常入表（err 字段展示）。
   const start = useCallback(async () => {
     setRunning(true);
     setErr("");
     setResult(null);
+    const urls = status?.urls.length ? status.urls : [];
+    if (urls.length === 0) {
+      setErr("测速源列表未就绪，请稍后重试");
+      setRunning(false);
+      return;
+    }
+    const acc: DownloadUrlResult[] = [];
     try {
-      setResult(await invoke<DownloadTestResult>("sk_download_test", { seconds: 8 }));
+      for (const url of urls) {
+        try {
+          acc.push(
+            await invoke<DownloadUrlResult>("sk_download_test_one", {
+              url,
+              seconds: 8,
+            }),
+          );
+        } catch (e) {
+          acc.push({ url, ok: false, err: String(e), bytes: 0, avg_bps: 0, peak_bps: 0 });
+        }
+        const okCount = acc.filter((r) => r.ok).length;
+        const best = acc.reduce((m, r) => Math.max(m, r.peak_bps), 0);
+        setResult({ results: [...acc], ok_count: okCount, best_peak_bps: best });
+      }
     } catch (e) {
       setErr(String(e));
     } finally {
       setRunning(false);
     }
-  }, []);
+  }, [status]);
 
   const available = downloadSpeedAvailable(status);
   const best = result ? formatBps(result.best_peak_bps) : "—";
