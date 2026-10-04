@@ -34,6 +34,7 @@ import { ToolboxAppNet } from "./ToolboxAppNet";
 import { SystemPage } from "./SystemPage";
 import { VaultPage } from "./VaultPage";
 import { SettingsView } from "./SettingsView";
+import type { SettingsAll } from "./settingsPage";
 import { applyTheme, palette, type Palette } from "./theme";
 
 
@@ -86,15 +87,20 @@ export function App() {
   };
 
   useEffect(() => {
-    void invoke<Record<string, unknown>>("sk_settings_all")
+    void invoke<SettingsAll>("sk_settings_all")
       .then((all) => {
-        const q = String(all["clip_quick_hotkey"] ?? "");
-        const p = String(all["palette_hotkey"] ?? "");
+        // sk_settings_all 返回 {count, items:[{key,current,...}]}，不是平铺 map
+        const cur = (k: string) =>
+          String(all.items?.find((i) => i.key === k)?.current ?? "");
+        const q = cur("clip_quick_hotkey");
+        const p = cur("palette_hotkey");
         setHotkeys({
           quick: q || "（未设）",
           palette: p || "（未设）",
         });
-        const idx = Number(all["last_page"] ?? 0);
+        const dark = all.items?.find((i) => i.key === "dark_mode")?.current;
+        if (dark === true) setDark(true);
+        const idx = Number(all.items?.find((i) => i.key === "last_page")?.current ?? 0);
         if (Number.isInteger(idx) && idx >= 0 && idx < ORDER_KEYS.length) {
           setPageState(ORDER_KEYS[idx]);
         }

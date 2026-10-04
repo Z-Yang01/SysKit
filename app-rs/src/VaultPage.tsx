@@ -57,9 +57,9 @@ export function VaultPage() {
   const phase = vaultPhase(status);
 
   useEffect(() => {
-    void invoke<Record<string, unknown>>("sk_settings_all")
+    void invoke<{ items: { key: string; current: unknown }[] }>("sk_settings_all")
       .then((all) => {
-        const v = all["vault_autolock_min"];
+        const v = all.items?.find((i) => i.key === "vault_autolock_min")?.current;
         setAutolockMin(typeof v === "number" ? v : 30);
       })
       .catch(() => setAutolockMin(30));
