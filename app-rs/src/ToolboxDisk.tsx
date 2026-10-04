@@ -19,14 +19,17 @@ import {
 } from "antd";
 
 import {
+  allTargetKeys,
   cleanConfirmText,
   cleanResultSummary,
   diskSummary,
   driveLabel,
   humanSize,
+  meaningfulKeys,
   needsSpaceWarning,
   selectedBytes,
   targetResultText,
+  toggleKey,
   usageColor,
   validateClean,
   type CleanRunResult,
@@ -39,12 +42,17 @@ import {
 export function DiskPanel() {
   const [list, setList] = useState<DiskList | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   const load = useCallback(async () => {
     setBusy(true);
     try {
       setList(await invoke<DiskList>("sk_disk_list"));
+      setLoadError("");
     } catch (e) {
+      // 失败要和"还在读"区分开（空态才能给出重试而不是永远"正在读取…"）；
+      // 已有数据时保留旧表——刷新失败不该把上一次的结果也抹掉
+      setLoadError(String(e));
       message.error(`读取磁盘信息失败：${String(e)}`);
     } finally {
       setBusy(false);
@@ -73,11 +81,27 @@ export function DiskPanel() {
         <Button size="small" type="primary" loading={busy} onClick={() => void load()}>
           刷新
         </Button>
-        <span className="sk-hint">{diskSummary(rows)}</span>
+        {/* 首次加载完成前不显示摘要："没有本地固定磁盘"在加载期会误导 */}
+        {list && <span className="sk-hint">{diskSummary(rows)}</span>}
       </Space>
 
       {rows.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取磁盘信息…" />
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={
+            list
+              ? "没有枚举到任何本地卷"
+              : loadError
+                ? `读取磁盘信息失败：${loadError}`
+                : "正在读取磁盘信息…"
+          }
+        >
+          {loadError && (
+            <Button size="small" type="primary" onClick={() => void load()}>
+              重试
+            </Button>
+          )}
+        </Empty>
       ) : (
         <Table<DriveRow>
           size="small"
@@ -142,6 +166,7 @@ export function CleanupPanel() {
   const [selected, setSelected] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
+  const [scanError, setScanError] = useState("");
   const [result, setResult] = useState<CleanRunResult | null>(null);
 
   const doScan = useCallback(async () => {
@@ -149,7 +174,10 @@ export function CleanupPanel() {
     try {
       const s = await invoke<CleanScan>("sk_clean_scan");
       setScan(s);
+      setScanError("");
     } catch (e) {
+      // 扫描失败要和"还在扫"区分开（空态才能给出重试）；已有结果时保留旧表
+      setScanError(String(e));
       message.error(`扫描失败：${String(e)}`);
     } finally {
       setScanning(false);
@@ -206,14 +234,39 @@ export function CleanupPanel() {
       />
 
       <Space wrap>
-        <Button size="small" loading={scanning} onClick={() => void doScan()}>
+        <Button size="small" loading={scanning} disabled={cleaning} onClick={() => void doScan()}>
           扫描大小
         </Button>
-        <Button size="small" type="primary" danger loading={cleaning} onClick={run}>
+        <Button
+          size="small"
+          type="primary"
+          danger
+          loading={cleaning}
+          disabled={scanning}
+          onClick={run}
+        >
           清理选中项
         </Button>
+        {/* 勾选辅助：清理是白名单固定项，全选安全；"只选有内容的"省得清 0 字节目标 */}
+        <Button
+          size="small"
+          disabled={rows.length === 0}
+          onClick={() => setSelected(allTargetKeys(rows))}
+        >
+          全选
+        </Button>
+        <Button
+          size="small"
+          disabled={rows.length === 0}
+          onClick={() => setSelected(meaningfulKeys(rows))}
+        >
+          只选有内容的
+        </Button>
+        <Button size="small" disabled={selected.length === 0} onClick={() => setSelected([])}>
+          清空选择
+        </Button>
         <span className="sk-hint">
-          {scan ? `合计可清理 ${scan.total_human}` : "正在扫描…"}
+          {scan ? `合计可清理 ${scan.total_human}` : scanError ? "扫描失败" : "正在扫描…"}
         </span>
         {selected.length > 0 && (
           <Tag color="orange">已选 {selected.length} 项 · 约 {humanSize(selectedBytes(rows, selected))}</Tag>
@@ -221,7 +274,22 @@ export function CleanupPanel() {
       </Space>
 
       {rows.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在扫描清理目标…" />
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={
+            scan
+              ? "没有可清理的目标"
+              : scanError
+                ? `扫描失败：${scanError}`
+                : "正在扫描清理目标…"
+          }
+        >
+          {scanError && (
+            <Button size="small" type="primary" onClick={() => void doScan()}>
+              重试
+            </Button>
+          )}
+        </Empty>
       ) : (
         <Checkbox.Group
           style={{ width: "100%" }}
@@ -232,9 +300,15 @@ export function CleanupPanel() {
             size="small"
             dataSource={rows}
             renderItem={(r) => (
-              <List.Item>
+              <List.Item
+                style={{ cursor: "pointer" }}
+                onClick={() => setSelected((s) => toggleKey(s, r.key))}
+              >
                 <Space size={10} style={{ width: "100%" }}>
-                  <Checkbox value={r.key} />
+                  {/* checkbox 自己的点击会冒泡到行 onClick 造成二次翻转，阻断它 */}
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <Checkbox value={r.key} />
+                  </span>
                   <span style={{ minWidth: 140 }}>{r.title}</span>
                   <Tag color={(r.bytes ?? 0) > 0 ? "orange" : "default"}>
                     {(r.bytes ?? 0) > 0 ? (r.human ?? humanSize(r.bytes ?? 0)) : "无"}

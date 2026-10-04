@@ -13,6 +13,7 @@ import {
   Empty,
   Input,
   Modal,
+  Segmented,
   Space,
   Table,
   Tag,
@@ -29,19 +30,31 @@ import {
   locationHint,
   startupStats,
   toggleConfirmText,
+  toggleErrorText,
   type StartupItem,
   type StartupList,
+  type StartupStatusFilter,
 } from "./startup";
 
 export function ToolboxStartup() {
   const [list, setList] = useState<StartupList | null>(null);
   const [keyword, setKeyword] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<StartupStatusFilter>("all");
+  // 记录"正在切换哪一行"而不是全局布尔：全局 busy 会让每一行的按钮同时转圈，
+  // 用户分不清刚才点的是哪个
+  const [busyKey, setBusyKey] = useState("");
+  const [loadError, setLoadError] = useState("");
 
   const load = useCallback(async () => {
     try {
       setList(await invoke<StartupList>("sk_startup_list"));
+      // 成功后清掉旧错误，重试入口随 Empty 一起消失
+      setLoadError("");
     } catch (e) {
+      // 必须区分「还在加载」和「加载失败」：失败若也停在 list=null，
+      // 界面会永远显示"正在枚举启动项…"骗人（message 提示 3 秒后就没了）。
+      // 已有数据时保留旧表——刷新失败不该把上一次的枚举结果也抹掉。
+      setLoadError(String(e));
       message.error(`枚举启动项失败：${String(e)}`);
     }
   }, []);
@@ -50,7 +63,10 @@ export function ToolboxStartup() {
     void load();
   }, [load]);
 
-  const rows = useMemo(() => filterStartup(list?.rows ?? [], keyword), [list, keyword]);
+  const rows = useMemo(
+    () => filterStartup(list?.rows ?? [], keyword, status),
+    [list, keyword, status],
+  );
   const stats = useMemo(() => startupStats(list?.rows ?? []), [list]);
   const isAdmin = list?.is_admin ?? false;
 
@@ -74,7 +90,8 @@ export function ToolboxStartup() {
         okButtonProps: { danger: !enable },
         cancelText: "取消",
         onOk: async () => {
-          setBusy(true);
+          const key = `${item.location}|${item.name}`;
+          setBusyKey(key);
           try {
             message.success(
               await invoke<string>("sk_startup_set", {
@@ -85,9 +102,9 @@ export function ToolboxStartup() {
             );
             await load();
           } catch (e) {
-            message.error(String(e));
+            message.error(toggleErrorText(enable, e));
           } finally {
-            setBusy(false);
+            setBusyKey("");
           }
         },
       });
@@ -122,6 +139,17 @@ export function ToolboxStartup() {
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
         />
+        {/* 状态档是高频意图：禁完一串想回头检查，或想找出"还有什么在自启" */}
+        <Segmented
+          size="small"
+          value={status}
+          onChange={(v) => setStatus(v as StartupStatusFilter)}
+          options={[
+            { value: "all", label: "全部" },
+            { value: "enabled", label: "已启用" },
+            { value: "disabled", label: "已禁用" },
+          ]}
+        />
         <Tag color="green">启用 {stats.enabled}</Tag>
         <Tag>禁用 {stats.disabled}</Tag>
         <span className="sk-hint">共 {stats.total} 项</span>
@@ -130,8 +158,20 @@ export function ToolboxStartup() {
       {rows.length === 0 ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={list ? "没有匹配的启动项" : "正在枚举启动项…"}
-        />
+          description={
+            list
+              ? "没有匹配的启动项"
+              : loadError
+                ? `枚举启动项失败：${loadError}`
+                : "正在枚举启动项…"
+          }
+        >
+          {loadError && (
+            <Button size="small" type="primary" onClick={() => void load()}>
+              重试
+            </Button>
+          )}
+        </Empty>
       ) : (
         <Table<StartupItem>
           size="small"
@@ -145,7 +185,9 @@ export function ToolboxStartup() {
               width: 220,
               render: (v: string, r) => (
                 <Space direction="vertical" size={0}>
-                  <span style={{ color: r.enabled ? undefined : "#8b949e" }}>{v}</span>
+                  {/* 禁用态压暗用 opacity 而不是写死灰色：写死的 #8b949e 在浅色
+                      主题下对比度不足（约 3:1），opacity 对深浅主题都成立 */}
+                  <span style={{ opacity: r.enabled ? 1 : 0.55 }}>{v}</span>
                   <span className="sk-hint">{commandProgram(r.command) || "—"}</span>
                 </Space>
               ),
@@ -182,7 +224,13 @@ export function ToolboxStartup() {
               render: (_: unknown, r) => {
                 const check = canToggle(r, isAdmin);
                 return check.ok ? (
-                  <Button size="small" type="link" loading={busy} onClick={() => toggle(r)}>
+                  <Button
+                    size="small"
+                    type="link"
+                    loading={busyKey === `${r.location}|${r.name}`}
+                    disabled={busyKey !== ""}
+                    onClick={() => toggle(r)}
+                  >
                     {r.enabled ? "禁用" : "启用"}
                   </Button>
                 ) : (

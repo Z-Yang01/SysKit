@@ -16,12 +16,14 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
 
 import {
   adminNote,
+  applyModeRun,
   enterConfirmText,
   failedSteps,
   isEntering,
@@ -29,6 +31,7 @@ import {
   outcomeLevel,
   outcomeSummary,
   updatePolicyNote,
+  type ModeActive,
   type ModeKey,
   type ModeRunResult,
   type ModeStep,
@@ -41,6 +44,8 @@ export function ModesPanel() {
   const [clearBg, setClearBg] = useState(true);
   const [result, setResult] = useState<ModeRunResult | null>(null);
   const [busy, setBusy] = useState<ModeKey | "">("");
+  // 会话内推断的当前模式（后端不持久化，切页后丢失——标签上如实注明）
+  const [active, setActive] = useState<ModeActive>({ office: false, game: false });
 
   useEffect(() => {
     void invoke<ModesInfo>("sk_modes_info")
@@ -58,6 +63,8 @@ export function ModesPanel() {
           clearBg,
         });
         setResult(r);
+        // 只有全部步骤成功才更新"进行中"推断；部分失败时状态未知，不改
+        setActive((prev) => applyModeRun(prev, key, r.outcome.fail_count === 0));
         const lvl = outcomeLevel(r.outcome);
         message[lvl === "success" ? "success" : "warning"](r.summary);
       } catch (e) {
@@ -100,7 +107,17 @@ export function ModesPanel() {
     <Space direction="vertical" size={10} style={{ width: "100%" }}>
       {admin && <Alert type="info" showIcon message="部分步骤需要管理员" description={admin} />}
 
-      <Card size="small" title="办公模式">
+      <Card
+        size="small"
+        title="办公模式"
+        extra={
+          active.office && (
+            <Tooltip title="按本次会话内最近一次成功执行推断；后端不持久化模式状态，重启应用后此标记消失。">
+              <Tag color="green">进行中 · 本次会话</Tag>
+            </Tooltip>
+          )
+        }
+      >
         <Space direction="vertical" size={8} style={{ width: "100%" }}>
           <Typography.Text type="secondary">
             勿扰（关通知）+ 静音 + 打开常用软件 + 备份当前配置。退出会恢复通知并取消静音
@@ -114,6 +131,8 @@ export function ModesPanel() {
               type="primary"
               size="small"
               loading={busy === "office"}
+              // 执行期间四个按钮全部锁住：办公/游戏互相改通知与电源，交错执行结果不可预期
+              disabled={busy !== "" && busy !== "office"}
               onClick={() => confirmAndRun("office")}
             >
               进入办公模式
@@ -121,6 +140,7 @@ export function ModesPanel() {
             <Button
               size="small"
               loading={busy === "office_exit"}
+              disabled={busy !== "" && busy !== "office_exit"}
               onClick={() => confirmAndRun("office_exit")}
             >
               退出办公模式
@@ -129,7 +149,17 @@ export function ModesPanel() {
         </Space>
       </Card>
 
-      <Card size="small" title="游戏模式">
+      <Card
+        size="small"
+        title="游戏模式"
+        extra={
+          active.game && (
+            <Tooltip title="按本次会话内最近一次成功执行推断；后端不持久化模式状态，重启应用后此标记消失。">
+              <Tag color="green">进行中 · 本次会话</Tag>
+            </Tooltip>
+          )
+        }
+      >
         <Space direction="vertical" size={8} style={{ width: "100%" }}>
           <Typography.Text type="secondary">
             关通知 + 高性能电源 + 暂停 Windows 更新 + 清理白名单后台。退出会恢复通知、
@@ -144,6 +174,7 @@ export function ModesPanel() {
               type="primary"
               size="small"
               loading={busy === "game"}
+              disabled={busy !== "" && busy !== "game"}
               onClick={() => confirmAndRun("game")}
             >
               进入游戏模式
@@ -151,6 +182,7 @@ export function ModesPanel() {
             <Button
               size="small"
               loading={busy === "game_exit"}
+              disabled={busy !== "" && busy !== "game_exit"}
               onClick={() => confirmAndRun("game_exit")}
             >
               退出游戏模式

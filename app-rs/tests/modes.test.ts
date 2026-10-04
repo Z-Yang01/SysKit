@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   adminNote,
+  applyModeRun,
   enterConfirmText,
   failedSteps,
   isEntering,
@@ -15,6 +16,7 @@ import {
   outcomeLevel,
   outcomeSummary,
   updatePolicyNote,
+  type ModeActive,
   type ModeOutcome,
   type ModeStep,
   type ModesInfo,
@@ -148,5 +150,27 @@ describe("adminNote", () => {
   it("管理员时为空（不打扰）", () => {
     expect(adminNote(info({ is_admin: true }))).toBe("");
     expect(adminNote(null)).toBe("");
+  });
+});
+
+describe("applyModeRun（会话内状态推导）", () => {
+  const active = (office: boolean, game: boolean): ModeActive => ({ office, game });
+  const idle = active(false, false);
+
+  it("全部成功时置位/清除对应族", () => {
+    expect(applyModeRun(idle, "office", true)).toEqual(active(true, false));
+    expect(applyModeRun(idle, "game", true)).toEqual(active(false, true));
+    expect(applyModeRun(active(true, false), "office_exit", true)).toEqual(active(false, false));
+    expect(applyModeRun(active(false, true), "game_exit", true)).toEqual(active(false, false));
+  });
+
+  it("部分失败不改状态（系统真实状态未知，宁缺勿错）", () => {
+    expect(applyModeRun(idle, "game", false)).toEqual(idle);
+    expect(applyModeRun(active(true, true), "office_exit", false)).toEqual(active(true, true));
+  });
+
+  it("两族独立跟踪：进游戏不清办公标记，退出也只动自己那族", () => {
+    expect(applyModeRun(active(true, false), "game", true)).toEqual(active(true, true));
+    expect(applyModeRun(active(true, true), "game_exit", true)).toEqual(active(true, false));
   });
 });

@@ -108,6 +108,21 @@ export function diskSummary(rows: DriveRow[]): string {
 
 // ---------------- 清理 ----------------
 
+/** 全部目标的 key（"全选"用）。 */
+export function allTargetKeys(rows: CleanTargetInfo[]): string[] {
+  return rows.map((r) => r.key);
+}
+
+/** 有内容（bytes > 0）的目标 key（"只选有内容的"用——清 0 字节的目标毫无收益）。 */
+export function meaningfulKeys(rows: CleanTargetInfo[]): string[] {
+  return rows.filter((r) => (r.bytes ?? 0) > 0).map((r) => r.key);
+}
+
+/** 单行点选/取消（勾选列表支持点整行切换时的状态翻转）。 */
+export function toggleKey(selected: string[], key: string): string[] {
+  return selected.includes(key) ? selected.filter((k) => k !== key) : [...selected, key];
+}
+
 /** 选中项合计大小（用于确认框）。 */
 export function selectedBytes(rows: CleanTargetInfo[], selected: string[]): number {
   return rows

@@ -16,6 +16,7 @@ import {
   needsAdmin,
   startupStats,
   toggleConfirmText,
+  toggleErrorText,
   type StartupItem,
 } from "../src/startup";
 
@@ -149,5 +150,34 @@ describe("toggleConfirmText", () => {
     const t = toggleConfirmText(item({ enabled: false }), true);
     expect(t).toContain("重新启用");
     expect(t).toContain("下次登录");
+  });
+});
+
+describe("filterStartup 状态档", () => {
+  const rows = [
+    item({ name: "OneDrive", enabled: true }),
+    item({ name: "SecurityHealth", enabled: false }),
+    item({ name: "WeChat", enabled: false }),
+  ];
+
+  it("默认 all 不筛状态（旧签名兼容）", () => {
+    expect(filterStartup(rows, "")).toHaveLength(3);
+  });
+
+  it("enabled / disabled 档分别过滤", () => {
+    expect(filterStartup(rows, "", "enabled").map((r) => r.name)).toEqual(["OneDrive"]);
+    expect(filterStartup(rows, "", "disabled")).toHaveLength(2);
+  });
+
+  it("状态档与关键字叠加", () => {
+    expect(filterStartup(rows, "security", "disabled")).toHaveLength(1);
+    expect(filterStartup(rows, "security", "enabled")).toEqual([]);
+  });
+});
+
+describe("toggleErrorText", () => {
+  it("补上动作上下文（是禁用还是启用失败了）", () => {
+    expect(toggleErrorText(false, "需要管理员权限")).toBe("禁用失败：需要管理员权限");
+    expect(toggleErrorText(true, "boom")).toBe("启用失败：boom");
   });
 });

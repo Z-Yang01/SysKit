@@ -75,11 +75,24 @@ export function startupStats(rows: StartupItem[]): { total: number; enabled: num
   return { total: rows.length, enabled, disabled: rows.length - enabled };
 }
 
-/** 关键字筛选（名称/命令/位置）。 */
-export function filterStartup(rows: StartupItem[], keyword: string): StartupItem[] {
+/** 状态筛选档位（all 之外的两档服务"找出自启项/找回被禁项"两个高频意图）。 */
+export type StartupStatusFilter = "all" | "enabled" | "disabled";
+
+/**
+ * 关键字 + 状态双重筛选。
+ * status 用可选参数保持旧签名兼容（只按关键字筛）。
+ */
+export function filterStartup(
+  rows: StartupItem[],
+  keyword: string,
+  status: StartupStatusFilter = "all",
+): StartupItem[] {
+  let out = rows;
+  if (status === "enabled") out = out.filter((r) => r.enabled);
+  else if (status === "disabled") out = out.filter((r) => !r.enabled);
   const kw = keyword.trim().toLowerCase();
-  if (!kw) return rows;
-  return rows.filter((r) =>
+  if (!kw) return out;
+  return out.filter((r) =>
     `${r.name} ${r.command} ${r.location}`.toLowerCase().includes(kw),
   );
 }
@@ -113,4 +126,13 @@ export function toggleConfirmText(item: StartupItem, enable: boolean): string {
     `不会删除程序本身，只是让它下次登录时不自启；随时可以在本页重新启用。\n` +
     `位置：${item.location}（${locationHint(item.location)}）`
   );
+}
+
+/**
+ * 切换失败的完整文案。后端错误串本身已可读（如"需要管理员权限：请以管理员
+ * 身份重启 SysKit 后重试"），但要补上"是禁用还是启用失败了"这个动作上下文——
+ * 否则用户只看到一句权限报错，不知道刚才哪步没做成。
+ */
+export function toggleErrorText(enable: boolean, e: unknown): string {
+  return `${enable ? "启用" : "禁用"}失败：${String(e)}`;
 }

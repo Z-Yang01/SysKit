@@ -37,6 +37,36 @@ export interface ModesInfo {
 
 export type ModeKey = "office" | "office_exit" | "game" | "game_exit";
 
+/** 会话内推断的"正在生效的模式"（后端不持久化模式状态，只能由前端按最后操作推）。 */
+export interface ModeActive {
+  office: boolean;
+  game: boolean;
+}
+
+/**
+ * 执行一次模式后推导新的会话内状态。
+ *
+ * 两个诚实性要点：
+ * - 只在**全部步骤成功**时才置位/清除：部分失败时系统真实状态未知，
+ *   保留原状态、由逐步结果表向用户交代——标错"进行中"会让用户以为
+ *   暂停更新之类的操作已生效；
+ * - 两族**各自独立跟踪**：进游戏不抹掉办公标记（两族改的系统状态有交叠
+ *   但并不互斥，只保留一个会丢信息）。
+ */
+export function applyModeRun(active: ModeActive, key: ModeKey, allOk: boolean): ModeActive {
+  if (!allOk) return active;
+  switch (key) {
+    case "office":
+      return { ...active, office: true };
+    case "office_exit":
+      return { ...active, office: false };
+    case "game":
+      return { ...active, game: true };
+    case "game_exit":
+      return { ...active, game: false };
+  }
+}
+
 /** 模式 → 按钮文案。 */
 export function modeLabel(key: ModeKey): string {
   switch (key) {

@@ -36,6 +36,7 @@ function tokenTagColor(token: string): string {
 
 export function BatteryPanel() {
   const [power, setPower] = useState<PowerStatus | null>(null);
+  const [powerFailed, setPowerFailed] = useState(false);
   const [health, setHealth] = useState<BatteryHealth | null>(null);
   const [querying, setQuerying] = useState(false);
 
@@ -43,8 +44,15 @@ export function BatteryPanel() {
   useEffect(() => {
     const load = () =>
       void invoke<PowerStatus>("sk_power_status")
-        .then(setPower)
-        .catch(() => setPower(null));
+        .then((p) => {
+          setPower(p);
+          setPowerFailed(false);
+        })
+        .catch(() => {
+          // 轮询接口偶发失败不打断已有展示；但首次就失败时不能把"读取失败"
+          // 伪装成"正在读取…"，所以要单独记失败标志（成功后清除）
+          setPowerFailed(true);
+        });
     load();
     const t = window.setInterval(load, 10000);
     return () => window.clearInterval(t);
@@ -95,7 +103,13 @@ export function BatteryPanel() {
         ) : (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={power ? power.summary : "正在读取电源状态…"}
+            description={
+              power
+                ? power.summary
+                : powerFailed
+                  ? "读取电源状态失败（每 10 秒自动重试）"
+                  : "正在读取电源状态…"
+            }
           />
         )}
       </Card>

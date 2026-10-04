@@ -6,15 +6,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  allTargetKeys,
   cleanConfirmText,
   cleanResultSummary,
   diskSummary,
   driveLabel,
   hasSkipped,
   humanSize,
+  meaningfulKeys,
   needsSpaceWarning,
   selectedBytes,
   targetResultText,
+  toggleKey,
   usageColor,
   validateClean,
   type CleanRunResult,
@@ -222,5 +225,31 @@ describe("targetResultText", () => {
     });
     expect(t).toContain("回收站已清空");
     expect(t).not.toContain("0 个文件");
+  });
+});
+
+describe("勾选辅助", () => {
+  const rows = [
+    target({ key: "a", bytes: 1024 }),
+    target({ key: "b", bytes: 0, human: "0 B" }),
+    target({ key: "c", bytes: 4096 }),
+  ];
+
+  it("allTargetKeys 返回全部 key", () => {
+    expect(allTargetKeys(rows)).toEqual(["a", "b", "c"]);
+    expect(allTargetKeys([])).toEqual([]);
+  });
+
+  it("meaningfulKeys 只留有内容的（清 0 字节目标毫无收益）", () => {
+    expect(meaningfulKeys(rows)).toEqual(["a", "c"]);
+    // bytes 缺失按 0 算
+    expect(meaningfulKeys([target({ key: "x", bytes: undefined })])).toEqual([]);
+  });
+
+  it("toggleKey 翻转单行选中", () => {
+    expect(toggleKey([], "a")).toEqual(["a"]);
+    expect(toggleKey(["a", "b"], "a")).toEqual(["b"]);
+    // 不去重输入、不改原数组顺序语义：重复选中时只留一个
+    expect(toggleKey(["a"], "a")).toEqual([]);
   });
 });

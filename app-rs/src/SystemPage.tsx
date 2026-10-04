@@ -1,8 +1,8 @@
 /**
- * 系统助手：性能监控（对应 Python 侧 `ui/system_page.py::PerfTab`）。
+ * 系统助手：7 个子 tab 的容器（对应 Python 侧 `ui/system_page.py` 的多个 Tab）。
  *
- * 已交付：CPU / 内存 / 磁盘曲线 + WiFi 状态（SSID、信号、dBm、链路速率）。
- * 其余分页（启动项/电池/清理/磁盘/剪贴板/场景）逐轮补。
+ * 性能监控（PerfPanel）与 WiFi 密码实现在本文件；启动项/磁盘/清理/电池/场景
+ * 五个面板拆分在各自文件。剪贴板 tab 已整体移除，不要恢复。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -111,7 +111,7 @@ export function SystemPage() {
           { key: "clean", label: "垃圾清理", children: <CleanupPanel /> },
           { key: "battery", label: "电池健康", children: <BatteryPanel /> },
           { key: "modes", label: "场景模式", children: <ModesPanel /> },
-      { key: "wifipwd", label: "WiFi 密码", children: <WifiPasswordPanel /> },
+          { key: "wifipwd", label: "WiFi 密码", children: <WifiPasswordPanel /> },
         ]}
       />
     </Card>
@@ -124,7 +124,9 @@ function PerfPanel() {
   const [diskR, setDiskR] = useState<number[]>([]);
   const [diskW, setDiskW] = useState<number[]>([]);
   const [wifi, setWifi] = useState<WifiInfo | null>(null);
+  const [wifiFailed, setWifiFailed] = useState(false);
   const [procs, setProcs] = useState<TopProcs | null>(null);
+  const [procsFailed, setProcsFailed] = useState(false);
   const [last, setLast] = useState<PerfTick | null>(null);
   const lastTickAt = useRef<number | null>(null);
 
@@ -158,8 +160,15 @@ function PerfPanel() {
   useEffect(() => {
     const load = () =>
       void invoke<WifiInfo>("sk_wifi_info")
-        .then(setWifi)
-        .catch(() => setWifi(null));
+        .then((w) => {
+          setWifi(w);
+          setWifiFailed(false);
+        })
+        .catch(() => {
+          // 失败与"还没读到"必须区分：否则读不到时会永远显示"正在读取…"骗人
+          setWifi(null);
+          setWifiFailed(true);
+        });
     load();
     const t = window.setInterval(load, 5000);
     return () => window.clearInterval(t);
@@ -168,15 +177,22 @@ function PerfPanel() {
   useEffect(() => {
     const load = () =>
       void invoke<TopProcs>("sk_top_procs", { limit: 15 })
-        .then(setProcs)
-        .catch(() => setProcs(null));
+        .then((p) => {
+          setProcs(p);
+          setProcsFailed(false);
+        })
+        .catch(() => {
+          setProcs(null);
+          setProcsFailed(true);
+        });
     load();
     // 后端有 2 秒缓存，这里 3 秒轮询即可（tasklist 一次约 0.5 秒）
     const t = window.setInterval(load, 3000);
     return () => window.clearInterval(t);
   }, []);
 
-  const latestCpu = cpu.length ? cpu[cpu.length - 1] : 0;  const latestMem = mem.length ? mem[mem.length - 1] : 0;
+  const latestCpu = cpu.length ? cpu[cpu.length - 1] : 0;
+  const latestMem = mem.length ? mem[mem.length - 1] : 0;
   const diskPeak = useMemo(
     () => Math.max(...diskR, ...diskW, 1),
     [diskR, diskW],
@@ -257,7 +273,13 @@ function PerfPanel() {
         ) : (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={wifi ? "未连接 WiFi（或本机无无线网卡）" : "正在读取 WiFi 状态…"}
+            description={
+              wifi
+                ? "未连接 WiFi（或本机无无线网卡）"
+                : wifiFailed
+                  ? "读取 WiFi 状态失败（每 5 秒自动重试）"
+                  : "正在读取 WiFi 状态…"
+            }
           />
         )}
       </Card>
@@ -304,7 +326,10 @@ function PerfPanel() {
             ]}
           />
         ) : (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在采集进程列表…" />
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={procsFailed ? "读取进程列表失败（每 3 秒自动重试）" : "正在采集进程列表…"}
+          />
         )}
         <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginTop: 8, marginBottom: 0 }}>
           数据源为 <code>tasklist /fo csv</code>（约 0.5 秒/次，后端 2 秒缓存）。
