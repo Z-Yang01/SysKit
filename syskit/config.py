@@ -113,7 +113,7 @@ DEFAULTS = {
     "clip_process_blacklist": "keepass,bitwarden,1password,enpass",  # 前台为这些进程时不记录剪贴板
     "clip_sensitive_ttl": 25,          # 敏感复制在剪贴板中的存活秒数（0=不清空）
     "clip_capture_images": True,       # 剪贴板监听是否记录图片
-    "vault_autolock_min": 10,          # 密码库自动锁定分钟数（0=不锁，DPAPI 模式默认值）
+    "vault_autolock_min": 30,          # 密码库自动锁定分钟数（0=不锁；默认 30 分钟，用户口径）
     "vault_trust_min": 30,             # 主密码验证后的免重复输入窗口（分钟）
     "palette_hotkey": "Ctrl+Alt+K",    # 命令面板全局热键（保存后即时生效，被占自动回退）
     "clip_paste_hotkey": "Ctrl+Win+V",  # 剪贴板快捷粘贴面板全局热键（空=禁用，仅托盘呼出）

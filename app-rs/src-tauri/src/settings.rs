@@ -44,7 +44,7 @@ pub fn defaults() -> Vec<(&'static str, Value, Ty)> {
         ),
         ("clip_sensitive_ttl", Value::from(25), Int),
         ("clip_capture_images", Value::Bool(true), Bool),
-        ("vault_autolock_min", Value::from(10), Int),
+        ("vault_autolock_min", Value::from(30), Int),
         ("vault_trust_min", Value::from(30), Int),
         ("palette_hotkey", Value::from("Ctrl+Alt+K"), Str),
         ("clip_paste_hotkey", Value::from("Ctrl+Win+V"), Str),

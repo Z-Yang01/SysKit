@@ -13,13 +13,14 @@ import {
   Button,
   Card,
   Descriptions,
-  Divider,
   Input,
   Modal,
   Radio,
+  Select,
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
@@ -51,7 +52,18 @@ export function VaultPage() {
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [search, setSearch] = useState("");
+  // 解锁保持时长（vault_autolock_min 分钟；0=不自动锁）——解锁卡的选择器写这里
+  const [autolockMin, setAutolockMin] = useState<number | null>(null);
   const phase = vaultPhase(status);
+
+  useEffect(() => {
+    void invoke<Record<string, unknown>>("sk_settings_all")
+      .then((all) => {
+        const v = all["vault_autolock_min"];
+        setAutolockMin(typeof v === "number" ? v : 30);
+      })
+      .catch(() => setAutolockMin(30));
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -163,8 +175,20 @@ export function VaultPage() {
                    onChange={(e) => (form.name = e.target.value)} />
             <Input id="vf-site-domain" defaultValue={form.domain} placeholder="域名（如 github.com）"
                    onChange={(e) => (form.domain = e.target.value)} />
-            <Input id="vf-site-url" defaultValue={form.url} placeholder="URL"
-                   onChange={(e) => (form.url = e.target.value)} />
+            <Input id="vf-site-url" defaultValue={form.url} placeholder="URL（填后自动带出域名）"
+                   onChange={(e) => (form.url = e.target.value)}
+                   onBlur={() => {
+                     const u = form.url.trim();
+                     if (!u || form.domain) return;
+                     try {
+                       const host = new URL(u.includes("://") ? u : `https://${u}`).hostname;
+                       if (host) {
+                         form.domain = host;
+                         const el = document.getElementById("vf-site-domain") as HTMLInputElement | null;
+                         if (el && !el.value) el.value = host;
+                       }
+                     } catch { /* 非 URL 文本：留空手填 */ }
+                   }} />
             <Input id="vf-site-aliases" defaultValue={form.aliases} placeholder="别名（逗号分隔）"
                    onChange={(e) => (form.aliases = e.target.value)} />
             <Input id="vf-site-tags" defaultValue={form.tags} placeholder="标签（逗号分隔）"
@@ -244,7 +268,7 @@ export function VaultPage() {
             await invoke("sk_vault_add_account", {
               siteId: selectedSite,
               password: form.password,
-              label: form.label,
+              label: form.label || form.username,   // 标签留空 = 用用户名，列表更好认
               username: form.username,
               totpSecret: form.totp_secret,
               notes: form.notes,
@@ -397,6 +421,23 @@ export function VaultPage() {
         title="密码库状态"
         extra={
           <Space>
+            {phase === "unlocked" && (
+              <Button size="small" onClick={() => void lock()}>
+                锁定
+              </Button>
+            )}
+            {phase === "unlocked" &&
+              (setPwCheck.ok ? (
+                <Button size="small" onClick={setMaster}>
+                  设置主密码
+                </Button>
+              ) : (
+                <Tooltip title={setPwCheck.reason}>
+                  <Button size="small" danger onClick={removeMaster}>
+                    移除主密码
+                  </Button>
+                </Tooltip>
+              ))}
             <Tag color={phase === "unlocked" ? "green" : phase === "locked" ? "orange" : "default"}>
               {statusSummary(status)}
             </Tag>
@@ -408,14 +449,23 @@ export function VaultPage() {
       >
         <Descriptions
           size="small"
-          column={1}
+          column={3}
           items={[
-            { key: "path", label: "密钥文件", children: <code>{status?.path ?? "—"}</code> },
             { key: "mode", label: "保护模式", children: modeLabel(status?.mode ?? "") },
             {
-              key: "state",
-              label: "解锁状态",
-              children: status?.unlocked ? <Tag color="green">已解锁</Tag> : <Tag>已锁定</Tag>,
+              key: "autolock",
+              label: "自动锁定",
+              children:
+                autolockMin === null ? "…" : autolockMin === 0 ? "不自动锁定" : `${autolockMin} 分钟`,
+            },
+            {
+              key: "path",
+              label: "密钥文件",
+              children: (
+                <Typography.Text code style={{ fontSize: 12 }} ellipsis>
+                  {status?.path ?? "—"}
+                </Typography.Text>
+              ),
             },
           ]}
         />
@@ -463,7 +513,7 @@ export function VaultPage() {
           <Space wrap>
             {status?.has_master_password ? (
               <Input.Password
-                style={{ width: 320 }}
+                style={{ width: 300 }}
                 placeholder="主密码"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -474,29 +524,27 @@ export function VaultPage() {
                 免密模式（DPAPI）：无需输入密码，点「解锁」即可。
               </Typography.Text>
             )}
+            <Tooltip title="解锁在此时长内免输主密码；到期自动重新锁定">
+              <Select
+                size="small"
+                style={{ width: 150 }}
+                value={autolockMin ?? 30}
+                onChange={(v) => {
+                  setAutolockMin(v);
+                  void invoke("sk_settings_set", { key: "vault_autolock_min", value: v })
+                    .then(() => message.success(v === 0 ? "已设为不自动锁定" : `解锁后将保持 ${v === 1440 ? "1 天" : `${v} 分钟`}`))
+                    .catch((e) => message.error(String(e)));
+                }}
+                options={[
+                  { value: 30, label: "保持 30 分钟" },
+                  { value: 1440, label: "保持 1 天" },
+                  { value: 0, label: "不自动锁定" },
+                ]}
+              />
+            </Tooltip>
             <Button type="primary" size="small" loading={busy} onClick={() => void unlock()}>
               解锁
             </Button>
-          </Space>
-        </Card>
-      )}
-
-      {phase === "unlocked" && (
-        <Card size="small" className="sk-card" title="主密码管理">
-          <Space wrap>
-            <Button size="small" onClick={() => void lock()}>
-              锁定
-            </Button>
-            {setPwCheck.ok ? (
-              <Button size="small" onClick={setMaster}>
-                设置主密码
-              </Button>
-            ) : (
-              <Button size="small" danger onClick={removeMaster}>
-                移除主密码
-              </Button>
-            )}
-            <span className="sk-hint">{setPwCheck.ok ? "" : setPwCheck.reason}</span>
           </Space>
         </Card>
       )}
@@ -543,9 +591,14 @@ export function VaultPage() {
               size="small"
               rowKey="id"
               loading={sitesLoading}
+              onRow={(r) => ({
+                onClick: () => setSelectedSite(r.id),
+                style: { cursor: "pointer" },
+              })}
+              rowClassName={(r) => (r.id === selectedSite ? "ant-table-row-selected" : "")}
               columns={[
                 {
-                  title: "站点",
+                  title: "站点（点击行查看账号）",
                   dataIndex: "name",
                   render: (v: string, r) => (
                     <Space size={4}>
@@ -558,23 +611,17 @@ export function VaultPage() {
                 {
                   title: "操作",
                   key: "ops",
-                  width: 190,
+                  width: 130,
                   render: (_: unknown, r) => (
                     <Space size={4}>
-                      <Button
-                        size="small"
-                        type={selectedSite === r.id ? "primary" : "default"}
-                        onClick={() => setSelectedSite(r.id)}
-                      >
-                        账号
-                      </Button>
-                      <Button size="small" onClick={() => siteModal(r)}>
+                      <Button size="small" onClick={(e) => { e.stopPropagation(); siteModal(r); }}>
                         编辑
                       </Button>
                       <Button
                         size="small"
                         danger
-                        onClick={() =>
+                        onClick={(e) => {
+                          e.stopPropagation();
                           Modal.confirm({
                             title: `删除站点「${r.name}」`,
                             content: `将同时删除其下 ${r.n_accounts} 个账号，且不可恢复。`,
@@ -587,8 +634,8 @@ export function VaultPage() {
                               if (selectedSite === r.id) setSelectedSite(null);
                               await loadSites(search);
                             },
-                          })
-                        }
+                          });
+                        }}
                       >
                         删除
                       </Button>
@@ -602,16 +649,23 @@ export function VaultPage() {
             />
 
             {selectedSite !== null && (
-              <>
-                <Divider style={{ margin: "4px 0" }} />
-                <Space>
-                  <Typography.Text strong>
-                    {sites.find((s) => s.id === selectedSite)?.name ?? "账号"}
-                  </Typography.Text>
-                  <Button size="small" onClick={addAccountModal}>
+              <Card
+                size="small"
+                type="inner"
+                title={
+                  <Space size={6}>
+                    <span>{sites.find((s) => s.id === selectedSite)?.name ?? "账号"}</span>
+                    <span className="sk-hint">
+                      {sites.find((s) => s.id === selectedSite)?.domain}
+                    </span>
+                  </Space>
+                }
+                extra={
+                  <Button size="small" type="primary" onClick={addAccountModal}>
                     添加账号
                   </Button>
-                </Space>
+                }
+              >
                 <Table<AccountRow>
                   size="small"
                   rowKey="id"
@@ -624,27 +678,51 @@ export function VaultPage() {
                         <Space size={4}>
                           {a.is_favorite && <span>⭐</span>}
                           <span>{accountTitle(a)}</span>
-                          {a.username && a.username !== a.label && (
-                            <span className="sk-hint">{a.username}</span>
-                          )}
                         </Space>
                       ),
                     },
                     {
-                      title: "密文",
-                      key: "secret",
-                      width: 120,
-                      render: () => <span className="sk-hint">{maskedSecret()}</span>,
+                      title: "用户名",
+                      key: "username",
+                      render: (_: unknown, a) =>
+                        a.username ? (
+                          <Tooltip title="双击复制用户名（不进剪贴板历史）">
+                            <span
+                              style={{ cursor: "copy" }}
+                              onDoubleClick={() =>
+                                void invoke("sk_clip_copy_plain", { text: a.username })
+                                  .then(() => message.success("用户名已复制"))
+                                  .catch((e) => message.error(String(e)))
+                              }
+                            >
+                              {a.username}
+                            </span>
+                          </Tooltip>
+                        ) : (
+                          <span className="sk-hint">—</span>
+                        ),
+                    },
+                    {
+                      title: "密码",
+                      key: "password",
+                      width: 150,
+                      render: (_: unknown, a) => (
+                        <Tooltip title="双击复制密码（25 秒后自动清空剪贴板，不进历史）">
+                          <span
+                            style={{ cursor: "copy", letterSpacing: 2 }}
+                            onDoubleClick={() => void copySecret(a.id, "password")}
+                          >
+                            {maskedSecret()}
+                          </span>
+                        </Tooltip>
+                      ),
                     },
                     {
                       title: "操作",
                       key: "ops",
-                      width: 320,
+                      width: 230,
                       render: (_: unknown, a) => (
                         <Space size={4}>
-                          <Button size="small" onClick={() => void copySecret(a.id, "password")}>
-                            复制密码
-                          </Button>
                           {a.has_totp && (
                             <Button size="small" onClick={() => void showTotp(a)}>
                               动态码
@@ -653,17 +731,7 @@ export function VaultPage() {
                           <Button
                             size="small"
                             onClick={() =>
-                              void invoke("sk_clip_copy_plain", { text: a.username })
-                                .then(() => message.success("用户名已复制"))
-                                .catch((e) => message.error(String(e)))
-                            }
-                          >
-                            复制用户名
-                          </Button>
-                          <Button
-                            size="small"
-                            onClick={() =>
-                              void invoke<boolean>("sk_vault_toggle_favorite", { accountId: a.id })
+                              void invoke("sk_vault_toggle_favorite", { accountId: a.id })
                                 .then(() => void loadAccounts())
                                 .catch((e) => message.error(String(e)))
                             }
@@ -697,9 +765,9 @@ export function VaultPage() {
                   ]}
                   dataSource={accounts}
                   pagination={false}
-                  locale={{ emptyText: "该站点暂无账号" }}
+                  locale={{ emptyText: "该站点暂无账号——点右上角「添加账号」" }}
                 />
-              </>
+              </Card>
             )}
           </Space>
         )}

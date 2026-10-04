@@ -34,7 +34,7 @@ const RUST_DEFAULTS: Record<string, { literal: string; kind: Kind }> = {
   clip_process_blacklist: { literal: "keepass,bitwarden,1password,enpass", kind: "str" },
   clip_sensitive_ttl: { literal: "25", kind: "int" },
   clip_capture_images: { literal: "True", kind: "bool" },
-  vault_autolock_min: { literal: "10", kind: "int" },
+  vault_autolock_min: { literal: "30", kind: "int" },
   vault_trust_min: { literal: "30", kind: "int" },
   palette_hotkey: { literal: "Ctrl+Alt+K", kind: "str" },
   clip_paste_hotkey: { literal: "Ctrl+Win+V", kind: "str" },
