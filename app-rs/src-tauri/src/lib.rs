@@ -251,13 +251,21 @@ fn start_hotkeys(app: &tauri::AppHandle) {
     if ok {
         return;
     }
+    // 有界重试：3 次 × 60s（覆盖约 3 分钟的持续占用——真机实证 00:38 有
+    // 占用者持续超过 30 秒，单次 30s 重试不够；再失败保持回退态，托盘菜单
+    // 永远可用，用户重启应用也能重来）。
     let handle = app.clone();
     std::thread::Builder::new()
         .name("sk-hotkey-retry".into())
         .spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(30));
-            log::info!("热键启动注册存在失败，30s 后自动重挂一次");
-            apply_hotkeys(&handle, &settings::get_str);
+            for attempt in 1..=3 {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                log::info!("热键启动注册失败，第 {attempt}/3 次自动重挂");
+                if apply_hotkeys(&handle, &settings::get_str) {
+                    return;
+                }
+            }
+            log::warn!("热键 3 次自动重挂均失败——请到「设置 / 日志」检查热键是否被其他程序占用");
         })
         .expect("热键重试线程启动失败");
 }
