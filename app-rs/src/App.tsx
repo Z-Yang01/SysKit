@@ -114,7 +114,6 @@ export function App() {
     quick: "",
     palette: "",
   });
-  const [pong, setPong] = useState("—");
   const [version, setVersion] = useState<string>("");
 
   useEffect(() => {
@@ -232,19 +231,6 @@ export function App() {
             <Space>
               <span className="sk-hint">深色主题</span>
               <Switch checked={dark} onChange={toggleDark} />
-              <Button
-                size="small"
-                onClick={async () => {
-                  try {
-                    setPong(await invoke<string>("ping"));
-                  } catch (e) {
-                    setPong(`失败: ${String(e)}`);
-                  }
-                }}
-              >
-                调用 Rust ping
-              </Button>
-              <span className="sk-hint">后端: {pong}</span>
             </Space>
             <Space>
               <Button size="small" onClick={() => void getCurrentWindow().hide()}>
