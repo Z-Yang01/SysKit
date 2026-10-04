@@ -49,7 +49,6 @@ def ev(expr, awaitp=False):
 
 def drain(secs=0.4):
     call("Runtime.evaluate", {"expression": "1", "returnByValue": True})
-    ws = None
     # 拉取事件流里的 console 错误：走 CDP 事件需要单独 recv——简化为不拉
     return
 
@@ -76,7 +75,6 @@ def click_tab(label):
 
 def page_state():
     b = ev('document.body.innerText') or ''
-    errs = ev('JSON.stringify(window.__errs||[])')
     return len(b), b
 
 
