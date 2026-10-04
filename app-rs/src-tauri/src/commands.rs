@@ -445,6 +445,27 @@ pub async fn sk_diag_one(id: String) -> Result<crate::netcheck::CheckResult, Str
     .map_err(|e| format!("诊断线程失败: {e}"))?
 }
 
+/// 诊断报告导出为 Markdown 文件（save_file_dialog 原语，与图片另存为同路）。
+/// 前端已把全文拼好（formatReportForCopy 同一文本），这里只落盘。
+#[tauri::command]
+pub async fn sk_diag_export(content: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = crate::w32::save_file_dialog(
+            "导出诊断报告",
+            "diag_report.md",
+            "Markdown *.md 文本文件 *.txt 所有文件 *.* ",
+        )?;
+        if target.is_empty() {
+            return Ok(String::new()); // 用户取消
+        }
+        std::fs::write(&target, content.as_bytes())
+            .map_err(|e| format!("写入失败（路径不可写？）: {e}"))?;
+        Ok(target)
+    })
+    .await
+    .map_err(|e| format!("导出线程失败: {e}"))?
+}
+
 // ---------------- M4 工具箱：Hosts 编辑 ----------------
 
 /// hosts 文件路径与可写性（前端展示用）。

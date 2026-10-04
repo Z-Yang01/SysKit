@@ -480,6 +480,22 @@ export function Diagnose() {
             </Button>
             <Button
               size="small"
+              disabled={!report || diagBusy !== ""}
+              onClick={() => {
+                if (!report || diagBusy) return;
+                void invoke<string>("sk_diag_export", {
+                  content: formatReportForCopy(report),
+                })
+                  .then((target) => {
+                    if (target) message.success(`已导出：${target}`);
+                  })
+                  .catch((e) => message.error(String(e)));
+              }}
+            >
+              导出报告
+            </Button>
+            <Button
+              size="small"
               onClick={() => void runDiag(true)}
               loading={diagBusy === "quick"}
               disabled={diagBusy === "full" || comboRun !== null}
