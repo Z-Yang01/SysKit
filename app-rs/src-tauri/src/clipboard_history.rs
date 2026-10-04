@@ -227,8 +227,17 @@ impl Default for History {
 
 impl History {
     /// 从磁盘载入（DPAPI 密封为本格式，兼容旧明文）。
+    ///
+    /// 容量上限跟随设置 `clipboard_max`（对齐 Python `ClipboardTab` 构造
+    /// `ClipboardHistory(max_items=int(settings["clipboard_max"]))`——上限是
+    /// 用户可调的设置项，若钉死默认 50，用户调大后监听侧仍按 50 淘汰，
+    /// 「最多保留 N 条」就成了撒谎的摆设）。
     pub fn load() -> Self {
         let mut h = History::default();
+        // Python 构造钳位同款：max(1, int(max_items)) / max(64, int(max_len))——
+        // 手改配置文件写出 0/负数时退化为「至少留 1 条」而不是剪贴板功能失效
+        h.max_items = crate::settings::get_int("clipboard_max").max(1) as usize;
+        h.max_len = h.max_len.max(64);
         let (data, _sealed) = secure_store::load_sealed_json(&paths::clipboard_file(), json!([]));
         if let Some(arr) = data.as_array() {
             for it in arr {
@@ -635,6 +644,25 @@ mod tests {
         // 空黑名单 → 一律记录（不依赖真实前台进程）
         assert!(should_record_now(""));
         assert!(should_record_now(",,,  ,"));
+    }
+
+    #[test]
+    fn load_applies_clipboard_max_from_settings() {
+        // 对齐 Python ClipboardTab 构造：ClipboardHistory(max_items=int(settings["clipboard_max"]))
+        // ——上限是设置项；钉死 50 的话用户调大后监听侧仍按 50 淘汰
+        let _g = crate::test_support::serial();
+        crate::test_support::reset_persistent_files();
+        crate::settings::set_i64("clipboard_max", 3).expect("写设置失败");
+        let h = History::load();
+        assert_eq!(h.max_items, 3, "容量上限必须跟随设置");
+        crate::settings::set_i64("clipboard_max", 0).expect("写设置失败");
+        let h = History::load();
+        assert_eq!(
+            h.max_items, 1,
+            "0/负数按 Python 构造钳位 max(1, int(max_items)) 退化为 1"
+        );
+        // 收尾恢复默认，免得并行用例读到本用例留下的 clipboard_max=0
+        crate::test_support::reset_persistent_files();
     }
 
     #[test]

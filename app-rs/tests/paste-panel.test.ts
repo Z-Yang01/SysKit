@@ -92,6 +92,18 @@ describe("reducer: loaded", () => {
     expect(s.cursor).toBe(-1);
     expect(currentRow(s)).toBeNull();
   });
+
+  it("快照截到前 200 行（Python _build_rows 的 _all[:200] 同口径）", () => {
+    // 面板只服务「最近条目」；用户把上限调得很大时也要保住渲染轻量
+    const many: ClipRow[] = Array.from({ length: 260 }, (_, i) => row(i, `条目 ${i}`));
+    const s = loaded(many);
+    expect(many).toHaveLength(260);
+    expect(s.all).toHaveLength(200);
+    expect(s.visible).toHaveLength(200);
+    // 截断保留的是最新的前 200 条（idx 0..199，后端已按时间倒序给出）
+    expect(s.all[0].idx).toBe(0);
+    expect(s.all[199].idx).toBe(199);
+  });
 });
 
 describe("reducer: query", () => {
@@ -250,11 +262,13 @@ describe("行文案", () => {
     expect(rowLabel(row(0, "内容", "text", true))).toBe("📌 内容");
   });
 
-  it("图片条目已是 [图片] 占位时不再叠 emoji", () => {
-    expect(rowLabel(row(0, "[图片 128×96]", "image"))).toBe("[图片 128×96]");
+  it("图片条目始终带 🖼 前缀（占位文本也要有类型区分）", () => {
+    // Python 面板健康图片用缩略图替位、载荷丢失回退 🖼；紧凑面板没有缩略图
+    // 链路，统一用 Python 的回退 emoji，否则「[图片 W×H]」与文本无从区分
+    expect(rowLabel(row(0, "[图片 128×96]", "image"))).toBe("🖼 [图片 128×96]");
   });
 
-  it("图片条目载荷丢失（非占位文本）时回退 emoji", () => {
+  it("图片条目载荷丢失（非占位文本）时同样回退 emoji", () => {
     expect(rowLabel(row(0, "某个图片描述", "image"))).toBe("🖼 某个图片描述");
   });
 

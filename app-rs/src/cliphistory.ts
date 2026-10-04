@@ -6,13 +6,13 @@
  * 两者共用同一份历史数据与同一批后端命令。
  */
 
-/** 类型筛选项（与 Python `KIND_FILTERS` 同口径）。 */
+/** 类型筛选项（与 Python `KIND_FILTERS` 同口径，含「网页」措辞）。 */
 export const KIND_FILTERS: { key: string; label: string }[] = [
   { key: "", label: "全部类型" },
   { key: "text", label: "文本" },
   { key: "image", label: "图片" },
   { key: "file", label: "文件" },
-  { key: "html", label: "HTML" },
+  { key: "html", label: "网页" },
 ];
 
 /** 后端 `sk_clip_list` / `sk_panel_init` 的行。 */
@@ -46,7 +46,7 @@ export function kindLabel(kind: string): string {
     case "file":
       return "文件";
     case "html":
-      return "HTML";
+      return "网页";
     default:
       return kind || "未知";
   }
@@ -68,13 +68,13 @@ export function kindColor(kind: string): string {
   }
 }
 
-/** 时间戳（秒）→ 本地时间文本。 */
+/** 时间戳（秒）→ 本地时间文本（含秒：同一秒内的连续复制靠它分辨先后）。 */
 export function formatTs(ts: number): string {
   if (!ts || ts <= 0) return "—";
   const d = new Date(ts * 1000);
   if (Number.isNaN(d.getTime())) return "—";
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 /** 相对时间（更直观：刚刚 / 5 分钟前 / 3 小时前）。 */
@@ -122,11 +122,17 @@ export function clearConfirmText(count: number, pinned: number): string {
   return t;
 }
 
-/** 按天数清理的确认文案。 */
+/** 按天数清理的确认文案。
+ *
+ * 必须如实说明**置顶条目同样会过期**：Python purge_older_than 的语义是
+ * 「置顶条目同样过期——按天是时间语义」，置顶只豁免数量淘汰（max_items），
+ * 不豁免时间清理。文案若许诺「置顶保留」，用户会拿置顶当永久收藏然后被清掉。
+ */
 export function purgeConfirmText(days: number): string {
   return (
     `将删除 ${days} 天前的历史条目（不可撤销）。\n\n` +
-    `置顶条目会被保留。图片文件同步删除。`
+    `置顶条目也会一并删除（置顶只豁免数量淘汰，不豁免按时间清理）。` +
+    `图片文件同步删除。`
   );
 }
 

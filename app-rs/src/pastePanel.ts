@@ -24,6 +24,13 @@ export interface ClipRow {
 
 export type PanelLabel = "paste" | "palette";
 
+/**
+ * 面板单次呼出最多展示的行数（对齐 Python `_build_rows` 的 `self._all[:200]`）。
+ * 面板是「呼出→扫一眼→粘贴」的快路径，翻 200 行还没找到就该去历史页搜索了；
+ * 用户把上限调得很大时也保住渲染与滚动的轻量。
+ */
+export const PANEL_MAX_ROWS = 200;
+
 export interface PanelState {
   /** 本次呼出的快照（顺序 = 可见顺序，置顶在前）。 */
   all: ClipRow[];
@@ -104,11 +111,13 @@ export function currentRow(state: PanelState): ClipRow | null {
 export function reducer(state: PanelState, action: PanelAction): PanelState {
   switch (action.type) {
     case "loaded": {
-      // 呼出时重置查询与游标（与 Python popup() 的 clear + _refresh 同语义）
-      const visible = filterRows(action.rows, "");
+      // 呼出时重置查询与游标（与 Python popup() 的 clear + _refresh 同语义）；
+      // 快照按 Python _build_rows 截到前 200 行——面板只服务「最近条目」
+      const rows = action.rows.slice(0, PANEL_MAX_ROWS);
+      const visible = filterRows(rows, "");
       return {
         ...state,
-        all: action.rows,
+        all: rows,
         visible,
         query: "",
         cursor: firstVisibleIndex(visible),
@@ -220,14 +229,18 @@ export function kindPrefix(row: ClipRow): string {
   }
 }
 
-/** 行显示文本：置顶前缀 + 类型前缀 + 预览。 */
+/**
+ * 行显示文本：置顶前缀 + 类型前缀 + 预览。
+ *
+ * 图片条目**始终**带 🖼 前缀：Python 面板对健康图片条目用 clip_thumbs 行内
+ * 缩略图替位、载荷丢失才回退 🖼；紧凑面板不引缩略图链路（异步拉取 + 缓存
+ * 都是笨重件），统一用 Python 的回退 emoji 保住「图片 vs 文本」的类型区分——
+ * 否则「[图片 W×H]」占位文本看起来和普通文本毫无差别。
+ */
 export function rowLabel(row: ClipRow): string {
   const pin = row.pinned ? "📌 " : "";
   const kind = kindPrefix(row);
   const text = row.preview || row.text;
-  // 图片条目预览已是「[图片 W×H]」形态，不再叠类型 emoji（Python 同规则：
-  // 有缩略图时用图标替位，载荷丢失才回退 emoji）
-  if (row.kind === "image" && text.startsWith("[图片")) return pin + text;
   return pin + kind + text;
 }
 

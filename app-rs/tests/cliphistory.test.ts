@@ -47,16 +47,17 @@ const summary = (over: Partial<ClipSummary> = {}): ClipSummary => ({
 });
 
 describe("类型映射", () => {
-  it("筛选项与 Python 同口径（首项为全部）", () => {
+  it("筛选项与 Python 同口径（首项为全部，html 叫「网页」）", () => {
     expect(KIND_FILTERS[0]).toEqual({ key: "", label: "全部类型" });
     expect(KIND_FILTERS.map((k) => k.key)).toEqual(["", "text", "image", "file", "html"]);
+    expect(KIND_FILTERS.find((k) => k.key === "html")?.label).toBe("网页");
   });
 
   it("标签与颜色", () => {
     expect(kindLabel("text")).toBe("文本");
     expect(kindLabel("image")).toBe("图片");
     expect(kindLabel("file")).toBe("文件");
-    expect(kindLabel("html")).toBe("HTML");
+    expect(kindLabel("html")).toBe("网页");
     expect(kindLabel("weird")).toBe("weird");
     expect(kindLabel("")).toBe("未知");
     expect(kindColor("image")).toBe("purple");
@@ -65,9 +66,9 @@ describe("类型映射", () => {
 });
 
 describe("时间展示", () => {
-  it("formatTs 输出本地时间", () => {
+  it("formatTs 输出本地时间（含秒，对齐 Python %H:%M:%S 的分辨力）", () => {
     const s = formatTs(1_700_000_000);
-    expect(s).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(s).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
   it("非法时间戳显示「—」而不是 1970", () => {
@@ -158,10 +159,14 @@ describe("清空/清理确认文案", () => {
     expect(clearConfirmText(1, 0)).toContain("PNG");
   });
 
-  it("按天数清理说明保留置顶", () => {
+  it("按天数清理必须如实说明置顶也会被删", () => {
+    // Python 语义：置顶条目同样过期——按天是时间语义；置顶只豁免数量淘汰。
+    // 文案若许诺「置顶保留」，用户拿置顶当永久收藏会被静默清掉。
     const t = purgeConfirmText(30);
     expect(t).toContain("30 天前");
     expect(t).toContain("置顶");
+    expect(t).toContain("一并删除");
+    expect(t).not.toContain("保留");
   });
 });
 

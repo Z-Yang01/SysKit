@@ -106,6 +106,8 @@ export function ClipboardHistoryPanel() {
   const [qrSvg, setQrSvg] = useState("");
   const [colorOf, setColorOf] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
+  // 全文预览：列表内容列只显示一行折叠，长条目从这里看全（Python「预览」同职责）
+  const [previewRow, setPreviewRow] = useState<ClipRow | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedKeyword(keyword), 300);
@@ -279,6 +281,17 @@ export function ClipboardHistoryPanel() {
       const msg = await invoke<string>("sk_clip_save_as", { index: row.idx });
       if (msg) message.success(msg);
       // 空串 = 用户取消，保持安静
+    } catch (e) {
+      message.error(String(e));
+    }
+  }, []);
+
+  /** 复制全文：走 write_back 单源（suppress + 系统排除格式），回填不被记成新复制。 */
+  const copyFullText = useCallback(async (row: ClipRow) => {
+    try {
+      const ok = await invoke<boolean>("sk_clip_write_back", { index: row.idx });
+      if (ok) message.success("已复制到剪贴板");
+      else message.error("复制失败：条目内容不可用");
     } catch (e) {
       message.error(String(e));
     }
@@ -481,14 +494,15 @@ export function ClipboardHistoryPanel() {
                   {r.kind === "image" ? (
                     <ClipImageThumb index={r.idx} />
                   ) : (
-                    <span>{v || r.text || "—"}</span>
+                    // 悬停看前 500 字（Python content 列 tooltip 同口径）
+                    <span title={r.text.slice(0, 500)}>{v || r.text || "—"}</span>
                   )}
                 </Space>
               ),
             },
             {
               title: "操作",
-              width: 250,
+              width: 300,
               render: (_: unknown, r) => {
                 const save = canSaveAs(r);
                 return (
@@ -496,6 +510,13 @@ export function ClipboardHistoryPanel() {
                     <Button size="small" type="link" onClick={() => copyBack(r)}>
                       复制
                     </Button>
+                    {/* 全文预览（Python「预览」菜单同职责）；图片条目的大图预览
+                        已由缩略图的 AntD Image 预览承担，这里只服务文本类条目 */}
+                    {r.kind !== "image" && r.text && (
+                      <Button size="small" type="link" onClick={() => setPreviewRow(r)}>
+                        全文
+                      </Button>
+                    )}
                     <Button size="small" type="link" onClick={() => togglePin(r)}>
                       {r.pinned ? "取消置顶" : "置顶"}
                     </Button>
@@ -633,6 +654,35 @@ export function ClipboardHistoryPanel() {
           }
         />
       )}
+
+      {/* 全文预览（对应 Python _show_text_preview）：只读文本 + 复制全文 + 关闭 */}
+      <Modal
+        open={previewRow !== null}
+        title="剪贴板内容预览"
+        footer={null}
+        onCancel={() => setPreviewRow(null)}
+        width={640}
+      >
+        <Typography.Paragraph
+          style={{
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-all",
+            maxHeight: 420,
+            overflowY: "auto",
+            marginBottom: 16,
+          }}
+        >
+          {previewRow?.text}
+        </Typography.Paragraph>
+        <Space style={{ display: "flex", justifyContent: "flex-end" }}>
+          <Button size="small" onClick={() => previewRow && void copyFullText(previewRow)}>
+            复制全文
+          </Button>
+          <Button size="small" onClick={() => setPreviewRow(null)}>
+            关闭
+          </Button>
+        </Space>
+      </Modal>
 
       <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginBottom: 0 }}>
         双击行可快速复制回剪贴板。置顶条目不会被自动淘汰，且相同文本再次复制时不会新增条目。
