@@ -192,7 +192,8 @@ export function ToolboxHosts() {
             "sk_hosts_write",
             { entries, backup: true },
           );
-          message.success(r.message);
+          // 备份路径单独展示：写坏 hosts 是大事故，用户需要知道备份在哪
+          message.success(r.backup ? `${r.message}（备份：${r.backup}）` : r.message);
           await load();
         } catch (e) {
           message.error(`写入失败（原文件已保留）：${String(e)}`);

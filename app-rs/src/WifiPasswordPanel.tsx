@@ -47,7 +47,7 @@ import {
   signalTag,
   strengthHint,
   validateWifiQrInput,
-  WIFI_SCAN_INTERVAL_MS,
+  WIFI_SCAN_INTERVAL_MS, // Python 同名常量实值 8s（wifi_page.py:169），对齐
   type ChannelUsage,
   type ProfileCredential,
   type ProfilesResult,

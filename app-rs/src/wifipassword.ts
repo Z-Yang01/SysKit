@@ -135,7 +135,7 @@ export interface ScanResult {
 }
 
 /** 自动刷新周期（毫秒）。 */
-export const WIFI_SCAN_INTERVAL_MS = 10_000;
+export const WIFI_SCAN_INTERVAL_MS = 8_000; // Python wifi_page.py tick 同为 8s
 
 /** 频段判定（与后端 band_of_channel 同口径：1~14 → 2.4G，>14 → 5G）。 */
 export function bandOf(channel: number): ScannedAp["band"] {
