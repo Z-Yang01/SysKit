@@ -5,7 +5,7 @@
  * `sk_clip_*` 命令直读内存态。其余页面（诊断/修复/工具箱/系统助手/密码库/设置）
  * 属 M3-M7，先给明确的「里程碑待接入」占位而不是空白。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -17,13 +17,13 @@ import {
   Menu,
   Space,
   Switch,
-  Table,
   Tabs,
   Tag,
   Typography,
   message,
 } from "antd";
 import { Dashboard } from "./Overview";
+import { ClipboardHistoryPanel } from "./ToolboxClipboard";
 import { Diagnose } from "./Diagnose";
 import { ToolboxHosts } from "./ToolboxHosts";
 import { ToolboxPorts } from "./ToolboxPorts";
@@ -35,15 +35,6 @@ import { VaultPage } from "./VaultPage";
 import { SettingsView } from "./SettingsView";
 import { applyTheme, palette, type Palette } from "./theme";
 
-interface ClipRow {
-  idx: number;
-  ts: number;
-  text: string;
-  kind: string;
-  pinned: boolean;
-  data: string;
-  preview: string;
-}
 
 /** 里程碑占位页：说清「这块归属哪个 M」，不留白。 */
 function Pending({
@@ -64,106 +55,6 @@ function Pending({
         <Tag color="blue">{milestone}</Tag>
         <Typography.Text type="secondary">{detail}</Typography.Text>
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未接入" />
-      </Space>
-    </div>
-  );
-}
-
-/** 剪贴板历史页（复用 M1 的 sk_clip_* 命令；记录侧监听属 M5）。 */
-function ClipboardPage() {
-  const [rows, setRows] = useState<ClipRow[]>([]);
-  const [summary, setSummary] = useState<Record<string, number>>({});
-
-  const reload = useCallback(async () => {
-    try {
-      setRows(await invoke<ClipRow[]>("sk_clip_list", {}));
-      setSummary(await invoke<Record<string, number>>("sk_clip_summary"));
-    } catch {
-      setRows([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  return (
-    <div className="sk-card">
-      <Space direction="vertical" size={10} style={{ width: "100%" }}>
-        <Space>
-          <Typography.Text strong>剪贴板历史</Typography.Text>
-          <Typography.Text type="secondary">
-            共 {summary.total ?? 0} 条 · 置顶 {summary.pinned ?? 0} · 图片 {summary.images ?? 0} ·
-            上限 {summary.max_items ?? 0}
-          </Typography.Text>
-          <Button size="small" onClick={() => void reload()}>
-            刷新
-          </Button>
-          <Button
-            size="small"
-            danger
-            onClick={async () => {
-              await invoke("sk_clip_clear");
-              await reload();
-              message.success("已清空");
-            }}
-          >
-            清空
-          </Button>
-        </Space>
-        <Table<ClipRow>
-          size="small"
-          rowKey="idx"
-          pagination={{ pageSize: 12 }}
-          dataSource={rows}
-          columns={[
-            { title: "类型", dataIndex: "kind", width: 80 },
-            {
-              title: "内容",
-              dataIndex: "preview",
-              render: (v: string, r) => (r.pinned ? `📌 ${v}` : v),
-            },
-            {
-              title: "操作",
-              width: 240,
-              render: (_: unknown, r) => (
-                <Space size={4}>
-                  <Button
-                    size="small"
-                    type="link"
-                    onClick={async () => {
-                      const ok = await invoke<boolean>("sk_clip_write_back", { index: r.idx });
-                      message[ok ? "success" : "warning"](ok ? "已放回剪贴板" : "内容不可用");
-                    }}
-                  >
-                    放回剪贴板
-                  </Button>
-                  <Button
-                    size="small"
-                    type="link"
-                    onClick={async () => {
-                      await invoke("sk_clip_toggle_pin", { index: r.idx });
-                      await reload();
-                    }}
-                  >
-                    {r.pinned ? "取消置顶" : "置顶"}
-                  </Button>
-                  <Button
-                    size="small"
-                    type="link"
-                    danger
-                    onClick={async () => {
-                      await invoke("sk_clip_remove", { index: r.idx });
-                      await reload();
-                    }}
-                  >
-                    删除
-                  </Button>
-                </Space>
-              ),
-            },
-          ]}
-        />
       </Space>
     </div>
   );
@@ -213,7 +104,7 @@ export function App() {
 
   const pages: Record<string, React.ReactNode> = {
     overview: <Dashboard />,
-    clipboard: <ClipboardPage />,
+    clipboard: <ClipboardHistoryPanel />,
     diagnose: <Diagnose />,
     toolbox: (
       <Tabs

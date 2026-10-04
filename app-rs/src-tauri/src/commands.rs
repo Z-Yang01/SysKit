@@ -1466,6 +1466,10 @@ pub struct VaultTrust(pub std::sync::Mutex<Option<std::time::Instant>>);
 fn session_lock(
     session: &VaultSession,
 ) -> Result<std::sync::MutexGuard<'_, Option<crate::vault_crypto::VaultCrypto>>, String> {
+    // 库表确保存在：所有 vault 命令都从这里进——曾经只有 sk_vault_sites 调了
+    // init_db，"设好主密码→直接添加站点"会撞 no such table: sites（真机实证
+    // 2026-10-04）。init_db 幂等且带进程级短路，放在公共入口零遗漏。
+    crate::vault_store::init_db().map_err(|e| format!("密码库初始化失败: {e}"))?;
     // 自动重锁：vault_autolock_min>0 且会话超过窗口 → 就地收锁
     {
         let mut guard = session.0.lock().expect("vault 会话锁中毒");

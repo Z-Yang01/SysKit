@@ -83,16 +83,31 @@ fn conn() -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// init_db 的进程级短路标志（首次成功后不再重复 open+PRAGMA）。
+static DB_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// 建库/补齐 schema：user_version 已达即跳过（免每启动重放 DDL）。
+///
+/// 进程级短路：首次成功后直接返回（每次 open+PRAGMA 是一次文件 IO，
+/// vault 命令走 session_lock 时每条都会经过这里）。失败不置位，下条命令重试。
 pub fn init_db() -> rusqlite::Result<()> {
-    let conn = conn()?;
-    let ver: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if ver >= SCHEMA_VERSION {
+    if DB_READY.load(std::sync::atomic::Ordering::Acquire) {
         return Ok(());
     }
-    conn.execute_batch(SCHEMA)?;
-    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    let conn = conn()?;
+    let ver: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if ver < SCHEMA_VERSION {
+        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    }
+    DB_READY.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
+}
+
+/// 测试专用：隔离目录换新后清进程级短路标志（生产代码不得调用）。
+#[cfg(test)]
+pub fn reset_db_ready_for_test() {
+    DB_READY.store(false, std::sync::atomic::Ordering::Release);
 }
 
 // ---------------- sites ----------------
@@ -671,6 +686,7 @@ mod tests {
     fn site_and_account_crud_roundtrip() {
         let _g = crate::test_support::serial();
         crate::test_support::isolate();
+        reset_db_ready_for_test();
         init_db().unwrap();
         let crypto = crypto_dpapi();
         let site = add_site("GitHub", "github.com", "https://github.com", "gh", "代码").unwrap();
@@ -747,7 +763,9 @@ mod tests {
     fn init_db_is_idempotent_via_user_version() {
         let _g = crate::test_support::serial();
         crate::test_support::isolate();
+        reset_db_ready_for_test();
         init_db().unwrap();
+        reset_db_ready_for_test();
         init_db().unwrap(); // 二次调用走 user_version 短路（不重放 DDL）
         let conn = conn().unwrap();
         let ver: i32 = conn
@@ -760,6 +778,7 @@ mod tests {
     fn bulk_decrypt_downgrades_single_failure() {
         let _g = crate::test_support::serial();
         crate::test_support::isolate();
+        reset_db_ready_for_test();
         init_db().unwrap();
         let crypto = crypto_dpapi();
         let site = add_site("S", "", "", "", "").unwrap();
@@ -807,6 +826,7 @@ mod cross_language_db_tests {
         set_db_override(dir.clone());
         let mut crypto = VaultCrypto::with_path(dir.join("vault.key"));
 
+        reset_db_ready_for_test();
         init_db().unwrap(); // user_version 已盖章 → 幂等短路，不得改动 Python 库
 
         let password = crypto_expected["password"].as_str().expect("crypto 密码");
@@ -869,6 +889,7 @@ mod cross_language_db_tests {
         std::fs::create_dir_all(&out).unwrap();
         set_db_override(out.clone());
 
+        reset_db_ready_for_test();
         init_db().unwrap();
         // DPAPI 包裹的数据密钥无法被 Python 校验脚本跨机器读——用密码模式
         // 并把 vault.key 一并导出（verify 脚本用固定密码解锁）
