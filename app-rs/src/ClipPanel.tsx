@@ -50,7 +50,7 @@ function PanelThumb({ index }: { index: number }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let alive = true;
-    invoke<string>("sk_clip_image_thumb", { index })
+    invoke<string>("sk_clip_image_thumb", { index: index })
       .then((url) => {
         if (alive) setSrc(url);
       })
