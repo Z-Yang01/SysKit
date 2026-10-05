@@ -137,9 +137,37 @@ export function App() {
         (ev.payload.ok ? message.success : message.warning)(ev.payload.message);
       }
     });
+    // 命令面板动作分发：nav/tab 跳页（tab 同时切子 tab）、quick:diag 触发快速检测。
+    // 面板窗口没有 page state，跳页只能由主窗消费（对齐 Python window.switch_page 回调）。
+    const un3 = listen<{ page: string; tab?: string; quick?: boolean }>(
+      "sk://palette-nav",
+      (ev) => {
+        const { page: p, tab, quick } = ev.payload;
+        if (ORDER_KEYS.includes(p)) setPage(p);
+        if (tab) {
+          // 子 tab 切换交给目标页的自定义事件（各页用 AntD Tabs activeKey 受控
+          // 的成本高——约定用 DOM 查找点击，等同用户手点）
+          window.setTimeout(() => {
+            const el = [
+              ...document.querySelectorAll(".ant-tabs-tab"),
+            ].find((x) => x.textContent?.includes(tab));
+            el?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          }, 300);
+        }
+        if (quick) {
+          window.setTimeout(() => {
+            const btn = [...document.querySelectorAll("button")].find(
+              (b) => b.textContent?.trim() === "快速检测",
+            );
+            btn?.click();
+          }, 350);
+        }
+      },
+    );
     return () => {
       void un.then((f) => f());
       void un2.then((f) => f());
+      void un3.then((f) => f());
     };
   }, []);
 
