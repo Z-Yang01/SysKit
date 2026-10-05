@@ -453,7 +453,7 @@ pub async fn sk_diag_export(content: String) -> Result<String, String> {
         let target = crate::w32::save_file_dialog(
             "导出诊断报告",
             "diag_report.md",
-            "Markdown *.md 文本文件 *.txt 所有文件 *.* ",
+            "Markdown\0*.md\0文本文件\0*.txt\0所有文件\0*.*\0",
         )?;
         if target.is_empty() {
             return Ok(String::new()); // 用户取消
@@ -2138,6 +2138,19 @@ pub fn sk_modes_info() -> serde_json::Value {
     })
 }
 
+/// 场景模式执行后 `modes_active` 的目标值（纯函数，供单测）。
+///
+/// 返回 `Some(v)` = 把设置键写成 `v`；`None` = 部分失败、系统真实状态未知，
+/// **保留旧值**——与前端 `applyModeRun` 的「失败不动原标记」同语义（此前
+/// 失败写空串：既抹掉仍在生效的另一模式标记，也在退出失败时谎报已还原）。
+pub fn modes_active_after_run(mode: &str, fail_count: usize) -> Option<String> {
+    match (mode, fail_count) {
+        ("office" | "game", 0) => Some(mode.to_string()),
+        ("office_exit" | "game_exit", 0) => Some(String::new()),
+        _ => None,
+    }
+}
+
 /// 进入/退出场景模式（每步结果一并返回，单步失败不中断）。
 #[tauri::command]
 pub async fn sk_modes_run(
@@ -2154,20 +2167,19 @@ pub async fn sk_modes_run(
             other => return Err(format!("未知模式: {other}")),
         };
         let summary = outcome.summary();
-        // 当前模式持久化：跨会话可见（settings 动态键）。仅全部步骤成功才
-        // 置位——部分失败时系统真实状态未知，标错会让用户以为暂停更新已
-        // 生效；退出模式成功即清除。
-        let entered = match mode.as_str() {
-            "office" | "game" => outcome.fail_count == 0,
-            _ => false,
-        };
-        let mut patch = serde_json::Map::new();
-        patch.insert(
-            "modes_active".to_string(),
-            serde_json::Value::String(if entered { mode.clone() } else { String::new() }),
-        );
-        if let Err(e) = crate::settings::save(&patch) {
-            log::warn!("模式状态持久化失败（不影响本次执行）: {e}");
+        // 当前模式持久化：跨会话可见（settings 动态键）。只在**结局确定**时
+        // 写：进入成功→置模式名，退出成功→清空；部分失败时系统真实状态未知，
+        // **不动旧值**（前端 applyModeRun 同语义：失败保持原标记）。旧实现
+        // 失败也写空串，两处与真实系统态分叉：① 成功进入办公模式后再进游戏
+        // 模式部分失败，会把 office 标记一并抹掉（勿扰/静音很可能仍生效）；
+        // ② 退出失败（如无管理员恢复更新策略）也清标记，而 NoAutoUpdate=1
+        // 仍在生效——重启后「进行中」消失，与真实状态相反。
+        if let Some(v) = modes_active_after_run(&mode, outcome.fail_count) {
+            let mut patch = serde_json::Map::new();
+            patch.insert("modes_active".to_string(), serde_json::Value::String(v));
+            if let Err(e) = crate::settings::save(&patch) {
+                log::warn!("模式状态持久化失败（不影响本次执行）: {e}");
+            }
         }
         Ok(serde_json::json!({
             "outcome": outcome,
@@ -2579,6 +2591,45 @@ pub async fn sk_lan_scan(prefix: Option<String>) -> Result<serde_json::Value, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modes_active_persists_only_on_decisive_outcomes() {
+        // 进入成功 → 置模式名
+        assert_eq!(
+            modes_active_after_run("office", 0).as_deref(),
+            Some("office")
+        );
+        assert_eq!(modes_active_after_run("game", 0).as_deref(), Some("game"));
+        // 退出成功 → 清空
+        assert_eq!(
+            modes_active_after_run("office_exit", 0).as_deref(),
+            Some("")
+        );
+        assert_eq!(modes_active_after_run("game_exit", 0).as_deref(), Some(""));
+        // 部分失败：真实状态未知 → None（不动旧值）。回归锁：旧实现写空串，
+        // 会抹掉仍在生效的另一模式标记（office→game 失败分叉），且退出失败
+        // 时 NoAutoUpdate=1 仍生效却被清，重启后「进行中」与真实状态相反。
+        assert_eq!(modes_active_after_run("office", 1), None);
+        assert_eq!(modes_active_after_run("game", 3), None);
+        assert_eq!(modes_active_after_run("office_exit", 1), None);
+        assert_eq!(modes_active_after_run("game_exit", 1), None);
+        // 未知模式一律 None（settings 不得被写进垃圾值）
+        assert_eq!(modes_active_after_run("bogus", 0), None);
+    }
+
+    #[test]
+    fn source_has_no_raw_nul_bytes() {
+        // sk_diag_export 的对话框过滤器曾把 \0 写成**裸 NUL 字节**：运行时
+        // 语义不变（lpstrFilter 本就是 NUL 分隔），但源文件被 file/grep/编辑
+        // 工具判成二进制——审计搜索静默漏配。同类调用方（图片/文本另存为）
+        // 都用 \0 转义，此处锁死源码卫生。
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands.rs");
+        let src = std::fs::read(&p).expect("读 commands.rs");
+        assert!(
+            !src.contains(&0u8),
+            "源码不得含裸 NUL 字节（应写成 \0\0 转义）"
+        );
+    }
 
     #[test]
     fn every_tauri_command_is_registered_in_lib() {

@@ -335,6 +335,7 @@ pub fn v4_dns(dns_list: &[String]) -> String {
 ///   下游 any(==官方期望) 反而放行成 PASS；
 /// - 私网/保留段应答（如 192.168.x.x）、v6 ULA/链路本地：不在静态表内 → 漏判；
 /// - 非法应答（解析失败）：Python ValueError→True，旧版 contains 永假 → 漏判。
+///
 /// 静态清单判定已整体移除（Python 无此清单，公共 IP 出现在应答里按
 /// 「非污染的异常应答」走 expect-IP/INFO 路径，与 Python 同口径）。
 pub fn is_bogus(ips: &[String]) -> bool {
@@ -360,7 +361,7 @@ pub fn is_bogus(ips: &[String]) -> bool {
             v6.is_loopback()
                 || v6.is_unspecified()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00    // fc00::/7 ULA
-                || (v6.segments()[0] & 0xffc0) == 0xfe80    // fe80::/10 链路本地
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 链路本地
         }
         Err(_) => true, // 解析失败=非法应答（Python ValueError→True 同口径）
     })

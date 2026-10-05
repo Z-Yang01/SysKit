@@ -187,8 +187,19 @@ export function VaultPage() {
                   <Button
                     size="small"
                     onClick={() => {
-                      void invoke("sk_clip_copy_plain", { text: code })
-                        .then(() => message.success("动态码已复制"))
+                      // 动态码是一次性凭证，必须走敏感通道（不进本应用历史/
+                      // 不进 Win+V 与云剪贴板/到期清空）——Python _copy_totp
+                      // 走 _copy_sensitive 同纪律。此前误接明文复制通道，
+                      // 监听器会把动态码当普通文本记进历史（源码守卫锁死：
+                      // tests/vault.test.ts「TOTP 复制走敏感通道」）。
+                      void invoke<{ note: string; ttl: number }>("sk_clip_copy_sensitive", {
+                        text: code,
+                      })
+                        .then((r) =>
+                          message.success(
+                            r.ttl > 0 ? `动态码已复制；${r.ttl} 秒后自动清空` : "动态码已复制",
+                          ),
+                        )
                         .catch((e) => message.error(String(e)));
                     }}
                   >
@@ -386,30 +397,35 @@ export function VaultPage() {
     });
   }, [newMode, password, load]);
 
-  const unlock = useCallback(async () => {
-    setBusy(true);
-    try {
-      const r = await invoke<{ message: string }>("sk_vault_unlock", {
-        password: status?.has_master_password ? password : null,
-      });
-      message.success(r.message);
-      setPassword("");
-      await load();
-    } catch (e) {
-      // 后端区分「密码错误」与「文件损坏」，原样展示
-      message.error(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }, [password, status, load]);
+  const unlock = useCallback(
+    async (pw: string | null) => {
+      setBusy(true);
+      try {
+        const r = await invoke<{ message: string }>("sk_vault_unlock", { password: pw });
+        message.success(r.message);
+        setPassword("");
+        await load();
+      } catch (e) {
+        // 后端区分「密码错误」与「文件损坏」，原样展示
+        message.error(String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load],
+  );
 
   // 「解锁…」：免密模式（DPAPI）直接静默解锁，对齐 Python 版语义；
   // 主密码模式弹出输入框验证。
   const openUnlock = useCallback(() => {
     if (!status?.has_master_password) {
-      void unlock();
+      void unlock(null);
       return;
     }
+    // Modal.confirm 的 content 是打开瞬间的静态快照：受控组件在弹窗内不
+    // 重渲染（输入显示不更新、闭包值不更新）——必须用非受控捕获。
+    // 这是「输入和显示不一样 + 不能解密」的根因（真机实锤 2026-10-05）。
+    let input = "";
     Modal.confirm({
       title: "解锁密码库",
       width: 440,
@@ -417,8 +433,7 @@ export function VaultPage() {
         <Input.Password
           autoFocus
           placeholder="主密码"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
+          onChange={(e) => (input = e.target.value)}
           onPressEnter={() => {
             // 回车 = 确定：触发确认框的 OK 按钮
             const ok = document.querySelector<HTMLButtonElement>(
@@ -430,10 +445,9 @@ export function VaultPage() {
       ),
       okText: "解锁",
       cancelText: "取消",
-      onOk: () => unlock(),
+      onOk: () => unlock(input),
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, password]);
+  }, [status, unlock]);
 
   const lock = useCallback(async () => {
     await invoke("sk_vault_lock");
@@ -447,6 +461,7 @@ export function VaultPage() {
   const setMaster = useCallback(() => {
     const changing = status?.has_master_password === true;
     let current = "";
+    let next = "";
     Modal.confirm({
       title: changing ? "更改主密码" : "设置主密码",
       width: 520,
@@ -464,14 +479,8 @@ export function VaultPage() {
           )}
           <Input.Password
             placeholder="新主密码（至少 8 位更稳）"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => (next = e.target.value)}
           />
-          {password && (
-            <Tag color={passwordStrength(password).level === "good" ? "green" : passwordStrength(password).level === "fair" ? "orange" : "red"}>
-              {passwordStrength(password).hint}
-            </Tag>
-          )}
         </Space>
       ),
       okText: changing ? "更改" : "设置",
@@ -485,7 +494,7 @@ export function VaultPage() {
               throw new Error("wrong password");
             }
           }
-          message.success(await invoke<string>("sk_vault_set_password", { password }));
+          message.success(await invoke<string>("sk_vault_set_password", { password: next }));
           setPassword("");
           await load();
         } catch (e) {
@@ -494,9 +503,10 @@ export function VaultPage() {
         }
       },
     });
-  }, [status, password, load]);
+  }, [status, load]);
 
   const removeMaster = useCallback(() => {
+    let current = "";
     Modal.confirm({
       title: "移除主密码",
       content: (
@@ -507,8 +517,7 @@ export function VaultPage() {
           </Typography.Paragraph>
           <Input.Password
             placeholder="当前主密码"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => (current = e.target.value)}
           />
         </Space>
       ),
@@ -517,7 +526,7 @@ export function VaultPage() {
       cancelText: "取消",
       onOk: async () => {
         try {
-          const ok = await invoke<boolean>("sk_vault_remove_password", { current: password });
+          const ok = await invoke<boolean>("sk_vault_remove_password", { current });
           if (!ok) {
             message.error("主密码错误，未做改动");
             throw new Error("wrong password");

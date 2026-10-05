@@ -5,6 +5,8 @@
  * 让用户填完表单再失败、或让空列表看起来像"还没有密码"，都是把
  * "功能没做"伪装成"暂无数据"——密码这种数据丢了就是丢了。
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -201,5 +203,33 @@ describe("setupConfirmText", () => {
     expect(t).toContain("无法找回");
     expect(t).toContain("PBKDF2");
     expect(t).toContain("不落盘");
+  });
+});
+
+/**
+ * 敏感复制纪律（源码守卫，Node 侧读源码——契约审计 contract.test.ts 同路）。
+ *
+ * 后端注释里写明的纪律：密码类内容只能经由 sk_clip_copy_sensitive 进入
+ * 剪贴板（不进本应用历史 / 不进 Win+V 与云剪贴板 / 到期清空）。TOTP 动态码
+ * 是一次性凭证，Python 版 _copy_totp 走 _copy_sensitive 同一条路；此前 Rust
+ * 前端把它接到 sk_clip_copy_plain，动态码会被监听器记进历史——这里锁死。
+ */
+describe("TOTP 复制走敏感通道（源码守卫）", () => {
+  // 规范化换行后再切：git autocrlf 可能落成 CRLF，直接找 \n 会静默失配
+  const src = readFileSync(resolve(__dirname, "../src/VaultPage.tsx"), "utf-8").replace(
+    /\r\n/g,
+    "\n",
+  );
+  const start = src.indexOf("const showTotp");
+  // showTotp 回调体：从定义处到顶层收尾「  );」（useCallback 的收尾）
+  const region = src.slice(start, src.indexOf("\n  );", start));
+
+  it("showTotp 区块存在且动态码复制按钮调 sk_clip_copy_sensitive", () => {
+    expect(start).toBeGreaterThan(-1);
+    expect(region).toContain("sk_clip_copy_sensitive");
+  });
+
+  it("动态码路径不得出现 sk_clip_copy_plain（明文复制会让动态码进历史）", () => {
+    expect(region).not.toContain("sk_clip_copy_plain");
   });
 });
