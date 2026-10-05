@@ -130,6 +130,12 @@ function PerfPanel() {
   useEffect(() => {
     let un: (() => void) | undefined;
     void listen<PerfTick>("sk://tick", (e) => {
+      // 窗口最小化/隐藏时跳过本拍（4 组 setState + 重渲染是纯浪费）；
+      // isStale 守卫会在切回时清旧序列，两条守卫互补
+      if (document.hidden) {
+        lastTickAt.current = null;
+        return;
+      }
       const t = e.payload;
       // 断流守卫：页面隐藏期间采样被跳过，切回时清空旧序列，
       // 免得把 10 分钟前的点和现在的点连成一条"平稳曲线"
@@ -166,7 +172,9 @@ function PerfPanel() {
           setWifiFailed(true);
         });
     load();
-    const t = window.setInterval(load, 5000);
+    const t = window.setInterval(() => {
+      if (!document.hidden) load();
+    }, 5000);
     return () => window.clearInterval(t);
   }, []);
 
@@ -183,7 +191,9 @@ function PerfPanel() {
         });
     load();
     // 后端有 2 秒缓存，这里 3 秒轮询即可（tasklist 一次约 0.5 秒）
-    const t = window.setInterval(load, 3000);
+    const t = window.setInterval(() => {
+      if (!document.hidden) load();
+    }, 3000);
     return () => window.clearInterval(t);
   }, []);
 

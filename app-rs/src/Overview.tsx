@@ -316,12 +316,12 @@ export function Dashboard() {
                     {st.text}
                   </Tag>
                 </Row>
-                <ReactECharts option={rateOption} style={{ height: 200 }} notMerge />
+                <ReactECharts option={rateOption} style={{ height: 200 }} lazyUpdate />
               </div>
 
               <div className="sk-card">
                 <Typography.Text strong>CPU / 内存</Typography.Text>
-                <ReactECharts option={usageOption} style={{ height: 200 }} notMerge />
+                <ReactECharts option={usageOption} style={{ height: 200 }} lazyUpdate />
               </div>
             </Space>
           ),
@@ -359,7 +359,7 @@ export function Dashboard() {
                     </Typography.Text>
                   </Space>
                 </Row>
-                <ReactECharts option={trafficOption} style={{ height: 240 }} notMerge />
+                <ReactECharts option={trafficOption} style={{ height: 240 }} lazyUpdate />
               </div>
 
               <Row gutter={14}>
