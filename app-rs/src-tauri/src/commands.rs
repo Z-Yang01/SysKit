@@ -1463,13 +1463,47 @@ pub fn sk_settings_set(
     Ok(serde_json::json!({ "key": key, "value": saved, "message": "已保存" }))
 }
 
-/// 恢复默认值（只重置已知键，动态键保留）。
-#[tauri::command]
-pub fn sk_settings_reset() -> Result<String, String> {
+/// 热键三键的重置回退目标快照（纯读，供 `sk_settings_reset` 与单测）。
+fn hotkey_reset_fallbacks() -> [String; 3] {
+    ["palette_hotkey", "clip_quick_hotkey", "clip_paste_hotkey"].map(crate::settings::get_str)
+}
+
+/// 恢复默认设置的公共体（`rehook` 注入以便单测）：**先**快照热键三键旧值，
+/// **再**落默认，最后把快照交给 `rehook` 即时重挂。顺序是语义的一部分——
+/// 落了默认再快照就只剩默认值，被占回退会因「回退目标==请求值」失去回退步，
+/// 用户旧组合从此找不回（轮次37 变异验证锁定此顺序）。
+fn reset_settings_with_rehook<R>(rehook: R) -> Result<String, String>
+where
+    R: FnOnce(&dyn Fn(&str) -> String),
+{
+    let previous = hotkey_reset_fallbacks();
     let n = crate::settings::reset_to_defaults()?;
+    let prev_getter = move |k: &str| -> String {
+        match k {
+            "palette_hotkey" => previous[0].clone(),
+            "clip_quick_hotkey" => previous[1].clone(),
+            "clip_paste_hotkey" => previous[2].clone(),
+            _ => String::new(),
+        }
+    };
+    rehook(&prev_getter);
     Ok(format!(
         "已恢复 {n} 项默认值（动态键如 modes_prev_volume 保留）"
     ))
+}
+
+/// 恢复默认值（只重置已知键，动态键保留）。
+///
+/// 热键三键重置后**必须即时重挂**（轮次37 互审实锤）：只写设置不重挂，
+/// 注册链还挂着用户旧组合，设置页却显示默认组合——按默认组合按了没反应，
+/// 三方一致（注册链 × 设置页 × 侧栏速查）被 reset 路径击穿。重置**前**快照
+/// 旧值作为回退目标：默认组合被占时链回退到旧值并持久化 + 发
+/// `sk://hotkey-reverted`，与 `sk_settings_set` 保存路径同语义。
+#[tauri::command]
+pub fn sk_settings_reset(app: tauri::AppHandle) -> Result<String, String> {
+    reset_settings_with_rehook(|prev| {
+        crate::apply_hotkeys(&app, prev);
+    })
 }
 
 /// 日志文件列表（按修改时间倒序）。
@@ -2245,7 +2279,34 @@ pub fn mutual_entry_restore(mode: &str, cur: (bool, bool)) -> Option<&'static st
     }
 }
 
-/// 进入/退出场景模式（每步结果一并返回，单步失败不中断）。
+/// 一次 run 的**执行计划**（纯函数，供单测/变异验证）：按真实执行顺序返回
+/// 模式步 id 列表。另一族标记在生效时，前置还原步必须排在进入步**之前**——
+/// 两族第 1 步都是「通知/勿扰」且写同一个注册表值：先进入再还原，restore 的
+/// 「开启通知」会把刚进入模式的勿扰覆盖掉（轮次37 互审实锤：勿扰静默失效，
+/// 结果清单的步序也和执行序相反）。未知模式返回空表（调用方报错，绝不执行
+/// 任何系统动作）。
+pub fn modes_run_plan(mode: &str, cur: (bool, bool)) -> Vec<&'static str> {
+    if !matches!(mode, "office" | "office_exit" | "game" | "game_exit") {
+        return Vec::new();
+    }
+    match mutual_entry_restore(mode, cur) {
+        // 前置还原步在前，进入步在后（步序 = 执行序 = 清单序）
+        Some(restore_id) => vec![restore_id, if mode == "office" { "office" } else { "game" }],
+        None => vec![match mode {
+            "office" => "office",
+            "office_exit" => "office_exit",
+            "game" => "game",
+            _ => "game_exit",
+        }],
+    }
+}
+
+/// 进入/退出场景模式（每步结果一并返回，单步失败不中断）。执行顺序由
+/// `modes_run_plan` 给出：另一族标记在生效时**先真实退出该族再进入**——
+/// 两族第 1 步都是「通知/勿扰」且写同一个注册表值，先进入再还原会让
+/// restore 的「开启通知」覆盖刚进入模式的勿扰（轮次37 互审实锤）。restore
+/// 步如实并入结果清单（步序=执行序）；前置还原失败 → fail_count>0 → 双键
+/// 不动旧值，与「失败不写标记」的既有语义衔接。
 #[tauri::command]
 pub async fn sk_modes_run(
     mode: String,
@@ -2258,31 +2319,32 @@ pub async fn sk_modes_run(
             modes_flag_on("modes_active_office"),
             modes_flag_on("modes_active_game"),
         );
-        let mut outcome = match mode.as_str() {
-            "office" => crate::modes::run_office_mode(open_apps.unwrap_or(true)),
-            "office_exit" => crate::modes::restore_office_defaults(),
-            "game" => crate::modes::run_game_mode(clear_bg.unwrap_or(true)),
-            "game_exit" => crate::modes::restore_game_defaults(),
-            other => return Err(format!("未知模式: {other}")),
-        };
-        // 互斥前置还原：另一族标记仍在生效时，先真实退出该族再进入
-        // （restore 步如实并入结果清单；前置还原失败 → fail_count>0 →
-        // 双键不动旧值，与「失败不写标记」的既有语义衔接）。
-        if let Some(restore_id) = mutual_entry_restore(&mode, cur) {
-            let restore = match restore_id {
-                "game_exit" => crate::modes::restore_game_defaults(),
+        let plan = modes_run_plan(&mode, cur);
+        if plan.is_empty() {
+            return Err(format!("未知模式: {mode}"));
+        }
+        let mut mode_name = String::new();
+        let mut steps = Vec::new();
+        for id in plan {
+            let out = match id {
+                "office" => crate::modes::run_office_mode(open_apps.unwrap_or(true)),
                 "office_exit" => crate::modes::restore_office_defaults(),
+                "game" => crate::modes::run_game_mode(clear_bg.unwrap_or(true)),
+                "game_exit" => crate::modes::restore_game_defaults(),
                 other => return Err(format!("未知还原族: {other}")),
             };
-            let mut steps = restore.steps;
-            steps.extend(outcome.steps);
-            outcome = crate::modes::ModeOutcome::new(&outcome.mode, steps);
-            log::info!(
-                "互斥前置还原：进入 {} 前先执行 {}（另一族标记在生效）",
-                mode,
-                restore_id
-            );
+            if id == mode.as_str() {
+                mode_name = out.mode.clone();
+            } else {
+                log::info!(
+                    "互斥前置还原：进入 {} 前先执行 {}（另一族标记在生效）",
+                    mode,
+                    id
+                );
+            }
+            steps.extend(out.steps);
         }
+        let outcome = crate::modes::ModeOutcome::new(&mode_name, steps);
         let summary = outcome.summary();
         // 当前模式持久化：跨会话可见（settings 双键）。只在**结局确定**时
         // 写：进入成功→置自己族并清另一族（互斥在写入侧强制），退出成功→
@@ -2891,6 +2953,65 @@ mod tests {
                 "前置还原成功后进 office：game 标记清零才与系统态一致"
             );
         }
+    }
+
+    #[test]
+    fn modes_run_plan_restores_other_family_before_entry() {
+        // 回归锁（无人值守轮次37）：前置还原必须排在进入**之前**。两族第 1 步
+        // 都是「通知/勿扰」且写同一注册表值（NOC_GLOBAL_SETTING_TOASTS_ENABLED）
+        // ——先进入再还原，restore 的「开启通知」会覆盖刚进入模式的勿扰，
+        // 且结果清单步序与执行序相反（轮次37 互审实锤的旧 r36 实现行为）。
+        assert_eq!(
+            modes_run_plan("office", (false, true)),
+            vec!["game_exit", "office"]
+        );
+        assert_eq!(
+            modes_run_plan("game", (true, false)),
+            vec!["office_exit", "game"]
+        );
+        // 另一族未激活：只进不还
+        assert_eq!(modes_run_plan("office", (false, false)), vec!["office"]);
+        assert_eq!(modes_run_plan("game", (false, false)), vec!["game"]);
+        // 退出路径永不触发前置还原（既有语义）
+        assert_eq!(
+            modes_run_plan("office_exit", (false, true)),
+            vec!["office_exit"]
+        );
+        assert_eq!(
+            modes_run_plan("game_exit", (true, false)),
+            vec!["game_exit"]
+        );
+        // 未知模式：空计划（调用方报错，绝不执行任何系统动作）
+        assert!(modes_run_plan("bogus", (true, true)).is_empty());
+        assert!(modes_run_plan("", (false, false)).is_empty());
+    }
+
+    #[test]
+    fn settings_reset_captures_hotkey_fallbacks_before_defaults() {
+        // 回归锁（无人值守轮次37）：reset 的热键回退目标必须在落默认**前**快照
+        // ——落了默认再读就只剩默认值，被占回退会因「回退目标==请求值」失去
+        // 回退步，用户旧组合从此找不回。走真实公共体（rehook 用测试替身），
+        // 快照/落默认的顺序变动必须在此变红。
+        let _g = crate::test_support::serial();
+        let _dir = crate::test_support::isolate();
+        crate::settings::set_one("palette_hotkey", serde_json::json!("Ctrl+Alt+Z")).unwrap();
+        let mut given_to_rehook: Option<String> = None;
+        let summary = reset_settings_with_rehook(|prev| {
+            given_to_rehook = Some(prev("palette_hotkey"));
+        })
+        .unwrap();
+        assert_eq!(
+            given_to_rehook.as_deref(),
+            Some("Ctrl+Alt+Z"),
+            "重挂钩拿到的回退目标必须是用户旧值（快照在落默认之前）"
+        );
+        assert!(summary.contains("已恢复"), "{summary}");
+        // 落默认确实发生了：设置里已是默认组合
+        assert_ne!(
+            crate::settings::get_str("palette_hotkey"),
+            "Ctrl+Alt+Z",
+            "reset 必须把设置落回默认，重挂钩的旧值只作回退目标"
+        );
     }
 
     #[test]

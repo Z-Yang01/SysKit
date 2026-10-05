@@ -287,6 +287,10 @@ function SettingsPanel() {
       onOk: async () => {
         try {
           message.success(await invoke<string>("sk_settings_reset"));
+          // 重置会改动热键三键且后端已即时重挂（sk_settings_reset →
+          // apply_hotkeys）：通知侧栏速查刷新，与保存路径同一三方一致语义
+          // （轮次37）。
+          window.dispatchEvent(new CustomEvent("sk:hotkeys-changed"));
           await load();
         } catch (e) {
           message.error(String(e));
