@@ -39,7 +39,12 @@ def _key_to_vk(key: str):
         ch = key.upper()
         if "A" <= ch <= "Z" or "0" <= ch <= "9":
             return ord(ch)
-    if key.startswith("f") and key[1:].isdigit():
+    # isascii 前置闸：str.isdigit 对「²」「Ⅻ」等非 ASCII 数字字符也为 True，
+    # 而 int() 只认十进制——"f²" 会在热键解析里炸 ValueError 并穿透
+    # parse_hotkey/hotkey_display（设置页可编辑下拉、settings.json 手改、
+    # 托盘提示/系统助手页 hotkey_hint 均无 try 包裹）。Rust 侧
+    # hotkey.rs::key_to_vk 用 is_ascii_digit 同口径，此处对齐。
+    if key.startswith("f") and key[1:].isascii() and key[1:].isdigit():
         n = int(key[1:])
         if 1 <= n <= 24:
             return 0x70 + (n - 1)

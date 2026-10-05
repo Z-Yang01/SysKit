@@ -40,6 +40,21 @@ class TestHotkeyParse:
         assert hotkey.parse_hotkey("Ctrl+不是键") is None
         assert hotkey.parse_hotkey("Alt+Shift") is None      # 无主键
 
+    def test_non_ascii_digits_must_not_crash(self):
+        """回归（深度审计轮31）：str.isdigit 对「²」也为 True 而 int() 只认十进制，
+        旧实现 _key_to_vk("f²") 在热键解析内炸 ValueError 并穿透
+        parse_hotkey/hotkey_display——设置页可编辑下拉/手改 settings.json/托盘
+        hotkey_hint 均无 try 包裹，一颗「f²」让设置保存与系统助手页构造整体崩。
+        语义对齐 Rust hotkey.rs（is_ascii_digit 闸）：非 ASCII 数字一律按未知键
+        返回 None，绝不抛异常。"""
+        assert hotkey.parse_hotkey("f²") is None             # 上标二：isdigit=True, int 炸
+        assert hotkey.parse_hotkey("ctrl+f²") is None
+        assert hotkey.hotkey_display("f²") == ""
+        assert hotkey.parse_hotkey("f１") is None            # 全角１：int 可转但非本口径
+        # 正常 F 键不受影响（变异验证锚点：删 isascii 闸本例仍绿、上三例红）
+        assert hotkey.parse_hotkey("f2") == (0, 0x71)
+        assert hotkey.parse_hotkey("F24") == (0, 0x87)
+
     def test_display_roundtrip(self):
         assert hotkey.hotkey_display("ctrl+alt+k") == "Ctrl+Alt+K"
         assert hotkey.hotkey_display("alt+space") == "Alt+Space"
