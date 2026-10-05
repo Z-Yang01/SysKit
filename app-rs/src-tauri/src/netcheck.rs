@@ -119,20 +119,6 @@ pub const PUBLIC_DNS_TEST: [&str; 2] = ["223.5.5.5", "119.29.29.29"];
 /// DNS 对比用域名。
 pub const DNS_COMPARE_HOST: &str = "www.baidu.com";
 
-/// DNS 污染判定用的"地雷"IP 集合（对应 config.FOREIGN_DNS_BLACKLIST 用途）。
-pub fn bogus_ips() -> Vec<&'static str> {
-    vec![
-        "127.0.0.1",
-        "0.0.0.0",
-        "1.1.1.1",
-        "8.8.8.8",
-        "8.8.4.4",
-        "9.9.9.9",
-        "208.67.222.222",
-        "208.67.220.220",
-    ]
-}
-
 /// 国内不可靠、常被列为"地雷"的国外 DNS（与 config.FOREIGN_DNS_BLACKLIST 逐项一致）。
 pub const FOREIGN_DNS_BLACKLIST: [&str; 7] = [
     "8.8.8.8",
@@ -340,9 +326,44 @@ pub fn v4_dns(dns_list: &[String]) -> String {
 }
 
 /// 结果是否为「可疑/污染」IP（对应 Python `_bogus`）。
+///
+/// 语义对齐（深度审计轮31修正）：Python 版逐个**解析分类**——任一 IP 解析
+/// 失败或落在 loopback/unspecified/private/reserved/link-local 即判污染
+/// （any 语义）。旧 Rust 版退化成「全体 ∈ 静态 8 项地雷表」的 all() 判定，
+/// 两类真实污染随后者漏判：
+/// - 混合应答（官方 IP 夹带 127.0.0.1）：Python WARN，旧版 all() 不过 →
+///   下游 any(==官方期望) 反而放行成 PASS；
+/// - 私网/保留段应答（如 192.168.x.x）、v6 ULA/链路本地：不在静态表内 → 漏判；
+/// - 非法应答（解析失败）：Python ValueError→True，旧版 contains 永假 → 漏判。
+/// 静态清单判定已整体移除（Python 无此清单，公共 IP 出现在应答里按
+/// 「非污染的异常应答」走 expect-IP/INFO 路径，与 Python 同口径）。
 pub fn is_bogus(ips: &[String]) -> bool {
-    let bogus = bogus_ips();
-    !ips.is_empty() && ips.iter().all(|ip| bogus.contains(&ip.as_str()))
+    use std::net::IpAddr;
+    // Ipv4Addr::is_reserved 在本工具链仍是 unstable 特性（E0658），手工判
+    // 240.0.0.0/4（与 Python ipaddress 的 is_reserved 口径一致）。
+    let v4_bogus = |v4: std::net::Ipv4Addr| {
+        let o = v4.octets();
+        v4.is_loopback()
+            || v4.is_unspecified()
+            || v4.is_private()
+            || v4.is_link_local()
+            || (o[0] & 0xf0) == 0xf0
+    };
+    ips.iter().any(|ip| match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4_bogus(v4),
+        Ok(IpAddr::V6(v6)) => {
+            // IPv4-mapped（::ffff:a.b.c.d）按映射的 v4 分类（Python
+            // ipaddress 对 mapped 私网地址 is_private 同样为 True）
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return v4_bogus(v4);
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00    // fc00::/7 ULA
+                || (v6.segments()[0] & 0xffc0) == 0xfe80    // fe80::/10 链路本地
+        }
+        Err(_) => true, // 解析失败=非法应答（Python ValueError→True 同口径）
+    })
 }
 
 /// 从 ping 输出解析丢包率百分比（对应 Python `_ping_loss`）。
@@ -631,7 +652,10 @@ pub fn chk_dns_pollution() -> CheckResult {
     r.detail = detail;
     if is_bogus(&sys_ips) {
         r.status = WARN;
-        r.detail = format!("{} —— 系统解析结果是已知地雷 IP，疑似污染", r.detail);
+        r.detail = format!(
+            "{} —— 系统解析结果含无效/私网保留/已知地雷地址（污染特征）",
+            r.detail
+        );
         r.fix_ids = vec!["dns_preset"];
     } else if !sys_ips.is_empty() && sys_ips.iter().any(|i| i == NCSI_DNS_EXPECT) {
         r.status = PASS;
@@ -1566,14 +1590,41 @@ mod tests {
         assert!(is_bogus(&["127.0.0.1".into()]));
         assert!(
             is_bogus(&["8.8.8.8".into(), "0.0.0.0".into()]),
-            "全是地雷 → 污染"
+            "含 unspecified 地雷 → 污染（any 语义）"
         );
         assert!(!is_bogus(&["131.107.255.255".into()]), "官方 IP 不算地雷");
         assert!(
             !is_bogus(&["8.8.8.8".into(), "1.2.3.4".into()]),
-            "有一个正常 → 不判污染"
+            "全公共地址（无坏 IP）→ 不判污染（与 Python _bogus 同口径）"
         );
         assert!(!is_bogus(&[]), "空结果不算污染");
+    }
+
+    #[test]
+    fn is_bogus_any_semantics_and_classification_parity() {
+        // 回归锁（深度审计轮31，对齐 Python _bogus 的解析分类 + any 语义）：
+        // 旧版 all() + 静态表对下列真实污染形态全部漏判。
+        // 1) 混合应答：官方 IP 夹带 loopback —— 旧版放行成非污染，
+        //    下游 any(==官方期望) 会把它误判成 PASS
+        assert!(is_bogus(&["131.107.255.255".into(), "127.0.0.1".into()]));
+        // 2) 私网段应答（静态表外）
+        assert!(is_bogus(&["192.168.1.1".into()]));
+        assert!(is_bogus(&["10.0.0.7".into()]));
+        // 3) 保留段 / 链路本地
+        assert!(is_bogus(&["240.0.0.1".into()]));
+        assert!(is_bogus(&["169.254.1.2".into()]));
+        // 4) IPv6：loopback / ULA / 链路本地 / v4-mapped 私网
+        assert!(is_bogus(&["::1".into()]));
+        assert!(is_bogus(&["fd00::1".into()]));
+        assert!(is_bogus(&["fe80::1".into()]));
+        assert!(is_bogus(&["::ffff:192.168.0.1".into()]));
+        // 5) 非法应答（解析失败）= 污染（Python ValueError→True 同口径）
+        assert!(is_bogus(&["not-an-ip".into()]));
+        // 合法公共地址不受牵连
+        assert!(!is_bogus(&["131.107.255.255".into(), "23.32.1.5".into()]));
+        // 8.8.8.8 虽是可疑的服务 IP，但按 Python 口径属公共地址：不走污染
+        // WARN，由 expect-IP/INFO 路径处理（旧静态清单判定已随 all() 移除）
+        assert!(!is_bogus(&["8.8.8.8".into()]));
     }
 
     #[test]
