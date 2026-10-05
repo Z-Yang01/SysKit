@@ -15,7 +15,7 @@
  * 体验纪律：非管理员提前标注跳过；执行中防重复触发；加载失败给重试入口
  * 而不是永远停在「正在读取」。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -78,7 +78,7 @@ import {
 
 import { statusLabel } from "./repair";
 
-export function Diagnose() {
+export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   const [data, setData] = useState<RepairList | null>(null);
   const [loadError, setLoadError] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
@@ -160,6 +160,15 @@ export function Diagnose() {
     },
     [comboRun],
   );
+
+  // palette「快速诊断」动作信号：递增即触发一次快速检测（消费一次）
+  const ranRef = useRef(quickRequest ?? 0);
+  useEffect(() => {
+    if (quickRequest === undefined || quickRequest === ranRef.current) return;
+    ranRef.current = quickRequest;
+    if (!diagBusy && !comboRun) void runDiag(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quickRequest]);
 
   /**
    * 组合修复后的静默快速复检（对齐 Python 组合完成后的

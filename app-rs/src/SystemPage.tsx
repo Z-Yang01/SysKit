@@ -87,10 +87,19 @@ function Spark({
   );
 }
 
-export function SystemPage() {
+export function SystemPage({
+  initialTab,
+  onTabChange,
+}: {
+  initialTab?: string;
+  onTabChange?: (key: string) => void;
+}) {
   return (
     <Card size="small" className="sk-card">
       <Tabs
+        {...(initialTab !== undefined
+          ? { activeKey: initialTab, onChange: (k: string) => onTabChange?.(k) }
+          : {})}
         items={[
           { key: "perf", label: "性能监控", children: <PerfPanel /> },
           { key: "startup", label: "启动项管理", children: <ToolboxStartup /> },
