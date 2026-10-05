@@ -489,6 +489,28 @@ pub fn save(patch: &Map<String, Value>) -> std::io::Result<()> {
     save_to(&paths::settings_file(), patch)
 }
 
+/// 删除动态键（`save` 的逆操作；场景模式旧单键 `modes_active` 迁移清场用）。
+///
+/// 缓存与磁盘同步更新；一个键都不存在时**不动盘**（幂等迁移的快速路径）。
+pub fn remove_keys(keys: &[&str]) -> std::io::Result<()> {
+    let mut merged = load();
+    let mut removed_any = false;
+    for k in keys {
+        removed_any |= merged.remove(*k).is_some();
+    }
+    if !removed_any {
+        return Ok(());
+    }
+    *cache().lock().expect("settings 缓存锁中毒") = Some(merged.clone());
+    let path = paths::settings_file();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let text = serde_json::to_string_pretty(&Value::Object(merged))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    crate::stores::atomic_write(&path, text.as_bytes())
+}
+
 /// 指定路径写入（测试用；同时更新缓存，与 Python 先更新缓存同语义）。
 pub fn save_to(path: &Path, patch: &Map<String, Value>) -> std::io::Result<()> {
     let mut merged = load();

@@ -2116,6 +2116,7 @@ pub fn safe_default_name(text: &str) -> String {
 /// 场景模式清单（供前端渲染按钮与说明）。
 #[tauri::command]
 pub fn sk_modes_info() -> serde_json::Value {
+    migrate_modes_active_keys();
     serde_json::json!({
         "common_apps": crate::modes::COMMON_APPS
             .iter()
@@ -2124,10 +2125,11 @@ pub fn sk_modes_info() -> serde_json::Value {
         "office_default_apps": crate::modes::OFFICE_DEFAULT_APPS,
         "whitelist": crate::modes::BACKGROUND_CLOSE_WHITELIST,
         "is_admin": crate::w32::is_elevated(),
-        // 当前生效模式（settings 动态键；run 全部步骤成功才置位，退出即清）
+        // 当前生效模式（settings 双键 `modes_active_office`/`modes_active_game`，
+        // 旧单键已就地迁移；run 全部步骤成功才置位，退出即清自己族）
         "active_mode": {
-            "office": crate::settings::get_str("modes_active") == "office",
-            "game": crate::settings::get_str("modes_active") == "game",
+            "office": modes_flag_on("modes_active_office"),
+            "game": modes_flag_on("modes_active_game"),
         },
         "notes": {
             "office": "勿扰（关通知）+ 静音 + 打开常用软件 + 备份当前配置。退出模式会恢复通知并取消静音。",
@@ -2138,15 +2140,76 @@ pub fn sk_modes_info() -> serde_json::Value {
     })
 }
 
-/// 场景模式执行后 `modes_active` 的目标值（纯函数，供单测）。
+/// 场景模式双键取值：开 = "1"。旧单键存的是模式名（"office"/"game"/""），
+/// 双键拆族后每键只有 开/关 两态，"1"/"0" 与 `get_str`（缺失→空串→关）直配。
+fn modes_flag_str(on: bool) -> &'static str {
+    if on {
+        "1"
+    } else {
+        "0"
+    }
+}
+
+/// 场景模式双键读取（缺失/空串/脏值一律视为关）。
+fn modes_flag_on(key: &str) -> bool {
+    crate::settings::get_str(key) == "1"
+}
+
+/// 旧单键 `modes_active` 的值 → 双键初值 `(office, game)`（纯函数，供单测）。
+pub fn modes_dual_from_legacy(legacy: &str) -> (bool, bool) {
+    (legacy == "office", legacy == "game")
+}
+
+/// 一次性迁移：读到旧单键 `modes_active` 时按其值初始化双键并**清旧键**。
 ///
-/// 返回 `Some(v)` = 把设置键写成 `v`；`None` = 部分失败、系统真实状态未知，
-/// **保留旧值**——与前端 `applyModeRun` 的「失败不动原标记」同语义（此前
-/// 失败写空串：既抹掉仍在生效的另一模式标记，也在退出失败时谎报已还原）。
-pub fn modes_active_after_run(mode: &str, fail_count: usize) -> Option<String> {
+/// 幂等：旧键不存在直接返回（不动盘）；旧键显式为 ""（旧版退出写过）也走
+/// 迁移——双键落 "0" 后旧键删除，此后读写面只剩双键。save 成功但清键失败时
+/// 旧键仍在，下次读到会再迁一遍（写同值 + 再清），收敛。
+fn migrate_modes_active_keys() {
+    let Some(v) = crate::settings::load().get("modes_active").cloned() else {
+        return;
+    };
+    let (office, game) = modes_dual_from_legacy(v.as_str().unwrap_or(""));
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        "modes_active_office".to_string(),
+        serde_json::Value::String(modes_flag_str(office).to_string()),
+    );
+    patch.insert(
+        "modes_active_game".to_string(),
+        serde_json::Value::String(modes_flag_str(game).to_string()),
+    );
+    if let Err(e) = crate::settings::save(&patch) {
+        log::warn!("场景模式双键迁移写入失败（旧键保留，下次再迁）: {e}");
+        return;
+    }
+    if let Err(e) = crate::settings::remove_keys(&["modes_active"]) {
+        log::warn!("场景模式旧单键清除失败（下次再迁）: {e}");
+    }
+}
+
+/// 场景模式执行后双键（`modes_active_office` / `modes_active_game`）的目标
+/// 状态（纯函数，供单测）。`cur` = 双键当前值 `(office, game)`。
+///
+/// 返回 `Some((office, game))` = 双键目标；`None` = 部分失败/未知模式，系统
+/// 真实状态未知，**不动旧值**——沿用轮次32 `modes_active_after_run` 的「失败
+/// 不动」语义（更早的旧实现失败写空串：既抹掉仍在生效的另一模式标记，也在
+/// 退出失败时谎报已还原）。
+///
+/// 互斥在**写入侧**强制：进入任一模式成功即清另一族（同刻只应一个场景模式
+/// 生效；旧单键天然如此，双键拆族后由这里保持，显示侧只读）。退出只动自己
+/// 那族——另一族标记是否真实生效未知，不能替它「顺手清」（旧前端实现任意
+/// 退出清双标记，会丢仍在生效那族的「进行中」）。
+pub fn modes_dual_after_run(
+    mode: &str,
+    fail_count: usize,
+    cur: (bool, bool),
+) -> Option<(bool, bool)> {
     match (mode, fail_count) {
-        ("office" | "game", 0) => Some(mode.to_string()),
-        ("office_exit" | "game_exit", 0) => Some(String::new()),
+        ("office", 0) => Some((true, false)),
+        ("game", 0) => Some((false, true)),
+        ("office_exit", 0) => Some((false, cur.1)),
+        ("game_exit", 0) => Some((cur.0, false)),
         _ => None,
     }
 }
@@ -2159,6 +2222,7 @@ pub async fn sk_modes_run(
     clear_bg: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        migrate_modes_active_keys();
         let outcome = match mode.as_str() {
             "office" => crate::modes::run_office_mode(open_apps.unwrap_or(true)),
             "office_exit" => crate::modes::restore_office_defaults(),
@@ -2167,16 +2231,30 @@ pub async fn sk_modes_run(
             other => return Err(format!("未知模式: {other}")),
         };
         let summary = outcome.summary();
-        // 当前模式持久化：跨会话可见（settings 动态键）。只在**结局确定**时
-        // 写：进入成功→置模式名，退出成功→清空；部分失败时系统真实状态未知，
-        // **不动旧值**（前端 applyModeRun 同语义：失败保持原标记）。旧实现
-        // 失败也写空串，两处与真实系统态分叉：① 成功进入办公模式后再进游戏
-        // 模式部分失败，会把 office 标记一并抹掉（勿扰/静音很可能仍生效）；
-        // ② 退出失败（如无管理员恢复更新策略）也清标记，而 NoAutoUpdate=1
-        // 仍在生效——重启后「进行中」消失，与真实状态相反。
-        if let Some(v) = modes_active_after_run(&mode, outcome.fail_count) {
+        // 当前模式持久化：跨会话可见（settings 双键）。只在**结局确定**时
+        // 写：进入成功→置自己族并清另一族（互斥在写入侧强制），退出成功→
+        // 清自己族（另一族保持）；部分失败时系统真实状态未知，**不动旧值**
+        // （前端 applyModeRun 同语义：失败保持原标记）。旧单键 `modes_active`
+        // 只能存一个模式名：office 生效中进 game（哪怕部分失败没写成）也会在
+        // 下一次成功写入时丢掉 office 标记，且旧前端任意退出清双标记——双键
+        // 后两族各自存退，丢态序列不再存在。
+        if let Some((office, game)) = modes_dual_after_run(
+            &mode,
+            outcome.fail_count,
+            (
+                modes_flag_on("modes_active_office"),
+                modes_flag_on("modes_active_game"),
+            ),
+        ) {
             let mut patch = serde_json::Map::new();
-            patch.insert("modes_active".to_string(), serde_json::Value::String(v));
+            patch.insert(
+                "modes_active_office".to_string(),
+                serde_json::Value::String(modes_flag_str(office).to_string()),
+            );
+            patch.insert(
+                "modes_active_game".to_string(),
+                serde_json::Value::String(modes_flag_str(game).to_string()),
+            );
             if let Err(e) = crate::settings::save(&patch) {
                 log::warn!("模式状态持久化失败（不影响本次执行）: {e}");
             }
@@ -2593,28 +2671,115 @@ mod tests {
     use super::*;
 
     #[test]
-    fn modes_active_persists_only_on_decisive_outcomes() {
-        // 进入成功 → 置模式名
+    fn modes_dual_keys_persist_only_on_decisive_outcomes() {
+        // 进入成功 → 置自己族 + 清另一族（互斥在写入侧强制：同刻只应一个场景
+        // 模式生效；旧单键天然如此，双键拆族后由纯函数保持）
         assert_eq!(
-            modes_active_after_run("office", 0).as_deref(),
-            Some("office")
+            modes_dual_after_run("office", 0, (false, true)),
+            Some((true, false)),
+            "进办公清游戏标记"
         );
-        assert_eq!(modes_active_after_run("game", 0).as_deref(), Some("game"));
-        // 退出成功 → 清空
         assert_eq!(
-            modes_active_after_run("office_exit", 0).as_deref(),
-            Some("")
+            modes_dual_after_run("game", 0, (true, false)),
+            Some((false, true)),
+            "进游戏清办公标记"
         );
-        assert_eq!(modes_active_after_run("game_exit", 0).as_deref(), Some(""));
+        assert_eq!(
+            modes_dual_after_run("office", 0, (false, false)),
+            Some((true, false))
+        );
+        assert_eq!(
+            modes_dual_after_run("game", 0, (false, false)),
+            Some((false, true))
+        );
+        // 退出成功 → 只清自己那族，另一族保持（不能替它「顺手清」）
+        assert_eq!(
+            modes_dual_after_run("office_exit", 0, (true, false)),
+            Some((false, false))
+        );
+        assert_eq!(
+            modes_dual_after_run("game_exit", 0, (false, true)),
+            Some((false, false))
+        );
+        assert_eq!(
+            modes_dual_after_run("office_exit", 0, (true, true)),
+            Some((false, true)),
+            "退出办公不清游戏标记"
+        );
+        assert_eq!(
+            modes_dual_after_run("game_exit", 0, (true, true)),
+            Some((true, false)),
+            "退出游戏不清办公标记"
+        );
         // 部分失败：真实状态未知 → None（不动旧值）。回归锁：旧实现写空串，
         // 会抹掉仍在生效的另一模式标记（office→game 失败分叉），且退出失败
         // 时 NoAutoUpdate=1 仍生效却被清，重启后「进行中」与真实状态相反。
-        assert_eq!(modes_active_after_run("office", 1), None);
-        assert_eq!(modes_active_after_run("game", 3), None);
-        assert_eq!(modes_active_after_run("office_exit", 1), None);
-        assert_eq!(modes_active_after_run("game_exit", 1), None);
+        assert_eq!(modes_dual_after_run("office", 1, (true, true)), None);
+        assert_eq!(modes_dual_after_run("game", 3, (true, true)), None);
+        assert_eq!(modes_dual_after_run("office_exit", 1, (true, false)), None);
+        assert_eq!(modes_dual_after_run("game_exit", 1, (true, false)), None);
         // 未知模式一律 None（settings 不得被写进垃圾值）
-        assert_eq!(modes_active_after_run("bogus", 0), None);
+        assert_eq!(modes_dual_after_run("bogus", 0, (false, false)), None);
+    }
+
+    #[test]
+    fn modes_legacy_single_key_maps_to_dual_initials() {
+        assert_eq!(modes_dual_from_legacy("office"), (true, false));
+        assert_eq!(modes_dual_from_legacy("game"), (false, true));
+        // 旧版退出写过空串：迁移为双关，不得臆造激活态
+        assert_eq!(modes_dual_from_legacy(""), (false, false));
+        // 脏值（手改 settings.json）不进双键
+        assert_eq!(modes_dual_from_legacy("garbage"), (false, false));
+    }
+
+    #[test]
+    fn modes_legacy_key_migrates_to_dual_and_is_cleared() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        // 预置旧单键（旧版存过 "game"）
+        let mut legacy = serde_json::Map::new();
+        legacy.insert(
+            "modes_active".to_string(),
+            serde_json::Value::String("game".to_string()),
+        );
+        crate::settings::save(&legacy).unwrap();
+
+        migrate_modes_active_keys();
+
+        assert_eq!(crate::settings::get_str("modes_active_office"), "0");
+        assert_eq!(crate::settings::get_str("modes_active_game"), "1");
+        assert_eq!(
+            crate::settings::load().get("modes_active"),
+            None,
+            "旧单键必须被删除（否则每次读都重复迁移，且旧值可能被误读）"
+        );
+
+        // 幂等：旧键已无时迁移为无操作，不炸也不覆写既有双键
+        let mut on = serde_json::Map::new();
+        on.insert(
+            "modes_active_office".to_string(),
+            serde_json::Value::String("1".to_string()),
+        );
+        crate::settings::save(&on).unwrap();
+        migrate_modes_active_keys();
+        assert_eq!(crate::settings::get_str("modes_active_office"), "1");
+        assert_eq!(crate::settings::get_str("modes_active_game"), "1");
+
+        // 显式空串（旧版退出写过）也走迁移：双键落 0 + 清旧键
+        let mut empty = serde_json::Map::new();
+        empty.insert(
+            "modes_active".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        crate::settings::save(&empty).unwrap();
+        migrate_modes_active_keys();
+        assert_eq!(
+            crate::settings::get_str("modes_active_office"),
+            "0",
+            "旧空串迁移为双关，不得臆造激活态"
+        );
+        assert_eq!(crate::settings::get_str("modes_active_game"), "0");
+        assert_eq!(crate::settings::load().get("modes_active"), None);
     }
 
     #[test]

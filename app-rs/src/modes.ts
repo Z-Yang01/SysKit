@@ -33,7 +33,7 @@ export interface ModesInfo {
   whitelist: string[];
   is_admin: boolean;
   notes: Record<string, string>;
-  /** 后端持久化的当前生效模式（run 全部步骤成功才置位，退出即清） */
+  /** 后端持久化的当前生效模式（双键 `modes_active_office`/`modes_active_game`；run 全部步骤成功才置位，退出即清自己族，进入互斥清另一族） */
   active_mode?: ModeActive;
 }
 
@@ -46,26 +46,29 @@ export interface ModeActive {
 }
 
 /**
- * 执行一次模式后推导新的会话内状态。
+ * 执行一次模式后推导新的会话内状态（与后端 `modes_dual_after_run` 同语义）。
  *
- * 两个诚实性要点：
+ * 三个诚实性要点：
  * - 只在**全部步骤成功**时才置位/清除：部分失败时系统真实状态未知，
  *   保留原状态、由逐步结果表向用户交代——标错"进行中"会让用户以为
  *   暂停更新之类的操作已生效；
- * - 两族**各自独立跟踪**：进游戏不抹掉办公标记（两族改的系统状态有交叠
- *   但并不互斥，只保留一个会丢信息）。
+ * - 互斥在**写入侧**强制（后端双键 `modes_active_office`/`modes_active_game`
+ *   的写入同规则）：进入任一模式成功即清另一族标记——同刻只应一个场景模式
+ *   生效，显示侧只读不自行裁决；
+ * - 退出只动自己那族：另一族是否真实生效未知，不能替它"顺手清"
+ *   （旧实现任意退出清双标记，会丢仍在生效那族的「进行中」）。
  */
 export function applyModeRun(active: ModeActive, key: ModeKey, allOk: boolean): ModeActive {
   if (!allOk) return active;
   switch (key) {
     case "office":
-      return { ...active, office: true };
+      return { office: true, game: false };
     case "office_exit":
-      return { ...active, office: false };
+      return { office: false, game: active.game };
     case "game":
-      return { ...active, game: true };
+      return { office: false, game: true };
     case "game_exit":
-      return { ...active, game: false };
+      return { office: active.office, game: false };
   }
 }
 

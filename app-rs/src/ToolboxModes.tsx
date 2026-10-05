@@ -44,7 +44,7 @@ export function ModesPanel() {
   const [clearBg, setClearBg] = useState(true);
   const [result, setResult] = useState<ModeRunResult | null>(null);
   const [busy, setBusy] = useState<ModeKey | "">("");
-  // 会话内推断的当前模式（后端不持久化，切页后丢失——标签上如实注明）
+  // 会话内推断的当前模式（挂载时以后端双键持久化值为准，跨会话可见——标签上如实注明）
   const [active, setActive] = useState<ModeActive>({ office: false, game: false });
 
   useEffect(() => {
@@ -67,21 +67,11 @@ export function ModesPanel() {
           clearBg,
         });
         setResult(r);
-        // 只有全部步骤成功才更新"进行中"推断；部分失败时状态未知，不改
-        const ok = r.outcome.fail_count === 0;
-        if (!ok) {
-          // 部分失败时系统真实状态未知——保持原标记不动
-          setActive((prev) => applyModeRun(prev, key, false));
-        } else {
-          setActive(
-            key === "office"
-              ? { office: true, game: false }
-              : key === "game"
-                ? { office: false, game: true }
-                : // 退出动作成功 = 清除对应标记（后端已持久化为空）
-                  { office: false, game: false },
-          );
-        }
+        // 与后端 modes_dual_after_run 同语义：只在全部步骤成功时动标记
+        // （进入互斥清另一族、退出只清自己族）；部分失败时系统真实状态未知，
+        // 保持原标记不动。旧实现此处硬编码赋值且任意退出清双标记，
+        // 会丢仍在生效那族的「进行中」。
+        setActive((prev) => applyModeRun(prev, key, r.outcome.fail_count === 0));
         const lvl = outcomeLevel(r.outcome);
         message[lvl === "success" ? "success" : "warning"](r.summary);
       } catch (e) {

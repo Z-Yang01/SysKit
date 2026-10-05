@@ -153,24 +153,29 @@ describe("adminNote", () => {
   });
 });
 
-describe("applyModeRun（会话内状态推导）", () => {
+describe("applyModeRun（会话内状态推导，与后端双键写入同语义）", () => {
   const active = (office: boolean, game: boolean): ModeActive => ({ office, game });
   const idle = active(false, false);
 
-  it("全部成功时置位/清除对应族", () => {
+  it("全部成功时置位自己族并清另一族（互斥在写入侧强制）", () => {
     expect(applyModeRun(idle, "office", true)).toEqual(active(true, false));
     expect(applyModeRun(idle, "game", true)).toEqual(active(false, true));
+    // 双标记并存时进入任一模式：另一族标记被清（同刻只应一个场景模式生效）
+    expect(applyModeRun(active(true, false), "game", true)).toEqual(active(false, true));
+    expect(applyModeRun(active(false, true), "office", true)).toEqual(active(true, false));
+  });
+
+  it("退出只动自己那族（另一族是否真实生效未知，不替它顺手清）", () => {
     expect(applyModeRun(active(true, false), "office_exit", true)).toEqual(active(false, false));
     expect(applyModeRun(active(false, true), "game_exit", true)).toEqual(active(false, false));
+    // 回归锁：旧实现任意退出清双标记，office/game 并存时任一退出
+    // 会把仍在生效那族的「进行中」一并抹掉（丢态）
+    expect(applyModeRun(active(true, true), "game_exit", true)).toEqual(active(true, false));
+    expect(applyModeRun(active(true, true), "office_exit", true)).toEqual(active(false, true));
   });
 
   it("部分失败不改状态（系统真实状态未知，宁缺勿错）", () => {
     expect(applyModeRun(idle, "game", false)).toEqual(idle);
     expect(applyModeRun(active(true, true), "office_exit", false)).toEqual(active(true, true));
-  });
-
-  it("两族独立跟踪：进游戏不清办公标记，退出也只动自己那族", () => {
-    expect(applyModeRun(active(true, false), "game", true)).toEqual(active(true, true));
-    expect(applyModeRun(active(true, true), "game_exit", true)).toEqual(active(true, false));
   });
 });
