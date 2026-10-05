@@ -7,10 +7,8 @@
  */
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
-  Button,
   ConfigProvider,
   Empty,
   Layout,
@@ -184,10 +182,35 @@ export function App() {
   return (
     <ConfigProvider theme={antdTheme}>
       <Layout style={{ minHeight: "100vh", background: pal.bg }}>
-        <Layout.Sider theme={dark ? "dark" : "light"} width={168} style={{ position: "relative", background: pal.card, borderRight: `1px solid ${pal.border}` }}>
-          <div style={{ padding: "12px 16px" }}>
-            <Typography.Text strong>SysKit</Typography.Text>
-            <div className="sk-hint">{version ? `v${version}` : ""}</div>
+        <Layout.Sider theme={dark ? "dark" : "light"} width={200} style={{ position: "relative", background: pal.card, borderRight: `1px solid ${pal.border}` }}>
+          {/* 品牌区（对齐 Python 版 brandCard）：渐变 S 标 + 两行文案，不引图片资源 */}
+          <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 14px" }}>
+            <div
+              style={{
+                width: 34,
+                height: 34,
+                flexShrink: 0,
+                borderRadius: 8,
+                background: "linear-gradient(135deg, #1668dc, #4096ff)",
+                color: "#fff",
+                fontSize: 20,
+                fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                userSelect: "none",
+              }}
+            >
+              S
+            </div>
+            <div style={{ lineHeight: 1.35, minWidth: 0 }}>
+              <Typography.Text strong style={{ display: "block" }}>
+                SysKit
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {version ? `v${version} ` : ""}系统工具箱
+              </Typography.Text>
+            </div>
           </div>
           <Menu
             mode="inline"
@@ -195,13 +218,29 @@ export function App() {
             onClick={(e) => setPage(e.key)}
             style={{ borderInlineEnd: "none" }}
             items={[
-              { key: "overview", label: "概览 / 网络监控" },
-              { key: "clipboard", label: "剪贴板历史" },
-              { key: "diagnose", label: "诊断 / 修复" },
-              { key: "toolbox", label: "工具箱" },
-              { key: "system", label: "系统助手" },
-              { key: "vault", label: "密码库" },
-              { key: "settings", label: "设置 / 日志" },
+              {
+                type: "group",
+                label: "网络",
+                children: [
+                  { key: "overview", label: "🏠 概览 / 网络监控" },
+                  { key: "clipboard", label: "📋 剪贴板历史" },
+                  { key: "diagnose", label: "🔍 诊断 / 修复" },
+                ],
+              },
+              {
+                type: "group",
+                label: "工具",
+                children: [
+                  { key: "toolbox", label: "⚡ 工具箱" },
+                  { key: "system", label: "💼 系统助手" },
+                  { key: "vault", label: "🔒 密码库" },
+                ],
+              },
+              {
+                type: "group",
+                label: "其他",
+                children: [{ key: "settings", label: "⚙ 设置 / 日志" }],
+              },
             ]}
           />
           <div
@@ -237,11 +276,6 @@ export function App() {
             <Space>
               <span className="sk-hint">深色主题</span>
               <Switch checked={dark} onChange={toggleDark} />
-            </Space>
-            <Space>
-              <Button size="small" onClick={() => void getCurrentWindow().hide()}>
-                最小化到托盘
-              </Button>
             </Space>
           </Layout.Header>
 
