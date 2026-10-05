@@ -39,7 +39,8 @@ export interface ModesInfo {
 
 export type ModeKey = "office" | "office_exit" | "game" | "game_exit";
 
-/** 会话内推断的"正在生效的模式"（后端不持久化模式状态，只能由前端按最后操作推）。 */
+/** 各场景模式的「进行中」标记。后端双键持久化为真值（`modes_active_office`/`modes_active_game`），
+ * 前端会话状态挂载时以 `sk_modes_info` 的 `active_mode` 为准，之后按每次 run 用 `applyModeRun` 推进。 */
 export interface ModeActive {
   office: boolean;
   game: boolean;
