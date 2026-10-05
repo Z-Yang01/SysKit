@@ -128,6 +128,7 @@ export function Dashboard() {
   // 事件/网络名每分钟刷新一次（事件由网络监控写入，不必每秒读盘）
   useEffect(() => {
     const t = window.setInterval(() => {
+      if (document.hidden) return; // 隐藏时读盘轮询无意义
       void invoke<EventItem[]>("sk_events", { limit: 30 }).then(setEvents).catch(() => {});
       void invoke<string[]>("sk_known_ssids").then(setSsids).catch(() => {});
     }, 60_000);
