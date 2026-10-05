@@ -571,6 +571,7 @@ pub fn parse_custom_commands(raw: &str) -> Vec<CustomCommand> {
 /// Rust 面板没有窗口回调——动作分两类由前端执行：
 /// - `nav:<key>` 页面跳转（前端 setPage）
 /// - `quick:*` 前端已有能力的行为（跳页 + 触发既有按钮），或后端命令
+///
 /// 自定义命令照旧走 custom:*。
 pub fn builtin_actions() -> Vec<PaletteAction> {
     let nav_pages: [(&str, &str); 7] = [
@@ -617,10 +618,30 @@ pub fn builtin_actions() -> Vec<PaletteAction> {
     }
     // 快捷动作（对齐 Python quick:*；wifi 对齐 WiFi 工具页入口）
     for (id, label, hint, kw) in [
-        ("quick:diag", "立即快速诊断", "网络", vec!["diagnose", "体检", "检测"]),
-        ("quick:deep", "深度诊断（全部检查）", "网络", vec!["diagnose", "完整"]),
-        ("quick:flush", "刷新 DNS 缓存", "网络", vec!["flush", "修复", "dns"]),
-        ("quick:wifi", "打开 WiFi 工具", "网络", vec!["wifi", "无线", "AP"]),
+        (
+            "quick:diag",
+            "立即快速诊断",
+            "网络",
+            vec!["diagnose", "体检", "检测"],
+        ),
+        (
+            "quick:deep",
+            "深度诊断（全部检查）",
+            "网络",
+            vec!["diagnose", "完整"],
+        ),
+        (
+            "quick:flush",
+            "刷新 DNS 缓存",
+            "网络",
+            vec!["flush", "修复", "dns"],
+        ),
+        (
+            "quick:wifi",
+            "打开 WiFi 工具",
+            "网络",
+            vec!["wifi", "无线", "AP"],
+        ),
         ("quick:show", "显示主界面", "窗口", vec!["show", "主窗口"]),
         (
             "quick:clip_paste",
@@ -833,7 +854,9 @@ mod tests {
     fn query_returns_calc_first_and_ranks_actions() {
         // 算式命中：直接给结果项（对齐 Python _dynamic_actions 第一段）
         let r = query("1+2*3", "");
-        assert!(r.iter().any(|(id, label, _)| id == "calc" && label.contains("7")));
+        assert!(r
+            .iter()
+            .any(|(id, label, _)| id == "calc" && label.contains("7")));
         // 空查询：返回全部内置动作（页面 + 页内 tab + 快捷）
         let r = query("", "");
         assert!(r.iter().any(|(_, label, _)| label.contains("概览")));
@@ -844,8 +867,13 @@ mod tests {
         assert!(r.iter().any(|(id, _, _)| id == "quick:flush"));
         assert!(r.iter().any(|(_, label, _)| label.contains("DNS")));
         // 自定义命令参与匹配
-        let r = query("github", r#"[{"name":"打开 GitHub","type":"url","value":"https://github.com"}]"#);
-        assert!(r.iter().any(|(id, label, _)| id.starts_with("custom:") && label.contains("GitHub")));
+        let r = query(
+            "github",
+            r#"[{"name":"打开 GitHub","type":"url","value":"https://github.com"}]"#,
+        );
+        assert!(r
+            .iter()
+            .any(|(id, label, _)| id.starts_with("custom:") && label.contains("GitHub")));
     }
 
     #[test]
