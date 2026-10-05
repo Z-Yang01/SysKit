@@ -223,20 +223,25 @@ export function ModesPanel() {
               description={
                 failed.length > 0 && (
                   <Space direction="vertical" size={2}>
-                    {failed.map((s) => (
-                      <span key={s.name} className="sk-hint">
-                        {s.name}：{s.detail}
-                      </span>
-                    ))}
+            {failed.map((s, i) => (
+              // key 用序号：互斥进入时还原步与进入步各有「通知/勿扰」，
+              // name 会撞 key（轮次38 互审实锤）
+              <span key={i} className="sk-hint">
+                {s.name}：{s.detail}
+              </span>
+            ))}
                   </Space>
                 )
               }
             />
             <Table<ModeStep>
               size="small"
-              rowKey="name"
               pagination={false}
               dataSource={steps}
+              // rowKey 用行号：互斥进入时还原步与进入步各有「通知/勿扰」
+              // （写同一注册表值，先还原后进入），name 撞 key 会让 React
+              // 出现重复 key（轮次38 互审实锤）。
+              rowKey={(_step, index) => index ?? 0}
               columns={[
                 { title: "步骤", dataIndex: "name", width: 200 },
                 {
