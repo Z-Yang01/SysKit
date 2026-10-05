@@ -264,3 +264,37 @@ export function logLevel(line: string): "err" | "warn" | "info" {
   if (l.includes("WARN") || l.includes("警告")) return "warn";
   return "info";
 }
+
+// ---------------- 热键速查三方一致（注册链 × 设置页 × 侧栏，轮次36） ----------------
+
+/** 热键类设置键：改任一键后侧栏速查都要即时刷新（否则三方显示分叉）。 */
+export const HOTKEY_SETTING_KEYS: readonly string[] = [
+  "palette_hotkey",
+  "clip_quick_hotkey",
+  "clip_paste_hotkey",
+];
+
+/** 该键是否为热键类设置。 */
+export function isHotkeyKey(key: string): boolean {
+  return HOTKEY_SETTING_KEYS.includes(key);
+}
+
+/** 侧栏底部热键速查的两条目（快速粘贴 / 命令面板）。 */
+export interface HotkeyHints {
+  quick: string;
+  palette: string;
+}
+
+/**
+ * 热键事件（被占回退 / 改键）后更新侧栏速查（纯函数）。
+ *
+ * `value` 必须是**实际生效**的持久化值（`sk://hotkey-reverted` 的载荷、
+ * 或 `sk_settings_all` 的 current），不是用户请求值——被占回退后请求值
+ * 并未注册，照它显示就是在展示一个按了没反应的组合。空串 = 已禁用。
+ */
+export function applyHotkeyEcho(h: HotkeyHints, key: string, value: string): HotkeyHints {
+  const shown = value.trim() || "（未设）";
+  if (key === "clip_quick_hotkey") return { ...h, quick: shown };
+  if (key === "palette_hotkey") return { ...h, palette: shown };
+  return h;
+}

@@ -13,7 +13,9 @@ import {
   groupKey,
   groupSettings,
   humanLogSize,
+  applyHotkeyEcho,
   isChanged,
+  isHotkeyKey,
   isUnwired,
   ladderSummary,
   monitorNeedsAttention,
@@ -295,3 +297,43 @@ describe("日志展示", () => {
 });
 
 
+
+describe("热键速查三方一致（轮次36）", () => {
+  const base = { quick: "Ctrl+Alt+V", palette: "Ctrl+Alt+K" };
+
+  it("isHotkeyKey 覆盖三把热键、拒绝普通键", () => {
+    expect(isHotkeyKey("palette_hotkey")).toBe(true);
+    expect(isHotkeyKey("clip_quick_hotkey")).toBe(true);
+    expect(isHotkeyKey("clip_paste_hotkey")).toBe(true);
+    expect(isHotkeyKey("poll_interval_sec")).toBe(false);
+  });
+
+  it("被占回退后按**实际生效值**回显（不是请求值）", () => {
+    // sk://hotkey-reverted 载荷 = 后端已持久化的实际生效值
+    const reverted = applyHotkeyEcho(base, "clip_quick_hotkey", "Ctrl+Alt+V");
+    expect(reverted.quick).toBe("Ctrl+Alt+V");
+    expect(reverted.palette).toBe("Ctrl+Alt+K");
+    const moved = applyHotkeyEcho(base, "palette_hotkey", "Ctrl+Alt+H");
+    expect(moved.palette).toBe("Ctrl+Alt+H");
+    expect(moved.quick).toBe("Ctrl+Alt+V");
+  });
+
+  it("空值回显为「未设」（禁用态不得显示旧组合）", () => {
+    const off = applyHotkeyEcho(base, "clip_quick_hotkey", "");
+    expect(off.quick).toBe("（未设）");
+    const blank = applyHotkeyEcho(base, "palette_hotkey", "   ");
+    expect(blank.palette).toBe("（未设）");
+  });
+
+  it("非侧栏展示的热键（面板键）不改速查", () => {
+    const same = applyHotkeyEcho(base, "clip_paste_hotkey", "Ctrl+Win+V");
+    expect(same).toEqual(base);
+    const unknown = applyHotkeyEcho(base, "bogus_key", "X");
+    expect(unknown).toEqual(base);
+  });
+
+  it("不改变未涉及条目（不可变更新）", () => {
+    const out = applyHotkeyEcho(base, "clip_quick_hotkey", "Ctrl+Shift+V");
+    expect(out).toEqual({ quick: "Ctrl+Shift+V", palette: "Ctrl+Alt+K" });
+  });
+});

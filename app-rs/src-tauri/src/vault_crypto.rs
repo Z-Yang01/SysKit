@@ -367,9 +367,36 @@ impl VaultCrypto {
     }
 
     /// 本次解锁的 UNIX 时刻（秒）；未解锁返回 None（自动重锁窗口判定用）。
+    ///
+    /// 语义（轮次36 起）：这是**最近一次密码库操作**的时刻，不是"解锁那一刻"
+    /// ——会话命令入口每次放行后都 `touch_unlocked()`，与 Python 侧
+    /// `_ensure_unlocked → _restart_autolock` 的闲置计时同口径。
     pub fn unlocked_since_secs(&self) -> Option<f64> {
         self.data_key.as_ref()?;
         self.unlocked_at
+    }
+
+    /// 活跃续期：把自动重锁窗口的起算点刷新到现在（仅已解锁时有意义）。
+    ///
+    /// 为什么必须有：自动重锁若按"解锁那一刻"起算，正在连续操作密码库的用户
+    /// 也会在第 N 分钟被踢（解密 30 分钟的账目/逐条复制密码中途要求重新解锁，
+    /// 与 TOTP 轮询显示互相打断）。Python 版每次操作都重启定时器（闲置超时），
+    /// 这里对齐：每次放行的密码库操作之后调用。
+    pub fn touch_unlocked(&mut self) {
+        if self.data_key.is_some() {
+            self.unlocked_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0),
+            );
+        }
+    }
+
+    /// 测试注入：把闲置计时拨回指定 UNIX 时刻（自动重锁语义的回归锁用）。
+    #[cfg(test)]
+    pub fn set_unlocked_at_for_test(&mut self, secs: f64) {
+        self.unlocked_at = Some(secs);
     }
 
     /// 校验主密码（不改变解锁状态）。非密码模式返回 false。
@@ -863,6 +890,36 @@ mod tests {
         assert!(!v.is_unlocked());
         v.unlock(None).unwrap();
         assert_eq!(v.decrypt(&sealed).unwrap(), b"data");
+    }
+
+    #[test]
+    fn touch_unlocked_advances_idle_baseline_and_never_resurrects() {
+        // 自动重锁的闲置基准：touch 后必须前进（会话入口每次放行都续期）；
+        // 锁定态 touch 是 no-op——绝不把锁定会话"摸活"
+        let mut v = fresh("touchidle");
+        v.setup(None).unwrap();
+        v.lock(); // setup 完成即处于解锁态（与 lock_clears 用例同前置），先收锁再验证
+        assert!(!v.is_unlocked());
+        v.touch_unlocked();
+        assert!(
+            v.unlocked_since_secs().is_none(),
+            "锁定态 touch 不得伪造解锁时刻"
+        );
+        v.unlock(None).unwrap();
+        let before = v.unlocked_since_secs().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        v.touch_unlocked();
+        let after = v.unlocked_since_secs().unwrap();
+        assert!(
+            after > before,
+            "touch 必须把闲置基准推进（{before} → {after}）"
+        );
+        v.lock();
+        v.touch_unlocked();
+        assert!(
+            v.unlocked_since_secs().is_none(),
+            "锁定后 touch 仍不得复活会话"
+        );
     }
 
     #[test]

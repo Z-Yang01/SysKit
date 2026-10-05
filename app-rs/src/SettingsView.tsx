@@ -37,6 +37,7 @@ import {
   groupSettings,
   humanLogSize,
   isChanged,
+  isHotkeyKey,
   isUnwired,
   groupKey,
   ladderSummary,
@@ -236,6 +237,12 @@ function SettingsPanel() {
       try {
         await invoke("sk_settings_set", { key, value });
         message.success("已保存");
+        // 热键类设置已即时重挂（sk_settings_set → apply_hotkeys）：通知侧栏
+        // 速查刷新，与注册链/设置页三方一致。注意这里不带值——保存的请求值
+        // 可能因被占被后端回退，权威值走 sk://hotkey-reverted 或重读设置。
+        if (isHotkeyKey(key)) {
+          window.dispatchEvent(new CustomEvent("sk:hotkeys-changed"));
+        }
         await load();
       } catch (e) {
         // 后端拒绝的原因原样展示（范围/枚举/未知键）

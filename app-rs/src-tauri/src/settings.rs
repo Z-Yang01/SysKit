@@ -203,7 +203,7 @@ fn decoration(key: &str) -> Decoration {
         "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径"),
         "vault_autolock_min" => Decoration::int(
             "密码库自动锁定（分）",
-            "解锁超过该时长后，下一次密码库操作会要求重新解锁；0=不自动锁定",
+            "闲置（无密码库操作）超过该时长后，下一次操作会要求重新解锁；0=不自动锁定",
             0,
             1440,
         ),

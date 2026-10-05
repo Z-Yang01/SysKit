@@ -1556,7 +1556,11 @@ fn session_lock(
     // init_db，"设好主密码→直接添加站点"会撞 no such table: sites（真机实证
     // 2026-10-04）。init_db 幂等且带进程级短路，放在公共入口零遗漏。
     crate::vault_store::init_db().map_err(|e| format!("密码库初始化失败: {e}"))?;
-    // 自动重锁：vault_autolock_min>0 且会话超过窗口 → 就地收锁
+    // 自动重锁：vault_autolock_min>0 且**闲置**超过窗口 → 就地收锁。
+    // 「闲置」= 距上次密码库操作（unlocked_at 会被每次放行的操作 touch 刷新），
+    // 与 Python 侧 _ensure_unlocked → _restart_autolock 同口径——按"解锁那一刻"
+    // 起算的话，连续操作的用户也会被中途踢出，TOTP 轮询显示会反复被
+    // 「密码库未解锁」打断（轮次36 跨模块审计实锤）。
     {
         let mut guard = session.0.lock().expect("vault 会话锁中毒");
         let min = crate::settings::get_int("vault_autolock_min");
@@ -1566,11 +1570,15 @@ fn session_lock(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs_f64())
                     .unwrap_or(0.0);
-                if now - since >= min as f64 * 60.0 {
+                if vault_autolock_due(now - since, min) {
                     c.lock();
                     *guard = None;
                 }
             }
+        }
+        // 活跃续期：本次操作放行后把闲置计时归零（下次操作的 due 判定以此为基准）
+        if let Some(c) = guard.as_mut() {
+            c.touch_unlocked();
         }
     }
     let guard = session.0.lock().expect("vault 会话锁中毒");
@@ -1578,6 +1586,12 @@ fn session_lock(
         return Err("密码库未解锁".into());
     }
     Ok(guard)
+}
+
+/// 自动重锁到期判定（纯函数，供单测/变异验证）：闲置秒数达到 `min` 分钟。
+/// `min<=0` 恒不锁定（设置 0 = 不自动锁）；边界取 `>=`（与 monitor 冷却同风格）。
+fn vault_autolock_due(idle_secs: f64, min: i64) -> bool {
+    min > 0 && idle_secs >= min as f64 * 60.0
 }
 
 /// 取会话守卫（未解锁 → Err）。调用方以 `guard.as_mut().expect(...)` 拿实例——
@@ -2214,6 +2228,23 @@ pub fn modes_dual_after_run(
     }
 }
 
+/// 进入模式前的**互斥前置还原**判定（纯函数，供单测/变异验证）。
+///
+/// 标记互斥的另一面是系统态也必须跟着还：进入 office 成功会把 game 标记清成
+/// "未激活"，但 `run_office_mode` 本身**不还原**游戏族的改动（NoAutoUpdate
+/// 策略、高性能电源）——不补前置还原，标记说"游戏已退出"而系统仍带着游戏
+/// 模式的持久策略（标记与真实系统态分叉，且 UI 的"进行中"提示从此消失，
+/// 用户失去了"需要退出游戏模式来恢复更新"的线索）。
+///
+/// 返回 Some(还原族) = 进入前先真实执行该族的 restore；None = 无需。
+pub fn mutual_entry_restore(mode: &str, cur: (bool, bool)) -> Option<&'static str> {
+    match (mode, cur) {
+        ("office", (_, true)) => Some("game_exit"),
+        ("game", (true, _)) => Some("office_exit"),
+        _ => None,
+    }
+}
+
 /// 进入/退出场景模式（每步结果一并返回，单步失败不中断）。
 #[tauri::command]
 pub async fn sk_modes_run(
@@ -2223,13 +2254,35 @@ pub async fn sk_modes_run(
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         migrate_modes_active_keys();
-        let outcome = match mode.as_str() {
+        let cur = (
+            modes_flag_on("modes_active_office"),
+            modes_flag_on("modes_active_game"),
+        );
+        let mut outcome = match mode.as_str() {
             "office" => crate::modes::run_office_mode(open_apps.unwrap_or(true)),
             "office_exit" => crate::modes::restore_office_defaults(),
             "game" => crate::modes::run_game_mode(clear_bg.unwrap_or(true)),
             "game_exit" => crate::modes::restore_game_defaults(),
             other => return Err(format!("未知模式: {other}")),
         };
+        // 互斥前置还原：另一族标记仍在生效时，先真实退出该族再进入
+        // （restore 步如实并入结果清单；前置还原失败 → fail_count>0 →
+        // 双键不动旧值，与「失败不写标记」的既有语义衔接）。
+        if let Some(restore_id) = mutual_entry_restore(&mode, cur) {
+            let restore = match restore_id {
+                "game_exit" => crate::modes::restore_game_defaults(),
+                "office_exit" => crate::modes::restore_office_defaults(),
+                other => return Err(format!("未知还原族: {other}")),
+            };
+            let mut steps = restore.steps;
+            steps.extend(outcome.steps);
+            outcome = crate::modes::ModeOutcome::new(&outcome.mode, steps);
+            log::info!(
+                "互斥前置还原：进入 {} 前先执行 {}（另一族标记在生效）",
+                mode,
+                restore_id
+            );
+        }
         let summary = outcome.summary();
         // 当前模式持久化：跨会话可见（settings 双键）。只在**结局确定**时
         // 写：进入成功→置自己族并清另一族（互斥在写入侧强制），退出成功→
@@ -2723,6 +2776,78 @@ mod tests {
     }
 
     #[test]
+    fn vault_autolock_due_boundary_matches_setting() {
+        // 边界含等号（与 monitor 冷却同风格）：恰满窗口即锁
+        assert!(vault_autolock_due(30.0 * 60.0, 30));
+        assert!(!vault_autolock_due(30.0 * 60.0 - 0.5, 30));
+        // 0 与负值 = 用户显式关闭自动锁，闲置再久也不锁
+        assert!(!vault_autolock_due(1e9, 0));
+        assert!(!vault_autolock_due(1e9, -5));
+    }
+
+    #[test]
+    fn vault_session_autolock_is_idle_based_not_since_unlock() {
+        // 回归锁（无人值守轮次36）：自动重锁必须是**闲置**超时（对齐 Python
+        // _ensure_unlocked → _restart_autolock）。按"解锁那一刻"起算的旧语义下，
+        // 连续操作的用户也会被中途踢出，TOTP 轮询显示反复被「密码库未解锁」打断
+        // ——正在进行的批量取密/复制与锁定定时交错（跨模块审计场景6）。
+        let _g = crate::test_support::serial();
+        let _dir = crate::test_support::isolate();
+        crate::settings::set_one("vault_autolock_min", serde_json::json!(30)).unwrap();
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0)
+        };
+        let unlocked_session = |tag: &str, idle_secs: f64| {
+            let mut c = crate::vault_crypto::VaultCrypto::with_path(
+                crate::paths::appdata_dir().join(format!("{tag}.key")),
+            );
+            c.setup(Some("pw")).unwrap();
+            assert!(c.unlock(Some("pw")).unwrap());
+            c.set_unlocked_at_for_test(now() - idle_secs);
+            VaultSession(std::sync::Mutex::new(Some(c)))
+        };
+
+        // 闲置超窗（31 分钟 > 30 分钟）→ 下一次密码库操作前就地收锁
+        let session = unlocked_session("autolock-over", 31.0 * 60.0);
+        let err = match session_lock(&session) {
+            Err(e) => e,
+            Ok(_) => panic!("闲置超窗的会话必须被拒绝"),
+        };
+        assert!(err.contains("未解锁"), "{err}");
+        assert!(
+            session.0.lock().unwrap().is_none(),
+            "超窗会话必须已收锁（密钥不得驻留内存）"
+        );
+
+        // 窗口内（29 分钟）→ 放行，且**放行即续期**：闲置计时归到本次操作
+        let session = unlocked_session("autolock-in", 29.0 * 60.0);
+        let _guard = session_lock(&session).unwrap();
+        drop(_guard);
+        let since = session
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|c| c.unlocked_since_secs())
+            .expect("放行后会话必须仍在");
+        assert!(
+            now() - since < 60.0,
+            "放行后闲置计时必须已归零（旧实现保持解锁时刻，续期无从谈起）：偏移 {}s",
+            now() - since
+        );
+
+        // 0 = 不自动锁：闲置数小时也不得收锁
+        crate::settings::set_one("vault_autolock_min", serde_json::json!(0)).unwrap();
+        let session = unlocked_session("autolock-off", 3600.0 * 5.0);
+        let _guard = session_lock(&session).expect("关闭自动锁后不得因闲置收锁");
+        drop(_guard);
+        assert!(session.0.lock().unwrap().is_some());
+    }
+
+    #[test]
     fn modes_legacy_single_key_maps_to_dual_initials() {
         assert_eq!(modes_dual_from_legacy("office"), (true, false));
         assert_eq!(modes_dual_from_legacy("game"), (false, true));
@@ -2730,6 +2855,42 @@ mod tests {
         assert_eq!(modes_dual_from_legacy(""), (false, false));
         // 脏值（手改 settings.json）不进双键
         assert_eq!(modes_dual_from_legacy("garbage"), (false, false));
+    }
+
+    #[test]
+    fn mutual_entry_restore_requires_real_other_family_exit() {
+        // 回归锁（无人值守轮次36）：标记互斥的另一面是系统态。旧实现进入
+        // office 直接清掉 game 标记，但 run_office_mode 不还原游戏族的
+        // NoAutoUpdate/高性能电源——标记说"游戏已退出"而持久策略仍在系统里
+        // 生效（标记与真实系统态分叉）。修复：进入前先真实还原另一族。
+        // 游戏标记在生效 → 进 office 前必须先退出游戏族
+        assert_eq!(
+            mutual_entry_restore("office", (false, true)),
+            Some("game_exit")
+        );
+        // 办公标记在生效 → 进 game 前必须先退出办公族（静音同样不会自愈）
+        assert_eq!(
+            mutual_entry_restore("game", (true, false)),
+            Some("office_exit")
+        );
+        // 另一族未激活：直接进，不画蛇添足
+        assert_eq!(mutual_entry_restore("office", (false, false)), None);
+        assert_eq!(mutual_entry_restore("game", (false, false)), None);
+        // 退出路径永不触发前置还原（退出只动自己族，既有语义）
+        assert_eq!(mutual_entry_restore("office_exit", (false, true)), None);
+        assert_eq!(mutual_entry_restore("game_exit", (true, false)), None);
+        // 未知模式不触发
+        assert_eq!(mutual_entry_restore("bogus", (true, true)), None);
+        // 与 modes_dual_after_run 的写入语义闭环：进入成功 → 自己族置位、
+        // 另一族清零；前置还原已在进入动作里真实发生过，标记才配清
+        let cur = (false, true);
+        if mutual_entry_restore("office", cur).is_some() {
+            assert_eq!(
+                modes_dual_after_run("office", 0, cur),
+                Some((true, false)),
+                "前置还原成功后进 office：game 标记清零才与系统态一致"
+            );
+        }
     }
 
     #[test]

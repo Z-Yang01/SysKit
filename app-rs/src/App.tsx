@@ -33,6 +33,7 @@ import { SystemPage } from "./SystemPage";
 import { VaultPage } from "./VaultPage";
 import { SettingsView } from "./SettingsView";
 import type { SettingsAll } from "./settingsPage";
+import { applyHotkeyEcho, type HotkeyHints } from "./settingsPage";
 import { applyTheme, palette, type Palette } from "./theme";
 
 
@@ -114,10 +115,41 @@ export function App() {
     if (idx >= 0) void invoke("sk_settings_set", { key: "last_page", value: idx }).catch(() => {});
   };
   // 侧栏底部热键速查：读真实配置（用户可改键，不能写死）
-  const [hotkeys, setHotkeys] = useState<{ quick: string; palette: string }>({
+  const [hotkeys, setHotkeys] = useState<HotkeyHints>({
     quick: "",
     palette: "",
   });
+
+  // 热键速查三方一致（轮次36）：注册链 × 设置页 × 此处。被占回退
+  // （sk://hotkey-reverted，载荷即后端已持久化的实际生效值）与设置页改键
+  // （sk:hotkeys-changed，SettingsView 保存热键后派发）都要即时刷新——
+  // 此前只在启动读一次，改键/回退后速查会一直显示并未注册的组合。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const refresh = () => {
+      void invoke<SettingsAll>("sk_settings_all")
+        .then((all) => {
+          const cur = (k: string) =>
+            String(all.items?.find((i) => i.key === k)?.current ?? "");
+          setHotkeys({
+            quick: cur("clip_quick_hotkey") || "（未设）",
+            palette: cur("palette_hotkey") || "（未设）",
+          });
+        })
+        .catch(() => {});
+    };
+    void listen<{ key: string; value: string }>("sk://hotkey-reverted", (e) => {
+      // 载荷是权威值（后端先持久化再发事件），直接回显，不必再查一轮
+      setHotkeys((h) => applyHotkeyEcho(h, e.payload.key, e.payload.value));
+    }).then((f) => {
+      unlisten = f;
+    });
+    window.addEventListener("sk:hotkeys-changed", refresh);
+    return () => {
+      unlisten?.();
+      window.removeEventListener("sk:hotkeys-changed", refresh);
+    };
+  }, []);
   const [version, setVersion] = useState<string>("");
 
   useEffect(() => {
