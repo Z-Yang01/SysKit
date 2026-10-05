@@ -3,10 +3,11 @@
  *
  * M1 阶段只交付与热键/托盘闭环相关的部分：输入即搜剪贴板历史、回车把条目
  * **复制**回剪贴板（不注键，与快捷粘贴面板的分工一致——面板负责闭环，命令面板
- * 只放回内容）。计算器 / 页面跳转 / 密码库搜索（Python palette.py 的
- * `_dynamic_actions`）属 M7，本组件按「provider 表」结构预留，接入时只加条目。
+ * 也放回内容）。计算器 / 页面跳转 / 快捷动作（Python palette.py 的
+ * `_dynamic_actions`）经 `sk_palette_query` 已接入：动作区在前端执行
+ * （nav: 跳页 / tab: 跳页+子tab / quick: 触发既有按钮或命令）。
  */
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Input, List, Typography } from "antd";
@@ -33,6 +34,9 @@ interface PanelInit {
 
 export function CommandPalette() {
   const [state, dispatch] = useReducer(reducer, initialState);
+  /** 动作区结果（sk_palette_query；输入停顿 200ms 才查） */
+  const [actions, setActions] = useState<{ id: string; label: string; hint: string }[]>([]);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const inputRef = useRef<InputRef | null>(null);
 
   const reload = useCallback(async () => {
@@ -44,7 +48,29 @@ export function CommandPalette() {
       dispatch({ type: "notice", value: `读取失败：${String(e)}` });
     }
     inputRef.current?.focus();
+    // 呼出即拉动作区（空查询 = 全量动作列表）
+    invoke<{ id: string; label: string; hint: string }[]>("sk_palette_query", { q: "" })
+      .then((r) => {
+        setActions(r);
+        setActionsOpen(true);
+      })
+      .catch(() => setActionsOpen(false));
   }, []);
+
+  // 输入防抖 200ms → 动作区查询（剪贴板过滤仍是内存即时）
+  useEffect(() => {
+    const t = setTimeout(() => {
+      invoke<{ id: string; label: string; hint: string }[]>("sk_palette_query", {
+        q: state.query,
+      })
+        .then((r) => {
+          setActions(r);
+          setActionsOpen(true);
+        })
+        .catch(() => setActionsOpen(false));
+    }, 200);
+    return () => clearTimeout(t);
+  }, [state.query]);
 
   useEffect(() => {
     void reload();
@@ -85,6 +111,65 @@ export function CommandPalette() {
     [state],
   );
 
+  /** 执行一个动作（nav/tab 跳页 + 子tab；quick 触发主窗既有按钮或后端命令）。 */
+  const runAction = useCallback(
+    async (id: string) => {
+      void invoke("sk_hide_panel", { label: "palette" });
+      const { emit } = await import("@tauri-apps/api/event");
+      if (id.startsWith("nav:")) {
+        const page = id.slice(4);
+        await emit("sk://palette-nav", { page });
+        return;
+      }
+      if (id.startsWith("tab:")) {
+        const [, page, tab] = id.split(":");
+        await emit("sk://palette-nav", { page, tab });
+        return;
+      }
+      switch (id) {
+        case "quick:diag":
+        case "quick:deep":
+          await emit("sk://palette-nav", { page: "diagnose", quick: id === "quick:diag" });
+          return;
+        case "quick:flush":
+          await invoke("sk_clip_action_run", { id: "flush_dns", arg: "" }).catch(() => {});
+          return;
+        case "quick:wifi":
+          await emit("sk://palette-nav", { page: "system", tab: "wifipwd" });
+          return;
+        case "quick:show":
+          await emit("sk://palette-nav", { page: "overview" });
+          return;
+        case "quick:clip_paste":
+          await invoke("sk_toggle_panel", { label: "paste" }).catch(() => {});
+          return;
+        default:
+          if (id.startsWith("custom:")) {
+            // 自定义命令的执行需要 value：sk_palette_query 的动作列表补个
+            // value 字段更直接——但为省一次往返，这里从 settings_all 读
+            const all = await invoke<{ items: { key: string; current: unknown }[] }>(
+              "sk_settings_all",
+            ).catch(() => null);
+            const raw = all?.items?.find((i) => i.key === "palette_commands")?.current;
+            const cmds =
+              typeof raw === "string"
+                ? (JSON.parse(raw) as { name: string; type: string; value: string }[])
+                : ((raw as { name: string; type: string; value: string }[]) ?? []);
+            const i = Number(id.slice(7));
+            const cmd = cmds[i];
+            if (!cmd) return;
+            if (cmd.type === "cmd") {
+              // cmd 类：写进剪贴板交给用户执行更安全（Rust 端不静默跑任意命令）
+              await invoke("sk_clip_copy_plain", { text: cmd.value });
+            } else {
+              await invoke("sk_clip_action_run", { id: "url_open", arg: cmd.value });
+            }
+          }
+      }
+    },
+    [],
+  );
+
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       const intent = keyIntent(e.key);
@@ -113,7 +198,7 @@ export function CommandPalette() {
   );
 
   const footer = useMemo(
-    () => state.notice || "↑↓ 选择 · Enter 放回剪贴板 · Esc 关闭（M7 接入页面跳转/计算器）",
+    () => state.notice || "↑↓ 选择 · Enter 放回剪贴板 · Esc 关闭 · 点上方动作直达页面",
     [state.notice],
   );
 
@@ -142,6 +227,30 @@ export function CommandPalette() {
         />
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "0 10px" }}>
+        {actionsOpen && actions.length > 0 && (
+          <>
+            <div className="sk-hint" style={{ padding: "6px 4px 2px" }}>
+              动作（Enter 执行第一个；剪贴板结果见下方）
+            </div>
+            <List
+              size="small"
+              split={false}
+              dataSource={actions.slice(0, 8)}
+              renderItem={(a) => (
+                <List.Item
+                  onClick={() => void runAction(a.id)}
+                  style={{ cursor: "pointer", padding: "3px 8px", borderRadius: 6 }}
+                >
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {a.label}
+                    <span className="sk-hint" style={{ marginLeft: 6 }}>{a.hint}</span>
+                  </span>
+                </List.Item>
+              )}
+            />
+            <div style={{ borderTop: "1px solid var(--sk-border)", margin: "4px 0" }} />
+          </>
+        )}
         {state.visible.length === 0 ? (
           <Typography.Text type="secondary">
             {state.all.length === 0 ? "剪贴板历史为空" : "没有匹配的条目"}

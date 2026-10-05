@@ -803,6 +803,15 @@ pub fn sk_speedtest_status() -> serde_json::Value {
     })
 }
 
+/// 命令面板查询（算式直算 + 内置/自定义动作排序）。
+#[tauri::command]
+pub fn sk_palette_query(q: String) -> Vec<serde_json::Value> {
+    crate::palette::query(&q, &crate::settings::get_str("palette_commands"))
+        .into_iter()
+        .map(|(id, label, hint)| serde_json::json!({ "id": id, "label": label, "hint": hint }))
+        .collect()
+}
+
 /// 单源下载测速（前端逐源调用实现真进度：每源完成即点亮一行）。
 #[tauri::command]
 pub async fn sk_download_test_one(

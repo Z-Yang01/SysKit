@@ -566,6 +566,102 @@ pub fn parse_custom_commands(raw: &str) -> Vec<CustomCommand> {
         .collect()
 }
 
+/// 内置动作注册表（对齐 Python `palette_actions.build_actions` 的条目集）。
+///
+/// Rust 面板没有窗口回调——动作分两类由前端执行：
+/// - `nav:<key>` 页面跳转（前端 setPage）
+/// - `quick:*` 前端已有能力的行为（跳页 + 触发既有按钮），或后端命令
+/// 自定义命令照旧走 custom:*。
+pub fn builtin_actions() -> Vec<PaletteAction> {
+    let nav_pages: [(&str, &str); 7] = [
+        ("overview", "🏠 概览 / 网络监控"),
+        ("clipboard", "📋 剪贴板历史"),
+        ("diagnose", "🔍 诊断 / 修复"),
+        ("toolbox", "⚡ 工具箱"),
+        ("system", "💼 系统助手"),
+        ("vault", "🔒 密码库"),
+        ("settings", "⚙ 设置 / 日志"),
+    ];
+    let mut out: Vec<PaletteAction> = nav_pages
+        .iter()
+        .map(|(key, label)| PaletteAction {
+            id: format!("nav:{key}"),
+            label: format!("打开 {label}"),
+            hint: "页面".into(),
+            keywords: vec!["goto".into(), "页面".into(), "打开".into()],
+            source: "页面".into(),
+        })
+        .collect();
+    // 页内 tab（对齐 Python 的页内 Tab 动作；前端映射到子 tab key）
+    let tabs: [(&str, &str, &str, &str); 11] = [
+        ("toolbox", "hosts", "⚡ 工具箱", "Hosts 编辑"),
+        ("toolbox", "ports", "⚡ 工具箱", "端口 / 局域网"),
+        ("toolbox", "dns", "⚡ 工具箱", "DNS / 子网 / ping"),
+        ("toolbox", "speed", "⚡ 工具箱", "测速"),
+        ("toolbox", "appnet", "⚡ 工具箱", "应用联网"),
+        ("system", "perf", "💼 系统助手", "性能监控"),
+        ("system", "startup", "💼 系统助手", "启动项管理"),
+        ("system", "disk", "💼 系统助手", "磁盘空间"),
+        ("system", "clean", "💼 系统助手", "垃圾清理"),
+        ("system", "battery", "💼 系统助手", "电池健康"),
+        ("system", "modes", "💼 系统助手", "场景模式"),
+    ];
+    for (page, tab, page_label, tab_label) in tabs {
+        out.push(PaletteAction {
+            id: format!("tab:{page}:{tab}"),
+            label: format!("{page_label} · {tab_label}"),
+            hint: "工具".into(),
+            keywords: vec![tab_label.to_string()],
+            source: "页面".into(),
+        });
+    }
+    // 快捷动作（对齐 Python quick:*；wifi 对齐 WiFi 工具页入口）
+    for (id, label, hint, kw) in [
+        ("quick:diag", "立即快速诊断", "网络", vec!["diagnose", "体检", "检测"]),
+        ("quick:deep", "深度诊断（全部检查）", "网络", vec!["diagnose", "完整"]),
+        ("quick:flush", "刷新 DNS 缓存", "网络", vec!["flush", "修复", "dns"]),
+        ("quick:wifi", "打开 WiFi 工具", "网络", vec!["wifi", "无线", "AP"]),
+        ("quick:show", "显示主界面", "窗口", vec!["show", "主窗口"]),
+        (
+            "quick:clip_paste",
+            "剪贴板快捷粘贴面板",
+            "剪贴板",
+            vec!["clipboard", "粘贴", "paste", "历史"],
+        ),
+    ] {
+        out.push(PaletteAction {
+            id: id.into(),
+            label: label.into(),
+            hint: hint.into(),
+            keywords: kw.into_iter().map(Into::into).collect(),
+            source: "快捷".into(),
+        });
+    }
+    out
+}
+
+/// 一次面板查询：算式直算 / 内置+自定义动作模糊排序（对齐 Python
+/// `_dynamic_actions` 的两段式：算式命中直接给结果项，否则按匹配分排序动作）。
+pub fn query(query: &str, custom_raw: &str) -> Vec<(String, String, String)> {
+    let q = query.trim();
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    if looks_like_math(q) {
+        if let Ok(v) = safe_calc(q) {
+            out.push((
+                "calc".into(),
+                format!("{q} = {}", v.display()),
+                "算式（回车复制结果）".into(),
+            ));
+        }
+    }
+    let mut actions = builtin_actions();
+    actions.extend(custom_to_actions(&parse_custom_commands(custom_raw)));
+    for a in rank_actions(q, &actions) {
+        out.push((a.id, a.label, a.hint));
+    }
+    out
+}
+
 /// 自定义命令 → 可参与匹配与执行的动作。
 pub fn custom_to_actions(cmds: &[CustomCommand]) -> Vec<PaletteAction> {
     cmds.iter()
@@ -731,6 +827,25 @@ mod tests {
         assert!(safe_calc("1+2)").is_err());
         assert!(safe_calc("1+").is_err(), "表达式不完整");
         assert!(safe_calc("1 2").is_err(), "多余内容");
+    }
+
+    #[test]
+    fn query_returns_calc_first_and_ranks_actions() {
+        // 算式命中：直接给结果项（对齐 Python _dynamic_actions 第一段）
+        let r = query("1+2*3", "");
+        assert!(r.iter().any(|(id, label, _)| id == "calc" && label.contains("7")));
+        // 空查询：返回全部内置动作（页面 + 页内 tab + 快捷）
+        let r = query("", "");
+        assert!(r.iter().any(|(_, label, _)| label.contains("概览")));
+        assert!(r.iter().any(|(id, _, _)| id == "tab:toolbox:speed"));
+        assert!(r.iter().any(|(id, _, _)| id == "quick:flush"));
+        // 关键词过滤：搜 "dns" 至少命中 Hosts 之外的 DNS 相关 tab 与 quick:flush
+        let r = query("dns", "");
+        assert!(r.iter().any(|(id, _, _)| id == "quick:flush"));
+        assert!(r.iter().any(|(_, label, _)| label.contains("DNS")));
+        // 自定义命令参与匹配
+        let r = query("github", r#"[{"name":"打开 GitHub","type":"url","value":"https://github.com"}]"#);
+        assert!(r.iter().any(|(id, label, _)| id.starts_with("custom:") && label.contains("GitHub")));
     }
 
     #[test]

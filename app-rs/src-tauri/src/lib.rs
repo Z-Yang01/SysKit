@@ -455,6 +455,7 @@ pub fn run() {
             commands::sk_clip_image_thumb,
             commands::sk_download_test_one,
             commands::sk_diag_export,
+            commands::sk_palette_query,
             commands::sk_frontend_error,
             commands::sk_clip_copy_sensitive,
             commands::sk_clip_sensitive_pending,
