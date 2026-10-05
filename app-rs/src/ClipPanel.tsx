@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Button, Input, List, Modal, Typography } from "antd";
+import { Button, Image, Input, List, Modal, Typography } from "antd";
 import type { InputRef } from "antd";
 
 import {
@@ -43,6 +43,36 @@ interface PasteResult {
 
 /** 文本长于该长度时提供全文预览（Python 用 80 字折叠 + 对话框看全文）。 */
 const PREVIEW_THRESHOLD = 120;
+
+/** 面板内图片条目缩略图：与历史页同源 sk_clip_image_thumb（96px）。 */
+function PanelThumb({ index }: { index: number }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    invoke<string>("sk_clip_image_thumb", { index })
+      .then((url) => {
+        if (alive) setSrc(url);
+      })
+      .catch(() => {
+        if (alive) setFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [index]);
+  if (failed) return null; // 图片文件缺失时退回 emoji 标记
+  if (!src) return <span className="sk-hint">…</span>;
+  return (
+    <Image
+      src={src}
+      width={36}
+      height={36}
+      style={{ objectFit: "cover", borderRadius: 4, flexShrink: 0 }}
+      preview={{ mask: null }}
+    />
+  );
+}
 
 export function ClipPanel() {
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -231,6 +261,7 @@ export function ClipPanel() {
                   alignItems: "center",
                 }}
               >
+                {row.kind === "image" && <PanelThumb index={row.idx} />}
                 <span
                   style={{
                     flex: 1,
@@ -240,7 +271,7 @@ export function ClipPanel() {
                   }}
                   title={row.text}
                 >
-                  {rowLabel(row)}
+                  {row.kind === "image" ? row.preview || rowLabel(row) : rowLabel(row)}
                 </span>
                 {row.text.length > PREVIEW_THRESHOLD && (
                   <Button
