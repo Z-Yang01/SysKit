@@ -85,8 +85,20 @@ def test_end_to_end_writes_land_in_portable_dir(tmp_path, monkeypatch):
         cfg2 = __import__("importlib").reload(cfg)
         assert cfg2._PORTABLE == str(app / "data")
 
+        # 迁移源必须收进沙箱：reload 会按真实 %APPDATA% 重算 _APP_DATA_ROOT，
+        # 而 _prepare_data_dirs 的便携首启迁移会读它、copy2 进新目录并把源文件
+        # 改名 .migrated（对真实用户数据的读+写）——机器上恰好有 vault.key 时
+        # 迁移进 tmp 后 setup() 撞「密码库已初始化」，全量门禁随开发机状态
+        # 时红时绿（2026-10-05 深审轮实锤）。改成空源 = 新装机首启语义。
+        fake_old_root = tmp_path / "old-home" / "SysKit"
+        monkeypatch.setattr(cfg2, "_APP_DATA_ROOT", str(fake_old_root),
+                            raising=False)
+
         from syskit.ui.app import _prepare_data_dirs
         _prepare_data_dirs()                   # 启动建目录
+        # 回归锁：空源不得发生任何迁移（源目录不该被创建，新目录不得有密钥）
+        assert not fake_old_root.exists()
+        assert not (app / "data" / "config" / "vault.key").exists()
 
         settings_mod.save({"dark_mode": True})         # 设置写入
         crypto = __import__("syskit.vault_crypto",
