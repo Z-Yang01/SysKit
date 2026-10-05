@@ -266,7 +266,7 @@ static LAST_STATE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new(
 static LAST_DETAIL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 static LAST_LADDER: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
-/// 断网/恢复提示音判定（对齐 Python main_window._on_monitor_state）：
+/// 断网/恢复提示音判定（对齐 Python main_window._on_monitor_status）：
 /// 仅**状态切换**发声；首态（prev 为空）不发声——启动时的初始状态不算事件。
 fn should_alert(prev: &str, new: &str) -> bool {
     !prev.is_empty() && prev != new

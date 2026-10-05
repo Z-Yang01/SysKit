@@ -19,7 +19,8 @@ pub enum Ty {
     Str,
 }
 
-/// 已知设置键 → (默认值, 类型)。逐键对齐 config.py::DEFAULTS（32 个键）。
+/// 已知设置键 → (默认值, 类型)。逐键对齐 config.py::DEFAULTS（覆盖全部键，
+/// 键数由下方 `defaults_cover_python_keys` 测试锁定，勿手改数字）。
 pub fn defaults() -> Vec<(&'static str, Value, Ty)> {
     use Ty::{Bool, Int, Str};
     vec![

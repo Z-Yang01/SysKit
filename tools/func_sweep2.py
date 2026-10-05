@@ -49,14 +49,14 @@ CASES = [
     ('DNS 指定服务器', 'sk_dns_query', {'domain': 'www.qq.com', 'server': '223.5.5.5'}),
     ('子网计算', 'sk_subnet_calc', {'ip': '192.168.1.66', 'prefix': 24}),
     ('ping 工具', 'sk_ping', {'host': '223.5.5.5', 'count': 2}),
-    ('端口扫描页命令', 'sk_port_probe', {'host': '127.0.0.1'}),
+    ('端口列表页命令', 'sk_ports_list', {}),
     ('诊断-快速检测', 'sk_diag_run', {'quick': True}),
     ('磁盘列表', 'sk_disk_list', {}),
     ('清理扫描', 'sk_clean_scan', {}),
     ('电池健康', 'sk_battery_health', {}),
     ('场景模式', 'sk_modes_info', {}),
     ('WiFi 信息', 'sk_wifi_info', {}),
-    ('DNS 测速', 'sk_dns_speed', None),
+    ('DNS 测速', 'sk_dns_speed', {'domain': 'www.baidu.com'}),
 ]
 
 bad = []
