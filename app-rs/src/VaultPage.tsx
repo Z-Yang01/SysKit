@@ -5,6 +5,10 @@
  * 渲染真实条目（站点/账号两级），复制密码/TOTP 走 `sk_vault_copy_secret`——
  * 解密与剪贴板写入都在后端完成（明文不过 JS），并带三重敏感防护。
  * `vault.key` 的创建/解锁/锁定与主密码管理为加密层能力，同样双向验证。
+ *
+ * 布局对齐 Python 版截图：顶部一排式工具条（左侧状态徽章 + 保护模式 +
+ * 自动锁定提示，右侧解锁/锁定/主密码/+ 网站全部收进同一排）；解锁后主体
+ * 左右两栏——左栏固定宽网站列表（搜索嵌在卡标题），右栏该站账号表。
  */
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -12,7 +16,6 @@ import {
   Alert,
   Button,
   Card,
-  Descriptions,
   Input,
   Modal,
   Radio,
@@ -32,7 +35,6 @@ import {
   modeLabel,
   passwordStrength,
   setupConfirmText,
-  statusSummary,
   storageAvailable,
   vaultPhase,
   type AccountRow,
@@ -52,9 +54,15 @@ export function VaultPage() {
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [search, setSearch] = useState("");
-  // 解锁保持时长（vault_autolock_min 分钟；0=不自动锁）——解锁卡的选择器写这里
+  // 账号搜索（走 `sk_vault_site_accounts` 的 q 参数；换站时重置）
+  const [accSearch, setAccSearch] = useState("");
+  // 解锁保持时长（vault_autolock_min 分钟；0=不自动锁）——锁定态显示在工具条
   const [autolockMin, setAutolockMin] = useState<number | null>(null);
   const phase = vaultPhase(status);
+  const trustSecs = status?.trusted_until ?? 0;
+  // 右栏展示的站点：必须在当前（过滤后的）站点列表里，否则视为未选中
+  const selSite = selectedSite !== null ? (sites.find((s) => s.id === selectedSite) ?? null) : null;
+  const setPwCheck = canSetMasterPassword(status);
 
   useEffect(() => {
     void invoke<{ items: { key: string; current: unknown }[] }>("sk_settings_all")
@@ -95,17 +103,22 @@ export function VaultPage() {
     [],
   );
 
-  const loadAccounts = useCallback(async () => {
-    if (selectedSite === null) return;
-    setAccountsLoading(true);
-    try {
-      setAccounts(await invoke<AccountRow[]>("sk_vault_site_accounts", { siteId: selectedSite, q: "" }));
-    } catch {
-      setAccounts([]);
-    } finally {
-      setAccountsLoading(false);
-    }
-  }, [selectedSite]);
+  const loadAccounts = useCallback(
+    async (q?: string) => {
+      if (selectedSite === null) return;
+      const query = q ?? accSearch;
+      setAccSearch(query);
+      setAccountsLoading(true);
+      try {
+        setAccounts(await invoke<AccountRow[]>("sk_vault_site_accounts", { siteId: selectedSite, q: query }));
+      } catch {
+        setAccounts([]);
+      } finally {
+        setAccountsLoading(false);
+      }
+    },
+    [selectedSite, accSearch],
+  );
 
   useEffect(() => {
     // 解锁状态下首次拉站点；锁定/未建库时清空
@@ -114,12 +127,13 @@ export function VaultPage() {
       setSites([]);
       setAccounts([]);
       setSelectedSite(null);
+      setAccSearch("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   useEffect(() => {
-    if (selectedSite !== null) void loadAccounts();
+    if (selectedSite !== null) void loadAccounts("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSite]);
 
@@ -255,6 +269,25 @@ export function VaultPage() {
 
   const addSiteModal = useCallback(() => siteModal(), [siteModal]);
 
+  const confirmDeleteSite = useCallback(
+    (r: SiteRow) => {
+      Modal.confirm({
+        title: `删除站点「${r.name}」`,
+        content: `将同时删除其下 ${r.n_accounts} 个账号，且不可恢复。`,
+        okText: "删除",
+        okButtonProps: { danger: true },
+        cancelText: "取消",
+        onOk: async () => {
+          await invoke("sk_vault_delete_site", { siteId: r.id });
+          message.success("已删除");
+          if (selectedSite === r.id) setSelectedSite(null);
+          await loadSites(search);
+        },
+      });
+    },
+    [selectedSite, loadSites, search],
+  );
+
   const accountModal = useCallback(
     (account?: AccountRow) => {
       if (selectedSite === null) return;
@@ -322,7 +355,7 @@ export function VaultPage() {
 
   const addAccountModal = useCallback(() => accountModal(), [accountModal]);
 
-  const setPwCheck = canSetMasterPassword(status);
+  // ---------------- 解锁 / 主密码（全部收进顶部工具条） ----------------
 
   const setup = useCallback(() => {
     Modal.confirm({
@@ -370,6 +403,38 @@ export function VaultPage() {
     }
   }, [password, status, load]);
 
+  // 「解锁…」：免密模式（DPAPI）直接静默解锁，对齐 Python 版语义；
+  // 主密码模式弹出输入框验证。
+  const openUnlock = useCallback(() => {
+    if (!status?.has_master_password) {
+      void unlock();
+      return;
+    }
+    Modal.confirm({
+      title: "解锁密码库",
+      width: 440,
+      content: (
+        <Input.Password
+          autoFocus
+          placeholder="主密码"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          onPressEnter={() => {
+            // 回车 = 确定：触发确认框的 OK 按钮
+            const ok = document.querySelector<HTMLButtonElement>(
+              ".ant-modal-confirm-btns .ant-btn-primary",
+            );
+            ok?.click();
+          }}
+        />
+      ),
+      okText: "解锁",
+      cancelText: "取消",
+      onOk: () => unlock(),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, password]);
+
   const lock = useCallback(async () => {
     await invoke("sk_vault_lock");
     message.success("已锁定");
@@ -377,17 +442,28 @@ export function VaultPage() {
     await load();
   }, [load]);
 
+  // 设置/更改主密码：已是主密码模式时先验当前密码（对齐 Python 版，
+  // 防止信任窗口内被静默换锁），再写新密码。
   const setMaster = useCallback(() => {
+    const changing = status?.has_master_password === true;
+    let current = "";
     Modal.confirm({
-      title: "设置主密码",
+      title: changing ? "更改主密码" : "设置主密码",
       width: 520,
       content: (
         <Space direction="vertical" size={8} style={{ width: "100%" }}>
           <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
             {setupConfirmText("password")}
           </Typography.Paragraph>
+          {changing && (
+            <Input.Password
+              id="vf-master-current"
+              placeholder="当前主密码"
+              onChange={(e) => (current = e.target.value)}
+            />
+          )}
           <Input.Password
-            placeholder="主密码（至少 8 位更稳）"
+            placeholder="新主密码（至少 8 位更稳）"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
@@ -398,20 +474,27 @@ export function VaultPage() {
           )}
         </Space>
       ),
-      okText: "设置",
+      okText: changing ? "更改" : "设置",
       cancelText: "取消",
       onOk: async () => {
         try {
+          if (changing) {
+            const ok = await invoke<boolean>("sk_vault_verify_password", { password: current });
+            if (!ok) {
+              message.error("当前主密码错误，未做改动");
+              throw new Error("wrong password");
+            }
+          }
           message.success(await invoke<string>("sk_vault_set_password", { password }));
           setPassword("");
           await load();
         } catch (e) {
-          message.error(String(e));
+          if (String(e) !== "Error: wrong password") message.error(String(e));
           throw e; // 保持对话框打开，用户可修正
         }
       },
     });
-  }, [password, load]);
+  }, [status, password, load]);
 
   const removeMaster = useCallback(() => {
     Modal.confirm({
@@ -452,60 +535,83 @@ export function VaultPage() {
 
   return (
     <Space direction="vertical" size={12} style={{ width: "100%" }}>
-      <Card
-        size="small"
-        className="sk-card"
-        title="密码库状态"
-        extra={
-          <Space>
+      {/* 顶部工具条：左侧状态徽章，右侧全部主密码操作（一排式，对齐 Python 版） */}
+      <Card size="small" className="sk-card" styles={{ body: { padding: "8px 12px" } }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Space size={8} wrap>
+            <Tag
+              color={phase === "unlocked" ? "green" : phase === "locked" ? "orange" : "default"}
+              style={{ marginInlineEnd: 0 }}
+            >
+              {phase === "unlocked" ? "🔓 已解锁" : phase === "locked" ? "🔒 已锁定" : "未初始化"}
+            </Tag>
+            <span className="sk-hint">{modeLabel(status?.mode ?? "")}</span>
+            {phase === "unlocked" && (
+              <span className="sk-hint">
+                {trustSecs > 0
+                  ? `免重复验证约 ${Math.max(1, Math.ceil(trustSecs / 60))} 分钟`
+                  : autolockMin === null
+                    ? "自动锁定：…"
+                    : autolockMin === 0
+                      ? "自动锁定：不自动锁定"
+                      : `自动锁定：闲置 ${autolockMin === 1440 ? "1 天" : `${autolockMin} 分钟`}后`}
+              </span>
+            )}
+            {phase === "locked" && (
+              <Tooltip title="解锁在此时长内免输主密码；到期自动重新锁定">
+                <Select
+                  size="small"
+                  style={{ width: 150 }}
+                  value={autolockMin ?? 30}
+                  onChange={(v) => {
+                    setAutolockMin(v);
+                    void invoke("sk_settings_set", { key: "vault_autolock_min", value: v })
+                      .then(() => message.success(v === 0 ? "已设为不自动锁定" : `解锁后将保持 ${v === 1440 ? "1 天" : `${v} 分钟`}`))
+                      .catch((e) => message.error(String(e)));
+                  }}
+                  options={[
+                    { value: 30, label: "保持 30 分钟" },
+                    { value: 1440, label: "保持 1 天" },
+                    { value: 0, label: "不自动锁定" },
+                  ]}
+                />
+              </Tooltip>
+            )}
+          </Space>
+          <div style={{ flex: 1, minWidth: 8 }} />
+          <Space size={8} wrap>
+            {phase === "locked" && (
+              <Button size="small" type="primary" loading={busy} onClick={openUnlock}>
+                解锁…
+              </Button>
+            )}
             {phase === "unlocked" && (
               <Button size="small" onClick={() => void lock()}>
                 锁定
               </Button>
             )}
-            {phase === "unlocked" &&
-              (setPwCheck.ok ? (
+            {phase === "unlocked" && setPwCheck.ok && (
+              <Button size="small" onClick={setMaster}>
+                设置主密码…
+              </Button>
+            )}
+            {phase === "unlocked" && status?.has_master_password && (
+              <>
                 <Button size="small" onClick={setMaster}>
-                  设置主密码
+                  更改主密码…
                 </Button>
-              ) : (
-                <Tooltip title={setPwCheck.reason}>
-                  <Button size="small" danger onClick={removeMaster}>
-                    移除主密码
-                  </Button>
-                </Tooltip>
-              ))}
-            <Tag color={phase === "unlocked" ? "green" : phase === "locked" ? "orange" : "default"}>
-              {statusSummary(status)}
-            </Tag>
-            <Button size="small" onClick={() => void load()}>
-              刷新
-            </Button>
+                <Button size="small" danger onClick={removeMaster}>
+                  移除主密码
+                </Button>
+              </>
+            )}
+            {phase === "unlocked" && storageAvailable(status) && (
+              <Button size="small" type="primary" onClick={addSiteModal}>
+                + 网站
+              </Button>
+            )}
           </Space>
-        }
-      >
-        <Descriptions
-          size="small"
-          column={3}
-          items={[
-            { key: "mode", label: "保护模式", children: modeLabel(status?.mode ?? "") },
-            {
-              key: "autolock",
-              label: "自动锁定",
-              children:
-                autolockMin === null ? "…" : autolockMin === 0 ? "不自动锁定" : `${autolockMin} 分钟`,
-            },
-            {
-              key: "path",
-              label: "密钥文件",
-              children: (
-                <Typography.Text code style={{ fontSize: 12 }} ellipsis>
-                  {status?.path ?? "—"}
-                </Typography.Text>
-              ),
-            },
-          ]}
-        />
+        </div>
       </Card>
 
       {phase === "unprovisioned" && (
@@ -545,89 +651,46 @@ export function VaultPage() {
         </Card>
       )}
 
-      {phase === "locked" && (
-        <Card size="small" className="sk-card" title="解锁">
-          <Space wrap>
-            {status?.has_master_password ? (
-              <Input.Password
-                style={{ width: 300 }}
-                placeholder="主密码"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onPressEnter={() => void unlock()}
-              />
-            ) : (
-              <Typography.Text type="secondary">
-                免密模式（DPAPI）：无需输入密码，点「解锁」即可。
-              </Typography.Text>
-            )}
-            <Tooltip title="解锁在此时长内免输主密码；到期自动重新锁定">
-              <Select
+      {!storageAvailable(status) ? (
+        // capability 门兜底（正常恒走解锁分支）：仅在后端异常时出现
+        <Alert
+          type="warning"
+          showIcon
+          message="密码库存取暂不可用"
+          description="后端数据层异常，请查看日志并重启应用。"
+        />
+      ) : phase === "locked" ? (
+        <Alert
+          type="info"
+          showIcon
+          message="密码库已锁定"
+          description="点右上角「解锁…」：免密模式直接打开；主密码模式输入主密码验证后查看与编辑条目。"
+        />
+      ) : phase === "unlocked" ? (
+        <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
+          {/* 左栏：网站列表（固定 ~300px，搜索嵌在卡标题） */}
+          <Card
+            size="small"
+            className="sk-card"
+            style={{ width: 300, flexShrink: 0 }}
+            styles={{ body: { padding: "4px 4px 8px" } }}
+            title={
+              <Input.Search
                 size="small"
-                style={{ width: 150 }}
-                value={autolockMin ?? 30}
-                onChange={(v) => {
-                  setAutolockMin(v);
-                  void invoke("sk_settings_set", { key: "vault_autolock_min", value: v })
-                    .then(() => message.success(v === 0 ? "已设为不自动锁定" : `解锁后将保持 ${v === 1440 ? "1 天" : `${v} 分钟`}`))
-                    .catch((e) => message.error(String(e)));
-                }}
-                options={[
-                  { value: 30, label: "保持 30 分钟" },
-                  { value: 1440, label: "保持 1 天" },
-                  { value: 0, label: "不自动锁定" },
-                ]}
+                allowClear
+                placeholder="搜索站点…"
+                style={{ width: 190 }}
+                onSearch={(q) => void loadSites(q)}
               />
-            </Tooltip>
-            <Button type="primary" size="small" loading={busy} onClick={() => void unlock()}>
-              解锁
-            </Button>
-          </Space>
-        </Card>
-      )}
-
-      <Card
-        size="small"
-        className="sk-card"
-        title="密码条目"
-        extra={
-          <Space>
-            <Input.Search
-              size="small"
-              allowClear
-              placeholder="搜索站点…"
-              style={{ width: 200 }}
-              onSearch={(q) => void loadSites(q)}
-            />
-            {storageAvailable(status) && phase === "unlocked" && (
-              <Button size="small" type="primary" onClick={addSiteModal}>
-                添加站点
-              </Button>
-            )}
-          </Space>
-        }
-      >
-        {!storageAvailable(status) ? (
-          // capability 门兜底（正常恒走解锁分支）：仅在后端异常时出现
-          <Alert
-            type="warning"
-            showIcon
-            message="密码库存取暂不可用"
-            description="后端数据层异常，请查看日志并重启应用。"
-          />
-        ) : phase !== "unlocked" ? (
-          <Alert
-            type="info"
-            showIcon
-            message="解锁后显示密码条目"
-            description="条目列表需要解锁密码库；解锁后本页直接读库展示站点与账号。"
-          />
-        ) : (
-          <Space direction="vertical" size={10} style={{ width: "100%" }}>
+            }
+          >
             <Table<SiteRow>
               size="small"
               rowKey="id"
+              showHeader={false}
               loading={sitesLoading}
+              dataSource={sites}
+              pagination={false}
               onRow={(r) => ({
                 onClick: () => setSelectedSite(r.id),
                 style: { cursor: "pointer" },
@@ -635,78 +698,81 @@ export function VaultPage() {
               rowClassName={(r) => (r.id === selectedSite ? "ant-table-row-selected" : "")}
               columns={[
                 {
-                  title: "站点（点击行查看账号）",
-                  dataIndex: "name",
-                  render: (v: string, r) => (
-                    <Space size={4}>
-                      <span style={{ fontWeight: 600 }}>{v}</span>
-                      {r.domain && <span className="sk-hint">{r.domain}</span>}
-                    </Space>
-                  ),
-                },
-                { title: "账号数", dataIndex: "n_accounts", width: 80 },
-                {
-                  title: "操作",
-                  key: "ops",
-                  width: 130,
+                  key: "site",
                   render: (_: unknown, r) => (
-                    <Space size={4}>
-                      <Button size="small" onClick={(e) => { e.stopPropagation(); siteModal(r); }}>
-                        编辑
-                      </Button>
-                      <Button
-                        size="small"
-                        danger
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          Modal.confirm({
-                            title: `删除站点「${r.name}」`,
-                            content: `将同时删除其下 ${r.n_accounts} 个账号，且不可恢复。`,
-                            okText: "删除",
-                            okButtonProps: { danger: true },
-                            cancelText: "取消",
-                            onOk: async () => {
-                              await invoke("sk_vault_delete_site", { siteId: r.id });
-                              message.success("已删除");
-                              if (selectedSite === r.id) setSelectedSite(null);
-                              await loadSites(search);
-                            },
-                          });
-                        }}
-                      >
-                        删除
-                      </Button>
-                    </Space>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "baseline",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <Space size={6} style={{ minWidth: 0 }}>
+                        <span style={{ fontWeight: 600 }}>{r.name}</span>
+                        {r.domain && <span className="sk-hint">{r.domain}</span>}
+                      </Space>
+                      <Tag style={{ marginInlineEnd: 0 }}>{r.n_accounts}</Tag>
+                    </div>
                   ),
                 },
               ]}
-              dataSource={sites}
-              pagination={false}
-              locale={{ emptyText: "暂无站点——点右上角「添加站点」开始" }}
+              locale={{ emptyText: "暂无站点——点右上角「+ 网站」开始" }}
             />
+          </Card>
 
-            {selectedSite !== null && (
-              <Card
-                size="small"
-                type="inner"
-                title={
-                  <Space size={6}>
-                    <span>{sites.find((s) => s.id === selectedSite)?.name ?? "账号"}</span>
-                    <span className="sk-hint">
-                      {sites.find((s) => s.id === selectedSite)?.domain}
-                    </span>
-                  </Space>
-                }
-                extra={
+          {/* 右栏：该站账号（flex:1；未选中站点时给引导文案） */}
+          <Card
+            size="small"
+            className="sk-card"
+            style={{ flex: 1, minWidth: 0 }}
+            title={
+              selSite ? (
+                <Space size={6}>
+                  <span>{selSite.name}</span>
+                  {selSite.domain && <span className="sk-hint">{selSite.domain}</span>}
+                </Space>
+              ) : (
+                "账号"
+              )
+            }
+            extra={
+              selSite ? (
+                <Space size={4}>
                   <Button size="small" type="primary" onClick={addAccountModal}>
-                    添加账号
+                    + 账号
                   </Button>
-                }
-              >
+                  <Button size="small" onClick={() => siteModal(selSite)}>
+                    编辑
+                  </Button>
+                  <Button size="small" danger onClick={() => confirmDeleteSite(selSite)}>
+                    删除
+                  </Button>
+                </Space>
+              ) : undefined
+            }
+          >
+            {!selSite ? (
+              <Typography.Text type="secondary">
+                左侧点一个网站，这里会显示它的账号；还没有站点就点右上角「+ 网站」新建。
+              </Typography.Text>
+            ) : (
+              <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                <Input.Search
+                  size="small"
+                  allowClear
+                  placeholder="搜索账号：用户名 / 标签"
+                  style={{ width: 260 }}
+                  value={accSearch}
+                  onChange={(e) => setAccSearch(e.target.value)}
+                  onSearch={(q) => void loadAccounts(q)}
+                />
                 <Table<AccountRow>
                   size="small"
                   rowKey="id"
                   loading={accountsLoading}
+                  dataSource={accounts}
+                  pagination={false}
                   columns={[
                     {
                       title: "账号",
@@ -755,9 +821,16 @@ export function VaultPage() {
                       ),
                     },
                     {
+                      title: "标签",
+                      dataIndex: "label",
+                      width: 140,
+                      ellipsis: true,
+                      render: (v: string) => (v ? <span>{v}</span> : <span className="sk-hint">—</span>),
+                    },
+                    {
                       title: "操作",
                       key: "ops",
-                      width: 230,
+                      width: 240,
                       render: (_: unknown, a) => (
                         <Space size={4}>
                           {a.has_totp && (
@@ -790,6 +863,7 @@ export function VaultPage() {
                                 onOk: async () => {
                                   await invoke("sk_vault_delete_account", { accountId: a.id });
                                   await loadAccounts();
+                                  await loadSites(search);
                                 },
                               })
                             }
@@ -800,15 +874,13 @@ export function VaultPage() {
                       ),
                     },
                   ]}
-                  dataSource={accounts}
-                  pagination={false}
-                  locale={{ emptyText: "该站点暂无账号——点右上角「添加账号」" }}
+                  locale={{ emptyText: "该站点暂无账号——点右上角「+ 账号」添加" }}
                 />
-              </Card>
+              </Space>
             )}
-          </Space>
-        )}
-      </Card>
+          </Card>
+        </div>
+      ) : null}
     </Space>
   );
 }
