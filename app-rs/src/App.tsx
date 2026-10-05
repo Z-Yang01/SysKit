@@ -184,7 +184,7 @@ export function App() {
   return (
     <ConfigProvider theme={antdTheme}>
       <Layout style={{ minHeight: "100vh", background: pal.bg }}>
-        <Layout.Sider theme="light" width={168} style={{ position: "relative", borderRight: `1px solid ${pal.border}` }}>
+        <Layout.Sider theme={dark ? "dark" : "light"} width={168} style={{ position: "relative", background: pal.card, borderRight: `1px solid ${pal.border}` }}>
           <div style={{ padding: "12px 16px" }}>
             <Typography.Text strong>SysKit</Typography.Text>
             <div className="sk-hint">{version ? `v${version}` : ""}</div>
@@ -246,7 +246,10 @@ export function App() {
           </Layout.Header>
 
           <Layout.Content style={{ padding: 14, overflow: "auto" }}>
-            {pages[page] ?? <Pending title={page} milestone="—" detail="未知页面" />}
+            {/* key=page 强制切页淡入（sk-page 动画），替代硬切 */}
+            <div key={page} className="sk-page">
+              {pages[page] ?? <Pending title={page} milestone="—" detail="未知页面" />}
+            </div>
           </Layout.Content>
         </Layout>
       </Layout>

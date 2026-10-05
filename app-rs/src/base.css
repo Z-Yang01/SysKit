@@ -3,13 +3,56 @@
   font-size: 14px;
 }
 
+/* 主题切换平滑过渡：--sk-* 与 AntD token 是两套来源，applyTheme 与
+   ConfigProvider 重渲染不同帧生效，没有过渡时用户看到的是一次硬闪。
+   统一给颜色类属性 0.18s 过渡（人眼感知为"平滑变色"而非"闪烁"）。 */
+body,
+.ant-layout,
+.ant-layout-sider,
+.ant-layout-header,
+.ant-layout-content,
+.ant-card,
+.ant-table,
+.ant-table-thead > tr > th,
+.ant-table-tbody > tr > td,
+.ant-btn,
+.ant-input,
+.ant-select .ant-select-selector,
+.ant-switch,
+.ant-modal .ant-modal-content,
+.ant-alert {
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease;
+}
+
 body {
   margin: 0;
   background: var(--sk-bg);
   color: var(--sk-text);
 }
 
-/* 卡片基形：白底圆角 + 边框（对应 Qt statCard/QGroupBox 形态） */
+/* 页面切换防闪：内容区先撑住高度，避免滚动条出现/消失引起的横向跳动 */
+.ant-layout-content {
+  min-height: calc(100vh - 48px);
+}
+
+/* 页面淡入：侧栏切页时内容区 0.12s 淡入，替代硬切 */
+.sk-page {
+  animation: sk-page-in 0.12s ease-out;
+}
+
+@keyframes sk-page-in {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 卡片基形：圆角 + 边框（对应 Qt statCard/QGroupBox 形态） */
 .sk-card {
   background: var(--sk-card);
   border: 1px solid var(--sk-border);
@@ -20,4 +63,19 @@ body {
 .sk-hint {
   color: var(--sk-sub);
   font-size: 12px;
+}
+
+/* 细滚动条（Win 默认滚动条在深色下非常突兀） */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--sk-scrollbar, #888);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
