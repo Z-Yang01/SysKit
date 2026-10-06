@@ -18,8 +18,8 @@ r"""真机冒烟：Rust+Tauri 重写版（rust-rewrite 分支）——8 靶 + 2 
      <exe目录>\data\config；不设则探测 %APPDATA%\SysKit）。
 2. 运行：
      python -m pytest tools/test_smoke_real_rs.py --run-real -v
-   （默认全数 skip；--run-real 时根 conftest 对 @pytest.mark.real 豁免系统
-     调用哨兵——冒烟靶要真实 os.startfile 拉窗口。）
+   （默认全数 skip；--run-real 时 tools/conftest.py 对 @pytest.mark.real
+     豁免系统调用哨兵——冒烟靶要真实 os.startfile 拉窗口。）
 3. 边界靶说明：
    - 边界 a（热键回退链）在本驱动中 skip：Rust 版回退链与热键即时重注册
      在 Step 2 落地后补验（当前语义=注册失败仅日志降级、改键需重启）。
@@ -43,43 +43,122 @@ import pytest
 
 RUN_REAL = "--run-real" in sys.argv
 
-# conftest 顶层把 QT_QPA_PLATFORM 设为 offscreen（离屏测试需要）；本脚本必须
-# 用真实平台，否则 QApplication 剪贴板不与真实系统剪贴板互通。仅在真机跑时
-# 清除——默认 skip 路径（含 pytest 收集期的模块导入）不得改动会话平台设置，
-# 否则 tools 与 tests/ 同场收集时会把离屏测试拖到真实窗口平台（审计修复）。
-if RUN_REAL:
-    os.environ.pop("QT_QPA_PLATFORM", None)
-
-from PySide6.QtCore import QMimeData, QUrl          # noqa: E402
-from PySide6.QtGui import QGuiApplication            # noqa: E402
-
-from syskit import paste as sk                        # noqa: E402  复用 INPUT 结构/签名/magic
-
 pytestmark = [
     pytest.mark.real,
     pytest.mark.skipif(
         not RUN_REAL,
-        reason="真机冒烟默认跳过：python -m pytest tools/test_smoke_real.py --run-real（人工在场）"),
+        reason="真机冒烟默认跳过：python -m pytest tools/test_smoke_real_rs.py --run-real（人工在场）"),
 ]
 
-PASTE_MAGIC = sk.PASTE_MAGIC
+# ---------------------------------------------------------------- Win32 注键原语
+# syskit/paste.py 的自足内联版：Python 包归档后本脚本必须独立加载。
+# Win32 入口签名在导入期声明：ctypes 默认 restype=c_int，x64 下会把 HWND
+# 句柄截断/符号扩展成 32 位（本仓库已知坑）。POINTER(INPUT) 要求结构类
+# 身份跨调用稳定，故提为模块级。
+
+PASTE_MAGIC = 0x53594B54          # "SYKT"：dwExtraInfo 注入标记（硬约束⑤）
+_KEY_UP = 0x0002
+_INPUT_KEYBOARD = 1
+_SW_RESTORE = 9
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD)]
+
+
+class _INPUTUNION(ctypes.Union):
+    _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [("type", wintypes.DWORD), ("iu", _INPUTUNION)]
+
+
+def _user32():
+    return ctypes.windll.user32
+
+
+def _declare_signatures():
+    """Win32 入口签名声明（进程级：windll 缓存同一 CDLL 实例，全局生效）。"""
+    u = ctypes.windll.user32
+    hwnd = wintypes.HWND
+    u.GetForegroundWindow.restype = hwnd
+    u.IsWindow.argtypes = [hwnd]
+    u.IsIconic.argtypes = [hwnd]
+    u.ShowWindow.argtypes = [hwnd, ctypes.c_int]
+    u.BringWindowToTop.argtypes = [hwnd]
+    u.SetForegroundWindow.argtypes = [hwnd]
+    u.GetWindowThreadProcessId.argtypes = [hwnd, ctypes.POINTER(wintypes.DWORD)]
+    u.GetWindowThreadProcessId.restype = wintypes.DWORD
+    u.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    u.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    u.SendInput.restype = wintypes.UINT
+    ctypes.windll.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+
+if os.name == "nt":
+    _declare_signatures()
+
+
+def focus_window(hwnd: int) -> bool:
+    """把焦点还给 hwnd（最小化先还原）。返回是否确实成为前台窗口。
+
+    SetForegroundWindow 只对前台进程放行：附着目标线程输入队列解除限制
+    （AttachThreadInput + BringWindowToTop + SetForegroundWindow 三步）。
+    """
+    if os.name != "nt" or not hwnd:
+        return False
+    try:
+        u = _user32()
+        if not u.IsWindow(hwnd):
+            return False
+        if u.IsIconic(hwnd):
+            u.ShowWindow(hwnd, _SW_RESTORE)
+        if u.GetForegroundWindow() == hwnd:
+            return True
+        cur_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+        tgt_tid = u.GetWindowThreadProcessId(hwnd, None)
+        attached = cur_tid != tgt_tid and bool(
+            u.AttachThreadInput(cur_tid, tgt_tid, True))
+        try:
+            u.BringWindowToTop(hwnd)
+            u.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                u.AttachThreadInput(cur_tid, tgt_tid, False)
+        return u.GetForegroundWindow() == hwnd
+    except Exception:
+        return False
+
+
 VK_CTRL, VK_MENU, VK_WIN, VK_SHIFT, VK_V = 0x11, 0x12, 0x5B, 0x10, 0x56
 VK_DOWN, VK_RETURN, VK_L = 0x28, 0x0D, 0x4C
 _INVALID = 0xFFFFFFFF
 
-# ---------------------------------------------------------------- Win32 基元
-
 
 def _send_input(events) -> int:
-    arr = (sk.INPUT * len(events))(*events)
-    return int(sk._user32().SendInput(len(events), arr, ctypes.sizeof(sk.INPUT)))
+    arr = (INPUT * len(events))(*events)
+    return int(_user32().SendInput(len(events), arr, ctypes.sizeof(INPUT)))
 
 
 def _key(vk, up=False):
-    inp = sk.INPUT()
-    inp.type = 1                                # INPUT_KEYBOARD
+    inp = INPUT()
+    inp.type = _INPUT_KEYBOARD
     inp.iu.ki.wVk = vk
-    inp.iu.ki.dwFlags = sk._KEY_UP if up else 0
+    inp.iu.ki.dwFlags = _KEY_UP if up else 0
     inp.iu.ki.dwExtraInfo = PASTE_MAGIC          # 本脚本注入统一带 magic
     return inp
 
@@ -149,11 +228,11 @@ def hold_quick_paste_v(hold_sec=0.5):
 
 
 def foreground() -> int:
-    return int(sk._user32().GetForegroundWindow() or 0)
+    return int(_user32().GetForegroundWindow() or 0)
 
 
 def focus(hwnd: int) -> bool:
-    return sk.focus_window(hwnd)
+    return focus_window(hwnd)
 
 
 def find_windows(class_name=None, title_sub=None, visible_only=True):
@@ -161,28 +240,28 @@ def find_windows(class_name=None, title_sub=None, visible_only=True):
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def _cb(hwnd, _lp):
-        if visible_only and not sk._user32().IsWindowVisible(hwnd):
+        if visible_only and not _user32().IsWindowVisible(hwnd):
             return True
         if class_name:
             buf = ctypes.create_unicode_buffer(256)
-            sk._user32().GetClassNameW(hwnd, buf, 256)
+            _user32().GetClassNameW(hwnd, buf, 256)
             if buf.value != class_name:
                 return True
         if title_sub is not None:
             buf = ctypes.create_unicode_buffer(512)
-            sk._user32().GetWindowTextW(hwnd, buf, 512)
+            _user32().GetWindowTextW(hwnd, buf, 512)
             if title_sub not in buf.value:
                 return True
         out.append(int(hwnd))
         return True
 
-    sk._user32().EnumWindows(_cb, 0)
+    _user32().EnumWindows(_cb, 0)
     return out
 
 
 def window_title(hwnd) -> str:
     buf = ctypes.create_unicode_buffer(512)
-    sk._user32().GetWindowTextW(hwnd, buf, 512)
+    _user32().GetWindowTextW(hwnd, buf, 512)
     return buf.value
 
 
@@ -221,7 +300,7 @@ def dismiss_syskit_dialog(timeout=8):
     def _dialog_up():
         for hwnd in find_windows(class_name="#32770"):
             pid = wintypes.DWORD()
-            sk._user32().GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            _user32().GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if pid.value in pids and window_title(hwnd):
                 return hwnd
         return 0
@@ -240,32 +319,23 @@ def dismiss_syskit_dialog(timeout=8):
 
 
 # ---------------------------------------------------------------- 剪贴板驱动
-
-_qapp = None
-
-
-def qapp():
-    global _qapp
-    if _qapp is None:
-        _qapp = QGuiApplication.instance() or QGuiApplication(sys.argv)
-    return _qapp
+# 全部原生 ctypes 直写（立即数据）。不用 Qt：Qt 的 Windows 剪贴板写入是
+# **延迟渲染**——SetClipboardData(NULL) 占位，数据等其它进程索取时才由 Qt
+# 窗口渲染（WM_RENDERFORMAT）。冒烟驱动从不跑事件循环（测试体 time.sleep
+# 阻塞主线程）→ 渲染请求永远得不到处理 → Rust 侧读到空（历史 7 靶连挂根因）。
+# 原生写入是立即数据，跨进程立即可读。x64 句柄截断防御：显式 64 位 restype。
 
 
-def clip_set_text(text):
-    """原生 Win32 写剪贴板（**不用 Qt**）。
+def _clip_open():
+    if not ctypes.windll.user32.OpenClipboard(None):
+        raise OSError("OpenClipboard 失败（被其它进程占用）")
 
-    Qt 的 Windows 剪贴板写入是**延迟渲染**：SetClipboardData(NULL) 占位，
-    数据等其它进程索取时才由 Qt 窗口渲染（WM_RENDERFORMAT）。冒烟驱动的
-    QApplication **从不跑事件循环**（测试体 time.sleep 阻塞主线程）→ 渲染
-    请求永远得不到处理 → Rust 应用的剪贴板读取拿到空 → 「监听未开启」假象
-    （上一轮 7 靶连挂的根因）。原生 ctypes 写入是立即数据，跨进程立即可读。
-    """
-    import ctypes
-    CF_UNICODETEXT = 13
-    GMEM_MOVEABLE = 0x0002
+
+def _clip_set_bytes(fmt: int, data: bytes):
+    """向**已打开**的剪贴板写入一份立即数据；成功后句柄所有权移交系统。"""
     k32 = ctypes.windll.kernel32
     u32 = ctypes.windll.user32
-    # x64 句柄截断防御：显式声明 64 位 restype（本仓库已知坑）
+    GMEM_MOVEABLE = 0x0002
     k32.GlobalAlloc.restype = ctypes.c_void_p
     k32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
     k32.GlobalLock.restype = ctypes.c_void_p
@@ -273,53 +343,147 @@ def clip_set_text(text):
     k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
     u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
     u32.SetClipboardData.restype = ctypes.c_void_p
-    if not u32.OpenClipboard(None):
-        raise OSError("OpenClipboard 失败（被其它进程占用）")
+    h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    ptr = k32.GlobalLock(h)
+    ctypes.memmove(ptr, data, len(data))
+    k32.GlobalUnlock(h)
+    if not u32.SetClipboardData(fmt, h):
+        k32.GlobalFree(h)
+        raise OSError(f"SetClipboardData(fmt={fmt}) 失败")
+
+
+_CF_HTML: int | None = None
+
+
+def _cf_html_format() -> int:
+    global _CF_HTML
+    if _CF_HTML is None:
+        _CF_HTML = int(ctypes.windll.user32.RegisterClipboardFormatW("HTML Format"))
+    return _CF_HTML
+
+
+def clip_set_text(text):
+    """原生写 CF_UNICODETEXT。"""
+    _clip_open()
     try:
-        u32.EmptyClipboard()
-        data = text.encode("utf-16-le") + bytes([0, 0])
-        h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        ctypes.windll.user32.EmptyClipboard()
+        _clip_set_bytes(13, text.encode("utf-16-le") + b"\x00\x00")  # CF_UNICODETEXT
+    finally:
+        ctypes.windll.user32.CloseClipboard()
+
+
+def clip_set_html(html, plain):
+    """原生同批写 CF_UNICODETEXT + CF_HTML（"HTML Format" 注册格式）。
+
+    头行定宽（:09d）→ 偏移先占位后回填自洽；偏移按 UTF-8 字节计。
+    """
+    tmpl = ("Version:0.9\r\nStartHTML:{sh:09d}\r\nEndHTML:{eh:09d}\r\n"
+            "StartFragment:{sf:09d}\r\nEndFragment:{ef:09d}\r\n")
+    pre = "<html><body>\n<!--StartFragment-->"
+    post = "<!--EndFragment-->\n</body></html>"
+    sh = len(tmpl.format(sh=0, eh=0, sf=0, ef=0).encode("utf-8"))
+    sf = sh + len(pre.encode("utf-8"))
+    ef = sf + len(html.encode("utf-8"))
+    eh = ef + len(post.encode("utf-8"))
+    blob = (tmpl.format(sh=sh, eh=eh, sf=sf, ef=ef) + pre + html + post).encode("utf-8")
+    _clip_open()
+    try:
+        ctypes.windll.user32.EmptyClipboard()
+        _clip_set_bytes(13, plain.encode("utf-16-le") + b"\x00\x00")
+        _clip_set_bytes(_cf_html_format(), blob)
+    finally:
+        ctypes.windll.user32.CloseClipboard()
+
+
+def clip_set_files(paths):
+    """原生写 CF_HDROP（资源管理器式文件粘贴；对应 Qt uri-list 语义）。"""
+    CF_HDROP = 15
+
+    class DROPFILES(ctypes.Structure):
+        _fields_ = [("pFiles", wintypes.DWORD), ("pt", wintypes.POINT),
+                    ("fNC", wintypes.BOOL), ("fWide", wintypes.BOOL)]
+
+    hdr = DROPFILES()
+    hdr.pFiles = ctypes.sizeof(DROPFILES)
+    hdr.fWide = True
+    blob = bytes(hdr) + ("\0".join(paths) + "\0").encode("utf-16-le")
+    _clip_open()
+    try:
+        ctypes.windll.user32.EmptyClipboard()
+        _clip_set_bytes(CF_HDROP, blob)
+    finally:
+        ctypes.windll.user32.CloseClipboard()
+
+
+def clip_text() -> str:
+    """原生读 CF_UNICODETEXT（读到首个 NUL；不可用/被占用返回空串）。"""
+    CF_UNICODETEXT = 13
+    u32 = ctypes.windll.user32
+    k32 = ctypes.windll.kernel32
+    u32.GetClipboardData.argtypes = [ctypes.c_uint]
+    u32.GetClipboardData.restype = ctypes.c_void_p
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = [ctypes.c_void_p]
+    k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    if not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+        return ""
+    if not u32.OpenClipboard(None):
+        return ""
+    try:
+        h = u32.GetClipboardData(CF_UNICODETEXT)
+        if not h:
+            return ""
         ptr = k32.GlobalLock(h)
-        ctypes.memmove(ptr, data, len(data))
-        k32.GlobalUnlock(h)
-        # 句柄所有权移交系统，不再释放
-        if not u32.SetClipboardData(CF_UNICODETEXT, h):
-            k32.GlobalFree(h)
-            raise OSError("SetClipboardData 失败")
+        if not ptr:
+            return ""
+        try:
+            return ctypes.c_wchar_p(ptr).value or ""
+        finally:
+            k32.GlobalUnlock(h)
     finally:
         u32.CloseClipboard()
 
 
-def clip_set_html(html, plain):
-    mime = QMimeData()
-    mime.setHtml(html)
-    mime.setText(plain)
-    qapp().clipboard().setMimeData(mime)
+def _dpapi_unprotect(blob: bytes) -> bytes:
+    """CryptUnprotectData（同 Windows 用户可解）。"""
+    class BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD),
+                    ("pbData", ctypes.POINTER(ctypes.c_char))]
 
-
-def clip_set_files(paths):
-    mime = QMimeData()
-    mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
-    qapp().clipboard().setMimeData(mime)
-
-
-def clip_text() -> str:
-    return qapp().clipboard().text()
+    buf = ctypes.create_string_buffer(blob, len(blob))
+    pin = BLOB(len(blob), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+    pout = BLOB()
+    if not ctypes.windll.crypt32.CryptUnprotectData(
+            ctypes.byref(pin), None, None, None, None, 0, ctypes.byref(pout)):
+        raise OSError("CryptUnprotectData 失败")
+    try:
+        return ctypes.string_at(pout.pbData, pout.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(pout.pbData)
 
 
 def recorded_tokens() -> set:
-    """从运行实例的 clipboard.json 读已记录条目文本（DPAPI 同用户可解）。"""
+    """从运行实例的 clipboard.json 读已记录条目文本。
+
+    Rust 版与 Python 版同容器格式 {"v":1,"enc":"dpapi","data":base64}；
+    DPAPI 同用户可解（secure_store 内联版；旧明文直读）。
+    """
     p = _find_settings_file()
     if not p:
         return set()
-    base = os.path.dirname(p)
-    cj = os.path.join(base, "clipboard.json")
+    cj = os.path.join(os.path.dirname(p), "clipboard.json")
     if not os.path.exists(cj):
         return set()
     try:
-        from syskit import secure_store
-        data, _ = secure_store.load_sealed_json(cj, [])
-        return {str(it.get("text", "")) for it in data if isinstance(it, dict)}
+        import base64
+        import json as _json
+        with open(cj, "r", encoding="utf-8") as f:
+            parsed = _json.load(f)
+        if isinstance(parsed, dict) and parsed.get("enc") == "dpapi":
+            parsed = _json.loads(
+                _dpapi_unprotect(base64.b64decode(parsed.get("data", "")))
+                .decode("utf-8"))
+        return {str(it.get("text", "")) for it in parsed if isinstance(it, dict)}
     except Exception:
         return set()
 
@@ -404,11 +568,11 @@ def _uia():
 def _read_win32_text(hwnd):
     """经典 Edit/RichEdit 子控件 WM_GETTEXT 读取（Win10 记事本等）。"""
     for klass in ("Edit", "RichEditD2DHWND", "RichEdit50W", "RichEdit20W"):
-        child = sk._user32().FindWindowExW(hwnd, None, klass, None)
+        child = _user32().FindWindowExW(hwnd, None, klass, None)
         if child:
-            size = sk._user32().SendMessageW(child, 0x000E, 0, 0)   # WM_GETTEXTLENGTH
+            size = _user32().SendMessageW(child, 0x000E, 0, 0)   # WM_GETTEXTLENGTH
             buf = ctypes.create_unicode_buffer(size + 1)
-            sk._user32().SendMessageW(child, 0x000D, size + 1, buf)  # WM_GETTEXT
+            _user32().SendMessageW(child, 0x000D, size + 1, buf)  # WM_GETTEXT
             return buf.value
     return ""
 
@@ -699,7 +863,7 @@ def _panel_visible():
     # 面板是无边框 Qt.Tool 窗口：以「前台进程属于 SysKit」为面板可见代理
     fg = foreground()
     pid = wintypes.DWORD()
-    sk._user32().GetWindowThreadProcessId(fg, ctypes.byref(pid))
+    _user32().GetWindowThreadProcessId(fg, ctypes.byref(pid))
     return pid.value in set(syskit_pids())
 
 
@@ -776,7 +940,7 @@ class TestTarget7Explorer:
         tap(VK_RETURN)                                # 行 0 = 最新（文件条目）
         dst = dst_dir / "smoke_src.txt"
         assert wait_until(lambda: dst.exists(), 8), \
-            "文件未被粘贴（写回应走 QMimeData uri-list；若目标出现的是路径文本则违反硬约束⑦）"
+            "文件未被粘贴（写回应应为 CF_HDROP 文件语义；若目标出现的是路径文本则违反硬约束⑦）"
         assert dst.read_text(encoding="utf-8") == "smoke-payload"
         # 反证：目标目录不得出现「以条目文本命名的 .txt 路径文件」
         strays = [p.name for p in dst_dir.iterdir() if p.name != "smoke_src.txt"]
