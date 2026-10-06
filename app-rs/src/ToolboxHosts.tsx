@@ -338,7 +338,7 @@ export function ToolboxHosts() {
           <Table<HostRow>
             size="small"
             rowKey="idx"
-            pagination={{ pageSize: 15 }}
+            pagination={{ simple: true, pageSize: 15 }}
             dataSource={rows}
             columns={[
               {

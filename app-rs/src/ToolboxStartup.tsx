@@ -128,9 +128,11 @@ export function ToolboxStartup() {
       )}
 
       <Space wrap>
-        <Button size="small" type="primary" onClick={() => void load()}>
-          刷新
-        </Button>
+        <Tooltip title="重新枚举启动项">
+          <Button size="small" type="primary" onClick={() => void load()}>
+            🔄
+          </Button>
+        </Tooltip>
         <Input
           size="small"
           style={{ width: 260 }}
@@ -139,20 +141,18 @@ export function ToolboxStartup() {
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
         />
-        {/* 状态档是高频意图：禁完一串想回头检查，或想找出"还有什么在自启" */}
+        {/* 状态档是高频意图：禁完一串想回头检查，或想找出"还有什么在自启"。
+            计数并入标签、去重复 Tag（用户反馈：三处计数挤在一起看不清）。 */}
         <Segmented
           size="small"
           value={status}
           onChange={(v) => setStatus(v as StartupStatusFilter)}
           options={[
-            { value: "all", label: "全部" },
-            { value: "enabled", label: "已启用" },
-            { value: "disabled", label: "已禁用" },
+            { value: "all", label: `全部(${stats.total})` },
+            { value: "enabled", label: `已启用(${stats.enabled})` },
+            { value: "disabled", label: `已禁用(${stats.disabled})` },
           ]}
         />
-        <Tag color="green">启用 {stats.enabled}</Tag>
-        <Tag>禁用 {stats.disabled}</Tag>
-        <span className="sk-hint">共 {stats.total} 项</span>
       </Space>
 
       {rows.length === 0 ? (
@@ -176,7 +176,12 @@ export function ToolboxStartup() {
         <Table<StartupItem>
           size="small"
           rowKey={(r) => `${r.location}|${r.name}`}
-          pagination={{ pageSize: 15, showSizeChanger: false }}
+          pagination={{
+            pageSize: 15,
+            showSizeChanger: false,
+            // 共 N 项移到表格底部（用户反馈：顶部计数挤在一起看不清）
+            showTotal: (n) => `共 ${n} 项`,
+          }}
           dataSource={rows}
           columns={[
             {
@@ -207,9 +212,11 @@ export function ToolboxStartup() {
               dataIndex: "command",
               ellipsis: true,
               render: (v: string) => (
-                <span className="sk-hint" style={{ fontFamily: "Consolas, monospace", fontSize: 12 }}>
-                  {v || "—"}
-                </span>
+                <Tooltip title={v} placement="topLeft">
+                  <span className="sk-hint" style={{ fontFamily: "Consolas, monospace", fontSize: 12 }}>
+                    {v || "—"}
+                  </span>
+                </Tooltip>
               ),
             },
             {
