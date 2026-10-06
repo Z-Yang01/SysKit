@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Card, Col, Empty, Radio, Row, Segmented, Space, Statistic, Table, Tabs, Tag, Typography } from "antd";
+import { Card, Col, Empty, Radio, Row, Segmented, Space, Table, Tabs, Tag, Typography } from "antd";
 import ReactECharts from "echarts-for-react";
 
 import {
@@ -336,80 +336,66 @@ export function Dashboard() {
           label: "概览",
           children: (
             <Space direction="vertical" size={14} style={{ width: "100%" }}>
-              <Row gutter={14}>
-                <Col span={6}>
-                  <Card size="small" className="sk-card">
-                    <Statistic
-                      title="实时下行"
-                      value={tick ? humanBps(tick.down) : "—"}
-                      valueStyle={{ fontSize: 20 }}
-                    />
-                  </Card>
-                </Col>
-                <Col span={6}>
-                  <Card size="small" className="sk-card">
-                    <Statistic
-                      title="实时上行"
-                      value={tick ? humanBps(tick.up) : "—"}
-                      valueStyle={{ fontSize: 20 }}
-                    />
-                  </Card>
-                </Col>
-                <Col span={6}>
-                  <Card size="small" className="sk-card">
-                    <Statistic
-                      title="CPU"
-                      value={tick ? tick.cpu.toFixed(1) : "—"}
-                      suffix="%"
-                      valueStyle={{ fontSize: 20 }}
-                    />
-                  </Card>
-                </Col>
-                <Col span={6}>
-                  <Card size="small" className="sk-card">
-                    <Statistic
-                      title="内存"
-                      value={tick ? tick.mem.toFixed(1) : "—"}
-                      suffix="%"
-                      valueStyle={{ fontSize: 20 }}
-                    />
-                  </Card>
-                </Col>
-              </Row>
-
-              <Row gutter={14}>
-                <Col span={8}>
-                  <Card size="small" className="sk-card">
-                    <Statistic
-                      title="今日下行"
-                      value={humanBytes(tick?.today_recv ?? 0)}
-                      valueStyle={{ fontSize: 18 }}
-                    />
-                  </Card>
-                </Col>
-                <Col span={8}>
-                  <Card size="small" className="sk-card">
-                    <Statistic
-                      title="今日上行"
-                      value={humanBytes(tick?.today_sent ?? 0)}
-                      valueStyle={{ fontSize: 18 }}
-                    />
-                  </Card>
-                </Col>
-                <Col span={8}>
-                  <Card size="small" className="sk-card">
-                    <Statistic
-                      title="磁盘 I/O"
-                      value={
-                        tick
-                          ? `读 ${humanBps(tick.disk_r)} / 写 ${humanBps(tick.disk_w)}`
-                          : "—"
-                      }
-                      valueStyle={{ fontSize: 16 }}
-                    />
-                  </Card>
-                </Col>
-              </Row>
+              {/* 速率面板（参考 NetSpeedMonitor 风格）：左侧紧凑数值列（↑下行/↓上行/⚙今日累计）
+                  + 右侧连续实时曲线——一屏同览，数值与曲线同源同拍 */}
+              <Card size="small" className="sk-card" styles={{ body: { padding: "10px 14px" } }}>
+                <div style={{ display: "flex", gap: 18, alignItems: "stretch" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "center",
+                      gap: 6,
+                      flexShrink: 0,
+                      minWidth: 150,
+                      borderRight: `1px solid var(--sk-border)`,
+                      paddingRight: 18,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span style={{ color: OK() }}>↑</span>
+                      <span style={{ fontSize: 18, fontWeight: 600 }}>
+                        {tick ? humanBps(tick.up) : "—"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span style={{ color: ACCENT() }}>↓</span>
+                      <span style={{ fontSize: 18, fontWeight: 600 }}>
+                        {tick ? humanBps(tick.down) : "—"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span style={{ color: "var(--sk-accent)", fontSize: 12 }}>CPU</span>
+                      <span style={{ fontWeight: 600 }}>
+                        {tick ? tick.cpu.toFixed(1) : "—"}
+                        <span className="sk-hint">%</span>
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span style={{ color: "var(--sk-accent)", fontSize: 12 }}>内存</span>
+                      <span style={{ fontWeight: 600 }}>
+                        {tick ? tick.mem.toFixed(1) : "—"}
+                        <span className="sk-hint">%</span>
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span style={{ color: "var(--sk-accent)", fontSize: 12 }}>磁盘</span>
+                      <span style={{ fontWeight: 600 }}>
+                        {tick ? humanBps(tick.disk_r + tick.disk_w) : "—"}
+                      </span>
+                    </div>
+                    <div className="sk-hint" style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span>⚙</span>
+                      <span>
+                        今日 {humanBytes(tick?.today_recv ?? 0)} / {humanBytes(tick?.today_sent ?? 0)}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <ReactECharts option={rateOption} style={{ height: 150 }} lazyUpdate />
+                  </div>
+                </div>
+              </Card>
 
               <div className="sk-card">
                 <Row justify="space-between" align="middle" style={{ marginBottom: 6 }}>
