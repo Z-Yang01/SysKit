@@ -28,6 +28,7 @@ mod cliprules;
 mod commands;
 mod dib;
 mod disk;
+mod diskusage;
 mod dnsclient;
 mod dnsspeed;
 mod hostsed;
@@ -405,6 +406,9 @@ pub fn run() {
             commands::sk_startup_list,
             commands::sk_startup_set,
             commands::sk_disk_list,
+            commands::sk_disk_scan_tree,
+            commands::sk_disk_scan_cancel,
+            commands::sk_disk_recycle_delete,
             commands::sk_clean_targets,
             commands::sk_clean_scan,
             commands::sk_clean_run,

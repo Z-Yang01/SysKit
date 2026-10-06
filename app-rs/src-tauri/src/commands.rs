@@ -2435,6 +2435,37 @@ pub async fn sk_battery_health() -> Result<serde_json::Value, String> {
 // ---------------- M5 系统助手：磁盘空间 / 垃圾清理 ----------------
 
 /// 列出本地卷的容量与使用率。
+/// 目录空间分析：递归扫描目录树（大小/文件数/类型分布/大文件 Top200）。
+/// 取消走 sk_disk_scan_cancel（同一时刻只跑一个扫描）。
+#[tauri::command]
+pub async fn sk_disk_scan_tree(root: String) -> Result<serde_json::Value, String> {
+    crate::diskusage::SCAN_STOP.reset();
+    tauri::async_runtime::spawn_blocking(move || {
+        let r =
+            crate::diskusage::scan_tree(std::path::Path::new(&root), &crate::diskusage::SCAN_STOP);
+        serde_json::to_value(r).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("扫描线程失败: {e}"))?
+}
+
+/// 取消进行中的目录扫描（已入回收站的删除不受影响）。
+#[tauri::command]
+pub fn sk_disk_scan_cancel() {
+    crate::diskusage::SCAN_STOP.cancel();
+}
+
+/// 批量移入回收站（可还原），返回 (成功数, 失败路径列表)。
+#[tauri::command]
+pub async fn sk_disk_recycle_delete(paths: Vec<String>) -> Result<serde_json::Value, String> {
+    Ok(tauri::async_runtime::spawn_blocking(move || {
+        let (ok, errors) = crate::diskusage::delete_to_recycle_bin(&paths);
+        serde_json::json!({ "ok_count": ok, "errors": errors })
+    })
+    .await
+    .map_err(|e| format!("删除线程失败: {e}"))?)
+}
+
 #[tauri::command]
 pub async fn sk_disk_list() -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
