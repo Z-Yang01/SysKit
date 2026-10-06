@@ -35,9 +35,9 @@ pub fn defaults() -> Vec<(&'static str, Value, Ty)> {
         ("sound_alert_enabled", Value::Bool(true), Bool),
         ("dark_mode", Value::Bool(false), Bool),
         ("dns_preset", Value::from("阿里"), Str),
-        ("clipboard_max", Value::from(50), Int),
+        ("clipboard_max", Value::from(1000), Int),
         ("clipboard_watch", Value::Bool(false), Bool),
-        ("clipboard_retain_days", Value::from(1), Int),
+        ("clipboard_retain_days", Value::from(30), Int),
         (
             "clip_process_blacklist",
             Value::from("keepass,bitwarden,1password,enpass"),

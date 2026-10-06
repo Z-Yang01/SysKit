@@ -217,7 +217,7 @@ pub struct History {
 impl Default for History {
     fn default() -> Self {
         Self {
-            max_items: 50,
+            max_items: 1000,
             max_len: 5000,
             items: Vec::new(),
             dirty: false,

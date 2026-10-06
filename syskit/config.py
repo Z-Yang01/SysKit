@@ -107,9 +107,9 @@ DEFAULTS = {
     "sound_alert_enabled": True,
     "dark_mode": False,
     "dns_preset": "阿里",
-    "clipboard_max": 50,               # 剪贴板历史上限条数
+    "clipboard_max": 1000,             # 剪贴板历史上限条数（默认 1000，用户口径）
     "clipboard_watch": False,          # 剪贴板监听总开关（默认关：系统助手页勾选并确认后开启；关闭只停新记录，历史保留）
-    "clipboard_retain_days": 1,        # 剪贴板历史按天过期（天，0=永不过期；启动与每日清理）（非置顶）
+    "clipboard_retain_days": 30,       # 剪贴板历史按天过期（天，0=永不过期；启动与每日清理）（非置顶；默认 30 天）
     "clip_process_blacklist": "keepass,bitwarden,1password,enpass",  # 前台为这些进程时不记录剪贴板
     "clip_sensitive_ttl": 25,          # 敏感复制在剪贴板中的存活秒数（0=不清空）
     "clip_capture_images": True,       # 剪贴板监听是否记录图片
