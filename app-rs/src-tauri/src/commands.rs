@@ -2434,7 +2434,6 @@ pub async fn sk_battery_health() -> Result<serde_json::Value, String> {
 
 // ---------------- M5 系统助手：磁盘空间 / 垃圾清理 ----------------
 
-/// 列出本地卷的容量与使用率。
 /// 目录空间分析：递归扫描目录树（大小/文件数/类型分布/大文件 Top200）。
 /// 取消走 sk_disk_scan_cancel（同一时刻只跑一个扫描）。
 #[tauri::command]
@@ -2466,6 +2465,7 @@ pub async fn sk_disk_recycle_delete(paths: Vec<String>) -> Result<serde_json::Va
     .map_err(|e| format!("删除线程失败: {e}"))
 }
 
+/// 列出本地卷的容量与使用率。
 #[tauri::command]
 pub async fn sk_disk_list() -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(|| {

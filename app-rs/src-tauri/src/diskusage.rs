@@ -102,7 +102,10 @@ impl WalkNode {
     }
 
     /// 子目录汇总回填：total = 自身 size + 子目录 total 之和
+    /// （对齐 Python diskusage.py:147 `node.total = node.size + sum(...)`；
+    /// 漏加自身 size 曾让所有目录的 total 恒为 0——轮次39实锤修复）
     fn finalize(&mut self) {
+        self.total = self.size;
         for c in &self.children {
             self.total += c.total;
             self.file_count += c.file_count;
@@ -149,14 +152,17 @@ pub fn scan_tree(root: &Path, stop: &ScanStop) -> ScanResult {
 
     struct Frame {
         node: WalkNode,
-        it: fs::ReadDir,
+        /// None = 无权限/打开失败的「真·空」占位。曾经这里拿 %TEMP% 的 ReadDir
+        /// 顶包，把临时目录的内容整个算进无权限目录的 size/ext_stats/Top200
+        /// （轮次39实锤修复）：占位必须表达「无内容」，不能是另一个目录的迭代器。
+        it: Option<fs::ReadDir>,
     }
 
     let mut result_root: Option<WalkNode> = None;
     let mut stack: Vec<Frame> = match fs::read_dir(root) {
         Ok(it) => vec![Frame {
             node: WalkNode::new(root_name.clone(), root.to_string_lossy().to_string()),
-            it,
+            it: Some(it),
         }],
         Err(_) => {
             // 根目录都打不开：返回带 1 个错误的空树（不 cancelled，是真实失败）
@@ -182,7 +188,12 @@ pub fn scan_tree(root: &Path, stop: &ScanStop) -> ScanResult {
             cancelled = true;
             break;
         }
-        match frame.it.next() {
+        // 取下一条目；None 占位（无权限目录）等同目录耗尽——无内容可读
+        let next = match frame.it.as_mut() {
+            None => None,
+            Some(it) => it.next(),
+        };
+        match next {
             None => {
                 // 目录耗尽：先汇总 children（后序遍历），再回退到父目录
                 let mut done =
@@ -218,15 +229,20 @@ pub fn scan_tree(root: &Path, stop: &ScanStop) -> ScanResult {
                         entry.path().to_string_lossy().to_string(),
                     );
                     match fs::read_dir(entry.path()) {
-                        Ok(it) => stack.push(Frame { node: child, it }),
-                        // 无权限子目录：入树但计 1 个错误（对齐 Python child.error_count=1）
+                        Ok(it) => stack.push(Frame {
+                            node: child,
+                            it: Some(it),
+                        }),
+                        // 无权限子目录：入树、计 1 个错误、it=None（真·空占位）。
+                        // 对齐 Python child.error_count=1；不得拿别的目录的
+                        // ReadDir 顶替（旧 empty_read_dir 实为 %TEMP% 迭代器）
                         Err(_) => stack.push(Frame {
                             node: {
                                 let mut n = child;
                                 n.error_count = 1;
                                 n
                             },
-                            it: empty_read_dir(),
+                            it: None,
                         }),
                     }
                 } else {
@@ -265,21 +281,28 @@ pub fn scan_tree(root: &Path, stop: &ScanStop) -> ScanResult {
         root: result_root
             .unwrap_or_else(|| WalkNode::new(root_name, root.to_string_lossy().to_string()))
             .into_dir_node(),
-        ext_stats: ext_stats.into_iter().collect(),
-        top_files: heap
-            .into_iter()
-            .map(|std::cmp::Reverse((size, path))| TopFile { size, path })
-            .collect(),
+        ext_stats: {
+            // 契约（结构体注释与 Python 版一致）：按字节降序。HashMap 裸
+            // into_iter 是乱序，必须显式排（并列按扩展名稳定排序，测试可复现）
+            let mut v: Vec<(String, u64)> = ext_stats.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            v
+        },
+        top_files: {
+            // 契约（结构体注释与 Python 版一致）：按大小降序。BinaryHeap 的
+            // into_iter 是堆序（非降序），必须显式排（并列按路径稳定排序）
+            let mut v: Vec<TopFile> = heap
+                .into_iter()
+                .map(|std::cmp::Reverse((size, path))| TopFile { size, path })
+                .collect();
+            v.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
+            v
+        },
         file_count,
         error_count,
         duration_ms: t0.elapsed().as_millis() as u64,
         cancelled,
     }
-}
-
-fn empty_read_dir() -> fs::ReadDir {
-    // 空迭代器占位：无权限目录入树但无内容（对齐 Python child.error_count=1 分支）
-    fs::read_dir(std::env::temp_dir()).unwrap_or_else(|_| unreachable!())
 }
 
 fn ext_key(name: &str) -> String {
