@@ -6,16 +6,19 @@
  * 解密与剪贴板写入都在后端完成（明文不过 JS），并带三重敏感防护。
  * `vault.key` 的创建/解锁/锁定与主密码管理为加密层能力，同样双向验证。
  *
- * 布局对齐 Python 版截图：顶部一排式工具条（左侧状态徽章 + 保护模式 +
- * 自动锁定提示，右侧解锁/锁定/主密码/+ 网站全部收进同一排）；解锁后主体
- * 左右两栏——左栏固定宽网站列表（搜索嵌在卡标题），右栏该站账号表。
+ * 布局对齐 Python 版截图：顶部一排式工具条（左侧状态徽章内联自动锁定倒计时，
+ * 右侧解锁/锁定/主密码/+ 网站全部收进同一排，「移除主密码」收纳进 ··· 菜单）；
+ * 解锁后主体左右两栏——左栏固定宽网站列表（搜索嵌在卡标题），右栏该站账号表
+ * （卡标题为「站点 › 名称（共 N 个账号）[编辑站点]」面包屑形态；密码列恒定
+ * 纯掩码 + 👁️ 临时显示/📋 复制小图标，行操作收进 ··· 菜单）。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Alert,
   Button,
   Card,
+  Dropdown,
   Input,
   Modal,
   Radio,
@@ -26,6 +29,7 @@ import {
   Tooltip,
   Typography,
   message,
+  type MenuProps,
 } from "antd";
 
 import {
@@ -56,6 +60,11 @@ export function VaultPage() {
   const [search, setSearch] = useState("");
   // 账号搜索（走 `sk_vault_site_accounts` 的 q 参数；换站时重置）
   const [accSearch, setAccSearch] = useState("");
+  // 👁️ 明文临时显示：一次只亮一行、30 秒定时器强制熄灭（「临时」是硬保证，
+  // 不依赖用户记得再点一次）。明文只活在渲染里，复制仍走 sk_vault_copy_secret
+  // 敏感通道；get_secret 是后端为「看一眼手抄」专开的使用时解密口子。
+  const [reveal, setReveal] = useState<{ id: number; text: string } | null>(null);
+  const revealTimer = useRef<number | undefined>(undefined);
   // 解锁保持时长（vault_autolock_min 分钟；0=不自动锁）——锁定态显示在工具条
   const [autolockMin, setAutolockMin] = useState<number | null>(null);
   const phase = vaultPhase(status);
@@ -108,6 +117,7 @@ export function VaultPage() {
       if (selectedSite === null) return;
       const query = q ?? accSearch;
       setAccSearch(query);
+      setReveal(null); // 行集合即将刷新，旧明文展示作废
       setAccountsLoading(true);
       try {
         setAccounts(await invoke<AccountRow[]>("sk_vault_site_accounts", { siteId: selectedSite, q: query }));
@@ -121,18 +131,21 @@ export function VaultPage() {
   );
 
   useEffect(() => {
-    // 解锁状态下首次拉站点；锁定/未建库时清空
+    // 解锁状态下首次拉站点；锁定/未建库时清空（明文展示一并熄灭）
     if (phase === "unlocked") void loadSites(search);
     else {
       setSites([]);
       setAccounts([]);
       setSelectedSite(null);
       setAccSearch("");
+      setReveal(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   useEffect(() => {
+    // 行数据即将整体刷新（换站/保存/删除），旧明文展示不再可信
+    setReveal(null);
     if (selectedSite !== null) void loadAccounts("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSite]);
@@ -144,6 +157,33 @@ export function VaultPage() {
     });
     message.success(r.ttl > 0 ? `已复制；${r.ttl} 秒后自动清空剪贴板` : "已复制（不会进入历史）");
   }, []);
+
+  // 👁️ 掩码 ↔ 明文切换。30 秒自动熄灭：用户「看一眼手抄」是常态场景，
+  // 忘了点回去也不能让明文常驻屏幕（截图/旁视风险）。换行显示即作废。
+  const toggleReveal = useCallback(
+    async (a: AccountRow) => {
+      if (reveal?.id === a.id) {
+        setReveal(null);
+        return;
+      }
+      try {
+        const text = await invoke<string>("sk_vault_get_secret", {
+          accountId: a.id,
+          field: "password",
+        });
+        if (!text) {
+          message.error("该账号没有存储密码");
+          return;
+        }
+        setReveal({ id: a.id, text });
+        if (revealTimer.current !== undefined) window.clearTimeout(revealTimer.current);
+        revealTimer.current = window.setTimeout(() => setReveal(null), 30_000);
+      } catch (e) {
+        message.error(String(e));
+      }
+    },
+    [reveal],
+  );
 
   const showTotp = useCallback(
     (a: AccountRow) => {
@@ -366,6 +406,33 @@ export function VaultPage() {
 
   const addAccountModal = useCallback(() => accountModal(), [accountModal]);
 
+  // 删除账号确认（操作列「···」菜单入口）：危险操作保持显式二次确认
+  const confirmDeleteAccount = useCallback(
+    (a: AccountRow) => {
+      Modal.confirm({
+        title: `删除账号「${accountTitle(a)}」`,
+        okText: "删除",
+        okButtonProps: { danger: true },
+        cancelText: "取消",
+        onOk: async () => {
+          await invoke("sk_vault_delete_account", { accountId: a.id });
+          await loadAccounts();
+          await loadSites(search);
+        },
+      });
+    },
+    [loadAccounts, loadSites, search],
+  );
+
+  const toggleFav = useCallback(
+    (a: AccountRow) => {
+      void invoke("sk_vault_toggle_favorite", { accountId: a.id })
+        .then(() => void loadAccounts())
+        .catch((e) => message.error(String(e)));
+    },
+    [loadAccounts],
+  );
+
   // ---------------- 解锁 / 主密码（全部收进顶部工具条） ----------------
 
   const setup = useCallback(() => {
@@ -548,24 +615,31 @@ export function VaultPage() {
       <Card size="small" className="sk-card" styles={{ body: { padding: "8px 12px" } }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <Space size={8} wrap>
-            <Tag
-              color={phase === "unlocked" ? "green" : phase === "locked" ? "orange" : "default"}
-              style={{ marginInlineEnd: 0 }}
-            >
-              {phase === "unlocked" ? "🔓 已解锁" : phase === "locked" ? "🔒 已锁定" : "未初始化"}
-            </Tag>
-            <span className="sk-hint">{modeLabel(status?.mode ?? "")}</span>
-            {phase === "unlocked" && (
-              <span className="sk-hint">
-                {trustSecs > 0
-                  ? `免重复验证约 ${Math.max(1, Math.ceil(trustSecs / 60))} 分钟`
-                  : autolockMin === null
-                    ? "自动锁定：…"
+            {phase === "unlocked" ? (
+              // 状态徽章与自动锁定合并为倒计时标签（分钟粒度）：trusted_until
+              // 有窗口时按它倒计时（后端给的是剩余秒）；无窗口时退回
+              // 「闲置 autolockMin 后」口径——后端重锁按闲置计时（每次操作
+              // 续期），前端没有闲置钟，不做会撒谎的假秒表。
+              <Tooltip title="解锁在此时长内免输主密码；闲置到期自动重新锁定，操作会续期">
+                <Tag color="green" style={{ marginInlineEnd: 0 }}>
+                  {trustSecs > 0
+                    ? `🔓 已解锁 · ${Math.max(1, Math.ceil(trustSecs / 60))} 分钟后自动锁`
                     : autolockMin === 0
-                      ? "自动锁定：不自动锁定"
-                      : `自动锁定：闲置 ${autolockMin === 1440 ? "1 天" : `${autolockMin} 分钟`}后`}
-              </span>
+                      ? "🔓 已解锁"
+                      : autolockMin === null
+                        ? "🔓 已解锁 · …"
+                        : `🔓 已解锁 · 闲置 ${autolockMin === 1440 ? "1 天" : `${autolockMin} 分钟`}后自动锁`}
+                </Tag>
+              </Tooltip>
+            ) : (
+              <Tag
+                color={phase === "locked" ? "orange" : "default"}
+                style={{ marginInlineEnd: 0 }}
+              >
+                {phase === "locked" ? "🔒 已锁定" : "未初始化"}
+              </Tag>
             )}
+            <span className="sk-hint">{modeLabel(status?.mode ?? "")}</span>
             {phase === "locked" && (
               <Tooltip title="解锁在此时长内免输主密码；到期自动重新锁定">
                 <Select
@@ -609,9 +683,21 @@ export function VaultPage() {
                 <Button size="small" onClick={setMaster}>
                   更改主密码…
                 </Button>
-                <Button size="small" danger onClick={removeMaster}>
-                  移除主密码
-                </Button>
+                {/* 移除主密码是危险操作：从常驻红按钮收进「···」，点开仍走
+                    输入当前主密码的确认 Modal（后端校验，误触第一层被挡） */}
+                <Dropdown
+                  trigger={["click"]}
+                  menu={{
+                    items: [{ key: "remove-master", danger: true, label: "移除主密码" }],
+                    onClick: ({ key }) => {
+                      if (key === "remove-master") removeMaster();
+                    },
+                  }}
+                >
+                  <Button size="small" aria-label="更多主密码操作">
+                    ···
+                  </Button>
+                </Dropdown>
               </>
             )}
             {phase === "unlocked" && storageAvailable(status) && (
@@ -737,9 +823,21 @@ export function VaultPage() {
             style={{ flex: 1, minWidth: 0 }}
             title={
               selSite ? (
-                <Space size={6}>
-                  <span>{selSite.name}</span>
-                  {selSite.domain && <span className="sk-hint">{selSite.domain}</span>}
+                // 面包屑形态「站点 › 名称（共 N 个账号）[编辑站点]」：取代
+                // 与左栏重复的站点名平铺；账号数随增删实时来自 sites 行。
+                <Space size={6} wrap>
+                  <span className="sk-hint">站点</span>
+                  <span className="sk-hint">›</span>
+                  <span style={{ fontWeight: 600 }}>{selSite.name}</span>
+                  <span className="sk-hint">（共 {selSite.n_accounts} 个账号）</span>
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ paddingInline: 0 }}
+                    onClick={() => siteModal(selSite)}
+                  >
+                    编辑站点
+                  </Button>
                 </Space>
               ) : (
                 "账号"
@@ -751,12 +849,12 @@ export function VaultPage() {
                   <Button size="small" type="primary" onClick={addAccountModal}>
                     + 账号
                   </Button>
-                  <Button size="small" onClick={() => siteModal(selSite)}>
-                    编辑
-                  </Button>
-                  <Button size="small" danger onClick={() => confirmDeleteSite(selSite)}>
-                    删除
-                  </Button>
+                  {/* 删除站点：图标化但有 Tooltip；弹窗里仍列明波及账号数 */}
+                  <Tooltip title={`删除站点「${selSite.name}」`}>
+                    <Button size="small" danger onClick={() => confirmDeleteSite(selSite)}>
+                      🗑️
+                    </Button>
+                  </Tooltip>
                 </Space>
               ) : undefined
             }
@@ -786,6 +884,7 @@ export function VaultPage() {
                     {
                       title: "账号",
                       key: "title",
+                      ellipsis: true,
                       render: (_: unknown, a) => (
                         <Space size={4}>
                           {a.is_favorite && <span>⭐</span>}
@@ -796,11 +895,12 @@ export function VaultPage() {
                     {
                       title: "用户名",
                       key: "username",
+                      ellipsis: true,
                       render: (_: unknown, a) =>
                         a.username ? (
                           <Tooltip title="双击复制用户名（不进剪贴板历史）">
                             <span
-                              style={{ cursor: "copy" }}
+                              style={{ cursor: "copy", whiteSpace: "nowrap" }}
                               onDoubleClick={() =>
                                 void invoke("sk_clip_copy_plain", { text: a.username })
                                   .then(() => message.success("用户名已复制"))
@@ -815,19 +915,64 @@ export function VaultPage() {
                         ),
                     },
                     {
+                      // 密码列恒定纯掩码（固定 8 圆点，长度不外泄）+ 单行 ellipsis，
+                      // 旁边才有 👁️/📋 两个小动作——此前「账号名紧贴掩码」在窄表里
+                      // 读起来像「1111••••」混排（用户实锤），图标动作也让列内容
+                      // 自成一体。双击复制语义保留。
                       title: "密码",
                       key: "password",
-                      width: 150,
-                      render: (_: unknown, a) => (
-                        <Tooltip title="双击复制密码（25 秒后自动清空剪贴板，不进历史）">
-                          <span
-                            style={{ cursor: "copy", letterSpacing: 2 }}
-                            onDoubleClick={() => void copySecret(a.id, "password")}
-                          >
-                            {maskedSecret()}
-                          </span>
-                        </Tooltip>
-                      ),
+                      width: 190,
+                      ellipsis: true,
+                      render: (_: unknown, a) => {
+                        const revealed = reveal?.id === a.id;
+                        return (
+                          <Space size={0} wrap={false}>
+                            <Tooltip
+                              title={
+                                revealed
+                                  ? "双击复制密码；点 👁️ 重新隐藏"
+                                  : "双击复制密码（敏感通道，25 秒后自动清空剪贴板）"
+                              }
+                            >
+                              <span
+                                style={{
+                                  cursor: "copy",
+                                  display: "inline-block",
+                                  verticalAlign: "bottom",
+                                  whiteSpace: "nowrap", // 恒单行：掩码/明文都不得换行撑破布局
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  maxWidth: 108,
+                                  letterSpacing: revealed ? 0 : 2,
+                                }}
+                                onDoubleClick={() => void copySecret(a.id, "password")}
+                              >
+                                {revealed ? reveal?.text : maskedSecret()}
+                              </span>
+                            </Tooltip>
+                            <Tooltip title={revealed ? "隐藏密码" : "临时显示明文（30 秒后自动隐藏）"}>
+                              <Button
+                                type="text"
+                                size="small"
+                                aria-label={revealed ? "隐藏密码" : "显示密码"}
+                                onClick={() => void toggleReveal(a)}
+                              >
+                                {revealed ? "🙈" : "👁️"}
+                              </Button>
+                            </Tooltip>
+                            <Tooltip title="复制密码（不进历史，25 秒后自动清空剪贴板）">
+                              <Button
+                                type="text"
+                                size="small"
+                                aria-label="复制密码"
+                                onClick={() => void copySecret(a.id, "password")}
+                              >
+                                📋
+                              </Button>
+                            </Tooltip>
+                          </Space>
+                        );
+                      },
                     },
                     {
                       title: "标签",
@@ -837,50 +982,39 @@ export function VaultPage() {
                       render: (v: string) => (v ? <span>{v}</span> : <span className="sk-hint">—</span>),
                     },
                     {
+                      // 操作列收进行尾「···」菜单：置顶/编辑/删除/动态码全部菜单化，
+                      // 窄表不再被一排文字按钮挤压（复制密码的 📋 就在密码列掩码旁）。
+                      // 删除仍带二次确认弹窗。
                       title: "操作",
                       key: "ops",
-                      width: 240,
-                      render: (_: unknown, a) => (
-                        <Space size={4}>
-                          {a.has_totp && (
-                            <Button size="small" onClick={() => void showTotp(a)}>
-                              动态码
+                      width: 64,
+                      render: (_: unknown, a) => {
+                        const items: MenuProps["items"] = [
+                          ...(a.has_totp ? [{ key: "totp", label: "⏱ 动态码" }] : []),
+                          { key: "fav", label: a.is_favorite ? "⭐ 取消置顶" : "📌 置顶" },
+                          { key: "edit", label: "✏️ 编辑" },
+                          { type: "divider" as const },
+                          { key: "del", danger: true, label: "🗑️ 删除" },
+                        ];
+                        return (
+                          <Dropdown
+                            trigger={["click"]}
+                            menu={{
+                              items,
+                              onClick: ({ key }) => {
+                                if (key === "totp") showTotp(a);
+                                else if (key === "fav") toggleFav(a);
+                                else if (key === "edit") accountModal(a);
+                                else if (key === "del") confirmDeleteAccount(a);
+                              },
+                            }}
+                          >
+                            <Button size="small" aria-label="更多操作">
+                              ···
                             </Button>
-                          )}
-                          <Button
-                            size="small"
-                            onClick={() =>
-                              void invoke("sk_vault_toggle_favorite", { accountId: a.id })
-                                .then(() => void loadAccounts())
-                                .catch((e) => message.error(String(e)))
-                            }
-                          >
-                            {a.is_favorite ? "取消置顶" : "置顶"}
-                          </Button>
-                          <Button size="small" onClick={() => accountModal(a)}>
-                            编辑
-                          </Button>
-                          <Button
-                            size="small"
-                            danger
-                            onClick={() =>
-                              Modal.confirm({
-                                title: `删除账号「${accountTitle(a)}」`,
-                                okText: "删除",
-                                okButtonProps: { danger: true },
-                                cancelText: "取消",
-                                onOk: async () => {
-                                  await invoke("sk_vault_delete_account", { accountId: a.id });
-                                  await loadAccounts();
-                                  await loadSites(search);
-                                },
-                              })
-                            }
-                          >
-                            删除
-                          </Button>
-                        </Space>
-                      ),
+                          </Dropdown>
+                        );
+                      },
                     },
                   ]}
                   locale={{ emptyText: "该站点暂无账号——点右上角「+ 账号」添加" }}
