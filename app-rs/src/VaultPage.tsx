@@ -610,10 +610,12 @@ export function VaultPage() {
   }, [password, load]);
 
   return (
-    <Space direction="vertical" size={12} style={{ width: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", minWidth: 0, paddingRight: 4 }}>
       {/* 顶部工具条：左侧状态徽章，右侧全部主密码操作（一排式，对齐 Python 版） */}
-      <Card size="small" className="sk-card" styles={{ body: { padding: "8px 12px" } }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <div
+        className="sk-card"
+        style={{ padding: "8px 12px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+      >
           <Space size={8} wrap>
             {phase === "unlocked" ? (
               // 状态徽章与自动锁定合并为倒计时标签（分钟粒度）：trusted_until
@@ -706,8 +708,7 @@ export function VaultPage() {
               </Button>
             )}
           </Space>
-        </div>
-      </Card>
+      </div>
 
       {phase === "unprovisioned" && (
         <Card size="small" className="sk-card" title="创建密码库">
@@ -795,19 +796,13 @@ export function VaultPage() {
                 {
                   key: "site",
                   render: (_: unknown, r) => (
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "baseline",
-                        justifyContent: "space-between",
-                        gap: 8,
-                      }}
-                    >
-                      <Space size={6} style={{ minWidth: 0 }}>
-                        <span style={{ fontWeight: 600 }}>{r.name}</span>
-                        {r.domain && <span className="sk-hint">{r.domain}</span>}
-                      </Space>
-                      <Tag style={{ marginInlineEnd: 0 }}>{r.n_accounts}</Tag>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {r.name}
+                      </div>
+                      <div className="sk-hint" style={{ fontSize: 11 }}>
+                        {r.n_accounts} 个账号{r.domain ? ` · ${r.domain}` : ""}
+                      </div>
                     </div>
                   ),
                 },
@@ -823,21 +818,35 @@ export function VaultPage() {
             style={{ flex: 1, minWidth: 0 }}
             title={
               selSite ? (
-                // 面包屑形态「站点 › 名称（共 N 个账号）[编辑站点]」：取代
-                // 与左栏重复的站点名平铺；账号数随增删实时来自 sites 行。
+                // 面包屑形态「站点 › 名称（共 N 个账号）」；编辑/删除收进 ···
+                // 菜单（右上角只留主按钮「+ 账号」，操作区不再拥挤）
                 <Space size={6} wrap>
                   <span className="sk-hint">站点</span>
                   <span className="sk-hint">›</span>
                   <span style={{ fontWeight: 600 }}>{selSite.name}</span>
                   <span className="sk-hint">（共 {selSite.n_accounts} 个账号）</span>
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ paddingInline: 0 }}
-                    onClick={() => siteModal(selSite)}
+                  <Dropdown
+                    trigger={["click"]}
+                    menu={{
+                      items: [
+                        { key: "edit", label: "✏️ 编辑站点" },
+                        { type: "divider" as const },
+                        {
+                          key: "del",
+                          danger: true,
+                          label: `🗑️ 删除站点（波及 ${selSite.n_accounts} 个账号）`,
+                        },
+                      ],
+                      onClick: ({ key }) => {
+                        if (key === "edit") siteModal(selSite);
+                        else if (key === "del") confirmDeleteSite(selSite);
+                      },
+                    }}
                   >
-                    编辑站点
-                  </Button>
+                    <Button type="text" size="small" aria-label="站点操作">
+                      ···
+                    </Button>
+                  </Dropdown>
                 </Space>
               ) : (
                 "账号"
@@ -845,17 +854,9 @@ export function VaultPage() {
             }
             extra={
               selSite ? (
-                <Space size={4}>
-                  <Button size="small" type="primary" onClick={addAccountModal}>
-                    + 账号
-                  </Button>
-                  {/* 删除站点：图标化但有 Tooltip；弹窗里仍列明波及账号数 */}
-                  <Tooltip title={`删除站点「${selSite.name}」`}>
-                    <Button size="small" danger onClick={() => confirmDeleteSite(selSite)}>
-                      🗑️
-                    </Button>
-                  </Tooltip>
-                </Space>
+                <Button size="small" type="primary" onClick={addAccountModal}>
+                  + 账号
+                </Button>
               ) : undefined
             }
           >
@@ -955,6 +956,7 @@ export function VaultPage() {
                                 type="text"
                                 size="small"
                                 aria-label={revealed ? "隐藏密码" : "显示密码"}
+                                style={{ marginLeft: 8 }}
                                 onClick={() => void toggleReveal(a)}
                               >
                                 {revealed ? "🙈" : "👁️"}
@@ -965,6 +967,7 @@ export function VaultPage() {
                                 type="text"
                                 size="small"
                                 aria-label="复制密码"
+                                style={{ marginLeft: 8 }}
                                 onClick={() => void copySecret(a.id, "password")}
                               >
                                 📋
@@ -977,9 +980,10 @@ export function VaultPage() {
                     {
                       title: "标签",
                       dataIndex: "label",
-                      width: 140,
+                      width: 120,
                       ellipsis: true,
-                      render: (v: string) => (v ? <span>{v}</span> : <span className="sk-hint">—</span>),
+                      render: (v: string) =>
+                        v ? <span>{v}</span> : <span style={{ opacity: 0.35 }}>—</span>,
                     },
                     {
                       // 操作列收进行尾「···」菜单：置顶/编辑/删除/动态码全部菜单化，
@@ -1024,6 +1028,6 @@ export function VaultPage() {
           </Card>
         </div>
       ) : null}
-    </Space>
+  </div>
   );
 }
