@@ -1,8 +1,9 @@
-# SysKit · Rust + Tauri 重写（app-rs/）
+# SysKit · Rust + Tauri（app-rs/，唯一在维护的版本）
 
-Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写。迁移决策与里程碑见
-原分支提交（214816f 后的批准计划）；**Python 版迁移期继续服役**，两版共用
-`%APPDATA%\SysKit` 数据目录、文件格式逐字节对齐、不同时运行。
+原 Python+PySide6 版（仓库根 `syskit/`）的绞杀者模式重写，迁移已完成：
+Python 版已于 2026-10 退役删除，完整快照在 git tag `python-final`（规格
+对照走 `git show python-final`）。两版共用 `%APPDATA%\SysKit` 数据目录、
+文件格式逐字节对齐——老用户从 Python 版升级数据无缝续用。
 
 ## 里程碑
 | M | 内容 | 状态 |
@@ -108,11 +109,11 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
 （`BCryptEncrypt`/`BCryptDeriveKeyPBKDF2`），DPAPI 本来就用 `CryptProtectData`。
 不引新依赖就少一处供应链风险；BCrypt 与 Python 的 OpenSSL 在同标准下字节级兼容。
 
-**双向验证**（这是 M6 最关键的一条）：
-- 正向：`tools/gen_vault_fixture.py` 用 Python 生成 `vault.key`（**故意用 2000 次迭代
+**双向验证**（这是 M6 最关键的一条；两个驱动脚本已随 Python 版退役删除，
+方法存档见 `git show python-final:tools/gen_vault_fixture.py`）：
+- 正向：Python 生成 `vault.key`（**故意用 2000 次迭代
   而不是常量 600000**）+ 一份 aad=`field` 的密文，Rust 单测读它并解出同样的明文；
-- 反向：Rust 生成 `vault.key` + 密文，`tools/verify_vault_rust_to_python.py` 交给
-  Python 读并解密。
+- 反向：Rust 生成 `vault.key` + 密文，交给 Python 读并解密。
 **两个方向都通过**——用户无论从哪一版切到另一版都不会看到"主密码错误"。
 
 三个必须保留的语义：
@@ -615,13 +616,15 @@ ping、DNS 解析、色块）。两处真机细节照搬 Python：
 
 ## 主题单源纪律
 
-32 个语义 token 的唯一事实源当前是 **Python 侧 `syskit/ui/theme.py`**；
-`src/theme.ts` 逐值对齐，`tests/theme.parity.test.ts` 跨语言奇偶校验锁定。
-改色必须两边同步改；Python 版退役后单源切到 TS。
+32 个语义 token 的唯一事实源是 **`src/theme.ts`**（`LIGHT`/`DARK`）；
+`tests/theme.parity.test.ts` 与**冻结快照**逐值比对锁定——快照值 =
+Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对过的终态。
+改色必须有意识地更新快照并在提交说明里写明理由，否则测试红。
 
-同类纪律**同样适用于设置表**：默认值/键名的唯一事实源是 `syskit/config.py::DEFAULTS`，
-`src-tauri/src/settings.rs::defaults()` 逐键对齐，`tests/settings.parity.test.ts`
-解析 Python 源码锁定（键集、类型、字面量三者都不许分叉）。
+同类纪律**同样适用于设置表**：默认值/键名的唯一事实源是
+`src-tauri/src/settings.rs::defaults()`，`tests/settings.parity.test.ts`
+解析该函数源码、与冻结快照比对（键集、类型、字面量三者都不许分叉；
+快照值同为 python-final 对齐终态）。
 
 ## M1 起点必读：Python 版真机换来的教训（平移清单）
 
@@ -650,7 +653,7 @@ ping、DNS 解析、色块）。两处真机细节照搬 Python：
   因此 text/html/image/file 四类写回全部用 `w32.rs` 直接构造载荷。
 
 
-## Step 5 切换 runbook（冒烟 GO 后逐条执行）
+## Step 5 切换 runbook（已完成）
 
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
@@ -659,21 +662,10 @@ ping、DNS 解析、色块）。两处真机细节照搬 Python：
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。
-3. **安装**：退出一切 SysKit 实例（两版严禁同跑）→ 跑 NSIS 向导（或绿色版直接
-   放置 exe）。安装前保留 Python 版 exe 备份（沿用 `.bak` 链）。
+3. **安装**：退出一切 SysKit 实例 → 跑 NSIS 向导（或绿色版直接放置 exe）。
    一键换装：`tools\deploy_swap_rs.bat`（守卫双实例/备份链/字节校验）；
    加 `with-data` 参数把 `%APPDATA%\SysKit` 的数据携入便携目录（vault db+key
-   成对拷、双方先备份）。**数据口径是决策点**：Rust 测试期数据在
-   `%APPDATA%\SysKit`，Python 部署版历史数据在 `E:\Software\SysKit\data`——
-   默认只换 exe（用便携旧数据）；要让 Rust 期配置/历史跟走就加 `with-data`。
-4. **观察期**（建议 ≥3 天）：日常使用走 Rust 版；重点留意双热键体感、TOTP、
-   自动重锁窗口、断网/恢复提示音、关窗最小化。异常可随时装回 Python 版
-   （数据互通，无迁移损失）。
-5. **退役**：观察期无异常 → Python 版源码归档（`syskit/` 保留在 git 历史、
-   从工作区移除或标记维护模式——**另行决策，不在本 runbook 自动执行**）；
-   UNATTENDED.md 的 Python 侧规范随之失效。
-
-## 回滚
-
-任意时点装回 Python 版（.bak 或重跑 Python 侧 build.bat）即可——数据目录
-互通且格式未变，唯一要求仍是「两版不同时运行」。
+   成对拷、双方先备份）。
+4. **退役（已完成，2026-10）**：Python 版源码已从工作区删除，
+   完整快照在 **git tag `python-final`**——规格对照走
+   `git show python-final`。UNATTENDED.md 已改写为 Rust 侧口径。

@@ -1,22 +1,6 @@
-# ===== Python =====
+# ===== Python（tools/ 冒烟驱动与 CDP 走查脚本仍是 Python）=====
 __pycache__/
 *.py[cod]
-*.egg-info/
-.eggs/
-*.egg
-.venv/
-venv/
-env/
-.python-version
-
-# ===== PyInstaller =====
-build/
-dist/
-*.spec.bak
-# 注意：NetTool.spec 是手工维护的主配置，保留入库
-
-# ===== 构建产物（可由 tools/make_icon.py 重新生成）=====
-assets/app.ico
 
 # ===== 日志 / 临时输出 =====
 *.log
@@ -48,17 +32,13 @@ Thumbs.db
 # ===== 会话/工具本地数据 =====
 .zcode/
 
-# Coverage artifacts
-.coverage
-.coverage.*
-htmlcov/
 # 便携模式数据目录（源码根误建时避免误入库）
 data/
 
 # ===== 本地工具状态 =====
 .workbuddy/
 
-# ===== Rust + Tauri（app-rs/ 重写分支）=====
+# ===== Rust + Tauri（app-rs/，唯一在维护的版本）=====
 app-rs/node_modules/
 app-rs/dist/
 app-rs/src-tauri/target/

@@ -1,5 +1,4 @@
-# SysKit 重写门禁（对标 Python 侧 tools/run_full_check.py 的纪律）：
-# fmt + clippy + cargo test + tsc + vitest，任一失败即非零退出。
+# SysKit 门禁：fmt + clippy + cargo test + tsc + vitest，任一失败即非零退出。
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 $failed = @()

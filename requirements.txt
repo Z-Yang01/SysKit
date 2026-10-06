@@ -1,7 +1,0 @@
-PySide6>=6.6        # 稳定性验证基线 6.11.2（当前最新，三轮全量 0 崩溃）
-loguru>=0.7
-psutil>=5.9
-qrcode>=7.4
-pillow>=10.0
-cryptography>=42.0     # 验证基线 50.0.1
-pyinstaller>=6.0
