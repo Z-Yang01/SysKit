@@ -400,3 +400,143 @@ pub fn delete_to_recycle_bin(paths: &[String]) -> (u32, Vec<String>) {
     }
     (ok, errors)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 每用例独立临时树（local fixture 约定：夹具进自己模块，不共享状态）。
+    fn temp_tree(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "syskit_rs_diskusage_{}_{}",
+            std::process::id(),
+            tag
+        ));
+        let _ = fs::remove_dir_all(&p);
+        std::fs::create_dir_all(p.join("sub")).unwrap();
+        std::fs::write(p.join("a.txt"), vec![0u8; 10]).unwrap();
+        std::fs::write(p.join("noext"), vec![0u8; 7]).unwrap();
+        std::fs::write(p.join("sub").join("b.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(p.join("sub").join("c.txt"), vec![0u8; 20]).unwrap();
+        p
+    }
+
+    fn scan(tag: &str) -> (std::path::PathBuf, ScanResult) {
+        let root = temp_tree(tag);
+        let stop = ScanStop(std::sync::atomic::AtomicBool::new(false));
+        let r = scan_tree(&root, &stop);
+        (root, r)
+    }
+
+    /// 回归锁（轮次39实锤①）：finalize 漏加自身 size 曾让所有目录的
+    /// total 恒为 0（Python diskusage.py:147 契约 total = size + Σchildren.total）。
+    #[test]
+    fn total_is_size_plus_children_recursive() {
+        let (root, r) = scan("total");
+        let sub = r
+            .root
+            .children
+            .iter()
+            .find(|c| c.name == "sub")
+            .expect("子目录 sub 必须入树");
+        // 叶子目录：total == size（直接文件 b.bin 100 + c.txt 20）
+        assert_eq!(sub.size, 120);
+        assert_eq!(sub.total, 120, "叶子目录 total 不得丢自身 size");
+        assert_eq!(sub.file_count, 2);
+        // 根目录：size=直接文件(10+7)，total=递归(17+120)
+        assert_eq!(r.root.size, 17);
+        assert_eq!(r.root.total, 137, "根 total = 自身 size + 子目录 total");
+        assert_eq!(r.root.file_count, 4); // 递归口径：2 直接 + 2 子目录
+                                          // 顶层计数口径：全局不重复计数（本树共 4 个文件）
+        assert_eq!(r.file_count, 4);
+        assert_eq!(r.error_count, 0);
+        assert!(!r.cancelled);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 回归锁（轮次39实锤②）：top_files 契约「按大小降序」（Python
+    /// sorted(heap, reverse=True)）；BinaryHeap::into_iter 是堆序非降序。
+    #[test]
+    fn top_files_sorted_desc_and_complete() {
+        let (root, r) = scan("top");
+        let sizes: Vec<u64> = r.top_files.iter().map(|f| f.size).collect();
+        assert_eq!(sizes, vec![100, 20, 10, 7], "必须严格降序且含全部 4 个文件");
+        assert_eq!(
+            r.top_files[0].path,
+            root.join("sub").join("b.bin").to_string_lossy()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 回归锁：Top200 小顶堆上限——205 个文件只留最大的 200 个，且仍降序。
+    #[test]
+    fn top_files_capped_at_limit() {
+        let root =
+            std::env::temp_dir().join(format!("syskit_rs_diskusage_{}_cap", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for i in 1..=205u32 {
+            std::fs::write(root.join(format!("f{i:03}.dat")), vec![0u8; i as usize]).unwrap();
+        }
+        let stop = ScanStop(std::sync::atomic::AtomicBool::new(false));
+        let r = scan_tree(&root, &stop);
+        assert_eq!(r.top_files.len(), TOP_FILES_LIMIT);
+        assert_eq!(r.top_files[0].size, 205);
+        assert_eq!(r.top_files[TOP_FILES_LIMIT - 1].size, 6); // 1..=5 被 Top200 挤出
+        for w in r.top_files.windows(2) {
+            assert!(w[0].size >= w[1].size, "上限截断后仍须降序");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 回归锁：ext_stats 按字节降序 + 无后缀归「无后缀」（结构体注释契约）。
+    #[test]
+    fn ext_stats_sorted_desc_with_noext_bucket() {
+        let (root, r) = scan("ext");
+        assert_eq!(
+            r.ext_stats,
+            vec![
+                ("bin".to_string(), 100),
+                ("txt".to_string(), 30),
+                ("无后缀".to_string(), 7),
+            ]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 回归锁：扫描取消——预置位的令牌立即生效（cancelled=true），结果仍成形。
+    #[test]
+    fn cancel_token_stops_scan_promptly() {
+        let root = temp_tree("cancel");
+        let stop = ScanStop(std::sync::atomic::AtomicBool::new(true));
+        let r = scan_tree(&root, &stop);
+        assert!(r.cancelled);
+        assert_eq!(r.file_count, 0, "预取消不得再统计任何文件");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 回归锁（轮次39实锤③的结构面）：空子目录扫描后 total==0 且无幽灵内容；
+    /// 无权限占位在类型上已是 Option<ReadDir> 的 None（真·空），把别的目录的
+    /// 迭代器顶包进占位在此类型下无法表示（编译期锁）。
+    #[test]
+    fn empty_subdir_yields_empty_node_no_phantom_content() {
+        let root =
+            std::env::temp_dir().join(format!("syskit_rs_diskusage_{}_empty", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("void")).unwrap();
+        std::fs::write(root.join("x.txt"), vec![0u8; 5]).unwrap();
+        let stop = ScanStop(std::sync::atomic::AtomicBool::new(false));
+        let r = scan_tree(&root, &stop);
+        let void = r
+            .root
+            .children
+            .iter()
+            .find(|c| c.name == "void")
+            .expect("空目录也要入树");
+        assert_eq!(void.size, 0);
+        assert_eq!(void.total, 0);
+        assert!(void.children.is_empty(), "空目录不得出现幽灵子内容");
+        assert_eq!(r.root.total, 5);
+        let _ = fs::remove_dir_all(&root);
+    }
+}
