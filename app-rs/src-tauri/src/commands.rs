@@ -2458,12 +2458,12 @@ pub fn sk_disk_scan_cancel() {
 /// 批量移入回收站（可还原），返回 (成功数, 失败路径列表)。
 #[tauri::command]
 pub async fn sk_disk_recycle_delete(paths: Vec<String>) -> Result<serde_json::Value, String> {
-    Ok(tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let (ok, errors) = crate::diskusage::delete_to_recycle_bin(&paths);
         serde_json::json!({ "ok_count": ok, "errors": errors })
     })
     .await
-    .map_err(|e| format!("删除线程失败: {e}"))?)
+    .map_err(|e| format!("删除线程失败: {e}"))
 }
 
 #[tauri::command]

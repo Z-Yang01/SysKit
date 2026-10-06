@@ -60,9 +60,6 @@ pub struct ScanResult {
 pub struct ScanStop(pub AtomicBool);
 
 impl ScanStop {
-    pub fn new() -> Self {
-        Self(AtomicBool::new(false))
-    }
     pub fn cancel(&self) {
         self.0.store(true, Ordering::SeqCst);
     }
@@ -113,7 +110,7 @@ impl WalkNode {
         }
     }
 
-    fn to_dir_node(self) -> DirNode {
+    fn into_dir_node(self) -> DirNode {
         DirNode {
             name: self.name,
             path: self.path,
@@ -124,7 +121,7 @@ impl WalkNode {
             children: self
                 .children
                 .into_iter()
-                .map(WalkNode::to_dir_node)
+                .map(WalkNode::into_dir_node)
                 .collect(),
         }
     }
@@ -267,7 +264,7 @@ pub fn scan_tree(root: &Path, stop: &ScanStop) -> ScanResult {
     ScanResult {
         root: result_root
             .unwrap_or_else(|| WalkNode::new(root_name, root.to_string_lossy().to_string()))
-            .to_dir_node(),
+            .into_dir_node(),
         ext_stats: ext_stats.into_iter().collect(),
         top_files: heap
             .into_iter()
@@ -300,13 +297,6 @@ fn ext_key(name: &str) -> String {
 
 // ---------------- 回收站删除 ----------------
 
-const FO_DELETE: u32 = 3;
-const FOF_ALLOWUNDO: u16 = 0x40;
-const FOF_NOCONFIRMATION: u16 = 0x10;
-const FOF_SILENT: u16 = 0x4;
-const FOF_NOERRORUI: u16 = 0x400;
-const FOF_NO_CONNECTED_ELEMENTS: u16 = 0x2000;
-
 /// 执行一次 SHFileOperationW 删除，pFrom 为双 null 结尾的宽字符路径列表。
 #[cfg(windows)]
 fn sh_delete(pfrom: &[u16]) -> bool {
@@ -318,6 +308,7 @@ fn sh_delete(pfrom: &[u16]) -> bool {
             wFunc: 3, // FO_DELETE
             pFrom: PCWSTR(pfrom.as_ptr()),
             pTo: PCWSTR::null(),
+            // ALLOWUNDO|NOCONFIRMATION|SILENT|NOERRORUI|NO_CONNECTED_ELEMENTS
             fFlags: 0x40 | 0x10 | 0x4 | 0x400 | 0x2000,
             fAnyOperationsAborted: false.into(),
             hNameMappings: std::ptr::null_mut(),
