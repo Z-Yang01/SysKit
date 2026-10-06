@@ -1,9 +1,9 @@
 @echo off
 setlocal EnableExtensions
 rem ============================================================
-rem SysKit Rust deploy swap (Step 5)
-rem   Swaps E:\Software\SysKit\syskit-rs.exe with the freshly
-rem   bundled exe (npx tauri build product, SysKit.exe).
+rem SysKit deploy swap（Rust 版唯一部署入口）
+rem   把新构建的 SysKit.exe（npx tauri build 产物）换装到
+rem   E:\Software\SysKit，旧 exe 进 .bak 链（保留最近 2 个）。
 rem
 rem Usage:
 rem   deploy_swap_rs.bat             exe swap only
@@ -12,17 +12,16 @@ rem                                  config data into the portable
 rem                                  data dir (vault db+key copied
 rem                                  as a pair; both sides backed up)
 rem
-rem Guards: aborts if any instance is running (two versions must
-rem never run simultaneously; also the exe file would be locked).
+rem Guards: aborts if any instance is running (exe file would be
+rem locked; single-instance mutex also forbids a second copy).
 rem ============================================================
 
-rem canonical standalone = bundle output (npx tauri build): embedded frontend,
-rem verified end-to-end by the bundler. 2026-10-04: bundle renames the artifact
-rem to SysKit.exe (productName) — this script intentionally keeps the deployed
-rem NAME as syskit-rs.exe so it never collides with the Python SysKit.exe.
+rem 部署名统一为 SysKit.exe（productName；Python 版退役后无重名冲突，
+rem 2026-10 起旧部署名 syskit-rs.exe 在换装成功后自动退役为 .bak）。
 set "SRC=E:\Code\project\SysKit\app-rs\src-tauri\target\release\SysKit.exe"
 set "DSTDIR=E:\Software\SysKit"
-set "DST=%DSTDIR%\syskit-rs.exe"
+set "DST=%DSTDIR%\SysKit.exe"
+set "LEGACY=%DSTDIR%\syskit-rs.exe"
 set "APPDATA_SK=%APPDATA%\SysKit"
 set "PORTABLE_SK=%DSTDIR%\data\config"
 
@@ -32,22 +31,15 @@ if not exist "%SRC%" (
   exit /b 1
 )
 
-rem -- Guard 1: no running Rust instance -----------------------
-tasklist /FI "IMAGENAME eq syskit-rs.exe" 2>nul | find /I "syskit-rs.exe" >nul
-if not errorlevel 1 (
-  echo [ABORT] syskit-rs.exe is running. Quit it first: tray right-click - Exit
-  exit /b 1
-)
-
-rem -- Guard 2: no running Python instance ---------------------
+rem -- Guard: no running instance (either historical name) ------
 tasklist /FI "IMAGENAME eq SysKit.exe" 2>nul | find /I "SysKit.exe" >nul
 if not errorlevel 1 (
-  echo [ABORT] SysKit.exe ^(Python packaged^) is running. Quit it first.
+  echo [ABORT] SysKit.exe is running. Quit it first: tray right-click - Exit
   exit /b 1
 )
-tasklist /FI "IMAGENAME eq pythonw.exe" 2>nul | find /I "pythonw.exe" >nul
+tasklist /FI "IMAGENAME eq syskit-rs.exe" 2>nul | find /I "syskit-rs.exe" >nul
 if not errorlevel 1 (
-  echo [ABORT] pythonw.exe is running - may be the Python SysKit. Quit it first.
+  echo [ABORT] syskit-rs.exe ^(legacy deployed name^) is running. Quit it first.
   exit /b 1
 )
 
@@ -72,8 +64,19 @@ if not "%SRCSZ%"=="%DSTSZ%" (
   exit /b 1
 )
 
+rem -- Retire legacy deployed name (avoid two-launch confusion) --
+if exist "%LEGACY%" (
+  move /Y "%LEGACY%" "%LEGACY%.bak-%STAMP%" >nul
+  echo [OK] legacy syskit-rs.exe retired as syskit-rs.exe.bak-%STAMP%
+)
+
+rem -- Prune .bak chain: keep the 2 newest ----------------------
+for /f "skip=2 delims=" %%B in ('dir /b /o-n "%DSTDIR%\SysKit.exe.bak-*" 2^>nul') do (
+  del /q "%DSTDIR%\%%B"
+)
+
 echo [OK] deployed %DST% ^(%DSTSZ% bytes^)
-if exist "%DST%.bak-%STAMP%" echo [OK] previous exe kept as syskit-rs.exe.bak-%STAMP%
+if exist "%DST%.bak-%STAMP%" echo [OK] previous exe kept as SysKit.exe.bak-%STAMP%
 echo Next: start "%DST%"  ^(portable data dir applies: %DSTDIR%\data^)
 exit /b 0
 
@@ -90,6 +93,7 @@ if exist "%PORTABLE_SK%" (
   echo [OK] portable config backed up to data\config.bak-%STAMP%
 )
 rem vault must move as a pair (db + key), key is the decryption root
+if not exist "%PORTABLE_SK%" mkdir "%PORTABLE_SK%"
 if not exist "%APPDATA_SK%\vault.key" (
   echo [ABORT] %%APPDATA%%\SysKit\vault.key missing - refusing partial vault copy
   exit /b 1

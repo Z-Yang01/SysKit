@@ -72,7 +72,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
-| 可执行文件 | `src-tauri/target/release/syskit-rs.exe` | 4.94 MB |
+| 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
 | NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.2.0_x64-setup.exe` | 2.15 MB |
 
 **release 二进制冒烟测试通过**：启动后进程存活、内存约 30 MB、正常初始化数据目录。
@@ -394,7 +394,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 
 | 产物 | 路径 |
 |---|---|
-| 可执行文件 | `src-tauri/target/release/syskit-rs.exe` |
+| 可执行文件 | `src-tauri/target/release/SysKit.exe` |
 | NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.2.0_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
