@@ -7,8 +7,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ALL_CATEGORY,
+  SETTING_CATEGORIES,
+  categoryEntries,
   changedCount,
   displayValue,
+  filterSettings,
   formatLogTime,
   groupKey,
   groupSettings,
@@ -21,6 +25,7 @@ import {
   monitorNeedsAttention,
   monitorStateLabel,
   logLevel,
+  matchesQuery,
   restartNote,
   tailSummary,
   unwiredBadge,
@@ -219,6 +224,118 @@ describe("未生效标注（诚实性）", () => {
     ];
     expect(unwiredCount(items)).toBe(2);
     expect(unwiredCount([])).toBe(0);
+  });
+});
+
+describe("双栏导航与统一过滤（信息架构重构）", () => {
+  // 覆盖全部 7 个分类的样本；ty/min/max 按类型收口，label 各不相同（搜索按名称找）
+  const boolItem = (key: string, label: string, current: boolean, dflt: boolean) =>
+    item({ key, label, ty: "bool", default: dflt, current, min: undefined, max: undefined });
+  const strItem = (key: string, label: string, current: string, dflt: string, options?: string[]) =>
+    item({ key, label, ty: "str", default: dflt, current, options, min: undefined, max: undefined });
+
+  const sample: SettingItem[] = [
+    item({ key: "poll_interval_sec" }), // 自动修复
+    item({ key: "fail_threshold", label: "失败阈值", current: 5 }), // 自动修复，已改动
+    boolItem("tray_rate_enabled", "托盘限速", true, true), // 界面与托盘
+    boolItem("dark_mode", "深色模式", true, false), // 界面与托盘，已改动
+    strItem("dns_preset", "DNS 预设", "阿里", "阿里", ["阿里", "腾讯"]), // 网络
+    item({ key: "clipboard_max", label: "剪贴板上限" }), // 剪贴板
+    item({ key: "vault_autolock_min", label: "密码库自动锁定（分）" }), // 密码库
+    strItem("palette_hotkey", "命令面板热键", "Ctrl+Alt+K", "Ctrl+Alt+K"), // 命令面板
+    boolItem("migrated_v2", "已迁移标记", false, false), // 通用
+  ];
+
+  it("SETTING_CATEGORIES 顺序固定，且覆盖 groupKey 的全部产出", () => {
+    expect([...SETTING_CATEGORIES]).toEqual([
+      "自动修复",
+      "界面与托盘",
+      "网络",
+      "剪贴板",
+      "密码库",
+      "命令面板",
+      "通用",
+    ]);
+    // 前缀表里的每条映射都落在导航表内——未来加前缀忘了更新导航会在这里暴露
+    for (const k of [
+      "clip_x",
+      "clipboard_x",
+      "vault_x",
+      "palette_x",
+      "auto_repair_x",
+      "cooldown_x",
+      "level3_x",
+      "fail_threshold",
+      "poll_x",
+      "tray_x",
+      "minimize_x",
+      "dark_x",
+      "sound_x",
+      "dns_x",
+      "whatever_else",
+    ]) {
+      expect(SETTING_CATEGORIES).toContain(groupKey(k));
+    }
+  });
+
+  it("categoryEntries：计数与已改动数按组汇总", () => {
+    const auto = categoryEntries(sample).find((e) => e.group === "自动修复")!;
+    expect(auto.total).toBe(2);
+    expect(auto.changed).toBe(1);
+    const tray = categoryEntries(sample).find((e) => e.group === "界面与托盘")!;
+    expect(tray.total).toBe(2);
+    expect(tray.changed).toBe(1);
+    const net = categoryEntries(sample).find((e) => e.group === "网络")!;
+    expect(net).toEqual({ group: "网络", total: 1, changed: 0 });
+  });
+
+  it("categoryEntries：顺序固定（不随键出现顺序跳动），空列表为空", () => {
+    // 故意把「通用」放最前：导航仍必须按 SETTING_CATEGORIES 排
+    const shuffled = [
+      boolItem("migrated_v2", "已迁移标记", false, false),
+      item({ key: "poll_interval_sec" }),
+    ];
+    expect(categoryEntries(shuffled).map((e) => e.group)).toEqual(["自动修复", "通用"]);
+    expect(categoryEntries([])).toEqual([]);
+  });
+
+  it("categoryEntries：总数不丢项（各组 total 之和 = 全部项数）", () => {
+    const sum = categoryEntries(sample).reduce((n, e) => n + e.total, 0);
+    expect(sum).toBe(sample.length);
+  });
+
+  it("filterSettings：分类过滤（ALL 返回全部，具体组只留该组）", () => {
+    expect(filterSettings(sample, { category: ALL_CATEGORY }).length).toBe(sample.length);
+    expect(filterSettings(sample, {}).length).toBe(sample.length); // 未指定 = 全部
+    expect(filterSettings(sample, { category: "网络" }).map((i) => i.key)).toEqual(["dns_preset"]);
+  });
+
+  it("filterSettings：只看已改动（可与分类叠加）", () => {
+    expect(filterSettings(sample, { onlyChanged: true }).map((i) => i.key).sort()).toEqual([
+      "dark_mode",
+      "fail_threshold",
+    ]);
+    expect(
+      filterSettings(sample, { onlyChanged: true, category: "自动修复" }).map((i) => i.key),
+    ).toEqual(["fail_threshold"]);
+  });
+
+  it("filterSettings：搜索匹配名称（新增 label）/键名/分组/描述，大小写不敏感", () => {
+    expect(filterSettings(sample, { query: "检测间隔" }).map((i) => i.key)).toEqual([
+      "poll_interval_sec",
+    ]); // label
+    expect(matchesQuery(item({ key: "poll_interval_sec" }), "POLL_")).toBe(true); // 键名大小写
+    expect(filterSettings(sample, { query: "自动修复" }).length).toBe(2); // 分组名
+    expect(filterSettings(sample, { query: "   " })).toHaveLength(sample.length); // 空白 = 全部
+  });
+
+  it("filterSettings：三条件组合", () => {
+    expect(
+      filterSettings(sample, { category: "界面与托盘", onlyChanged: true, query: "dark" }).map(
+        (i) => i.key,
+      ),
+    ).toEqual(["dark_mode"]);
+    expect(filterSettings(sample, { category: "网络", onlyChanged: true })).toEqual([]);
   });
 });
 

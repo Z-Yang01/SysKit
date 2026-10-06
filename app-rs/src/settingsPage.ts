@@ -198,6 +198,98 @@ export function groupSettings(items: SettingItem[]): { group: string; items: Set
   return order.map((g) => ({ group: g, items: map.get(g)! }));
 }
 
+// ---------------- 信息架构：左导航分类 + 统一过滤（设置页双栏重构） ----------------
+
+/**
+ * 左侧导航的分类与固定顺序（组名与 `groupKey` 的产出一一对应）。
+ *
+ * 为什么写死顺序：`groupSettings` 按后端键的首次出现排组，一旦搜索/过滤，
+ * 组会忽隐忽现、顺序跳动；导航必须稳定，否则用户的肌肉记忆失效。
+ */
+export const SETTING_CATEGORIES: readonly string[] = [
+  "自动修复",
+  "界面与托盘",
+  "网络",
+  "剪贴板",
+  "密码库",
+  "命令面板",
+  "通用",
+];
+
+/** 「全部」视图的伪分类 key（双下划线前缀，不会与任何 groupKey 产出撞车）。 */
+export const ALL_CATEGORY = "__all__";
+
+/** 导航里单个分类的条目：项数与已改动数（角标用）。 */
+export interface CategoryEntry {
+  group: string;
+  total: number;
+  changed: number;
+}
+
+/**
+ * 导航条目：按 SETTING_CATEGORIES 固定顺序排列，无项的组不出现。
+ * 计划外的新组（未来后端加键而前缀表没跟上）附在末尾——不吞项是底线。
+ */
+export function categoryEntries(items: SettingItem[]): CategoryEntry[] {
+  const map = new Map<string, CategoryEntry>();
+  for (const it of items) {
+    const g = groupKey(it.key);
+    const e = map.get(g) ?? { group: g, total: 0, changed: 0 };
+    e.total += 1;
+    if (isChanged(it)) e.changed += 1;
+    map.set(g, e);
+  }
+  const ordered: CategoryEntry[] = [];
+  for (const g of SETTING_CATEGORIES) {
+    const e = map.get(g);
+    if (e) ordered.push(e);
+    map.delete(g);
+  }
+  for (const e of map.values()) ordered.push(e);
+  return ordered;
+}
+
+/**
+ * 搜索匹配：键名 / 名称 / 描述 / 分组 / 当前值，大小写不敏感。
+ *
+ * 名称（label）也参与匹配：重构后底层键名默认隐藏，用户看得见的是 label，
+ * 搜不到 label 等于搜不到自己看得见的字。空查询匹配全部。
+ */
+export function matchesQuery(it: SettingItem, rawQuery: string): boolean {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    it.key.toLowerCase().includes(q) ||
+    it.label.toLowerCase().includes(q) ||
+    (it.description ?? "").toLowerCase().includes(q) ||
+    groupKey(it.key).toLowerCase().includes(q) ||
+    String(displayValue(it)).toLowerCase().includes(q)
+  );
+}
+
+/** 右侧内容的统一过滤条件（三者可任意组合）。 */
+export interface SettingsFilter {
+  /** 限定分类（ALL_CATEGORY = 全部；空值按全部处理）。 */
+  category?: string;
+  /** 只看已改动（工具条的「N 项已改动」过滤按钮）。 */
+  onlyChanged?: boolean;
+  /** 搜索词。 */
+  query?: string;
+}
+
+/** 按条件过滤（分类 → 已改动 → 搜索；结果保持后端键顺序）。 */
+export function filterSettings(items: SettingItem[], f: SettingsFilter): SettingItem[] {
+  let out = items;
+  if (f.category && f.category !== ALL_CATEGORY) {
+    const cat = f.category;
+    out = out.filter((it) => groupKey(it.key) === cat);
+  }
+  if (f.onlyChanged) out = out.filter(isChanged);
+  const q = f.query ?? "";
+  if (q.trim()) out = out.filter((it) => matchesQuery(it, q));
+  return out;
+}
+
 /** 值的展示文本。 */
 export function displayValue(item: SettingItem): string {
   if (item.ty === "bool") return item.current ? "开" : "关";

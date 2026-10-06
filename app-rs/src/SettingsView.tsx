@@ -1,5 +1,5 @@
 /**
- * 设置 / 日志页（M7）。
+ * 设置 / 日志页（M7；信息架构重构：双栏导航 + 吸顶工具条 + 失焦自动保存）。
  *
  * 设置项由后端 `describe_all()` 驱动（`defaults()` 是键清单的唯一来源），
  * 本页按类型渲染控件；**范围校验后端才是权威**，前端只做即时反馈。
@@ -13,6 +13,7 @@ import {
   Empty,
   Input,
   InputNumber,
+  Menu,
   Modal,
   Select,
   Space,
@@ -22,6 +23,8 @@ import {
   Tooltip,
   Typography,
   message,
+  theme,
+  type MenuProps,
 } from "antd";
 
 /** 热键回退事件里的键名 → 界面名称（与 settings.rs Decoration label 对齐）。 */
@@ -32,19 +35,19 @@ const HOTKEY_LABELS: Record<string, string> = {
 };
 
 import {
+  ALL_CATEGORY,
+  categoryEntries,
   changedCount,
-  displayValue,
+  filterSettings,
   groupSettings,
   humanLogSize,
   isChanged,
   isHotkeyKey,
   isUnwired,
-  groupKey,
   ladderSummary,
   monitorNeedsAttention,
   monitorStateLabel,
   logLevel,
-  restartNote,
   tailSummary,
   unwiredBadge,
   unwiredCount,
@@ -57,12 +60,19 @@ import {
   type SettingsAll,
 } from "./settingsPage";
 
+/**
+ * 单行设置项：开关/下拉切换即存，文本/数字失焦即存——不再有逐行「保存」按钮。
+ *
+ * 为什么自动保存：设置项都是小粒度偏好，「改完还得找保存」是纯负担；blur 是
+ * 「这一项我改完了」的自然信号。校验不过时不落盘，只给行内红字（不弹全局
+ * 警告，避免打断输入过程）——后端仍是权威，这里只是即时反馈。
+ */
 function SettingRow({
   item,
   onSave,
 }: {
   item: SettingItem;
-  onSave: (key: string, value: unknown) => Promise<void>;
+  onSave: (key: string, value: unknown, desc: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<unknown>(item.current);
   const [busy, setBusy] = useState(false);
@@ -77,13 +87,10 @@ function SettingRow({
   const commit = useCallback(
     async (value: unknown) => {
       const v = validateValue(item, value);
-      if (!v.ok) {
-        message.warning(v.reason);
-        return;
-      }
+      if (!v.ok) return; // 行内红字已常驻提示，无需再打断
       setBusy(true);
       try {
-        await onSave(item.key, v.coerced);
+        await onSave(item.key, v.coerced, item.label);
       } finally {
         setBusy(false);
       }
@@ -91,11 +98,25 @@ function SettingRow({
     [item, onSave],
   );
 
+  // 文本/数字的提交时机 = 失焦。纯聚焦不改值不写盘（避免无谓写入），非法值不写盘。
+  const commitOnBlur = useCallback(() => {
+    if (dirty && check.ok) void commit(draft);
+  }, [dirty, check.ok, commit, draft]);
+
+  // InputNumber 的受控值：null/空串必须显示为空——Number(null) 是 0，
+  // 直接换算会把「正在清空」瞬间变成 0（旧实现的小毛病，顺手修掉）。
+  const numValue =
+    typeof draft === "number"
+      ? draft
+      : draft === null || draft === undefined || draft === ""
+        ? null
+        : Number(draft);
+
   return (
     <tr>
-      <td style={{ padding: "6px 8px", verticalAlign: "top", minWidth: 180 }}>
+      <td style={{ padding: "8px 8px", verticalAlign: "top", minWidth: 200, width: "40%" }}>
         <Space direction="vertical" size={0}>
-          <Space size={6}>
+          <Space size={6} wrap>
             <span>{item.label}</span>
             {isChanged(item) && <Tag color="orange">已改动</Tag>}
             {isUnwired(item) && (
@@ -114,81 +135,66 @@ function SettingRow({
           <span className="sk-hint" style={{ fontSize: 12 }}>
             {item.description}
           </span>
-          <code className="sk-hint" style={{ fontSize: 11 }}>
-            {item.key}
-          </code>
         </Space>
       </td>
-      <td style={{ padding: "6px 8px", verticalAlign: "top", minWidth: 220 }}>
-        {item.ty === "bool" ? (
-          <Switch
-            size="small"
-            checked={Boolean(draft)}
-            loading={busy}
-            onChange={(v) => {
-              setDraft(v);
-              void commit(v);
-            }}
-          />
-        ) : item.options ? (
-          <Select
-            size="small"
-            style={{ width: 180 }}
-            value={String(draft ?? "")}
-            onChange={(v) => {
-              setDraft(v);
-              void commit(v);
-            }}
-            options={item.options.map((o) => ({ label: o, value: o }))}
-          />
-        ) : item.ty === "int" ? (
-          <Space size={6}>
+      <td style={{ padding: "8px 8px", verticalAlign: "top", minWidth: 260 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {item.ty === "bool" ? (
+            <Switch
+              size="small"
+              checked={Boolean(draft)}
+              loading={busy}
+              onChange={(v) => {
+                setDraft(v);
+                void commit(v);
+              }}
+            />
+          ) : item.options ? (
+            <Select
+              size="small"
+              style={{ width: 180 }}
+              value={String(draft ?? "")}
+              onChange={(v) => {
+                setDraft(v);
+                void commit(v);
+              }}
+              options={item.options.map((o) => ({ label: o, value: o }))}
+            />
+          ) : item.ty === "int" ? (
             <InputNumber
               size="small"
-              style={{ width: 120 }}
+              style={{ width: 80 }}
               min={item.min}
               max={item.max}
-              value={typeof draft === "number" ? draft : Number(draft)}
+              value={numValue}
               onChange={(v) => setDraft(v)}
+              onBlur={commitOnBlur}
             />
-            <Button
-              size="small"
-              type="primary"
-              disabled={!dirty || !check.ok}
-              loading={busy}
-              onClick={() => void commit(draft)}
-            >
-              保存
-            </Button>
-          </Space>
-        ) : (
-          <Space size={6}>
+          ) : (
             <Input
               size="small"
-              style={{ width: 260 }}
+              style={{ width: 240 }}
               value={String(draft ?? "")}
               onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitOnBlur}
             />
-            <Button
-              size="small"
-              type="primary"
-              disabled={!dirty || !check.ok}
-              loading={busy}
-              onClick={() => void commit(draft)}
-            >
-              保存
-            </Button>
-          </Space>
-        )}
+          )}
+          {/* 底层键名降为行尾灰色小字：需要对照配置文件时仍可读到，但不再占据每行主线 */}
+          <code
+            style={{
+              marginLeft: "auto",
+              fontSize: 11,
+              color: "var(--sk-sub)",
+              opacity: 0.8,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.key}
+          </code>
+        </div>
         {!check.ok && (
-          <div className="sk-hint" style={{ fontSize: 12, marginTop: 4 }}>
+          <div style={{ fontSize: 12, marginTop: 4 }}>
             <Typography.Text type="danger">{check.reason}</Typography.Text>
-          </div>
-        )}
-        {item.ty === "bool" && (
-          <div className="sk-hint" style={{ fontSize: 12 }}>
-            当前：{displayValue(item)}
-            {restartNote(item) ? ` · ${restartNote(item)}` : ""}
           </div>
         )}
       </td>
@@ -197,6 +203,8 @@ function SettingRow({
 }
 
 function SettingsPanel() {
+  // token 取当前主题色（darkAlgorithm 已接）：吸顶条/导航的底色随深浅主题走
+  const { token } = theme.useToken();
   const [all, setAll] = useState<SettingsAll | null>(null);
 
   const load = useCallback(async () => {
@@ -233,10 +241,10 @@ function SettingsPanel() {
   }, [load]);
 
   const save = useCallback(
-    async (key: string, value: unknown) => {
+    async (key: string, value: unknown, desc: string) => {
       try {
         await invoke("sk_settings_set", { key, value });
-        message.success("已保存");
+        message.success(`已自动保存：${desc}`);
         // 热键类设置已即时重挂（sk_settings_set → apply_hotkeys）：通知侧栏
         // 速查刷新，与注册链/设置页三方一致。注意这里不带值——保存的请求值
         // 可能因被占被后端回退，权威值走 sk://hotkey-reverted 或重读设置。
@@ -253,23 +261,60 @@ function SettingsPanel() {
   );
 
   const items = all?.items ?? [];
-  // 设置搜索：24 项平铺难找——键名/描述/分组/当前值文本全参与匹配（大小写不敏感）
+
+  // 工具条过滤三件套：搜索词 / 只看已改动 / 左侧选中分类
   const [query, setQuery] = useState("");
-  const grouped = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const filtered = q
-      ? items.filter(
-          (it) =>
-            it.key.toLowerCase().includes(q) ||
-            (it.description ?? "").toLowerCase().includes(q) ||
-            groupKey(it.key).toLowerCase().includes(q) ||
-            String(displayValue(it)).toLowerCase().includes(q),
-        )
-      : items;
-    return groupSettings(filtered);
-  }, [items, query]);
+  const [onlyChanged, setOnlyChanged] = useState(false);
+  const [category, setCategory] = useState<string>(ALL_CATEGORY);
+
+  const grouped = useMemo(
+    () => groupSettings(filterSettings(items, { category, onlyChanged, query })),
+    [items, category, onlyChanged, query],
+  );
   const changed = changedCount(items);
   const unwired = unwiredCount(items);
+
+  // 左侧导航条目：计数基于**全部**设置算（不随右侧过滤变化），保持稳定锚点
+  const navItems = useMemo(() => {
+    const head = { key: ALL_CATEGORY, label: "全部", total: items.length, changed };
+    return [
+      head,
+      ...categoryEntries(items).map((e) => ({
+        key: e.group,
+        label: e.group,
+        total: e.total,
+        changed: e.changed,
+      })),
+    ];
+  }, [items, changed]);
+
+  // AntD Menu 自带 hover/选中态与深浅主题适配，比自己糊按钮省心
+  const menuItems: MenuProps["items"] = navItems.map((n) => ({
+    key: n.key,
+    label: (
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {n.label}
+        </span>
+        <span
+          style={{
+            marginLeft: "auto",
+            display: "inline-flex",
+            alignItems: "baseline",
+            gap: 3,
+            flexShrink: 0,
+          }}
+        >
+          {n.changed > 0 && (
+            <span style={{ fontSize: 11, color: token.colorWarning }}>{n.changed}</span>
+          )}
+          <span className="sk-hint" style={{ fontSize: 11 }}>
+            /{n.total}
+          </span>
+        </span>
+      </span>
+    ),
+  }));
 
   const reset = useCallback(() => {
     Modal.confirm({
@@ -303,27 +348,69 @@ function SettingsPanel() {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取设置…" />;
   }
 
+  // 空态文案要讲清是哪个过滤条件把列表清空的（组合过滤时按"卡人"的顺序说）
+  const emptyText = query.trim()
+    ? onlyChanged
+      ? `没有匹配「${query.trim()}」的已改动项`
+      : `没有匹配「${query.trim()}」的设置`
+    : onlyChanged
+      ? "没有已改动的设置项"
+      : "该分类下没有设置项";
+
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
+    <div>
       {unwired > 0 && (
         <Alert
           type="info"
           showIcon
+          style={{ marginBottom: 10 }}
           message={`有 ${unwired} 项设置暂未生效`}
           description="这些项会被正常保存，但 Rust 版还没有对应的实现，改了不会有实际效果（点各项的「暂未生效」标签看原因）。保留它们是为了让设置文件与 Python 版保持同构，迁移期不会丢配置。"
         />
       )}
 
-      <Space>
-        <span className="sk-hint">
+      {/* 工具条吸顶：滚动容器是 Layout.Content（overflow:auto），sticky 相对它生效；
+          背景用不透明 token 色——内容从底下滚过时数字/按钮必须仍可读 */}
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 10,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+          padding: "8px 12px",
+          marginBottom: 10,
+          borderRadius: 8,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          background: token.colorBgContainer,
+        }}
+      >
+        <span className="sk-hint" style={{ whiteSpace: "nowrap" }}>
           共 {all?.count ?? 0} 项
-          {changed > 0 ? ` · ${changed} 项已改动` : " · 全部为默认值"}
         </span>
+        {/* 已改动计数即过滤器：点亮后右侧只剩与默认值不同的项 */}
+        {changed > 0 ? (
+          <Tooltip title="点击只显示与默认值不同的设置项">
+            <Button
+              size="small"
+              type={onlyChanged ? "primary" : "default"}
+              onClick={() => setOnlyChanged((v) => !v)}
+            >
+              {changed} 项已改动
+            </Button>
+          </Tooltip>
+        ) : (
+          <span className="sk-hint" style={{ whiteSpace: "nowrap" }}>
+            全部为默认值
+          </span>
+        )}
         <Input
           size="small"
           allowClear
           style={{ width: 220 }}
-          placeholder="搜索设置：键名 / 描述 / 值…"
+          placeholder="搜索设置：名称 / 键名 / 描述 / 值…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -333,24 +420,48 @@ function SettingsPanel() {
         <Button size="small" danger onClick={reset}>
           恢复默认
         </Button>
-      </Space>
+      </div>
 
-      {grouped.length === 0 && query.trim() && (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`没有匹配「${query.trim()}」的设置`} />
-      )}
-
-      {grouped.map((g) => (
-        <Card key={g.group} size="small" className="sk-card" title={g.group}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <tbody>
-              {g.items.map((it) => (
-                <SettingRow key={it.key} item={it} onSave={save} />
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      ))}
-    </Space>
+      {/* 双栏：左侧分类导航（稳定顺序 + 已改动/总数角标），右侧只渲染选中分类 */}
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+        <Menu
+          mode="inline"
+          inlineIndent={12}
+          selectedKeys={[category]}
+          onClick={({ key }) => setCategory(key)}
+          items={menuItems}
+          style={{
+            width: 168,
+            flexShrink: 0,
+            background: "transparent",
+            borderInlineEnd: "none",
+          }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {grouped.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} />
+          ) : (
+            grouped.map((g) => (
+              <Card
+                key={g.group}
+                size="small"
+                className="sk-card"
+                title={g.group}
+                style={{ marginBottom: 10 }}
+              >
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <tbody>
+                    {g.items.map((it) => (
+                      <SettingRow key={it.key} item={it} onSave={save} />
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
