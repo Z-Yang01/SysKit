@@ -9,10 +9,16 @@ import { describe, expect, it } from "vitest";
 import {
   CHART_WINDOW,
   REPORT_COLUMNS,
+  axisTimeLabels,
+  clockTime,
   eventLine,
+  formatAxisBps,
+  formatAxisTime,
   formatDuration,
+  humanBps,
   humanBytes,
   humanRate,
+  peakPoint,
   pushTick,
   seriesPoints,
   stateLabel,
@@ -143,6 +149,88 @@ describe("pushTick", () => {
     const next = pushTick(original, tick({ down: 2 }));
     expect(original).toHaveLength(1);
     expect(next).toHaveLength(2);
+  });
+});
+
+describe("humanBps / humanRate", () => {
+  it("humanBps 自适应单位并带 /s（各值各选最优单位）", () => {
+    expect(humanBps(14.6 * 1024 * 1024)).toBe("14.6 MB/s");
+    expect(humanBps(477.9 * 1024)).toBe("477.9 KB/s");
+    expect(humanBps(0)).toBe("0 B/s");
+    expect(humanBps(-5)).toBe("0 B/s");
+  });
+
+  it("humanRate 是旧名，口径与 humanBps 一致", () => {
+    expect(humanRate(1024)).toBe(humanBps(1024));
+    expect(humanRate(1024)).toBe("1.0 KB/s");
+  });
+});
+
+describe("formatAxisBps", () => {
+  it("Y 轴紧凑刻度：去空格去尾零（对应裸字节 15,000,000 → 14.3MB）", () => {
+    expect(formatAxisBps(0)).toBe("0");
+    expect(formatAxisBps(512)).toBe("512B");
+    expect(formatAxisBps(1024)).toBe("1KB");
+    expect(formatAxisBps(1536)).toBe("1.5KB");
+    expect(formatAxisBps(6 * 1024 * 1024)).toBe("6MB");
+    expect(formatAxisBps(15_000_000)).toBe("14.3MB");
+    expect(formatAxisBps(1024 ** 4)).toBe("1TB");
+  });
+
+  it("负数/NaN/Infinity 夹 0（速率不可能为负，轴不能出现坏刻度）", () => {
+    expect(formatAxisBps(-3)).toBe("0");
+    expect(formatAxisBps(Number.NaN)).toBe("0");
+    expect(formatAxisBps(Number.POSITIVE_INFINITY)).toBe("0");
+  });
+});
+
+describe("formatAxisTime / axisTimeLabels", () => {
+  it("相对时刻：0 为最新一拍，向左为负，小数秒四舍五入", () => {
+    expect(formatAxisTime(0)).toBe("0s");
+    expect(formatAxisTime(-37.4)).toBe("-37s");
+    expect(formatAxisTime(-119.6)).toBe("-120s");
+  });
+
+  it("有 ts 的窗口按时间戳差换算（-120s … 0s）", () => {
+    const base = 1_700_000_000_000;
+    const h = [tick({ ts: base - 2000 }), tick({ ts: base - 1000 }), tick({ ts: base })];
+    expect(axisTimeLabels(h)).toEqual(["-2s", "-1s", "0s"]);
+  });
+
+  it("缺 ts 的旧点按「每拍 1 秒」用索引差兜底，与有 ts 的点混用不串位", () => {
+    const base = 1_700_000_000_000;
+    const h = [tick(), tick(), tick({ ts: base - 1000 }), tick({ ts: base })];
+    expect(axisTimeLabels(h)).toEqual(["-3s", "-2s", "-1s", "0s"]);
+  });
+
+  it("全缺 ts 的窗口退化为索引差；空窗口返回空数组", () => {
+    expect(axisTimeLabels([tick(), tick(), tick()])).toEqual(["-2s", "-1s", "0s"]);
+    expect(axisTimeLabels([])).toEqual([]);
+  });
+});
+
+describe("clockTime", () => {
+  it("按本地时区输出 HH:MM:SS（tooltip 标题）", () => {
+    const t = new Date(2026, 0, 1, 10, 5, 9).getTime(); // 本地分量构造，避免时区差
+    expect(clockTime(t)).toBe("10:05:09");
+    expect(clockTime(new Date(2026, 5, 3, 23, 0, 0).getTime())).toBe("23:00:00");
+  });
+
+  it("缺 ts / 非法值返回 null（由调用方决定兜底文案）", () => {
+    expect(clockTime(undefined)).toBe(null);
+    expect(clockTime(Number.NaN)).toBe(null);
+  });
+});
+
+describe("peakPoint", () => {
+  it("取窗口内首个最大值点", () => {
+    expect(peakPoint([1, 5, 5, 2])).toEqual({ index: 1, value: 5 });
+  });
+
+  it("空 / 全非有限数返回 null；全 0 返回点（是否标注由调用方决定）", () => {
+    expect(peakPoint([])).toBe(null);
+    expect(peakPoint([Number.NaN])).toBe(null);
+    expect(peakPoint([0, 0])).toEqual({ index: 0, value: 0 });
   });
 });
 
