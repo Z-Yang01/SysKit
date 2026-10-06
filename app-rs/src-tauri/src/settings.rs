@@ -892,7 +892,7 @@ mod tests {
         let p = std::env::temp_dir().join("syskit_rs_nonexistent_settings.json");
         let _ = std::fs::remove_file(&p);
         let d = load_from(&p);
-        assert_eq!(d.get("clipboard_max"), Some(&json!(50)));
+        assert_eq!(d.get("clipboard_max"), Some(&json!(1000)));
         assert_eq!(d.get("clip_paste_hotkey"), Some(&json!("Ctrl+Win+V")));
     }
 
@@ -903,6 +903,6 @@ mod tests {
         let p = dir.join("settings.json");
         std::fs::write(&p, "{ 半截").unwrap();
         let d = load_from(&p);
-        assert_eq!(d.get("clipboard_max"), Some(&json!(50)));
+        assert_eq!(d.get("clipboard_max"), Some(&json!(1000)));
     }
 }
