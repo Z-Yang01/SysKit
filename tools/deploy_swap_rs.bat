@@ -1,23 +1,28 @@
 @echo off
 setlocal EnableExtensions
 rem ============================================================
-rem SysKit deploy swap（Rust 版唯一部署入口）
-rem   把新构建的 SysKit.exe（npx tauri build 产物）换装到
-rem   E:\Software\SysKit，旧 exe 进 .bak 链（保留最近 2 个）。
+rem SysKit deploy swap (Rust version, the only maintained one)
+rem   Swaps E:\Software\SysKit\SysKit.exe with the freshly
+rem   bundled exe (npx tauri build product), keeps the previous
+rem   exe in a .bak chain (2 newest kept).
 rem
 rem Usage:
 rem   deploy_swap_rs.bat             exe swap only
-rem   deploy_swap_rs.bat with-data   also carry %APPDATA%\SysKit
+rem   deploy_swap_rs.bat with-data   also carry %%APPDATA%%\SysKit
 rem                                  config data into the portable
 rem                                  data dir (vault db+key copied
 rem                                  as a pair; both sides backed up)
 rem
 rem Guards: aborts if any instance is running (exe file would be
 rem locked; single-instance mutex also forbids a second copy).
+rem
+rem NOTE: keep this file ASCII-only + CRLF. cmd parses batch in
+rem the OEM codepage (GBK here); UTF-8 Chinese comments break it.
 rem ============================================================
 
-rem 部署名统一为 SysKit.exe（productName；Python 版退役后无重名冲突，
-rem 2026-10 起旧部署名 syskit-rs.exe 在换装成功后自动退役为 .bak）。
+rem Deployed name unified to SysKit.exe (productName). The Python
+rem version is retired (tag python-final), so the old collision-
+rem avoiding name syskit-rs.exe is auto-retired to .bak on swap.
 set "SRC=E:\Code\project\SysKit\app-rs\src-tauri\target\release\SysKit.exe"
 set "DSTDIR=E:\Software\SysKit"
 set "DST=%DSTDIR%\SysKit.exe"
@@ -45,7 +50,7 @@ if not errorlevel 1 (
 
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STAMP=%%i"
 
-rem -- Mode: with-data (carry %APPDATA% data into portable dir) --
+rem -- Mode: with-data (carry APPDATA data into portable dir) --
 if /I "%~1"=="with-data" call :carry_data
 if errorlevel 1 exit /b 1
 
