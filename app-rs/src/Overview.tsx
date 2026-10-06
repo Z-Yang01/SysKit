@@ -55,6 +55,9 @@ function cssVar(name: string, fallback: string): string {
 /** 图表统一风格：透明底 + 取主题变量，切主题时随 CSS 变量自动变。 */
 function baseChartOption() {
   return {
+    // 实时监控图每秒 setOption：关动画省 GPU/CPU（动画重放在 1s 数据节拍下
+    // 是纯开销，且会造成曲线"呼吸"感）
+    animation: false as const,
     textStyle: { color: cssVar("--sk-text", "#2d3748"), fontSize: 12 },
     grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
     tooltip: {

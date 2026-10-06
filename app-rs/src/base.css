@@ -51,12 +51,17 @@ body {
 
 /* 玻璃层：表面半透明 + backdrop 模糊。直接覆写玻璃目标（Sider/Header/卡片）
    的底色为半透明；AntD token 只保留边框/文字，避免与半透明底色打架。 */
+/* Sider/Header 是固定框架：backdrop blur 只在这两块大静态表面上启用；
+   卡片区只保留半透明底色（blur 逐帧重算在内容每秒变化的卡片上是 GPU 纯浪费） */
 .ant-layout-sider,
-.ant-layout-header,
-.sk-card {
+.ant-layout-header {
   background: color-mix(in srgb, var(--sk-card) 72%, transparent) !important;
   backdrop-filter: blur(14px) saturate(1.15);
   -webkit-backdrop-filter: blur(14px) saturate(1.15);
+}
+
+.sk-card {
+  background: color-mix(in srgb, var(--sk-card) 82%, transparent) !important;
 }
 
 /* 弹层玻璃（Modal/Dropdown/预览）：更高不透明度保证可读性 */
