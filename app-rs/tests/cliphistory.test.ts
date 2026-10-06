@@ -14,10 +14,12 @@ import {
   evictionCandidates,
   formatTs,
   kindColor,
+  kindFilterOptions,
   kindLabel,
   pauseHint,
   purgeConfirmText,
   relativeTime,
+  rowMenuItems,
   watchEnableConfirmText,
   watchResumeConfirmText,
   watchToggleLabel,
@@ -203,6 +205,62 @@ describe("canSaveAs", () => {
     const r = canSaveAs(row({ kind: "text", text: "" }));
     expect(r.ok).toBe(false);
     expect(r.reason).toContain("为空");
+  });
+});
+
+describe("类型筛选计数（顶部 Segmented）", () => {
+  it("全部用 summary.count，其余用 by_kind；html 显示「网页」不写 HTML", () => {
+    const opts = kindFilterOptions(summary());
+    expect(opts.map((o) => o.key)).toEqual(["", "text", "image", "file", "html"]);
+    expect(opts[0].label).toBe("全部(10)");
+    expect(opts.find((o) => o.key === "text")?.label).toBe("文本(8)");
+    expect(opts.find((o) => o.key === "image")?.label).toBe("图片(2)");
+    expect(opts.find((o) => o.key === "file")?.label).toBe("文件(0)");
+    expect(opts.find((o) => o.key === "html")?.label).toBe("网页(0)");
+  });
+
+  it("summary 未读到时退化为纯标签（无计数，不猜 0）", () => {
+    const opts = kindFilterOptions(null);
+    expect(opts[0]).toEqual({ key: "", label: "全部" });
+    expect(opts.find((o) => o.key === "text")?.label).toBe("文本");
+  });
+
+  it("全部的计数不等于 by_kind 求和也能对上（count 是后端唯一真源）", () => {
+    // by_kind 漏记的类型不能让「全部」缩水
+    const opts = kindFilterOptions(summary({ count: 99, by_kind: { text: 3 } }));
+    expect(opts[0].label).toBe("全部(99)");
+    expect(opts.find((o) => o.key === "text")?.label).toBe("文本(3)");
+  });
+});
+
+describe("行内「···」菜单项", () => {
+  it("文本行：全文/置顶/另存为/动作/分隔/删除（danger）", () => {
+    const items = rowMenuItems(row({ kind: "text", text: "abc" }));
+    expect(items.map((i) => i.key)).toEqual(["preview", "pin", "save", "actions", "sep", "remove"]);
+    expect(items.find((i) => i.key === "pin")?.label).toBe("📌 置顶");
+    expect(items.find((i) => i.key === "save")?.disabled).toBe(false);
+    expect(items.find((i) => i.key === "remove")?.danger).toBe(true);
+  });
+
+  it("已置顶行：置顶项变为「取消置顶」", () => {
+    expect(rowMenuItems(row({ pinned: true })).find((i) => i.key === "pin")?.label).toBe(
+      "📌 取消置顶",
+    );
+  });
+
+  it("图片缺文件：另存为禁用并带原因；图片行不出「全文」项", () => {
+    const items = rowMenuItems(row({ kind: "image", text: "", data: "" }));
+    expect(items.some((i) => i.key === "preview")).toBe(false);
+    const save = items.find((i) => i.key === "save");
+    expect(save?.disabled).toBe(true);
+    expect(save?.disabledReason).toContain("没有对应文件");
+  });
+
+  it("图片有文件：另存为可用", () => {
+    const save = rowMenuItems(row({ kind: "image", data: "a.png", text: "[图片]" })).find(
+      (i) => i.key === "save",
+    );
+    expect(save?.disabled).toBe(false);
   });
 });
 

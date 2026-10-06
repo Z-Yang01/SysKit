@@ -36,6 +36,21 @@ export interface ClipSummary {
   by_kind: Record<string, number>;
 }
 
+/**
+ * 顶部类型筛选（横向 Segmented）的选项：label 带实时计数，如「全部(42)」。
+ *
+ * 计数直接取后端 summary（全部用 count，其余按 by_kind），前端**不重复统计**——
+ * 两套口径迟早算岔；by_kind 缺某类型时按 0 计。summary 未读到时退化为纯标签。
+ * html 沿用「网页」措辞（前一轮与 Python 口径对齐过，不要写 HTML）。
+ */
+export function kindFilterOptions(s: ClipSummary | null): { key: string; label: string }[] {
+  return KIND_FILTERS.map((f) => {
+    if (!s) return { key: f.key, label: f.key === "" ? "全部" : f.label };
+    const n = f.key === "" ? s.count : (s.by_kind?.[f.key] ?? 0);
+    return { key: f.key, label: `${f.key === "" ? "全部" : f.label}(${n})` };
+  });
+}
+
 /** 类型 → 展示名。 */
 export function kindLabel(kind: string): string {
   switch (kind) {
@@ -140,7 +155,7 @@ export function purgeConfirmText(days: number): string {
 export function pauseHint(paused: boolean, enabled: boolean): string {
   if (!enabled) return "监听已关闭——点「开启监听」开始记录。";
   return paused
-    ? "已暂停记录；恢复后**不会**补录暂停期间的内容（隐私考虑）。"
+    ? "已暂停记录；恢复后不会补录暂停期间的内容（隐私考虑）。"
     : "暂停记录后，期间复制的内容不会被保存；恢复后也不会补录。";
 }
 
@@ -176,4 +191,35 @@ export function canSaveAs(row: ClipRow): { ok: boolean; reason: string } {
     return { ok: false, reason: "条目内容为空，无可保存内容" };
   }
   return { ok: true, reason: "" };
+}
+
+/** 行内「···」菜单的一项（纯数据：UI 映射为 antd Menu，vitest 可断言）。 */
+export interface RowMenuItem {
+  key: "preview" | "pin" | "save" | "actions" | "sep" | "remove";
+  label: string;
+  danger?: boolean;
+  disabled?: boolean;
+  /** 不可用原因（如图片文件已被清理）——拼进 label，让用户知道为什么置灰。 */
+  disabledReason?: string;
+}
+
+/** 行操作收拢进「···」菜单后的项序：全文/置顶/另存为/动作 + 分隔 + 删除。 */
+export function rowMenuItems(r: ClipRow): RowMenuItem[] {
+  const items: RowMenuItem[] = [];
+  // 图片条目的大图预览由缩略图（AntD Image）承担，全文只服务文本类条目
+  if (r.kind !== "image" && r.text) items.push({ key: "preview", label: "📄 查看全文" });
+  items.push({ key: "pin", label: r.pinned ? "📌 取消置顶" : "📌 置顶" });
+  const save = canSaveAs(r);
+  items.push({
+    key: "save",
+    label: "💾 另存为",
+    disabled: !save.ok,
+    disabledReason: save.ok ? undefined : save.reason,
+  });
+  // 内容规则动作：识别这段文本能做什么（URL/二维码/JSON/颜色/路径/IP）
+  items.push({ key: "actions", label: "🔍 识别可执行动作" });
+  // 破坏性操作（删除）与其余动作隔开，防手滑
+  items.push({ key: "sep", label: "" });
+  items.push({ key: "remove", label: "🗑️ 删除", danger: true });
+  return items;
 }

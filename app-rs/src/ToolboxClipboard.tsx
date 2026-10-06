@@ -3,38 +3,44 @@
  *
  * 与快捷粘贴面板（`ClipPanel`）共用同一份历史与后端命令，但这里是完整管理界面：
  * 筛选、置顶、删除、清空、按天数清理、另存为。
+ *
+ * 布局（用户明确指令）：监听横幅一行化；工具栏 = 搜索 + 类型 Segmented（带计数）
+ * + 刷新 + 清理下拉；列表用 AntD List——点击整行即复制回剪贴板，行操作图标化，
+ * 除 📋 复制外全部收进行尾「···」菜单，悬停行时才浮现（平时 25% 透明度）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Alert,
   Button,
+  Dropdown,
   Empty,
   Image as AntImage,
   Input,
   InputNumber,
+  List,
   Modal,
-  Select,
+  Segmented,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
   message,
+  type MenuProps,
 } from "antd";
 
 import {
-  KIND_FILTERS,
-  canSaveAs,
   clearConfirmText,
   clipSummaryText,
   evictionCandidates,
   formatTs,
   kindColor,
+  kindFilterOptions,
   kindLabel,
   pauseHint,
   purgeConfirmText,
   relativeTime,
+  rowMenuItems,
   watchEnableConfirmText,
   watchResumeConfirmText,
   watchToggleLabel,
@@ -56,7 +62,7 @@ import {
 } from "./cliprules";
 import { svgDataUrl } from "./qr";
 
-/** 图片条目缩略图：按需拉取后端 base64 缩略图；AntD Image 点击放大。 */
+/** 图片条目缩略图：按需拉取后端 base64 缩略图；AntD Image 点击放大（56px，规格放大自 44px）。 */
 function ClipImageThumb({ index }: { index: number }) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -80,11 +86,26 @@ function ClipImageThumb({ index }: { index: number }) {
   return (
     <AntImage
       src={src}
-      width={44}
-      height={44}
-      style={{ objectFit: "cover", borderRadius: 4 }}
+      width={56}
+      height={56}
+      style={{ objectFit: "cover", borderRadius: 6 }}
       preview={{ mask: "预览" }}
     />
+  );
+}
+
+/** RowMenuItem（纯数据）→ antd Menu items；分隔项转 divider，禁用项把原因拼进标签。 */
+function toMenuItems(r: ClipRow): MenuProps["items"] {
+  return rowMenuItems(r).map((it) =>
+    it.key === "sep"
+      ? { type: "divider" as const }
+      : {
+          key: it.key,
+          label:
+            it.disabled && it.disabledReason ? `${it.label}（${it.disabledReason}）` : it.label,
+          danger: it.danger,
+          disabled: it.disabled,
+        },
   );
 }
 
@@ -97,8 +118,10 @@ export function ClipboardHistoryPanel() {
   const [purgeDays, setPurgeDays] = useState(30);
   const [busy, setBusy] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // 清理下拉的开关：受控是为了点「清理更早/清空历史」时先收起，再弹确认框，
+  // 否则确认框取消后下拉仍悬在原处，像一次没生效的点击
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   // 内容规则动作：detected 是"当前展示的那一条"的检测结果
-  const [detecting, setDetecting] = useState(-1);
   const [detected, setDetected] = useState<DetectResult | null>(null);
   const [detectedFor, setDetectedFor] = useState(-1);
   const [running, setRunning] = useState("");
@@ -106,7 +129,7 @@ export function ClipboardHistoryPanel() {
   const [qrSvg, setQrSvg] = useState("");
   const [colorOf, setColorOf] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
-  // 全文预览：列表内容列只显示一行折叠，长条目从这里看全（Python「预览」同职责）
+  // 全文预览：列表只显示两行折叠，长条目从这里看全（Python「预览」同职责）
   const [previewRow, setPreviewRow] = useState<ClipRow | null>(null);
 
   useEffect(() => {
@@ -253,7 +276,7 @@ export function ClipboardHistoryPanel() {
     (row: ClipRow) => {
       void act(
         () => invoke<boolean>("sk_clip_write_back", { index: row.idx }),
-        "已复制到剪贴板",
+        "已复制",
       );
     },
     [act],
@@ -290,24 +313,21 @@ export function ClipboardHistoryPanel() {
   const copyFullText = useCallback(async (row: ClipRow) => {
     try {
       const ok = await invoke<boolean>("sk_clip_write_back", { index: row.idx });
-      if (ok) message.success("已复制到剪贴板");
+      if (ok) message.success("已复制");
       else message.error("复制失败：条目内容不可用");
     } catch (e) {
       message.error(String(e));
     }
   }, []);
 
-  /** 检测选中条目的可执行动作（后端识别，前端呈现）。 */
+  /** 检测行内文本的可执行动作（后端识别，前端呈现；结果条在列表下方）。 */
   const detect = useCallback(async (row: ClipRow) => {
-    setDetecting(row.idx);
     try {
       setDetected(await invoke<DetectResult>("sk_clip_detect", { text: row.text }));
       setDetectedFor(row.idx);
     } catch (e) {
       setDetected(null);
       message.error(String(e));
-    } finally {
-      setDetecting(-1);
     }
   }, []);
 
@@ -342,6 +362,32 @@ export function ClipboardHistoryPanel() {
       }
     },
     [],
+  );
+
+  /** 「···」菜单派发：key 与 cliphistory.rowMenuItems 一一对应。 */
+  const onRowMenu = useCallback(
+    (key: string, r: ClipRow) => {
+      switch (key) {
+        case "preview":
+          setPreviewRow(r);
+          break;
+        case "pin":
+          togglePin(r);
+          break;
+        case "save":
+          void saveAs(r);
+          break;
+        case "actions":
+          void detect(r);
+          break;
+        case "remove":
+          remove(r);
+          break;
+        default:
+          break;
+      }
+    },
+    [togglePin, saveAs, detect, remove],
   );
 
   const clearAll = useCallback(() => {
@@ -393,303 +439,369 @@ export function ClipboardHistoryPanel() {
     [rows, summary],
   );
 
+  const enabled = summary?.watch_enabled ?? false;
+  const paused = summary?.watch_paused ?? false;
+
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Alert
-        type="info"
-        showIcon
-        message="剪贴板监听"
-        description={pauseHint(summary?.watch_paused ?? false, summary?.watch_enabled ?? false)}
-        action={
-          <Button
-            size="small"
-            type={summary?.watch_enabled ? "default" : "primary"}
-            onClick={watchToggleModal}
-          >
-            {watchToggleLabel(summary?.watch_enabled ?? false, summary?.watch_paused ?? false)}
-          </Button>
-        }
-      />
+    <>
+      {/* 行操作浮现样式：base.css 属并行改动域（本任务只许改 3 个文件），故在组件内
+          注入一条作用域限定的小样式；:focus-within 让键盘 Tab 到行时操作同样可见。 */}
+      <style>{`
+        .sk-clip-row .sk-clip-row-actions { opacity: 0.25; transition: opacity 0.15s ease; }
+        .sk-clip-row:hover .sk-clip-row-actions,
+        .sk-clip-row:focus-within .sk-clip-row-actions { opacity: 1; }
+      `}</style>
 
-      <Space wrap>
-        <Input
-          size="small"
-          style={{ width: 240 }}
-          allowClear
-          placeholder="搜索历史…"
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-        />
-        <Select
-          size="small"
-          style={{ width: 120 }}
-          value={kind}
-          onChange={setKind}
-          options={KIND_FILTERS.map((k) => ({ label: k.label, value: k.key }))}
-        />
-        <Button size="small" onClick={() => void load()}>
-          刷新
-        </Button>
-        <span className="sk-hint">{clipSummaryText(summary)}</span>
-        {evicting > 0 && (
-          <Tooltip title="超出上限的非置顶条目会在新内容进来时被淘汰；置顶条目不受影响">
-            <Tag color="orange">将有 {evicting} 条被淘汰</Tag>
-          </Tooltip>
-        )}
-      </Space>
-
-      <Space wrap>
-        <span className="sk-hint">清理天数</span>
-        <InputNumber
-          size="small"
-          min={1}
-          max={3650}
-          value={purgeDays}
-          onChange={(v) => setPurgeDays(Number(v ?? 30))}
-        />
-        <Button size="small" danger loading={busy} onClick={purge}>
-          清理更早的历史
-        </Button>
-        <Button size="small" danger loading={busy} onClick={clearAll}>
-          清空历史
-        </Button>
-      </Space>
-
-      {rows.length === 0 ? (
-        <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={keyword || kind ? "没有匹配的条目" : "剪贴板历史为空"}
-        />
-      ) : (
-        <Table<ClipRow>
-          size="small"
-          rowKey="idx"
-          pagination={{ pageSize: 20, showSizeChanger: false }}
-          dataSource={rows}
-          onRow={(r) => ({ onDoubleClick: () => copyBack(r) })}
-          columns={[
-            {
-              title: "时间",
-              dataIndex: "ts",
-              width: 150,
-              render: (v: number) => (
-                <Tooltip title={formatTs(v)}>
-                  <span className="sk-hint">{relativeTime(v, nowMs)}</span>
-                </Tooltip>
-              ),
-            },
-            {
-              title: "类型",
-              dataIndex: "kind",
-              width: 90,
-              render: (v: string) => <Tag color={kindColor(v)}>{kindLabel(v)}</Tag>,
-            },
-            {
-              title: "内容",
-              dataIndex: "preview",
-              ellipsis: true,
-              render: (v: string, r) => (
-                <Space size={6}>
-                  {r.pinned && <Tag color="gold">置顶</Tag>}
-                  {r.kind === "image" ? (
-                    <ClipImageThumb index={r.idx} />
-                  ) : (
-                    // 悬停看前 500 字（Python content 列 tooltip 同口径）
-                    <span title={r.text.slice(0, 500)}>{v || r.text || "—"}</span>
-                  )}
-                </Space>
-              ),
-            },
-            {
-              title: "操作",
-              width: 300,
-              render: (_: unknown, r) => {
-                const save = canSaveAs(r);
-                return (
-                  <Space size={4}>
-                    <Button size="small" type="link" onClick={() => copyBack(r)}>
-                      复制
-                    </Button>
-                    {/* 全文预览（Python「预览」菜单同职责）；图片条目的大图预览
-                        已由缩略图的 AntD Image 预览承担，这里只服务文本类条目 */}
-                    {r.kind !== "image" && r.text && (
-                      <Button size="small" type="link" onClick={() => setPreviewRow(r)}>
-                        全文
-                      </Button>
-                    )}
-                    <Button size="small" type="link" onClick={() => togglePin(r)}>
-                      {r.pinned ? "取消置顶" : "置顶"}
-                    </Button>
-                    {save.ok ? (
-                      <Button size="small" type="link" onClick={() => void saveAs(r)}>
-                        另存为
-                      </Button>
-                    ) : (
-                      <Tooltip title={save.reason}>
-                        <span className="sk-hint">另存为</span>
-                      </Tooltip>
-                    )}
-                    <Button size="small" type="link" danger onClick={() => remove(r)}>
-                      删除
-                    </Button>
-                    {/* 内容规则动作：识别这段文本能做什么（URL/JSON/颜色/路径/IP/域名） */}
-                    <Button
-                      size="small"
-                      type="link"
-                      loading={detecting === r.idx}
-                      onClick={() => void detect(r)}
-                    >
-                      动作
-                    </Button>
-                  </Space>
-                );
-              },
-            },
-          ]}
-        />
-      )}
-
-      {detected && shouldShowActions(detected) && (
-        <Alert
-          type="info"
-          showIcon
-          message={`可执行动作 · ${actionsSummary(detected)}`}
-          description={
-            <Space wrap size={6}>
-              {detected.actions.map((a) => (
-                <Tooltip key={a.id} title={actionHint(a)}>
-                  <Button
-                    size="small"
-                    danger={actionColor(a.id) === "red"}
-                    type={actionColor(a.id) === "default" ? "default" : "primary"}
-                    loading={running === a.id}
-                    disabled={detectedFor !== -1 && !rows.some((x) => x.idx === detectedFor)}
-                    onClick={() => void runAction(a)}
-                  >
-                    {a.label}
-                  </Button>
-                </Tooltip>
-              ))}
-              <Button size="small" type="text" onClick={() => setDetected(null)}>
-                收起
-              </Button>
-            </Space>
-          }
-        />
-      )}
-
-      {qrOf && (
-        <Alert
-          type="success"
-          showIcon
-          message="二维码"
-          description={
-            <Space direction="vertical" size={6}>
-              {/* 本地渲染（后端 qrcode crate），不调用任何第三方二维码服务：
-                  你复制的链接不出本机。白底是扫码可靠性的硬要求（深色主题下
-                  静区必须仍是白的）。 */}
-              <Typography.Text copyable={{ text: qrOf }}>{qrOf}</Typography.Text>
-              {qrSvg ? (
-                <div style={{ background: "#fff", padding: 8, width: 296 }}>
-                  <img
-                    src={svgDataUrl(qrSvg)}
-                    width={280}
-                    height={280}
-                    alt="二维码"
-                  />
-                </div>
-              ) : (
-                <Typography.Text type="secondary" className="sk-hint">
-                  生成中…
-                </Typography.Text>
-              )}
-              <Space size={8}>
-                <Button size="small" onClick={saveQrPng} disabled={!qrSvg}>
-                  保存图片
-                </Button>
-                <Button size="small" onClick={() => setQrOf("")}>
-                  收起
-                </Button>
-              </Space>
-            </Space>
-          }
-        />
-      )}
-
-      {colorOf && (
-        <Alert
-          type="success"
-          showIcon
-          message="色块"
-          description={
-            <Space direction="vertical" size={6}>
-              <div
-                style={{
-                  width: "100%",
-                  height: 64,
-                  borderRadius: 6,
-                  background: normalizeHex(colorOf) || "#000",
-                  border: "1px solid #8884",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: isLightColor(colorOf) ? "#000" : "#fff",
-                  fontFamily: "Consolas, monospace",
-                }}
-              >
-                {normalizeHex(colorOf) || colorOf}
-              </div>
-              <Space size={10} wrap>
-                <Typography.Text copyable={{ text: normalizeHex(colorOf) }} className="sk-hint">
-                  HEX: {normalizeHex(colorOf)}
-                </Typography.Text>
-                <Typography.Text copyable={{ text: formatColor(colorOf, "RGB") }} className="sk-hint">
-                  RGB: {formatColor(colorOf, "RGB")}
-                </Typography.Text>
-                <Button size="small" onClick={() => setColorOf("")}>
-                  收起
-                </Button>
-              </Space>
-            </Space>
-          }
-        />
-      )}
-
-      {/* 全文预览（对应 Python _show_text_preview）：只读文本 + 复制全文 + 关闭 */}
-      <Modal
-        open={previewRow !== null}
-        title="剪贴板内容预览"
-        footer={null}
-        onCancel={() => setPreviewRow(null)}
-        width={640}
-      >
-        <Typography.Paragraph
-          style={{
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-            maxHeight: 420,
-            overflowY: "auto",
-            marginBottom: 16,
-          }}
-        >
-          {previewRow?.text}
-        </Typography.Paragraph>
-        <Space style={{ display: "flex", justifyContent: "flex-end" }}>
-          <Button size="small" onClick={() => previewRow && void copyFullText(previewRow)}>
-            复制全文
-          </Button>
-          <Button size="small" onClick={() => setPreviewRow(null)}>
-            关闭
+      <Space direction="vertical" size={10} style={{ width: "100%" }}>
+        {/* 监听状态一行化：原大横幅独占一屏头部，状态+开关其实一行就够。
+            pauseHint 的语义保留在行内文案里（暂停时说明"不补录"）。 */}
+        <Space size={8} wrap align="center">
+          <span className="sk-hint">
+            {enabled
+              ? paused
+                ? pauseHint(true, true)
+                : `监听中 · ${pauseHint(false, true)}`
+              : "监听已关闭"}
+          </span>
+          <Button size="small" type={enabled ? "default" : "primary"} onClick={watchToggleModal}>
+            {enabled && !paused ? "⏸" : "▶"} {watchToggleLabel(enabled, paused)}
           </Button>
         </Space>
-      </Modal>
 
-      <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginBottom: 0 }}>
-        双击行可快速复制回剪贴板。置顶条目不会被自动淘汰，且相同文本再次复制时不会新增条目。
-      </Typography.Paragraph>
-    </Space>
+        {/* 工具栏：搜索 + 类型 Segmented（计数直接取 summary，前端不重复统计）
+            + 刷新 + 清理下拉（清理天数/清理更早/清空历史全收进来） */}
+        <Space wrap size={[8, 6]} align="center">
+          <Input
+            size="small"
+            style={{ width: 220 }}
+            allowClear
+            placeholder="搜索历史…"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+          />
+          <Segmented
+            size="small"
+            value={kind}
+            onChange={(v) => setKind(String(v))}
+            options={kindFilterOptions(summary).map((k) => ({ label: k.label, value: k.key }))}
+          />
+          <Button size="small" onClick={() => void load()}>
+            🔄 刷新
+          </Button>
+          <Dropdown
+            trigger={["click"]}
+            open={cleanupOpen}
+            onOpenChange={setCleanupOpen}
+            dropdownRender={() => (
+              <div
+                style={{
+                  padding: 12,
+                  width: 300,
+                  background: "var(--sk-card)",
+                  border: "1px solid var(--sk-border)",
+                  borderRadius: 8,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                }}
+              >
+                <Space size={6} align="center">
+                  <span className="sk-hint">清理天数</span>
+                  <InputNumber
+                    size="small"
+                    min={1}
+                    max={3650}
+                    value={purgeDays}
+                    onChange={(v) => setPurgeDays(Number(v ?? 30))}
+                  />
+                </Space>
+                <Space size={6} wrap>
+                  <Button
+                    size="small"
+                    danger
+                    loading={busy}
+                    onClick={() => {
+                      setCleanupOpen(false);
+                      purge();
+                    }}
+                  >
+                    清理更早的历史
+                  </Button>
+                  <Button
+                    size="small"
+                    danger
+                    loading={busy}
+                    onClick={() => {
+                      setCleanupOpen(false);
+                      clearAll();
+                    }}
+                  >
+                    清空历史
+                  </Button>
+                </Space>
+                <Typography.Text type="secondary" className="sk-hint" style={{ fontSize: 12 }}>
+                  两个操作都会先弹确认框再执行。
+                </Typography.Text>
+              </div>
+            )}
+          >
+            <Button size="small">🧹 清理</Button>
+          </Dropdown>
+          <span className="sk-hint">{clipSummaryText(summary)}</span>
+          {evicting > 0 && (
+            <Tooltip title="超出上限的非置顶条目会在新内容进来时被淘汰；置顶条目不受影响">
+              <Tag color="orange">将有 {evicting} 条被淘汰</Tag>
+            </Tooltip>
+          )}
+        </Space>
+
+        {rows.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={keyword || kind ? "没有匹配的条目" : "剪贴板历史为空"}
+          />
+        ) : (
+          <List<ClipRow>
+            rowKey="idx"
+            size="small"
+            pagination={{ pageSize: 20, size: "small", showSizeChanger: false }}
+            dataSource={rows}
+            renderItem={(r) => (
+              <List.Item
+                className="sk-clip-row"
+                style={{
+                  cursor: "pointer",
+                  padding: "8px 10px",
+                  gap: 10,
+                  alignItems: "flex-start",
+                  borderRadius: 8,
+                }}
+                // 点击整行 = 复制回剪贴板（sk_clip_write_back：写回不进历史）
+                onClick={() => copyBack(r)}
+              >
+                {/* 左列：相对时间在上，类型 Tag 紧随其下 */}
+                <div
+                  style={{
+                    width: 78,
+                    flexShrink: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: 4,
+                  }}
+                >
+                  <Tooltip title={formatTs(r.ts)}>
+                    <span className="sk-hint" style={{ fontSize: 12 }}>
+                      {relativeTime(r.ts, nowMs)}
+                    </span>
+                  </Tooltip>
+                  <Tag color={kindColor(r.kind)} style={{ marginRight: 0 }}>
+                    {kindLabel(r.kind)}
+                  </Tag>
+                </div>
+
+                {/* 中列：内容。文本 line-clamp 2 行省略（悬停看前 500 字）；
+                    图片 56px 缩略图，点击放大——stopPropagation 防止误触整行复制 */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {r.pinned && (
+                    <Tooltip title="已置顶——不会被自动淘汰">
+                      <Tag color="gold" style={{ marginBottom: 2 }}>
+                        📌 已置顶
+                      </Tag>
+                    </Tooltip>
+                  )}
+                  {r.kind === "image" ? (
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <ClipImageThumb index={r.idx} />
+                    </span>
+                  ) : (
+                    <span
+                      title={r.text.slice(0, 500)}
+                      style={{
+                        display: "-webkit-box",
+                        WebkitBoxOrient: "vertical",
+                        WebkitLineClamp: 2,
+                        overflow: "hidden",
+                        wordBreak: "break-all",
+                      }}
+                    >
+                      {r.preview || r.text || "—"}
+                    </span>
+                  )}
+                </div>
+
+                {/* 右列：只留 📋 复制 + ··· 菜单（置顶/另存为/删除/动作全收进去）。
+                    平时 25% 透明度、行悬停浮现（见顶部 style）；stopPropagation
+                    防止点按钮时冒泡成"整行复制"（一次点击触发两次复制语义混乱）。 */}
+                <Space
+                  size={0}
+                  className="sk-clip-row-actions"
+                  style={{ flexShrink: 0 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Tooltip title="复制">
+                    <Button
+                      size="small"
+                      type="text"
+                      aria-label="复制"
+                      onClick={() => copyBack(r)}
+                    >
+                      📋
+                    </Button>
+                  </Tooltip>
+                  <Dropdown
+                    trigger={["click"]}
+                    menu={{ items: toMenuItems(r), onClick: ({ key }) => onRowMenu(key, r) }}
+                  >
+                    <Button size="small" type="text" aria-label="更多操作">
+                      ···
+                    </Button>
+                  </Dropdown>
+                </Space>
+              </List.Item>
+            )}
+          />
+        )}
+
+        {detected && shouldShowActions(detected) && (
+          <Alert
+            type="info"
+            showIcon
+            message={`可执行动作 · ${actionsSummary(detected)}`}
+            description={
+              <Space wrap size={6}>
+                {detected.actions.map((a) => (
+                  <Tooltip key={a.id} title={actionHint(a)}>
+                    <Button
+                      size="small"
+                      danger={actionColor(a.id) === "red"}
+                      type={actionColor(a.id) === "default" ? "default" : "primary"}
+                      loading={running === a.id}
+                      disabled={detectedFor !== -1 && !rows.some((x) => x.idx === detectedFor)}
+                      onClick={() => void runAction(a)}
+                    >
+                      {a.label}
+                    </Button>
+                  </Tooltip>
+                ))}
+                <Button size="small" type="text" onClick={() => setDetected(null)}>
+                  收起
+                </Button>
+              </Space>
+            }
+          />
+        )}
+
+        {qrOf && (
+          <Alert
+            type="success"
+            showIcon
+            message="二维码"
+            description={
+              <Space direction="vertical" size={6}>
+                {/* 本地渲染（后端 qrcode crate），不调用任何第三方二维码服务：
+                    你复制的链接不出本机。白底是扫码可靠性的硬要求（深色主题下
+                    静区必须仍是白的）。 */}
+                <Typography.Text copyable={{ text: qrOf }}>{qrOf}</Typography.Text>
+                {qrSvg ? (
+                  <div style={{ background: "#fff", padding: 8, width: 296 }}>
+                    <img
+                      src={svgDataUrl(qrSvg)}
+                      width={280}
+                      height={280}
+                      alt="二维码"
+                    />
+                  </div>
+                ) : (
+                  <Typography.Text type="secondary" className="sk-hint">
+                    生成中…
+                  </Typography.Text>
+                )}
+                <Space size={8}>
+                  <Button size="small" onClick={saveQrPng} disabled={!qrSvg}>
+                    保存图片
+                  </Button>
+                  <Button size="small" onClick={() => setQrOf("")}>
+                    收起
+                  </Button>
+                </Space>
+              </Space>
+            }
+          />
+        )}
+
+        {colorOf && (
+          <Alert
+            type="success"
+            showIcon
+            message="色块"
+            description={
+              <Space direction="vertical" size={6}>
+                <div
+                  style={{
+                    width: "100%",
+                    height: 64,
+                    borderRadius: 6,
+                    background: normalizeHex(colorOf) || "#000",
+                    border: "1px solid #8884",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: isLightColor(colorOf) ? "#000" : "#fff",
+                    fontFamily: "Consolas, monospace",
+                  }}
+                >
+                  {normalizeHex(colorOf) || colorOf}
+                </div>
+                <Space size={10} wrap>
+                  <Typography.Text copyable={{ text: normalizeHex(colorOf) }} className="sk-hint">
+                    HEX: {normalizeHex(colorOf)}
+                  </Typography.Text>
+                  <Typography.Text copyable={{ text: formatColor(colorOf, "RGB") }} className="sk-hint">
+                    RGB: {formatColor(colorOf, "RGB")}
+                  </Typography.Text>
+                  <Button size="small" onClick={() => setColorOf("")}>
+                    收起
+                  </Button>
+                </Space>
+              </Space>
+            }
+          />
+        )}
+
+        {/* 全文预览（对应 Python _show_text_preview）：只读文本 + 复制全文 + 关闭 */}
+        <Modal
+          open={previewRow !== null}
+          title="剪贴板内容预览"
+          footer={null}
+          onCancel={() => setPreviewRow(null)}
+          width={640}
+        >
+          <Typography.Paragraph
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              maxHeight: 420,
+              overflowY: "auto",
+              marginBottom: 16,
+            }}
+          >
+            {previewRow?.text}
+          </Typography.Paragraph>
+          <Space style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Button size="small" onClick={() => previewRow && void copyFullText(previewRow)}>
+              复制全文
+            </Button>
+            <Button size="small" onClick={() => setPreviewRow(null)}>
+              关闭
+            </Button>
+          </Space>
+        </Modal>
+
+        <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginBottom: 0 }}>
+          点击行即可复制回剪贴板（写回不会记进历史）；操作按钮在行悬停时浮现。置顶条目不会被自动淘汰，且相同文本再次复制时不会新增条目。
+        </Typography.Paragraph>
+      </Space>
+    </>
   );
 }
-
-
-
