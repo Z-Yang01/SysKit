@@ -100,8 +100,10 @@ export function Dashboard() {
   // ---------------- 每秒 tick ----------------
   useEffect(() => {
     const un = listen<Tick>("sk://tick", (ev) => {
-      setTick(ev.payload);
-      setHistory((h) => pushTick(h, ev.payload));
+      const t = ev.payload;
+      t.ts = Date.now();
+      setTick(t);
+      setHistory((h) => pushTick(h, t));
     });
     return () => {
       void un.then((f) => f());

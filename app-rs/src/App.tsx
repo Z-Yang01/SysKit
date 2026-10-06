@@ -14,7 +14,6 @@ import {
   Layout,
   Menu,
   Space,
-  Switch,
   Tabs,
   theme as antdThemeApi,
   Tag,
@@ -80,10 +79,6 @@ export function App() {
       .then((all) => setDark(all["dark_mode"] === true))
       .catch(() => {});
   }, []);
-  const toggleDark = (v: boolean) => {
-    setDark(v);
-    void invoke("sk_settings_set", { key: "dark_mode", value: v }).catch(() => {});
-  };
 
   useEffect(() => {
     void invoke<SettingsAll>("sk_settings_all")
@@ -325,10 +320,6 @@ export function App() {
               justifyContent: "space-between",
             }}
           >
-            <Space>
-              <span className="sk-hint">深色主题</span>
-              <Switch checked={dark} onChange={toggleDark} />
-            </Space>
           </Layout.Header>
 
           <Layout.Content style={{ padding: 14, overflow: "auto" }}>

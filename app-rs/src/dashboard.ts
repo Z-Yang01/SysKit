@@ -8,6 +8,8 @@
 
 /** 后端 `sk_tick` / `sk://tick` 的载荷。 */
 export interface Tick {
+  /** 前端收到时的本地毫秒时间戳（后端 payload 无 ts，订阅处补充；旧数据可缺省） */
+  ts?: number;
   down: number;
   up: number;
   cpu: number;
@@ -117,6 +119,7 @@ export function seriesPoints(series: Series | null): { labels: string[]; sent: n
 export const CHART_WINDOW = 120;
 
 export function pushTick(history: Tick[], tick: Tick, cap = CHART_WINDOW): Tick[] {
+  if (tick.ts === undefined) tick.ts = Date.now();
   const next = history.length >= cap ? history.slice(history.length - cap + 1) : history.slice();
   next.push(tick);
   return next;

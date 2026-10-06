@@ -27,10 +27,57 @@ body,
     border-color 0.18s ease;
 }
 
+/* 玻璃拟态基座：活跃渐变背景——大半径柔和色斑固定在 body 上，
+   透过上方半透明玻璃层显现，产生深度感（不引入图片资源）。 */
 body {
   margin: 0;
-  background: var(--sk-bg);
   color: var(--sk-text);
+  background:
+    radial-gradient(1100px 700px at 12% -8%, rgba(53, 118, 224, 0.16), transparent 60%),
+    radial-gradient(900px 650px at 105% 18%, rgba(46, 158, 132, 0.10), transparent 55%),
+    radial-gradient(800px 700px at 50% 115%, rgba(126, 87, 224, 0.10), transparent 55%),
+    var(--sk-bg);
+  background-attachment: fixed;
+}
+
+[data-theme="dark"] body {
+  background:
+    radial-gradient(1100px 700px at 12% -8%, rgba(74, 138, 240, 0.14), transparent 60%),
+    radial-gradient(900px 650px at 105% 18%, rgba(46, 158, 132, 0.08), transparent 55%),
+    radial-gradient(800px 700px at 50% 115%, rgba(126, 87, 224, 0.12), transparent 55%),
+    var(--sk-bg);
+  background-attachment: fixed;
+}
+
+/* 玻璃层：表面半透明 + backdrop 模糊。直接覆写玻璃目标（Sider/Header/卡片）
+   的底色为半透明；AntD token 只保留边框/文字，避免与半透明底色打架。 */
+.ant-layout-sider,
+.ant-layout-header,
+.sk-card {
+  background: color-mix(in srgb, var(--sk-card) 72%, transparent) !important;
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+}
+
+/* 弹层玻璃（Modal/Dropdown/预览）：更高不透明度保证可读性 */
+.ant-modal .ant-modal-content,
+.ant-dropdown-menu,
+.ant-select-dropdown {
+  background: color-mix(in srgb, var(--sk-card) 88%, transparent) !important;
+  backdrop-filter: blur(18px) saturate(1.1);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+}
+
+/* 玻璃上的微妙边框：高光描边（浅色=白描边，深色=亮描边），层叠感来源 */
+[data-theme="light"] .ant-layout-sider,
+[data-theme="light"] .sk-card,
+[data-theme="light"] .ant-layout-header {
+  border-color: rgba(255, 255, 255, 0.55);
+}
+[data-theme="dark"] .ant-layout-sider,
+[data-theme="dark"] .sk-card,
+[data-theme="dark"] .ant-layout-header {
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 /* 页面切换防闪：内容区先撑住高度，避免滚动条出现/消失引起的横向跳动 */
