@@ -36,6 +36,7 @@ const HOTKEY_LABELS: Record<string, string> = {
 
 import {
   ALL_CATEGORY,
+  categoryBadge,
   categoryEntries,
   changedCount,
   filterSettings,
@@ -48,6 +49,7 @@ import {
   monitorNeedsAttention,
   monitorStateLabel,
   logLevel,
+  settingKeyTip,
   tailSummary,
   unwiredBadge,
   unwiredCount,
@@ -113,92 +115,84 @@ function SettingRow({
         : Number(draft);
 
   return (
-    <tr>
-      <td style={{ padding: "8px 8px", verticalAlign: "top", minWidth: 200, width: "40%" }}>
-        <Space direction="vertical" size={0}>
-          <Space size={6} wrap>
-            <span>{item.label}</span>
-            {isChanged(item) && <Tag color="orange">已改动</Tag>}
-            {isUnwired(item) && (
-              <Tooltip title={item.unwired_reason}>
-                <Tag color="default" style={{ borderStyle: "dashed" }}>
-                  {unwiredBadge(item)}
-                </Tag>
-              </Tooltip>
-            )}
-            {item.needs_restart && (
-              <Tooltip title="该设置需要重启 SysKit 才生效">
-                <Tag>重启生效</Tag>
-              </Tooltip>
-            )}
+    // 底层键名不再平铺在行尾（全局撤下，语义见 settingKeyTip）：悬浮整行才显示。
+    // 0.3s 延迟是防骚扰阀门——快速划过多行去点控件时，Tooltip 不应连续弹出。
+    <Tooltip title={settingKeyTip(item)} mouseEnterDelay={0.3}>
+      <tr>
+        <td style={{ padding: "8px 8px", verticalAlign: "top", minWidth: 200, width: "40%" }}>
+          <Space direction="vertical" size={0}>
+            <Space size={6} wrap>
+              <span>{item.label}</span>
+              {isChanged(item) && <Tag color="orange">已改动</Tag>}
+              {isUnwired(item) && (
+                <Tooltip title={item.unwired_reason}>
+                  <Tag color="default" style={{ borderStyle: "dashed" }}>
+                    {unwiredBadge(item)}
+                  </Tag>
+                </Tooltip>
+              )}
+              {item.needs_restart && (
+                <Tooltip title="该设置需要重启 SysKit 才生效">
+                  <Tag>重启生效</Tag>
+                </Tooltip>
+              )}
+            </Space>
+            <span className="sk-hint" style={{ fontSize: 12 }}>
+              {item.description}
+            </span>
           </Space>
-          <span className="sk-hint" style={{ fontSize: 12 }}>
-            {item.description}
-          </span>
-        </Space>
-      </td>
-      <td style={{ padding: "8px 8px", verticalAlign: "top", minWidth: 260 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {item.ty === "bool" ? (
-            <Switch
-              size="small"
-              checked={Boolean(draft)}
-              loading={busy}
-              onChange={(v) => {
-                setDraft(v);
-                void commit(v);
-              }}
-            />
-          ) : item.options ? (
-            <Select
-              size="small"
-              style={{ width: 180 }}
-              value={String(draft ?? "")}
-              onChange={(v) => {
-                setDraft(v);
-                void commit(v);
-              }}
-              options={item.options.map((o) => ({ label: o, value: o }))}
-            />
-          ) : item.ty === "int" ? (
-            <InputNumber
-              size="small"
-              style={{ width: 80 }}
-              min={item.min}
-              max={item.max}
-              value={numValue}
-              onChange={(v) => setDraft(v)}
-              onBlur={commitOnBlur}
-            />
-          ) : (
-            <Input
-              size="small"
-              style={{ width: 240 }}
-              value={String(draft ?? "")}
-              onChange={(e) => setDraft(e.target.value)}
-              onBlur={commitOnBlur}
-            />
-          )}
-          {/* 底层键名降为行尾灰色小字：需要对照配置文件时仍可读到，但不再占据每行主线 */}
-          <code
-            style={{
-              marginLeft: "auto",
-              fontSize: 11,
-              color: "var(--sk-sub)",
-              opacity: 0.8,
-              whiteSpace: "nowrap",
-            }}
-          >
-            {item.key}
-          </code>
-        </div>
-        {!check.ok && (
-          <div style={{ fontSize: 12, marginTop: 4 }}>
-            <Typography.Text type="danger">{check.reason}</Typography.Text>
+        </td>
+        <td style={{ padding: "8px 8px", verticalAlign: "top", minWidth: 260 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {item.ty === "bool" ? (
+              <Switch
+                size="small"
+                checked={Boolean(draft)}
+                loading={busy}
+                onChange={(v) => {
+                  setDraft(v);
+                  void commit(v);
+                }}
+              />
+            ) : item.options ? (
+              <Select
+                size="small"
+                style={{ width: 180 }}
+                value={String(draft ?? "")}
+                onChange={(v) => {
+                  setDraft(v);
+                  void commit(v);
+                }}
+                options={item.options.map((o) => ({ label: o, value: o }))}
+              />
+            ) : item.ty === "int" ? (
+              <InputNumber
+                size="small"
+                style={{ width: 80 }}
+                min={item.min}
+                max={item.max}
+                value={numValue}
+                onChange={(v) => setDraft(v)}
+                onBlur={commitOnBlur}
+              />
+            ) : (
+              <Input
+                size="small"
+                style={{ width: 240 }}
+                value={String(draft ?? "")}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={commitOnBlur}
+              />
+            )}
           </div>
-        )}
-      </td>
-    </tr>
+          {!check.ok && (
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              <Typography.Text type="danger">{check.reason}</Typography.Text>
+            </div>
+          )}
+        </td>
+      </tr>
+    </Tooltip>
   );
 }
 
@@ -289,32 +283,35 @@ function SettingsPanel() {
   }, [items, changed]);
 
   // AntD Menu 自带 hover/选中态与深浅主题适配，比自己糊按钮省心
-  const menuItems: MenuProps["items"] = navItems.map((n) => ({
-    key: n.key,
-    label: (
-      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {n.label}
-        </span>
-        <span
-          style={{
-            marginLeft: "auto",
-            display: "inline-flex",
-            alignItems: "baseline",
-            gap: 3,
-            flexShrink: 0,
-          }}
-        >
-          {n.changed > 0 && (
-            <span style={{ fontSize: 11, color: token.colorWarning }}>{n.changed}</span>
-          )}
-          <span className="sk-hint" style={{ fontSize: 11 }}>
-            /{n.total}
+  const menuItems: MenuProps["items"] = navItems.map((n) => {
+    // 角标语义化（categoryBadge）：默认灰字总数；有已改动项才换红色「已改 N」，
+    // 「4/8」这种分数读不出"改了几个"，两态文案一眼即懂。红色徽标上保留悬浮
+    // 提示回看总数——语义化不等于丢信息。
+    const badge = categoryBadge(n);
+    return {
+      key: n.key,
+      label: (
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {n.label}
+          </span>
+          <span style={{ marginLeft: "auto", display: "inline-flex", flexShrink: 0 }}>
+            {badge.changed ? (
+              <Tooltip title={`共 ${n.total} 项，其中 ${n.changed} 项与默认值不同`}>
+                <Tag color="error" style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: "18px" }}>
+                  {badge.text}
+                </Tag>
+              </Tooltip>
+            ) : (
+              <span className="sk-hint" style={{ fontSize: 11 }}>
+                {badge.text}
+              </span>
+            )}
           </span>
         </span>
-      </span>
-    ),
-  }));
+      ),
+    };
+  });
 
   const reset = useCallback(() => {
     Modal.confirm({
@@ -422,7 +419,7 @@ function SettingsPanel() {
         </Button>
       </div>
 
-      {/* 双栏：左侧分类导航（稳定顺序 + 已改动/总数角标），右侧只渲染选中分类 */}
+      {/* 双栏：左侧分类导航（稳定顺序 + 语义化角标：总数 / 红色「已改 N」），右侧只渲染选中分类 */}
       <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
         <Menu
           mode="inline"

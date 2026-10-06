@@ -250,6 +250,39 @@ export function categoryEntries(items: SettingItem[]): CategoryEntry[] {
 }
 
 /**
+ * 左导航角标语义（纯逻辑，界面与测试共用同一口径）。
+ *
+ * 为什么不用「4/8」这种分数形式：它读不出"有几个被我改过"，用户得自己做减法。
+ * 语义化两态：
+ * - 无已改动项 → 只显示总数（灰字），界面安静；
+ * - 有已改动项 → 改显红色「已改 N」，红色只在有改动时出现，不做常驻红点。
+ */
+export interface CategoryBadge {
+  /** 角标文本：无改动 = 总数；有改动 = 「已改 N」。 */
+  text: string;
+  /** true = 红色"已改动"徽标（Tag color=error）；false = 灰色总数。 */
+  changed: boolean;
+}
+
+/** 入参取 CategoryEntry 的子集即可：「全部」伪分类（无 group 字段）也直接可用。 */
+export function categoryBadge(e: Pick<CategoryEntry, "total" | "changed">): CategoryBadge {
+  return e.changed > 0
+    ? { text: `已改 ${e.changed}`, changed: true }
+    : { text: String(e.total), changed: false };
+}
+
+/**
+ * 设置行悬浮 Tooltip 的文案：底层键名（poll_interval_sec 等）。
+ *
+ * 键名从行尾灰色小字**全局撤下**（每行少一个视觉噪音源），但对照配置文件、
+ * 报障排查时仍需要它——收进"悬浮该行"的 Tooltip：要找的人能找到，
+ * 不关心的人看不见。注意这只是显示层隐藏，搜索仍按键名匹配（matchesQuery）。
+ */
+export function settingKeyTip(item: SettingItem): string {
+  return `配置键：${item.key}`;
+}
+
+/**
  * 搜索匹配：键名 / 名称 / 描述 / 分组 / 当前值，大小写不敏感。
  *
  * 名称（label）也参与匹配：重构后底层键名默认隐藏，用户看得见的是 label，

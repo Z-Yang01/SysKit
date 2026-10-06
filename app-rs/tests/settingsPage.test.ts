@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   ALL_CATEGORY,
   SETTING_CATEGORIES,
+  categoryBadge,
   categoryEntries,
   changedCount,
   displayValue,
@@ -27,6 +28,7 @@ import {
   logLevel,
   matchesQuery,
   restartNote,
+  settingKeyTip,
   tailSummary,
   unwiredBadge,
   unwiredCount,
@@ -336,6 +338,34 @@ describe("双栏导航与统一过滤（信息架构重构）", () => {
       ),
     ).toEqual(["dark_mode"]);
     expect(filterSettings(sample, { category: "网络", onlyChanged: true })).toEqual([]);
+  });
+});
+
+describe("导航角标语义与键名悬浮提示（用户反馈：语义不清 / 键名降噪）", () => {
+  it("categoryBadge：无已改动项 → 只显示总数（灰字，不出红色）", () => {
+    expect(categoryBadge({ total: 8, changed: 0 })).toEqual({ text: "8", changed: false });
+  });
+
+  it("categoryBadge：有已改动项 → 红色「已改 N」徽标（不再并排 4/8 分数）", () => {
+    expect(categoryBadge({ total: 8, changed: 4 })).toEqual({ text: "已改 4", changed: true });
+    // 全部改完仍是同一语义
+    expect(categoryBadge({ total: 3, changed: 3 }).text).toBe("已改 3");
+  });
+
+  it("categoryBadge：与 categoryEntries 的产出直接对接（「全部」伪分类同语义）", () => {
+    // sample 里的自动修复组：2 项，1 项已改动（fail_threshold）
+    const auto = categoryEntries([
+      item({ key: "poll_interval_sec" }),
+      item({ key: "fail_threshold", label: "失败阈值", current: 5 }),
+    ]).find((e) => e.group === "自动修复")!;
+    expect(categoryBadge(auto)).toEqual({ text: "已改 1", changed: true });
+  });
+
+  it("settingKeyTip：悬浮提示含底层键名（行尾小字撤下后仍可查）", () => {
+    expect(settingKeyTip(item())).toBe("配置键：poll_interval_sec");
+    expect(settingKeyTip(item({ key: "auto_repair_max_level" }))).toBe(
+      "配置键：auto_repair_max_level",
+    );
   });
 });
 

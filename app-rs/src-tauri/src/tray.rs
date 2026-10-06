@@ -1,11 +1,14 @@
 //! 托盘：状态色圆点图标（代码绘制，无额外依赖）、右键菜单、气泡通知。
 //!
-//! 与 Python 侧 ui/tray.py 对齐：菜单项、图标状态色、「最近剪贴板」子菜单。
-//! M1 阶段托盘负责「打开主界面 / 立即检测 / 快速修复 / 呼出两个面板 / 退出」；
+//! 菜单项、图标状态色与 Python 侧 ui/tray.py 对齐；「最近剪贴板」子菜单是
+//! **有意分叉**：用户反馈二级子菜单层级过深，且 Rust 侧从未真正填充条目
+//! （Python 的 aboutToShow 填充在 Rust 没有对应实现，只有一条禁用占位）。
+//! 剪贴板历史入口收敛到「打开主界面」——主窗剪贴板页已是完整管理界面，
+//! 托盘只留一键可达的快捷操作。
 //! 状态灯与实时速率 tooltip 属 M2 遥测，接口（set_state / update_rate）先留好。
 
 use std::sync::Mutex;
-use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -28,6 +31,57 @@ pub const MENU_FIX: &str = "sk_fix";
 pub const MENU_PASTE: &str = "sk_paste";
 pub const MENU_PALETTE: &str = "sk_palette";
 pub const MENU_QUIT: &str = "sk_quit";
+
+/// 托盘菜单条目的纯数据描述：普通项（id + 文案）或分隔线。
+///
+/// 抽出来是因为菜单构建内联在 `setup` 里、依赖 `AppHandle`，单元测试够不着；
+/// 有了这张描述表，构建逻辑只剩机械展开，测试直接断言扁平结构（项数/顺序/
+/// 文案/无子菜单），构建函数本身不需要挂着 App 才能验证。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum MenuEntry {
+    /// 普通菜单项：id + 文案
+    Item {
+        id: &'static str,
+        label: &'static str,
+    },
+    /// 分隔线
+    Separator,
+}
+
+/// 右键菜单的扁平结构（用户反馈：「📋 最近剪贴板」二级子菜单层级过深）。
+///
+/// 剪贴板历史不再进托盘菜单：历史条目列表、搜索、置顶、动作识别等已由主窗
+/// 剪贴板页完整承接，托盘只保留「打开主界面」这一层入口。
+pub fn menu_entries() -> &'static [MenuEntry] {
+    &[
+        MenuEntry::Item {
+            id: MENU_OPEN,
+            label: "打开主界面",
+        },
+        MenuEntry::Item {
+            id: MENU_CHECK,
+            label: "立即检测",
+        },
+        MenuEntry::Item {
+            id: MENU_FIX,
+            label: "快速修复",
+        },
+        MenuEntry::Separator,
+        MenuEntry::Item {
+            id: MENU_PASTE,
+            label: "📋 快捷粘贴面板…",
+        },
+        MenuEntry::Item {
+            id: MENU_PALETTE,
+            label: "⌘ 命令面板",
+        },
+        MenuEntry::Separator,
+        MenuEntry::Item {
+            id: MENU_QUIT,
+            label: "退出",
+        },
+    ]
+}
 
 /// 生成 64×64 RGBA 状态圆点（带高光），返回 (rgba, size)。
 ///
@@ -81,26 +135,27 @@ pub fn state_icon_rgba(state: &str, size: u32) -> (Vec<u8>, u32) {
 
 /// 装载托盘图标与菜单（setup 阶段调用一次）。
 pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, MENU_OPEN, "打开主界面", true, None::<&str>)?;
-    let check = MenuItem::with_id(app, MENU_CHECK, "立即检测", true, None::<&str>)?;
-    let fix = MenuItem::with_id(app, MENU_FIX, "快速修复", true, None::<&str>)?;
-    let paste = MenuItem::with_id(app, MENU_PASTE, "📋 快捷粘贴面板…", true, None::<&str>)?;
-    let palette = MenuItem::with_id(app, MENU_PALETTE, "⌘ 命令面板", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "退出", true, None::<&str>)?;
-    // 「最近剪贴板」子菜单：M1 先用固定条目占位（真实条目在对话框内取）
-    let clip = Submenu::with_id(app, "sk_clip", "📋 最近剪贴板", true)?;
-    let clip_empty =
-        MenuItem::with_id(app, "sk_clip_empty", "（M1 待接历史）", false, None::<&str>)?;
-    clip.append(&clip_empty)?;
-
-    let sep1 = PredefinedMenuItem::separator(app)?;
-    let sep2 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(
-        app,
-        &[
-            &open, &check, &fix, &clip, &paste, &palette, &sep1, &sep2, &quit,
-        ],
-    )?;
+    // 从纯数据描述表机械展开：普通项 → MenuItem，分隔线 → PredefinedMenuItem。
+    // 菜单本体是扁平列表（menu_entries），这里没有子菜单层级可言。
+    let mut items: Vec<Box<dyn IsMenuItem<R>>> = Vec::new();
+    for entry in menu_entries() {
+        match *entry {
+            MenuEntry::Item { id, label } => {
+                items.push(Box::new(MenuItem::with_id(
+                    app,
+                    id,
+                    label,
+                    true,
+                    None::<&str>,
+                )?));
+            }
+            MenuEntry::Separator => {
+                items.push(Box::new(PredefinedMenuItem::separator(app)?));
+            }
+        }
+    }
+    let refs: Vec<&dyn IsMenuItem<R>> = items.iter().map(|b| b.as_ref()).collect();
+    let menu = Menu::with_items(app, &refs)?;
 
     let (rgba, size) = state_icon_rgba("offline", 64);
     let icon = tauri::image::Image::new_owned(rgba, size, size);
@@ -398,5 +453,78 @@ mod tests {
         let l = rate_line(1024 * 1024, 1024);
         assert!(l.starts_with("↓ 1.0 MB/s"));
         assert!(l.contains("↑ 1.0 KB/s"));
+    }
+
+    #[test]
+    fn tray_menu_is_flat_with_expected_order() {
+        // 用户要求的扁平结构：打开主界面 / 立即检测 / 快速修复 / --- /
+        // 快捷粘贴面板 / 命令面板 / --- / 退出。
+        let entries = menu_entries();
+        let items: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| match *e {
+                MenuEntry::Item { id, .. } => Some(id),
+                MenuEntry::Separator => None,
+            })
+            .collect();
+        assert_eq!(
+            items,
+            vec![
+                MENU_OPEN,
+                MENU_CHECK,
+                MENU_FIX,
+                MENU_PASTE,
+                MENU_PALETTE,
+                MENU_QUIT
+            ]
+        );
+        // 恰好两条分隔线：快捷操作 | 面板呼出 | 退出
+        let seps = entries
+            .iter()
+            .filter(|e| **e == MenuEntry::Separator)
+            .count();
+        assert_eq!(seps, 2);
+    }
+
+    #[test]
+    fn tray_menu_has_no_clipboard_submenu() {
+        // 回归（用户反馈）：「📋 最近剪贴板」二级子菜单层级过深，整体移除；
+        // 剪贴板历史入口走「打开主界面」（主窗剪贴板页是完整管理界面）。
+        for e in menu_entries() {
+            if let MenuEntry::Item { label, .. } = *e {
+                assert!(
+                    !label.contains("最近剪贴板"),
+                    "托盘菜单不得再出现「最近剪贴板」条目：{label}"
+                );
+            }
+        }
+        // 旧子菜单及其占位条目的 id 不许复活（on_menu 也从未接过这两个 id）
+        for e in menu_entries() {
+            if let MenuEntry::Item { id, .. } = *e {
+                assert!(
+                    id != "sk_clip" && id != "sk_clip_empty",
+                    "子菜单占位 id 复活：{id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tray_menu_item_ids_all_dispatched() {
+        // 菜单里的每个普通项 id 必须是 on_menu 已接线的 MENU_* 常量，
+        // 否则用户点了菜单项会静默无反应（托盘菜单没有报错渠道）。
+        let known = [
+            MENU_OPEN,
+            MENU_CHECK,
+            MENU_FIX,
+            MENU_PASTE,
+            MENU_PALETTE,
+            MENU_QUIT,
+        ];
+        for e in menu_entries() {
+            if let MenuEntry::Item { id, .. } = *e {
+                assert!(known.contains(&id), "菜单项 {id} 没有对应的事件分派分支");
+            }
+        }
     }
 }
