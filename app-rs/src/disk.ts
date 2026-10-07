@@ -189,6 +189,27 @@ export function drillErrorText(path: string, err: unknown): string {
   return `展开 ${path} 失败：${String(err)}`;
 }
 
+/**
+ * 根扫描的表格空态文案。取消残留（cancelled=true，children 通常为空）
+ * 不得冒充「空目录」——轮次112 审计实锤：根扫描点「取消扫描」后表格
+ * 只剩「（空目录）」，与轮次111「取消残留如实标注」的承诺相悖。
+ */
+export function rootEmptyText(root: ChildrenScan | null): string {
+  if (!root) return "输入路径后点「开始扫描」";
+  return root.cancelled ? "扫描已取消（结果不完整）" : "（空目录）";
+}
+
+/**
+ * 截断提示（根概要行与深层展开行共用）：null=未截断。深层目录被
+ * MAX_CHILD_ROWS 截断时过去只有根层提示，下钻行静默丢 500 名之后
+ * 的小项——同一文案现在两处都标（轮次112 审计）。
+ */
+export function truncatedNote(
+  scan: Pick<ChildrenScan, "children" | "truncated">,
+): string | null {
+  return scan.truncated ? `仅显示最大的前 ${scan.children.length} 项` : null;
+}
+
 /** 卷显示名：`C:` + 卷标。 */
 export function driveLabel(d: DriveRow): string {
   return d.label ? `${d.letter} ${d.label}` : d.letter;

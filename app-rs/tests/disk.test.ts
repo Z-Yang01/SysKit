@@ -19,11 +19,13 @@ import {
   humanSize,
   meaningfulKeys,
   needsSpaceWarning,
+  rootEmptyText,
   selectedBytes,
   sortChildRows,
   targetResultText,
   toggleExpanded,
   toggleKey,
+  truncatedNote,
   usageColor,
   validateClean,
   type ChildrenScan,
@@ -373,5 +375,23 @@ describe("下钻：展开收起状态机（仅内存态）", () => {
     expect(childIcon({ is_dir: true })).toBe("📁");
     expect(childIcon({ is_dir: false })).toBe("📄");
     expect(drillErrorText("C:\a", "拒绝访问")).toBe("展开 C:\a 失败：拒绝访问");
+  });
+});
+
+describe("下钻：不完整结果的如实呈现（轮次112 审计）", () => {
+  it("根扫描取消残留不得冒充「空目录」", () => {
+    expect(rootEmptyText(null)).toBe("输入路径后点「开始扫描」");
+    expect(rootEmptyText(scanOf({ cancelled: true, children: [] }))).toBe(
+      "扫描已取消（结果不完整）",
+    );
+    expect(rootEmptyText(scanOf({}))).toBe("（空目录）");
+    expect(rootEmptyText(scanOf({ children: [child()] }))).toBe("（空目录）");
+  });
+
+  it("截断提示：根概要行与深层展开行共用同一文案", () => {
+    expect(truncatedNote({ truncated: false, children: [] })).toBeNull();
+    expect(truncatedNote({ truncated: true, children: [child(), child()] })).toBe(
+      "仅显示最大的前 2 项",
+    );
   });
 });

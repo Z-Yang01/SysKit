@@ -32,10 +32,12 @@ import {
   humanSize,
   meaningfulKeys,
   needsSpaceWarning,
+  rootEmptyText,
   selectedBytes,
   targetResultText,
   toggleExpanded,
   toggleKey,
+  truncatedNote,
   usageColor,
   validateClean,
   type ChildrenScan,
@@ -459,6 +461,10 @@ export function DirDrillPanel() {
           {row.is_dir && expanded[row.path] && sub?.cancelled && (
             <Tag color="red">已取消（结果不完整）</Tag>
           )}
+          {/* 深层目录超 MAX_CHILD_ROWS 截断：与根概要行同一文案，不得静默丢行 */}
+          {row.is_dir && expanded[row.path] && sub?.truncated && (
+            <Tag color="orange">{truncatedNote(sub)}</Tag>
+          )}
         </Space>
       </div>
     );
@@ -501,8 +507,9 @@ export function DirDrillPanel() {
         <span className="sk-hint">
           {root.name} · 递归 {humanSize(root.total)}（自身文件 {humanSize(root.size)}）· 子项{" "}
           {root.children.length}
-          {root.truncated ? `（仅显示最大的前 ${root.children.length} 项）` : ""} ·{" "}
-          {root.duration_ms} ms
+          {root.truncated ? `（${truncatedNote(root)}）` : ""} · {root.duration_ms} ms{" "}
+          {/* 根扫描取消残留同样要如实标注——空表格不得冒充「空目录」 */}
+          {root.cancelled && <Tag color="red">已取消（结果不完整）</Tag>}
         </span>
       )}
 
@@ -511,7 +518,7 @@ export function DirDrillPanel() {
         rowKey={(r) => (r.kind === "row" ? r.row!.path : `loading:${r.path}`)}
         pagination={false}
         dataSource={flat}
-        locale={{ emptyText: root ? "（空目录）" : "输入路径后点「开始扫描」" }}
+        locale={{ emptyText: rootEmptyText(root) }}
         columns={[
           { title: "名称", render: renderNameCell },
           {

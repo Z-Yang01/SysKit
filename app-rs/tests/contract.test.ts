@@ -14,8 +14,9 @@
  * Tauri v2 默认把 JS 侧 camelCase 键映射到 Rust snake_case 形参；
  * 本仓前端混用两种风格，比较前统一归一化到 snake_case。
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { beforeAll, describe, expect, it } from "vitest";
 
 const REPO = resolve(__dirname, "..");
@@ -52,34 +53,80 @@ interface InvokeSite {
   spread: boolean;
 }
 
+/** 跳过从 open 开始的字符串字面量，返回收尾引号之后的位置（未收尾到文件尾）。 */
+function skipString(src: string, open: number): number {
+  const q = src[open];
+  let i = open + 1;
+  while (i < src.length) {
+    if (src[i] === q) {
+      // 前面连续偶数个反斜杠才是真收尾（"a\"b" 的引号是转义，不是收尾）
+      let bs = 0;
+      for (let j = i - 1; j >= 0 && src[j] === "\\"; j--) bs++;
+      if (bs % 2 === 0) return i + 1;
+    }
+    i++;
+  }
+  return src.length;
+}
+
+/**
+ * 从 from（对象起始 { 之后）扫描平衡大括号，返回收尾 } 之后的位置。
+ * 字符串字面量（` " '）与注释（// 、块注释）里的大括号**不参与配平**——
+ * 裸扫描曾把 `label: "}"` 的字符串收尾 } 当成对象收尾，实参被截断，
+ * 必填形参误报「未传」；注释里的 } 更会让实参提取成空（轮次112 实锤）。
+ */
+function objectEnd(src: string, from: number): number {
+  let depth = 1;
+  let i = from;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      i = skipString(src, i);
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "/") {
+      const nl = src.indexOf("\n", i + 2);
+      if (nl < 0) return src.length;
+      i = nl;
+      i++;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end < 0 ? src.length : end + 2;
+      continue;
+    }
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+    i++;
+  }
+  return src.length; // 未配平（残缺源码）：兜底拿到文件尾
+}
+
 /** 从前端源码提取全部 invoke 点（命令名 + 实参键，含跨行对象字面量）。 */
-function collectInvokeSites(): InvokeSite[] {
+function collectInvokeSites(dir: string = SRC): InvokeSite[] {
   const sites: InvokeSite[] = [];
-  for (const p of walk(SRC)) {
+  for (const p of walk(dir)) {
     if (!/\.(tsx?|)$/.test(p)) continue;
     const src = read(p);
     const re = /invoke(?:<[^>]*>)?\(\s*"([a-z_]+)"\s*,\s*\{/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(src))) {
       const cmd = m[1];
-      // 平衡括号找对象字面量结束
-      let depth = 1;
-      let i = m.index + m[0].length;
-      while (i < src.length && depth > 0) {
-        const ch = src[i];
-        if (ch === "{") depth++;
-        else if (ch === "}") depth--;
-        i++;
-      }
-      // 补回被 m[0] 吃掉的起始 {，并**保留收尾 }**：收尾括号被截掉时，
+      const end = objectEnd(src, m.index + m[0].length);
+      // 补回被 m[0] 吃掉的起始 {，并保留收尾 }：收尾括号被截掉时，
       // 简写 { dir } 的最后一个键没有尾随 [,}] 可匹配，整个实参对象会被
       // 提取成空——「必填形参未传」永远查不出来（轮次111 变异验证实锤）
-      const body = "{" + src.slice(m.index + m[0].length, i);
-      // 去掉字符串字面量与注释，避免键名误报
+      const body = "{" + src.slice(m.index + m[0].length, end);
+      // 去掉字符串字面量与注释，避免键名误报（与 objectEnd 同一套识别规则）
       const clean = body
         .replace(/`[^`]*`/g, "")
         .replace(/"[^"\n]*"/g, "")
         .replace(/'[^'\n]*'/g, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/\/\/[^\n]*/g, "");
       const args = new Set<string>();
       // key: value 形式
@@ -139,12 +186,14 @@ function collectRustCommands(): { registered: Set<string>; cmds: Map<string, Rus
       const [, pname, ptype] = pm;
       if (/tauri::State|State<'_|AppHandle|Window|WebviewWindow/.test(ptype)) continue;
       const t = ptype.trim();
-      // 「单个 CamelCase 整包参数」判定必须排除 String 族（String /
-      // Option<String> / Vec<String>）：它们首字母大写但仍是标量形参——
-      // 曾把 dir: String 这类命令误判成结构体整包，整条命令的键名审计被
-      // 跳过（轮次111 变异验证实锤：实参键改错名契约测试照样绿）。真实
-      // 结构体形参（如 PasteRequest）不含 String 字样，不受影响。
-      if (/^[A-Z]/.test(t) && !t.includes("::") && !t.includes("String")) {
+      // 「单个裸 CamelCase 标识符」才可能是整包结构体参数（如 req: PasteRequest）。
+      // 泛型容器（Option<bool>/Option<u32>/Vec<i64>/HashMap<K,V>…）首字母同样
+      // 大写，但在 invoke 里仍是**具名**形参——轮次111 只排除了 String 族，
+      // 仍有 16 条命令（sk_ping/sk_modes_run/sk_log_tail/sk_hosts_write…）被
+      // 误判整包、键名+必填审计整条跳过（轮次112 实锤：sk_ping 必填 host 改错
+      // 名契约测试照样绿）。泛型必含 `<`，裸标识符判定天然排除；String 是唯一
+      // 裸写的大写标量，显式排除。
+      if (/^[A-Z][A-Za-z0-9_]*$/.test(t) && t !== "String") {
         structShaped = true;
         continue;
       }
@@ -175,6 +224,65 @@ describe("前后端 invoke 契约", () => {
     expect(
       bad.map((s) => `${s.cmd} @ ${s.file}`),
     ).toEqual([]);
+  });
+
+  it("整包结构体豁免只覆盖裸 CamelCase 形参（泛型容器仍逐键审计）", () => {
+    // 轮次112 实锤锁：曾把 Option<bool>/Option<u32>/Vec<i64> 误判成整包，
+    // sk_ping 等命令的必填形参改错名测试照样绿。这些命令此刻必须处于
+    // 「已审计」状态——若此处红了，说明有人把豁免判定放宽了。
+    for (const cmd of [
+      "sk_ping", // count: Option<u32> + host: String
+      "sk_modes_run", // mode: String + open_apps/clear_bg: Option<bool>
+      "sk_log_tail", // lines: Option<usize>
+      "sk_hosts_write", // backup: Option<bool> + entries: Vec<…>
+      "sk_vault_secrets_bulk", // account_ids: Vec<i64>
+    ]) {
+      const def = cmds.get(cmd);
+      expect(def, `${cmd} 签名必须解析得到`).toBeTruthy();
+      expect(def!.structShaped, `${cmd} 不得被豁免审计`).toBe(false);
+      expect(def!.params.size, `${cmd} 形参清单不得为空`).toBeGreaterThan(0);
+    }
+    // 真整包结构体（req: PasteRequest，裸 CamelCase）仍豁免
+    expect(cmds.get("sk_paste")?.structShaped).toBe(true);
+  });
+
+  it("解析器形态回归：多行/简写/展开/字符串与注释内大括号（夹具目录）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "contract_probe_"));
+    try {
+      writeFileSync(
+        join(dir, "probe.tsx"),
+        [
+          `const a = invoke("cmd_multi", {`,
+          `  rootPath: p,`,
+          `  includeHidden: true,`,
+          `});`,
+          `const b = invoke("cmd_short", { dir });`,
+          `const c = invoke("cmd_spread", { ...base, extra: 1 });`,
+          `const d = invoke("cmd_str_close", { label: "a (b) } c", n: 1 });`,
+          `const e = invoke("cmd_comment", { // 注释 } 不配平`,
+          `  a: 1, b: 2,`,
+          `});`,
+          `const f = invoke("cmd_str_open", { tmpl: "{x}", k: 2 });`,
+          `const g = invoke("cmd_block", { /* 块注释 } */ m: 3 });`,
+        ].join("\n"),
+      );
+      const sites = collectInvokeSites(dir);
+      const by = (cmd: string) => sites.find((s) => s.cmd === cmd);
+      expect(by("cmd_multi")?.args).toEqual(new Set(["root_path", "include_hidden"]));
+      expect(by("cmd_short")?.args).toEqual(new Set(["dir"]));
+      expect(by("cmd_spread")?.spread).toBe(true);
+      expect(by("cmd_spread")?.args.has("extra")).toBe(true);
+      // 字符串/注释里的大括号不参与配平：实参一个不少（轮次112 实锤锁）
+      expect(by("cmd_str_close")?.args).toEqual(new Set(["label", "n"]));
+      expect(by("cmd_comment")?.args).toEqual(new Set(["a", "b"]));
+      expect(by("cmd_str_open")?.args).toEqual(new Set(["tmpl", "k"]));
+      expect(by("cmd_block")?.args).toEqual(new Set(["m"]));
+      for (const cmd of ["cmd_multi", "cmd_short", "cmd_str_close", "cmd_comment"]) {
+        expect(by(cmd)?.spread, cmd).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("每个 invoke 点的参数键都能对上 Rust 形参（抓键名漂移/拼写错）", () => {
