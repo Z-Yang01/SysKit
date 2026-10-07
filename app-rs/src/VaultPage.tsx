@@ -610,7 +610,17 @@ export function VaultPage() {
   }, [password, load]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", minWidth: 0, paddingRight: 4 }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        width: "100%",
+        minWidth: 0,
+        paddingRight: 4,
+        minHeight: "100%", // 两栏行 flex:1 的前提：根至少撑满 Content 视口高
+      }}
+    >
       {/* 顶部工具条：左侧状态徽章，右侧全部主密码操作（一排式，对齐 Python 版） */}
       <div
         className="sk-card"
@@ -763,7 +773,9 @@ export function VaultPage() {
           description="点右上角「解锁…」：免密模式直接打开；主密码模式输入主密码验证后查看与编辑条目。"
         />
       ) : phase === "unlocked" ? (
-        <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
+        // flex:1 占满根容器剩余高度——站点少/账号少时卡片仍满窗高，
+        // 不再在页面底部留一大段窗口底色（用户实锤「一大段留白」）
+        <div style={{ display: "flex", gap: 12, alignItems: "stretch", flex: 1, minHeight: 0 }}>
           {/* 左栏：网站列表（固定 ~300px，搜索嵌在卡标题） */}
           <Card
             size="small"

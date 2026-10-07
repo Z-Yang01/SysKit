@@ -90,9 +90,13 @@ body {
   min-height: calc(100vh - 48px);
 }
 
-/* 页面淡入：侧栏切页时内容区 0.12s 淡入，替代硬切 */
+/* 页面淡入：侧栏切页时内容区 0.12s 淡入，替代硬切。
+   flex: 1 0 auto——Content 是 flex 列滚动容器，页面根撑满剩余高度：
+   短内容页（密码库两栏）不再在下方留一大段窗口底色；shrink 0 保证
+   长内容页照常把 Content 撑出滚动条。 */
 .sk-page {
   animation: sk-page-in 0.12s ease-out;
+  flex: 1 0 auto;
 }
 
 @keyframes sk-page-in {

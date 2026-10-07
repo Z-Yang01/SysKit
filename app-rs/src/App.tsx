@@ -340,7 +340,17 @@ export function App() {
           >
           </Layout.Header>
 
-          <Layout.Content ref={contentRef} style={{ padding: 14, minHeight: 0, overflow: "auto" }}>
+          {/* flex 列：让 .sk-page（flex:1 0 auto）撑满剩余高度——滚动仍发生在本容器 */}
+          <Layout.Content
+            ref={contentRef}
+            style={{
+              padding: 14,
+              minHeight: 0,
+              overflow: "auto",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
             {/* key=page 强制切页淡入（sk-page 动画），替代硬切 */}
             <div key={page} className="sk-page">
               {pages[page] ?? <Pending title={page} milestone="—" detail="未知页面" />}
