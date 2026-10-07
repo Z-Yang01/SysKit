@@ -23,7 +23,7 @@ import {
 } from "antd";
 
 import { ToolboxStartup } from "./ToolboxStartup";
-import { CleanupPanel, DiskPanel } from "./ToolboxDisk";
+import { CleanupPanel, DiskPanel, DirDrillPanel } from "./ToolboxDisk";
 import { BatteryPanel } from "./ToolboxBattery";
 import { ModesPanel } from "./ToolboxModes";
 import { WifiPage } from "./WifiPasswordPanel";
@@ -103,7 +103,16 @@ export function SystemPage({
         items={[
           { key: "perf", label: "性能监控", children: <PerfPanel /> },
           { key: "startup", label: "启动项管理", children: <ToolboxStartup /> },
-          { key: "disk", label: "磁盘空间", children: <DiskPanel /> },
+          {
+            key: "disk",
+            label: "磁盘空间",
+            children: (
+              <Space direction="vertical" size={24} style={{ width: "100%" }}>
+                <DiskPanel />
+                <DirDrillPanel />
+              </Space>
+            ),
+          },
           { key: "clean", label: "垃圾清理", children: <CleanupPanel /> },
           { key: "battery", label: "电池健康", children: <BatteryPanel /> },
           { key: "modes", label: "场景模式", children: <ModesPanel /> },

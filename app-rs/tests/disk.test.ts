@@ -7,19 +7,27 @@ import { describe, expect, it } from "vitest";
 
 import {
   allTargetKeys,
+  childIcon,
   cleanConfirmText,
   cleanResultSummary,
+  collapsePath,
   diskSummary,
+  drillErrorText,
   driveLabel,
+  flattenChildRows,
   hasSkipped,
   humanSize,
   meaningfulKeys,
   needsSpaceWarning,
   selectedBytes,
+  sortChildRows,
   targetResultText,
+  toggleExpanded,
   toggleKey,
   usageColor,
   validateClean,
+  type ChildrenScan,
+  type ChildEntry,
   type CleanRunResult,
   type CleanTargetInfo,
   type DriveRow,
@@ -251,5 +259,119 @@ describe("勾选辅助", () => {
     expect(toggleKey(["a", "b"], "a")).toEqual(["b"]);
     // 不去重输入、不改原数组顺序语义：重复选中时只留一个
     expect(toggleKey(["a"], "a")).toEqual([]);
+  });
+});
+
+// ---------------- 目录逐级展开（下钻分析） ----------------
+
+const child = (over: Partial<ChildEntry> = {}): ChildEntry => ({
+  name: "sub",
+  path: "C:\data\sub",
+  size: 0,
+  total: 100,
+  file_count: 1,
+  error_count: 0,
+  is_dir: true,
+  ...over,
+});
+
+const scanOf = (over: Partial<ChildrenScan> = {}): ChildrenScan => ({
+  path: "C:\data",
+  name: "data",
+  size: 3,
+  total: 103,
+  file_count: 2,
+  error_count: 0,
+  children: [],
+  truncated: false,
+  ext_stats: [],
+  top_files: [],
+  duration_ms: 5,
+  cancelled: false,
+  ...over,
+});
+
+describe("下钻：子项行排序", () => {
+  it("按 total 降序，目录与文件混排同列；并列按名称稳定", () => {
+    const rows = [
+      child({ name: "b", total: 100 }),
+      child({ name: "f.txt", total: 500, is_dir: false }),
+      child({ name: "z", total: 100 }),
+      child({ name: "a", total: 900 }),
+    ];
+    expect(sortChildRows(rows).map((r) => r.name)).toEqual(["a", "f.txt", "b", "z"]);
+  });
+
+  it("不改动入参数组（纯函数）", () => {
+    const rows = [child({ name: "b", total: 1 }), child({ name: "a", total: 2 })];
+    sortChildRows(rows);
+    expect(rows.map((r) => r.name)).toEqual(["b", "a"]);
+  });
+});
+
+describe("下钻：展开收起状态机（仅内存态）", () => {
+  it("toggleExpanded 翻转；collapsePath 收回起态", () => {
+    let expanded = toggleExpanded({}, "C:\a");
+    expect(expanded).toEqual({ "C:\a": true });
+    expanded = toggleExpanded(expanded, "C:\a");
+    expect(expanded).toEqual({});
+    // 失败回退：收起指定行且不影响其他已展开行
+    const two = toggleExpanded(toggleExpanded({}, "C:\a"), "C:\b");
+    expect(collapsePath(two, "C:\a")).toEqual({ "C:\b": true });
+  });
+
+  it("未展开/收起时不渲染子项；展开且缓存命中才插入缩进子行", () => {
+    const root = scanOf({
+      children: [child({ name: "sub", path: "C:\data\sub" })],
+    });
+    const subScan = scanOf({
+      path: "C:\data\sub",
+      name: "sub",
+      children: [child({ name: "deep", path: "C:\data\sub\deep", total: 30 })],
+    });
+    // 未展开：只有一行
+    expect(flattenChildRows(root, {}, {})).toHaveLength(1);
+    // 已展开但结果未到：子行位置是 loading 占位
+    const expanded = toggleExpanded({}, "C:\data\sub");
+    const loading = flattenChildRows(root, expanded, {});
+    expect(loading).toHaveLength(2);
+    expect(loading[1]).toMatchObject({ kind: "loading", depth: 1, path: "C:\data\sub" });
+    // 缓存命中：插入 depth+1 的子行
+    const withSub = flattenChildRows(root, expanded, { "C:\data\sub": subScan });
+    expect(withSub).toHaveLength(2);
+    expect(withSub[1]).toMatchObject({ kind: "row", depth: 1 });
+    expect(withSub[1].row?.name).toBe("deep");
+    // 收起：子行整体消失
+    expect(flattenChildRows(root, collapsePath(expanded, "C:\data\sub"), { "C:\data\sub": subScan })).toHaveLength(1);
+    // 嵌套展开：孙辈 depth=2（deep 的扫描结果自带子行 leaf）
+    const two = toggleExpanded(expanded, "C:\data\sub\deep");
+    const nested = flattenChildRows(root, two, {
+      "C:\data\sub": subScan,
+      "C:\data\sub\deep": scanOf({
+        path: "C:\data\sub\deep",
+        children: [child({ name: "leaf", path: "C:\data\sub\deep\leaf" })],
+      }),
+    });
+    expect(nested.map((r) => r.depth)).toEqual([0, 1, 2]);
+    expect(nested[2].row?.name).toBe("leaf");
+  });
+
+  it("文件行不可展开（flatten 不为其插 loading/子行）", () => {
+    const root = scanOf({
+      children: [child({ name: "f.txt", path: "C:\data\f.txt", is_dir: false, total: 5 })],
+    });
+    // 即便状态异常地把文件路径标成展开，也不产生子行
+    const weird = { "C:\data\f.txt": true };
+    expect(flattenChildRows(root, weird, {})).toHaveLength(1);
+  });
+
+  it("root 未扫描时拍平结果恒为空（不渲染幽灵行）", () => {
+    expect(flattenChildRows(null, { "C:\a": true }, {})).toEqual([]);
+  });
+
+  it("图标区分目录/文件；失败文案带路径", () => {
+    expect(childIcon({ is_dir: true })).toBe("📁");
+    expect(childIcon({ is_dir: false })).toBe("📄");
+    expect(drillErrorText("C:\a", "拒绝访问")).toBe("展开 C:\a 失败：拒绝访问");
   });
 });

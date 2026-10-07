@@ -408,6 +408,7 @@ pub fn run() {
             commands::sk_startup_set,
             commands::sk_disk_list,
             commands::sk_disk_scan_tree,
+            commands::sk_disk_scan_children,
             commands::sk_disk_scan_cancel,
             commands::sk_disk_recycle_delete,
             commands::sk_clean_targets,

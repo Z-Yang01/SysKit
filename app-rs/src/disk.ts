@@ -88,6 +88,107 @@ export function usageColor(token: string): string {
   }
 }
 
+// ---------------- 目录逐级展开（下钻分析） ----------------
+
+/** 后端 `sk_disk_scan_children` 的一行子项（目录或文件）。 */
+export interface ChildEntry {
+  name: string;
+  path: string;
+  /** 目录=直接文件合计；文件=自身大小 */
+  size: number;
+  /** 目录=递归总大小；文件=自身大小 */
+  total: number;
+  file_count: number;
+  error_count: number;
+  is_dir: boolean;
+}
+
+/** 后端 `sk_disk_scan_children` 的返回：某目录直接子项的单层摘要。 */
+export interface ChildrenScan {
+  path: string;
+  name: string;
+  size: number;
+  total: number;
+  file_count: number;
+  error_count: number;
+  children: ChildEntry[];
+  truncated: boolean;
+  ext_stats: [string, number][];
+  top_files: { size: number; path: string }[];
+  duration_ms: number;
+  cancelled: boolean;
+}
+
+/** 子项行排序：按 total 降序（目录=递归、文件=自身），并列按名称升序稳定。 */
+export function sortChildRows(rows: ChildEntry[]): ChildEntry[] {
+  return [...rows].sort(
+    (a, b) => b.total - a.total || a.name.localeCompare(b.name),
+  );
+}
+
+/** 行首图标（与剪贴板/粘贴面板的字符图标同风格，不引图标库）。 */
+export function childIcon(row: Pick<ChildEntry, "is_dir">): string {
+  return row.is_dir ? "📁" : "📄";
+}
+
+/** 展开状态翻转（仅内存态，不持久化）。 */
+export function toggleExpanded(
+  expanded: Record<string, boolean>,
+  path: string,
+): Record<string, boolean> {
+  const next = { ...expanded };
+  if (next[path]) delete next[path];
+  else next[path] = true;
+  return next;
+}
+
+/** 展开失败的回退：把该行收回起态（不得卡在「已展开但没内容」的假态）。 */
+export function collapsePath(
+  expanded: Record<string, boolean>,
+  path: string,
+): Record<string, boolean> {
+  const next = { ...expanded };
+  delete next[path];
+  return next;
+}
+
+/** 拍平后的可见行：普通子项行，或「已展开但结果未到」的加载占位行。 */
+export interface FlatChildRow {
+  kind: "row" | "loading";
+  depth: number;
+  row?: ChildEntry;
+  path?: string;
+}
+
+/**
+ * 把根层子项与各已展开目录的子项拍平成带缩进层级的可见行序列。
+ * 展开但扫描未返回的目录输出 loading 占位行（行内「扫描中…」就靠它）。
+ */
+export function flattenChildRows(
+  root: ChildrenScan | null,
+  expanded: Record<string, boolean>,
+  scans: Record<string, ChildrenScan>,
+): FlatChildRow[] {
+  const out: FlatChildRow[] = [];
+  const walk = (rows: ChildEntry[], depth: number) => {
+    for (const row of sortChildRows(rows)) {
+      out.push({ kind: "row", row, depth });
+      if (row.is_dir && expanded[row.path]) {
+        const sub = scans[row.path];
+        if (sub) walk(sub.children, depth + 1);
+        else out.push({ kind: "loading", depth: depth + 1, path: row.path });
+      }
+    }
+  };
+  if (root) walk(root.children, 0);
+  return out;
+}
+
+/** 下钻扫描失败的提示文案（toast 用）。 */
+export function drillErrorText(path: string, err: unknown): string {
+  return `展开 ${path} 失败：${String(err)}`;
+}
+
 /** 卷显示名：`C:` + 卷标。 */
 export function driveLabel(d: DriveRow): string {
   return d.label ? `${d.letter} ${d.label}` : d.letter;

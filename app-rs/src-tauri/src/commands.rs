@@ -2480,6 +2480,23 @@ pub fn sk_disk_scan_cancel() {
     crate::diskusage::SCAN_STOP.cancel();
 }
 
+/// 目录逐级展开：扫描一个目录的直接子项（递归大小/类型分布/Top200 摘要，
+/// 只返回一层——孙辈由前端再次调用按需下钻）。路径校验见
+/// diskusage::validate_scan_dir（绝对路径/存在且为目录/拒绝设备命名空间与
+/// DOS 保留设备名）。取消走 sk_disk_scan_cancel（与 sk_disk_scan_tree
+/// 同一枚 SCAN_STOP，同一时刻只跑一个扫描）。
+#[tauri::command]
+pub async fn sk_disk_scan_children(dir: String) -> Result<serde_json::Value, String> {
+    let dir = crate::diskusage::validate_scan_dir(&dir)?;
+    crate::diskusage::SCAN_STOP.reset();
+    tauri::async_runtime::spawn_blocking(move || {
+        let r = crate::diskusage::scan_children(&dir, &crate::diskusage::SCAN_STOP);
+        serde_json::to_value(r).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("扫描线程失败: {e}"))?
+}
+
 /// 批量移入回收站（可还原），返回 (成功数, 失败路径列表)。
 #[tauri::command]
 pub async fn sk_disk_recycle_delete(paths: Vec<String>) -> Result<serde_json::Value, String> {

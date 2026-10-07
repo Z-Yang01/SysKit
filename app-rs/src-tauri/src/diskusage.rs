@@ -41,6 +41,52 @@ pub struct TopFile {
     pub path: String,
 }
 
+/// 单层展开的一行子项（目录或文件）。
+/// 目录：size=直接文件合计、total=递归总大小（轮次39 契约 total=自身+子树）；
+/// 文件：size=total=自身大小、file_count=1。
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ChildEntry {
+    pub name: String,
+    pub path: String,
+    /// 目录=直接文件合计；文件=自身大小
+    pub size: u64,
+    /// 目录=递归总大小；文件=自身大小
+    pub total: u64,
+    /// 目录=子树文件数（递归口径，与 scan_tree 一致）；文件=1
+    pub file_count: u64,
+    pub error_count: u64,
+    pub is_dir: bool,
+}
+
+/// `scan_children` 的返回：某目录直接子项的单层摘要。
+/// 子项内部不再嵌套内容（孙辈要前端再次调 sk_disk_scan_children 下钻），
+/// 否则一次展开就会把整棵子树塞进响应。
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ChildrenScan {
+    pub path: String,
+    pub name: String,
+    /// 本目录直接文件合计
+    pub size: u64,
+    /// 本目录递归总大小
+    pub total: u64,
+    pub file_count: u64,
+    pub error_count: u64,
+    /// 直接子项，按 total 降序（并列按名称稳定排序），最多 MAX_CHILD_ROWS 个
+    pub children: Vec<ChildEntry>,
+    /// children 被截断到 MAX_CHILD_ROWS 时为 true
+    pub truncated: bool,
+    /// 子树类型分布（复用 scan_tree 口径：字节降序、无后缀归「无后缀」）
+    pub ext_stats: Vec<(String, u64)>,
+    /// 子树大文件 Top200（复用 scan_tree 口径）
+    pub top_files: Vec<TopFile>,
+    pub duration_ms: u64,
+    pub cancelled: bool,
+}
+
+/// 单层子项行数上限：目录里可能堆几万个文件，整包序列化既慢又会卡渲染。
+/// 按大小降序截断后「占空间的都在」，前端用 truncated 提示「仅显示前 N 项」。
+pub const MAX_CHILD_ROWS: usize = 500;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanResult {
     pub root: DirNode,
@@ -318,6 +364,153 @@ fn ext_key(name: &str) -> String {
     }
 }
 
+// ---------------- 单层展开（目录逐级下钻） ----------------
+
+/// 扫描单个目录的**直接子项**（磁盘分析页逐级下钻用）。
+///
+/// 实现上复用 `scan_tree` 跑完整子树——子项的 total（递归大小）/ext_stats/
+/// top_files 都要从整棵子树算出来才有意义；随后只投影出第一层子项返回，
+/// 孙辈内容由前端再次调用本函数按需下钻。取消令牌与 sk_disk_scan_tree
+/// 同一枚 SCAN_STOP（同一时刻只跑一个扫描，预取消连直接子项也不枚举）。
+pub fn scan_children(dir: &Path, stop: &ScanStop) -> ChildrenScan {
+    let t0 = Instant::now();
+    let r = scan_tree(dir, stop);
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| dir.to_string_lossy().trim_end_matches('\\').to_string());
+    let mut result = ChildrenScan {
+        path: dir.to_string_lossy().to_string(),
+        name,
+        size: r.root.size,
+        total: r.root.total,
+        file_count: r.file_count,
+        error_count: r.error_count,
+        duration_ms: t0.elapsed().as_millis() as u64,
+        cancelled: r.cancelled,
+        ext_stats: r.ext_stats,
+        top_files: r.top_files,
+        ..Default::default()
+    };
+    // 取消即时生效：预取消/中途取消不再枚举直接子项（与 scan_tree 的
+    // 「预取消不得再统计任何文件」同口径），cancelled 标记结果不完整
+    if r.cancelled {
+        return result;
+    }
+
+    // 子目录的递归口径按名称对齐到 scan_tree 结果（name 在同一目录内唯一）
+    let mut subdirs: std::collections::HashMap<String, &DirNode> = std::collections::HashMap::new();
+    for c in &r.root.children {
+        subdirs.insert(c.name.clone(), c);
+    }
+
+    if let Ok(it) = fs::read_dir(dir) {
+        for entry in it.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => {
+                    // 与 scan_tree 同口径：readdir 条目失败计 1 个错误
+                    result.error_count += 1;
+                    continue;
+                }
+            };
+            // 跳过 reparse point/符号链接：与 scan_tree 同规则（junction 死循环）
+            if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || meta.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let path = entry.path().to_string_lossy().to_string();
+            if meta.is_dir() {
+                // 对齐不到 scan_tree 结果（两次遍历之间目录树变动的竞态）：
+                // 给 0 值占位，行本身仍要列出——不列会让用户以为子目录丢了
+                let (size, total, fc, ec) = match subdirs.get(&name) {
+                    Some(n) => (n.size, n.total, n.file_count, n.error_count),
+                    None => (0, 0, 0, 0),
+                };
+                result.children.push(ChildEntry {
+                    name,
+                    path,
+                    size,
+                    total,
+                    file_count: fc,
+                    error_count: ec,
+                    is_dir: true,
+                });
+            } else {
+                let size = meta.len();
+                result.children.push(ChildEntry {
+                    name,
+                    path,
+                    size,
+                    total: size,
+                    file_count: 1,
+                    error_count: 0,
+                    is_dir: false,
+                });
+            }
+        }
+    } else {
+        // scan_tree 能打开、这里打不开：目录在两次遍历间被删（竞态）
+        result.error_count += 1;
+    }
+
+    // 契约：按 total 降序（目录=递归大小、文件=自身），并列按名称稳定排序
+    result
+        .children
+        .sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.name.cmp(&b.name)));
+    if result.children.len() > MAX_CHILD_ROWS {
+        result.truncated = true;
+        result.children.truncate(MAX_CHILD_ROWS);
+    }
+    result.duration_ms = t0.elapsed().as_millis() as u64;
+    result
+}
+
+/// `sk_disk_scan_children` 的路径守卫：绝对路径 / 存在且为目录 /
+/// 拒绝设备命名空间（`\\.\`、`\\?\`）与 DOS 保留设备名（CON/NUL/COM1…）。
+/// sk_disk_scan_tree 无校验是历史欠账，新命令不再复制这个口子。
+pub fn validate_scan_dir(raw: &str) -> Result<std::path::PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("目录路径不能为空".to_string());
+    }
+    // 设备命名空间（\\.\PhysicalDrive0 / \\?\C:\…）：绕过文件系统语义直接
+    // 摸设备，扫描语义在这里没有定义，一律拒绝
+    let lowered = raw.to_ascii_lowercase().replace('/', "\\");
+    if lowered.starts_with("\\\\.\\") || lowered.starts_with("\\\\?\\") {
+        return Err(format!("不支持设备命名空间路径: {raw}"));
+    }
+    let path = Path::new(raw);
+    if !path.is_absolute() {
+        return Err(format!("必须是绝对路径（如 C:\\Users）: {raw}"));
+    }
+    // DOS 保留设备名：即使拼成 C:\CON\ 子路径，Win32 也可能把它解析到
+    // 控制台设备而不是文件系统——逐级组件排查（含「CON.txt」式带扩展名变体）
+    const DEVICE_NAMES: [&str; 22] = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    for comp in path.components() {
+        if let std::path::Component::Normal(os) = comp {
+            let name = os.to_string_lossy().to_ascii_lowercase();
+            let stem = name.split('.').next().unwrap_or("");
+            if DEVICE_NAMES.contains(&stem) {
+                return Err(format!(
+                    "路径包含 Windows 保留设备名（{stem}），已拒绝: {raw}"
+                ));
+            }
+        }
+    }
+    if !path.exists() {
+        return Err(format!("目录不存在: {raw}"));
+    }
+    if !path.is_dir() {
+        return Err(format!("不是目录: {raw}"));
+    }
+    Ok(path.to_path_buf())
+}
+
 // ---------------- 回收站删除 ----------------
 
 /// 执行一次 SHFileOperationW 删除，pFrom 为双 null 结尾的宽字符路径列表。
@@ -538,5 +731,169 @@ mod tests {
         assert!(void.children.is_empty(), "空目录不得出现幽灵子内容");
         assert_eq!(r.root.total, 5);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---------------- 单层展开 scan_children ----------------
+
+    /// 下钻夹具：根下 1 个直接文件 + 2 个子目录（其一再有嵌套），可断言递归口径。
+    fn children_tree(tag: &str) -> std::path::PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("syskit_rs_children_{}_{}", std::process::id(), tag));
+        let _ = fs::remove_dir_all(&p);
+        std::fs::create_dir_all(p.join("big").join("deep")).unwrap();
+        std::fs::create_dir_all(p.join("small")).unwrap();
+        std::fs::write(p.join("root.txt"), vec![0u8; 3]).unwrap();
+        std::fs::write(p.join("big").join("a.bin"), vec![0u8; 300]).unwrap();
+        std::fs::write(p.join("big").join("deep").join("b.bin"), vec![0u8; 30]).unwrap();
+        std::fs::write(p.join("small").join("c.txt"), vec![0u8; 4]).unwrap();
+        p
+    }
+
+    fn scan_children_of(tag: &str) -> (std::path::PathBuf, ChildrenScan) {
+        let root = children_tree(tag);
+        let stop = ScanStop(std::sync::atomic::AtomicBool::new(false));
+        let r = scan_children(&root, &stop);
+        (root, r)
+    }
+
+    /// 回归锁：单层展开的 size 口径延续轮次39 契约——目录 total=自身+子树
+    /// （递归），size=直接文件；文件 size=total=自身；根摘要与 scan_tree 一致。
+    #[test]
+    fn children_size_contract_recursive_total() {
+        let (root, r) = scan_children_of("size");
+        assert!(!r.cancelled);
+        assert_eq!(r.name, root.file_name().unwrap().to_string_lossy());
+        assert_eq!(r.path, root.to_string_lossy());
+        let big = r
+            .children
+            .iter()
+            .find(|c| c.name == "big")
+            .expect("子目录 big 必须在列");
+        // big：直接文件 a.bin=300，子树另有 deep/b.bin=30
+        assert_eq!(big.size, 300, "目录 size=直接文件合计");
+        assert_eq!(big.total, 330, "目录 total=自身 size+子树（轮次39契约）");
+        assert_eq!(big.file_count, 2, "file_count 递归口径");
+        assert!(big.is_dir);
+        // deep 不出现在第一层（只返回一层，孙辈要再次下钻）
+        assert!(
+            !r.children.iter().any(|c| c.name == "deep"),
+            "单层展开不得夹带孙辈内容"
+        );
+        // 文件行：size=total=自身
+        let f = r.children.iter().find(|c| c.name == "root.txt").unwrap();
+        assert!(!f.is_dir);
+        assert_eq!(f.size, 3);
+        assert_eq!(f.total, 3);
+        assert_eq!(f.file_count, 1);
+        // 根摘要与 scan_tree 同口径
+        assert_eq!(r.size, 3);
+        assert_eq!(r.total, 337);
+        assert_eq!(r.file_count, 4);
+        assert_eq!(r.error_count, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 回归锁：子项按 total 降序（目录与文件混排同列），并列按名称稳定排序。
+    #[test]
+    fn children_sorted_by_total_desc() {
+        let (root, r) = scan_children_of("order");
+        let totals: Vec<u64> = r.children.iter().map(|c| c.total).collect();
+        assert_eq!(totals, vec![330, 4, 3], "big 目录 > small 目录 > root.txt");
+        for w in r.children.windows(2) {
+            assert!(
+                w[0].total > w[1].total || (w[0].total == w[1].total && w[0].name <= w[1].name),
+                "必须降序且并列按名称稳定"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 回归锁：空目录展开——零子项、零大小、truncated=false、无幽灵行。
+    #[test]
+    fn children_empty_dir_yields_no_rows() {
+        let root =
+            std::env::temp_dir().join(format!("syskit_rs_children_{}_void", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let stop = ScanStop(std::sync::atomic::AtomicBool::new(false));
+        let r = scan_children(&root, &stop);
+        assert!(!r.cancelled);
+        assert!(r.children.is_empty());
+        assert!(!r.truncated);
+        assert_eq!(r.total, 0);
+        assert_eq!(r.size, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 回归锁：取消即时生效——预置位令牌下 cancelled=true 且不再枚举任何子项。
+    #[test]
+    fn children_cancel_token_takes_effect_immediately() {
+        let root = children_tree("cancel");
+        let stop = ScanStop(std::sync::atomic::AtomicBool::new(true));
+        let r = scan_children(&root, &stop);
+        assert!(r.cancelled);
+        assert!(r.children.is_empty(), "预取消不得再枚举任何子项");
+        assert_eq!(r.total, 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 回归锁：超过 MAX_CHILD_ROWS 截断 + truncated 标记，留下的必是最大的前 N。
+    #[test]
+    fn children_truncated_at_limit_keeps_largest() {
+        let root =
+            std::env::temp_dir().join(format!("syskit_rs_children_{}_cap", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let n = MAX_CHILD_ROWS + 5;
+        for i in 1..=n as u64 {
+            std::fs::write(root.join(format!("f{i:04}.dat")), vec![0u8; i as usize]).unwrap();
+        }
+        let stop = ScanStop(std::sync::atomic::AtomicBool::new(false));
+        let r = scan_children(&root, &stop);
+        assert_eq!(r.children.len(), MAX_CHILD_ROWS);
+        assert!(r.truncated);
+        // 降序切齐：首行 = 最大的文件
+        assert_eq!(r.children[0].total, n as u64);
+        assert_eq!(
+            r.children[MAX_CHILD_ROWS - 1].total,
+            (n - MAX_CHILD_ROWS + 1) as u64
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 回归锁：路径守卫拒绝用例（空/相对/设备命名空间/保留设备名/不存在/文件），
+    /// 并断言错误文案命中对应拒绝原因（防止「都返回 Err」的假绿）。
+    #[test]
+    fn children_guard_rejects_suspicious_paths() {
+        let rejects = |p: &str| validate_scan_dir(p).expect_err("必须被拒绝");
+        // 空与纯空白
+        assert!(rejects("").contains("不能为空"));
+        assert!(rejects("   ").contains("不能为空"));
+        // 相对路径
+        assert!(rejects("relative\\dir").contains("绝对路径"));
+        assert!(rejects(".").contains("绝对路径"));
+        // 设备命名空间（正反斜杠两种写法）
+        assert!(rejects(r"\\.\PhysicalDrive0").contains("设备命名空间"));
+        assert!(rejects(r"\\?\C:\Windows").contains("设备命名空间"));
+        assert!(rejects("//./PhysicalDrive0").contains("设备命名空间"));
+        // DOS 保留设备名（含带扩展名变体与子路径形式）
+        assert!(rejects(r"C:\CON").contains("保留设备名"));
+        assert!(rejects(r"C:\con.txt").contains("保留设备名"));
+        assert!(rejects(r"C:\Users\NUL\sub").contains("保留设备名"));
+        assert!(rejects(r"C:\lpt9").contains("保留设备名"));
+        // 不存在
+        assert!(rejects(r"C:\__syskit_no_such_dir_9x__").contains("不存在"));
+        // 存在但不是目录（测试二进制本身是真实的绝对文件路径）
+        let exe = std::env::current_exe().expect("取测试二进制路径");
+        assert!(rejects(exe.to_string_lossy().as_ref()).contains("不是目录"));
+    }
+
+    /// 回归锁：合法目录路径放行（守卫不得误伤正常使用）。
+    #[test]
+    fn children_guard_accepts_real_dir() {
+        let root = children_tree("guard_ok");
+        let p = validate_scan_dir(root.to_string_lossy().as_ref()).expect("真实目录必须放行");
+        assert_eq!(p, root);
+        let _ = fs::remove_dir_all(root);
     }
 }

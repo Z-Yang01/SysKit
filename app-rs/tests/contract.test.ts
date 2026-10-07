@@ -48,6 +48,8 @@ interface InvokeSite {
   cmd: string;
   args: Set<string>; // 已归一化为 snake_case
   file: string;
+  /** 实参对象用了 ...展开（内容文本上不可验证）——必填形参检查对它豁免 */
+  spread: boolean;
 }
 
 /** 从前端源码提取全部 invoke 点（命令名 + 实参键，含跨行对象字面量）。 */
@@ -69,7 +71,10 @@ function collectInvokeSites(): InvokeSite[] {
         else if (ch === "}") depth--;
         i++;
       }
-      const body = "{" + src.slice(m.index + m[0].length, i - 1); // 补回被 m[0] 吃掉的起始 {
+      // 补回被 m[0] 吃掉的起始 {，并**保留收尾 }**：收尾括号被截掉时，
+      // 简写 { dir } 的最后一个键没有尾随 [,}] 可匹配，整个实参对象会被
+      // 提取成空——「必填形参未传」永远查不出来（轮次111 变异验证实锤）
+      const body = "{" + src.slice(m.index + m[0].length, i);
       // 去掉字符串字面量与注释，避免键名误报
       const clean = body
         .replace(/`[^`]*`/g, "")
@@ -81,11 +86,18 @@ function collectInvokeSites(): InvokeSite[] {
       for (const k of clean.matchAll(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:/g)) {
         args.add(toSnake(k[2]));
       }
-      // 简写 { keyword } / 尾随 { keyword }
-      for (const k of clean.matchAll(/[{,]\s*([A-Za-z_][A-Za-z0-9_]*)\s*[,}]/g)) {
+      // 简写 { keyword } / 尾随 { keyword }。收尾必须用前瞻 (?=[,}])：
+      // 消费型 [,}] 会把属性间的逗号吃掉，多属性简写永远只抓到前 N-1 个
+      // （{ key, value } 提不出 value——轮次111 修复）
+      for (const k of clean.matchAll(/[{,]\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,}])/g)) {
         args.add(toSnake(k[1]));
       }
-      sites.push({ cmd, args, file: p.replace(REPO + "\\", "").replace(REPO + "/", "") });
+      sites.push({
+        cmd,
+        args,
+        file: p.replace(REPO + "\\", "").replace(REPO + "/", ""),
+        spread: /\.\.\./.test(clean),
+      });
     }
   }
   return sites;
@@ -126,7 +138,13 @@ function collectRustCommands(): { registered: Set<string>; cmds: Map<string, Rus
       if (!pm) continue; // 如 self / 模式参数
       const [, pname, ptype] = pm;
       if (/tauri::State|State<'_|AppHandle|Window|WebviewWindow/.test(ptype)) continue;
-      if (/^[A-Z]/.test(ptype.trim()) && !ptype.includes("::")) {
+      const t = ptype.trim();
+      // 「单个 CamelCase 整包参数」判定必须排除 String 族（String /
+      // Option<String> / Vec<String>）：它们首字母大写但仍是标量形参——
+      // 曾把 dir: String 这类命令误判成结构体整包，整条命令的键名审计被
+      // 跳过（轮次111 变异验证实锤：实参键改错名契约测试照样绿）。真实
+      // 结构体形参（如 PasteRequest）不含 String 字样，不受影响。
+      if (/^[A-Z]/.test(t) && !t.includes("::") && !t.includes("String")) {
         structShaped = true;
         continue;
       }
@@ -182,6 +200,7 @@ describe("前后端 invoke 契约", () => {
   it("Rust 必填形参（非 Option）在每个 invoke 点都有传", () => {
     const problems: string[] = [];
     for (const s of sites) {
+      if (s.spread) continue; // ...展开站点的实参清单文本上不可见，无法核对
       const def = cmds.get(s.cmd);
       if (!def || def.structShaped) continue;
       for (const [p, optional] of def.params) {
