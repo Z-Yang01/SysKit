@@ -19,11 +19,14 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Dropdown,
   Input,
   Modal,
+  Progress,
   Radio,
   Select,
+  Slider,
   Space,
   Table,
   Tag,
@@ -34,18 +37,156 @@ import {
 } from "antd";
 
 import {
+  PWGEN_DEFAULT_LENGTH,
+  PWGEN_MAX_LENGTH,
+  PWGEN_MIN_LENGTH,
   accountTitle,
   canSetMasterPassword,
   maskedSecret,
   modeLabel,
   passwordStrength,
+  pwgenEntropyBits,
+  pwgenMeterPercent,
+  pwgenTier,
+  pwgenUsable,
   setupConfirmText,
   storageAvailable,
   vaultPhase,
   type AccountRow,
+  type PwgenOptions,
   type SiteRow,
   type VaultStatus,
 } from "./vault";
+
+/**
+ * 账号表单内嵌的密码生成面板。
+ *
+ * 为什么是自持 state 的独立组件：Modal.confirm 的 content 是打开瞬间的静态
+ * 快照，父组件不重渲染（openUnlock 注释里的同根源问题）——选项滑杆/勾选要
+ * 在弹窗内联动（强度条实时重算），必须让组件自己持有 state 自己重渲染。
+ *
+ * 纪律：生成的密码在点「保存」前只活在表单输入框里，但已经是凭据材料——
+ * 「复制」必须走 `sk_clip_copy_sensitive` 敏感通道（不进本应用历史 / 不进
+ * Win+V 与云剪贴板 / 到期清空）。未保存的密码与已保存密码的暴露窗口一致，
+ * 没有理由降级到明文通道（TOTP 复制走敏感通道是同一教训，源码守卫锁死）。
+ * 生成只填充输入框，不自动保存——保存与否始终由用户点「保存」决定。
+ */
+function PasswordGenPanel({ onGenerated }: { onGenerated: (pw: string) => void }) {
+  const [length, setLength] = useState(PWGEN_DEFAULT_LENGTH);
+  const [upper, setUpper] = useState(true);
+  const [lower, setLower] = useState(true);
+  const [digits, setDigits] = useState(true);
+  const [symbols, setSymbols] = useState(true);
+  const [excludeAmbiguous, setExcludeAmbiguous] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // 最近一次生成结果：仅存活于本弹窗（关闭即丢），复制按钮据此启用
+  const [generated, setGenerated] = useState("");
+
+  const opts: PwgenOptions = {
+    length,
+    upper,
+    lower,
+    digits,
+    symbols,
+    exclude_ambiguous: excludeAmbiguous,
+  };
+  const usable = pwgenUsable(opts);
+  const bits = pwgenEntropyBits(opts);
+  const tier = pwgenTier(bits);
+
+  const gen = () => {
+    setBusy(true);
+    // 六个实参全部写 key: value 显式形态——契约审计（tests/contract.test.ts）
+    // 的纯简写逐行列表会被它的 shorthand 正则漏采隔行键，显式键名让它稳定可解析
+    void invoke<string>("sk_vault_generate_password", {
+      length: length,
+      upper: upper,
+      lower: lower,
+      digits: digits,
+      symbols: symbols,
+      excludeAmbiguous: excludeAmbiguous,
+    })
+      .then((pw) => {
+        setGenerated(pw);
+        onGenerated(pw);
+      })
+      .catch((e) => message.error(String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const copyGenerated = () => {
+    // 未保存的生成密码同为凭据材料：必须走敏感通道（见组件头注释）
+    void invoke<{ note: string; ttl: number }>("sk_clip_copy_sensitive", { text: generated })
+      .then((r) =>
+        message.success(r.ttl > 0 ? `已复制；${r.ttl} 秒后自动清空剪贴板` : "已复制（不会进入历史）"),
+      )
+      .catch((e) => message.error(String(e)));
+  };
+
+  return (
+    <div
+      style={{
+        border: "1px solid rgba(128,128,128,0.35)",
+        borderRadius: 6,
+        padding: "8px 10px",
+      }}
+    >
+      <Space direction="vertical" size={6} style={{ width: "100%" }}>
+        <Space size={12} wrap>
+          <span className="sk-hint">长度 {length}</span>
+          <Slider
+            min={PWGEN_MIN_LENGTH}
+            max={PWGEN_MAX_LENGTH}
+            value={length}
+            onChange={setLength}
+            style={{ width: 180, marginInline: 0 }}
+          />
+          <Checkbox checked={upper} onChange={(e) => setUpper(e.target.checked)}>
+            大写
+          </Checkbox>
+          <Checkbox checked={lower} onChange={(e) => setLower(e.target.checked)}>
+            小写
+          </Checkbox>
+          <Checkbox checked={digits} onChange={(e) => setDigits(e.target.checked)}>
+            数字
+          </Checkbox>
+          <Checkbox checked={symbols} onChange={(e) => setSymbols(e.target.checked)}>
+            符号
+          </Checkbox>
+          <Tooltip title="剔除 0/O、1/l/I、竖线、引号等手抄易看错的字符">
+            <Checkbox
+              checked={excludeAmbiguous}
+              onChange={(e) => setExcludeAmbiguous(e.target.checked)}
+            >
+              排除易混淆字符
+            </Checkbox>
+          </Tooltip>
+        </Space>
+        <Space size={8} wrap>
+          <Button size="small" type="primary" loading={busy} disabled={!usable.ok} onClick={gen}>
+            生成
+          </Button>
+          <Button size="small" disabled={!generated} onClick={copyGenerated}>
+            复制
+          </Button>
+          {!usable.ok ? (
+            <Typography.Text type="danger">{usable.reason}</Typography.Text>
+          ) : (
+            <Progress
+              percent={pwgenMeterPercent(bits)}
+              size="small"
+              style={{ width: 180, marginInline: 0 }}
+              strokeColor={
+                tier.color === "red" ? "#ff4d4f" : tier.color === "orange" ? "#faad14" : "#52c41a"
+              }
+              format={() => `强度${tier.label} · 约 ${Math.round(bits)} 位熵`}
+            />
+          )}
+        </Space>
+      </Space>
+    </div>
+  );
+}
 
 export function VaultPage() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
@@ -365,6 +506,16 @@ export function VaultPage() {
               id="vf-acc-password"
               placeholder={account ? "留空 = 不修改密码" : "密码 *"}
               onChange={(e) => (form.password = e.target.value)}
+            />
+            <PasswordGenPanel
+              onGenerated={(pw) => {
+                // 生成结果只填表单不落库（保存与否仍由用户点「保存」决定）。
+                // Input.Password 非受控（onChange 只写闭包 form），直接同步
+                // DOM 值——与 vf-site-domain 的 URL 自动带出同款手法。
+                form.password = pw;
+                const el = document.getElementById("vf-acc-password") as HTMLInputElement | null;
+                if (el) el.value = pw;
+              }}
             />
             <Input id="vf-acc-totp" defaultValue={form.totp_secret} placeholder="TOTP 密钥（Base32，可留空）"
                    onChange={(e) => (form.totp_secret = e.target.value)} />

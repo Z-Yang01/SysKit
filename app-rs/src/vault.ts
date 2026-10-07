@@ -193,3 +193,92 @@ export function setupConfirmText(mode: "dpapi" | "password"): string {
     "· 主密码只存在你脑子里，不落盘。"
   );
 }
+
+// ---------------- 密码生成器（纯逻辑；生成核心在 Rust pwgen.rs） ----------------
+
+/** 后端 `sk_vault_generate_password` 的参数。 */
+export interface PwgenOptions {
+  length: number;
+  upper: boolean;
+  lower: boolean;
+  digits: boolean;
+  symbols: boolean;
+  exclude_ambiguous: boolean;
+}
+
+/** 生成器默认长度（与 pwgen.rs DEFAULT_LENGTH 一致，parity 守卫锁定）。 */
+export const PWGEN_DEFAULT_LENGTH = 16;
+/** 长度区间（与 pwgen.rs MIN/MAX_LENGTH 一致）。 */
+export const PWGEN_MIN_LENGTH = 8;
+export const PWGEN_MAX_LENGTH = 64;
+
+/**
+ * 四类字符集与易混淆集：**与 pwgen.rs 的 b"..." 字面量逐字对齐**。
+ * tests/vault.test.ts 的 parity 守卫直接读 Rust 源里的字面量与本文件比对，
+ * 任何一侧单独改动都会红——熵按字母表大小算，双端不同步就会撒谎。
+ */
+export const PWGEN_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+export const PWGEN_LOWER = "abcdefghijklmnopqrstuvwxyz";
+export const PWGEN_DIGITS = "0123456789";
+export const PWGEN_SYMBOLS = "!@#$%^&*()-_=+[]{};:,.<>/?~\\|'\"`";
+/** 易混淆字符（跨类）：0/O、1/l/I、竖线、反引号、单双引号。 */
+export const PWGEN_AMBIGUOUS = "0O1lI|`'\"";
+
+/** 排除易混淆后的单类字符集。 */
+function filterAmbiguous(set: string, excludeAmbiguous: boolean): string {
+  if (!excludeAmbiguous) return set;
+  return [...set].filter((c) => !PWGEN_AMBIGUOUS.includes(c)).join("");
+}
+
+/** 当前选项下可用字符总数（熵公式的真数）。全部关闭时为 0。 */
+export function pwgenAlphabetSize(o: PwgenOptions): number {
+  let n = 0;
+  if (o.upper) n += filterAmbiguous(PWGEN_UPPER, o.exclude_ambiguous).length;
+  if (o.lower) n += filterAmbiguous(PWGEN_LOWER, o.exclude_ambiguous).length;
+  if (o.digits) n += filterAmbiguous(PWGEN_DIGITS, o.exclude_ambiguous).length;
+  if (o.symbols) n += filterAmbiguous(PWGEN_SYMBOLS, o.exclude_ambiguous).length;
+  return n;
+}
+
+/** 熵位数 = 长度 × log2(字符集大小)。字母表为空（全类关闭）时为 0。 */
+export function pwgenEntropyBits(o: PwgenOptions): number {
+  const size = pwgenAlphabetSize(o);
+  return size > 1 ? o.length * Math.log2(size) : 0;
+}
+
+/**
+ * 熵分档（弱 / 中 / 强）——只提示，不阻断。
+ *
+ * 阈值口径：<50 弱（8 位全字符集 52 勉强过线，8 位纯小写 37.6 直接弱）；
+ * 50~79 中（12 位全字符集 78.7）；≥80 强（16 位全字符集 104.9、
+ * 12 位大小写数字 71 中档）。上限 128 位封顶显示——超过后再长对在线猜测
+ * 已无区分度，进度条顶格即可，不必把 400+ 位画成天梯。
+ */
+export function pwgenTier(bits: number): {
+  level: "weak" | "fair" | "strong";
+  label: string;
+  color: string;
+} {
+  if (bits < 50) return { level: "weak", label: "弱", color: "red" };
+  if (bits < 80) return { level: "fair", label: "中", color: "orange" };
+  return { level: "strong", label: "强", color: "green" };
+}
+
+/** 强度条显示百分比：熵 128 位封顶（见 pwgenTier 注），避免 400 位画满千格。 */
+export function pwgenMeterPercent(bits: number): number {
+  return Math.max(0, Math.min(100, Math.round((bits / 128) * 100)));
+}
+
+/**
+ * 生成参数可满足性（与后端 validate 同口径的前端预检，双端各自成立）：
+ * 至少一类；长度在区间内。不满足时给出可直接展示的原因。
+ */
+export function pwgenUsable(o: PwgenOptions): { ok: boolean; reason: string } {
+  if (!o.upper && !o.lower && !o.digits && !o.symbols) {
+    return { ok: false, reason: "至少勾选一类字符（大写/小写/数字/符号）" };
+  }
+  if (o.length < PWGEN_MIN_LENGTH || o.length > PWGEN_MAX_LENGTH) {
+    return { ok: false, reason: `长度须在 ${PWGEN_MIN_LENGTH}~${PWGEN_MAX_LENGTH} 之间` };
+  }
+  return { ok: true, reason: "" };
+}

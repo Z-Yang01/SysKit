@@ -45,6 +45,7 @@ mod netstats;
 mod palette;
 mod paths;
 mod portscan;
+mod pwgen;
 mod rate_stats;
 mod rate_store;
 mod repairs;
@@ -439,6 +440,7 @@ pub fn run() {
             commands::sk_vault_global_search,
             commands::sk_vault_totp_code,
             commands::sk_vault_copy_secret,
+            commands::sk_vault_generate_password,
             commands::sk_clip_copy_plain,
             commands::sk_settings_all,
             commands::sk_settings_set,

@@ -2033,6 +2033,35 @@ pub fn sk_vault_totp_code(
     Ok(crate::vault_store::totp_code(&secret, None, 6, 30))
 }
 
+/// 生成随机密码（表单「生成」按钮）。参数与语义见 pwgen 模块头注释：
+/// 拒绝采样保证均匀、每个启用类保底一个、参数不对（长度越界/未启用任何
+/// 字符类）返回 Err 由前端提示。
+///
+/// 不依赖密码库会话——生成是纯 CSPRNG 运算，不触碰任何密文。
+/// **纪律**：生成的密码在用户点「保存」前只活在表单输入框里，但它已经是
+/// 凭据材料（暴露窗口与已保存密码一致）——此时复制必须走
+/// `sk_clip_copy_sensitive` 敏感通道（不进本应用历史 / 不进 Win+V 与云剪贴板 /
+/// 到期清空），与 `vault::password_copy_routes_through_sensitive` 守卫维持的
+/// 密码类口径相同；前端源码守卫 tests/vault.test.ts 锁死这一接线。
+#[tauri::command]
+pub fn sk_vault_generate_password(
+    length: usize,
+    upper: bool,
+    lower: bool,
+    digits: bool,
+    symbols: bool,
+    exclude_ambiguous: bool,
+) -> Result<String, String> {
+    crate::pwgen::generate(crate::pwgen::GenOptions {
+        length,
+        upper,
+        lower,
+        digits,
+        symbols,
+        exclude_ambiguous,
+    })
+}
+
 // ---------------- M5 系统助手：剪贴板历史（管理动作） ----------------
 
 /// 把一条历史保存为文件（图片 → PNG，其它 → 文本）。
