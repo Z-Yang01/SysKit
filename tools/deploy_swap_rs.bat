@@ -51,8 +51,11 @@ if not errorlevel 1 (
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STAMP=%%i"
 
 rem -- Mode: with-data (carry APPDATA data into portable dir) --
-rem 必须括号块：裸的 `if errorlevel 1 exit /b 1` 会在未调用时读到守卫
-rem find 留下的残留 errorlevel=1，整个脚本被静默击杀（exit=1 零输出）。
+rem Must stay a parenthesized block: a bare `if errorlevel 1 exit /b 1`
+rem at top level reads the stale errorlevel=1 left by the guard's find
+rem above when with-data is NOT requested, silently killing the whole
+rem script (exit=1, zero output). Comments stay ASCII-only: cmd parses
+rem batch in the OEM codepage (GBK); see the NOTE at the top.
 if /I "%~1"=="with-data" (
   call :carry_data
   if errorlevel 1 exit /b 1

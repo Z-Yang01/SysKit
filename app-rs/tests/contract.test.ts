@@ -7,6 +7,9 @@
  *   2. 每个 invoke 点传的参数键都能对上 Rust 形参名（抓参数名漂移——
  *      Tauri 只在运行时按名匹配，键拼错 = 用户点按钮才炸，测试全绿）；
  *   3. Rust 侧非 Option 必填形参在每个 invoke 点都有传（抓漏传）。
+ *   4. tools/*.bat 脚本卫生：恒 ASCII + 恒 CRLF（cmd 以 OEM 代码页
+ *      (GBK) 解析批处理，UTF-8 中文注释炸解析——89a0dc1 实锤后立规，
+ *      同日 9464def 又引入中文注释，轮次110 回归锁固化）。
  *
  * Tauri v2 默认把 JS 侧 camelCase 键映射到 Rust snake_case 形参；
  * 本仓前端混用两种风格，比较前统一归一化到 snake_case。
@@ -188,5 +191,39 @@ describe("前后端 invoke 契约", () => {
       }
     }
     expect(problems).toEqual([]);
+  });
+});
+
+describe("tools/*.bat 脚本卫生（cmd 按 OEM 代码页解析批处理）", () => {
+  // cmd 逐行按 OEM 代码页（本机 GBK）读 .bat：UTF-8 中文注释曾炸解析
+  // （89a0dc1：'oy'/'?rem' 不是内部或外部命令），行尾多字节序列还会在
+  // GBK 视角留下孤儿前导字节、令整文件不可 GBK 解码。同日 9464def 又
+  // 把中文注释写了回来——这里把「恒 ASCII + 恒 CRLF」锁成断言，两条
+  // 各抓一类退化（任何一条红都说明有人往 bat 里写了非 ASCII / 转了 LF）。
+  const TOOLS = join(REPO, "..", "tools");
+  const bats = readdirSync(TOOLS).filter((f) => f.endsWith(".bat"));
+
+  it("tools/*.bat 全部纯 ASCII（禁 UTF-8 中文注释）", () => {
+    expect(bats.length).toBeGreaterThan(0); // 守卫不能因文件改名而静默空转
+    const bad: string[] = [];
+    for (const f of bats) {
+      const bytes = readFileSync(join(TOOLS, f));
+      if (bytes.some((b) => b > 0x7f)) bad.push(f);
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("tools/*.bat 全部 CRLF 行尾（每个 LF 前必须有 CR）", () => {
+    const bad: string[] = [];
+    for (const f of bats) {
+      const bytes = readFileSync(join(TOOLS, f));
+      for (let i = 0; i < bytes.length; i++) {
+        if (bytes[i] === 0x0a && (i === 0 || bytes[i - 1] !== 0x0d)) {
+          bad.push(f);
+          break;
+        }
+      }
+    }
+    expect(bad).toEqual([]);
   });
 });
