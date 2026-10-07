@@ -446,7 +446,6 @@ pub fn run() {
             commands::sk_log_list,
             commands::sk_log_tail,
             commands::sk_palette_actions,
-            commands::sk_palette_calc,
             commands::sk_clip_watch_state,
             commands::sk_clip_watch_set,
             commands::sk_clip_probe,

@@ -87,11 +87,6 @@ export function humanBps(bytesPerSec: number): string {
   return `${humanBytes(bytesPerSec)}/s`;
 }
 
-/** 旧名（正名 humanBps）；保留转发以免其他调用点断裂。 */
-export function humanRate(bytesPerSec: number): string {
-  return humanBps(bytesPerSec);
-}
-
 /** 断网时长格式化：<60 秒 → 「N 秒」；<60 分 → 「N分M秒」；否则「N.N 小时」。 */
 export function formatDuration(sec: number): string {
   const s = Math.max(0, Math.floor(sec));

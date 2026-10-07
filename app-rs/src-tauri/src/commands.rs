@@ -1381,27 +1381,6 @@ pub fn sk_palette_actions(query: Option<String>) -> serde_json::Value {
     })
 }
 
-/// 算式直算（面板里输入 `1+1` 直接出结果）。
-///
-/// 返回 `{is_math, ok, display, error}`：`is_math=false` 表示这不像算式，
-/// 前端据此忽略而不是弹错误。
-#[tauri::command]
-pub fn sk_palette_calc(input: String) -> serde_json::Value {
-    if !crate::palette::looks_like_math(&input) {
-        return serde_json::json!({ "is_math": false, "ok": false, "display": "", "error": "" });
-    }
-    // safe_calc 有意在**主线程同步**执行（面板求值本来就是同步的）：
-    // 规模护栏已保证它不会长时间占用 CPU——见 palette 模块文档的两道护栏
-    match crate::palette::safe_calc(&input) {
-        Ok(v) => serde_json::json!({
-            "is_math": true, "ok": true, "display": v.display(), "error": ""
-        }),
-        Err(e) => serde_json::json!({
-            "is_math": true, "ok": false, "display": "", "error": e
-        }),
-    }
-}
-
 /// 内置动作（页面跳转）。页内 Tab 由前端按当前页面结构补充。
 fn builtin_actions() -> Vec<crate::palette::PaletteAction> {
     const PAGES: [(&str, &str, &str); 10] = [

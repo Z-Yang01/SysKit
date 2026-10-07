@@ -17,7 +17,6 @@ import {
   formatDuration,
   humanBps,
   humanBytes,
-  humanRate,
   peakPoint,
   pushTick,
   rateViewFromBuckets,
@@ -78,8 +77,6 @@ describe("humanBytes", () => {
   });
 
   it("速率带 /s 后缀", () => {
-    expect(humanRate(1024)).toBe("1.0 KB/s");
-    expect(humanRate(0)).toBe("0 B/s");
   });
 });
 
@@ -155,17 +152,12 @@ describe("pushTick", () => {
   });
 });
 
-describe("humanBps / humanRate", () => {
+describe("humanBps", () => {
   it("humanBps 自适应单位并带 /s（各值各选最优单位）", () => {
     expect(humanBps(14.6 * 1024 * 1024)).toBe("14.6 MB/s");
     expect(humanBps(477.9 * 1024)).toBe("477.9 KB/s");
     expect(humanBps(0)).toBe("0 B/s");
     expect(humanBps(-5)).toBe("0 B/s");
-  });
-
-  it("humanRate 是旧名，口径与 humanBps 一致", () => {
-    expect(humanRate(1024)).toBe(humanBps(1024));
-    expect(humanRate(1024)).toBe("1.0 KB/s");
   });
 });
 
