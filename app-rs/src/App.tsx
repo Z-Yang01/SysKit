@@ -157,6 +157,17 @@ export function App() {
     applyTheme(dark);
   }, [dark]);
 
+  // 设置页保存 → 后端广播 sk://settings-changed → 这里同步运行时状态。
+  // 深色开关此前只写文件不改这个 state，勾选后界面永不变暗（CDP 实锤回归）。
+  useEffect(() => {
+    const un = listen<{ key: string; value: unknown }>("sk://settings-changed", (ev) => {
+      if (ev.payload.key === "dark_mode") setDark(ev.payload.value === true);
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+
   useEffect(() => {
     void invoke<{ version: string }>("sk_version")
       .then((v) => setVersion(v.version))

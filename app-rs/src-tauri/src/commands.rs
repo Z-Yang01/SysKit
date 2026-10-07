@@ -1437,12 +1437,15 @@ pub fn sk_settings_all() -> serde_json::Value {
 ///
 /// 热键三键保存后即时重挂（语义对齐 Python `_rehook_hotkey`）：被占回退
 /// 旧值并持久化 + 发 `sk://hotkey-reverted`；`previous` 快照在写入前捕获。
+/// 保存成功一律广播 `sk://settings-changed`：主窗的 dark 状态等「设置驱动的
+/// 运行时状态」以此同步（此前深色开关只写文件不改 UI 状态，勾选不变暗）。
 #[tauri::command]
 pub fn sk_settings_set(
     key: String,
     value: serde_json::Value,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
+    use tauri::Emitter;
     const HOTKEY_KEYS: [&str; 3] = ["palette_hotkey", "clip_quick_hotkey", "clip_paste_hotkey"];
     let previous = if HOTKEY_KEYS.contains(&key.as_str()) {
         Some(crate::settings::get_str(&key))
@@ -1450,6 +1453,10 @@ pub fn sk_settings_set(
         None
     };
     let saved = crate::settings::set_one(&key, value)?;
+    let _ = app.emit(
+        "sk://settings-changed",
+        serde_json::json!({ "key": key, "value": saved }),
+    );
     if let Some(previous) = previous {
         let prev_getter = |k: &str| -> String {
             if k == key {
