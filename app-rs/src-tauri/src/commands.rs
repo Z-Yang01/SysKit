@@ -1350,6 +1350,17 @@ pub fn sk_clip_probe() -> serde_json::Value {
 
 // ---------------- M7 命令面板 provider ----------------
 
+/// 应用内 Ctrl+K 呼出/收起命令面板（对齐全局热键的行为）。
+///
+/// README 宣称「应用内 Ctrl+K」但此前主窗没有任何处理（CDP 实锤：dispatch
+/// Ctrl+K 后 /json 无新 target）——Python 版有此行为，这里补齐：主窗键盘
+/// 事件经前端 invoke 到这，复用与全局热键同一条 toggle_palette 链路
+/// （定位到光标所在显示器、show+focus、发 sk://panel-shown）。
+#[tauri::command]
+pub fn sk_palette_toggle(app: tauri::AppHandle) {
+    crate::input_panel::toggle_palette(&app);
+}
+
 /// 面板动作全集：内置页面跳转 + 自定义命令，按查询排序。
 ///
 /// 匹配与排序在 Rust 侧做（与 Python 同口径），前端只渲染结果——这样两版的

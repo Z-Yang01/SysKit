@@ -460,6 +460,7 @@ pub fn run() {
             commands::sk_download_test_one,
             commands::sk_diag_export,
             commands::sk_palette_query,
+            commands::sk_palette_toggle,
             commands::sk_frontend_error,
             commands::sk_clip_copy_sensitive,
             commands::sk_clip_sensitive_pending,

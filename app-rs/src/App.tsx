@@ -157,6 +157,23 @@ export function App() {
     applyTheme(dark);
   }, [dark]);
 
+  // 应用内 Ctrl+K 呼出/收起命令面板（README 宣称的行为，Python 版有、Rust 版
+  // 此前缺失）。输入框聚焦时放行（Ctrl+K 在编辑语境另有语义，不劫持）；
+  // 实际开合走后端 toggle_palette（与全局热键同链路：定位光标屏、show+focus）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
+        e.preventDefault();
+        void invoke("sk_palette_toggle").catch(() => {});
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // 设置页保存 → 后端广播 sk://settings-changed → 这里同步运行时状态。
   // 深色开关此前只写文件不改这个 state，勾选后界面永不变暗（CDP 实锤回归）。
   useEffect(() => {
@@ -327,7 +344,9 @@ export function App() {
               right: 16,
               fontSize: 11,
               lineHeight: 1.7,
-              color: pal.border === "#303030" ? "#8a8a8a" : "#999",
+              // 主题单源：淡字用 brand_sub（原 pal.border==="#303030" 判定是旧深色
+              // 值，换 token 后恒假 → 深色下用浅色灰，对比度不足）
+              color: pal.brand_sub,
             }}
           >
             <div>快速粘贴：{hotkeys.quick}</div>
