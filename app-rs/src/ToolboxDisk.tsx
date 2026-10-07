@@ -1,11 +1,12 @@
 /**
  * 系统助手：磁盘空间 + 垃圾清理（对应 Python 侧 `DiskTab` / `CleanupTab`）。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Alert,
   Button,
+  Card,
   Checkbox,
   Empty,
   Input,
@@ -25,9 +26,13 @@ import {
   cleanConfirmText,
   cleanResultSummary,
   collapsePath,
+  countTreeNodes,
   diskSummary,
   drillErrorText,
+  drillResetNeeded,
   driveLabel,
+  extBars,
+  firstLevelBars,
   flattenChildRows,
   humanSize,
   meaningfulKeys,
@@ -37,6 +42,9 @@ import {
   targetResultText,
   toggleExpanded,
   toggleKey,
+  topFileRows,
+  topFilesNote,
+  treeGuard,
   truncatedNote,
   usageColor,
   validateClean,
@@ -46,9 +54,39 @@ import {
   type CleanScan,
   type CleanTargetInfo,
   type DiskList,
+  type DrillRequest,
   type DriveRow,
   type FlatChildRow,
+  type OverviewBarRow,
+  type ScanTreeResult,
 } from "./disk";
+
+/** 总览扩展名条形的 Top-N 行数（后端全量降序给出，前端只展示最大的几类）。 */
+const OVERVIEW_EXT_ROWS = 15;
+
+/** 总览条形/Top200 的纯 CSS 条形（不引图表库；宽度=percent，轨道用主题色）。 */
+function OverviewBar({ percent }: { percent: number }) {
+  return (
+    <div
+      style={{
+        height: 6,
+        borderRadius: 3,
+        background: "var(--sk-border)",
+        overflow: "hidden",
+      }}
+      aria-hidden
+    >
+      <div
+        style={{
+          width: `${percent}%`,
+          height: "100%",
+          borderRadius: 3,
+          background: "#3fb950",
+        }}
+      />
+    </div>
+  );
+}
 
 export function DiskPanel() {
   const [list, setList] = useState<DiskList | null>(null);
@@ -356,16 +394,250 @@ export function CleanupPanel() {
 }
 
 /**
+ * 磁盘分析总览：输入根路径全量扫描（sk_disk_scan_tree），渲染根概要 +
+ * 扩展名 Top-N 条形 + 最大文件 Top200 + 一级子目录条形概览。
+ *
+ * - 后端无进度事件：扫描期间按钮转圈 + 「取消扫描」走 sk_disk_scan_cancel
+ *   （与下钻面板同一枚 SCAN_STOP）。
+ * - 树**只渲染一级子目录**（结构上不递归，树再大 DOM 也不膨胀）；树超大时
+ *   treeGuard 降级提示。更深层点击子目录行交给 DirDrillPanel 下钻（onDrill
+ *   换根联动），本面板不重复建树渲染。
+ * - 「定位」走既有 file_reveal 通道（explorer /select）。
+ */
+export function DiskOverviewPanel({ onDrill }: { onDrill: (path: string) => void }) {
+  const [dirInput, setDirInput] = useState("");
+  const [result, setResult] = useState<ScanTreeResult | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState("");
+
+  const runScan = useCallback(async () => {
+    const dir = dirInput.trim();
+    if (!dir) {
+      message.warning("请先输入要扫描的绝对路径");
+      return;
+    }
+    setScanning(true);
+    try {
+      const r = await invoke<ScanTreeResult>("sk_disk_scan_tree", { root: dir });
+      setResult(r);
+      setScanError("");
+    } catch (e) {
+      // 失败与"还在扫"区分开；保留旧结果——刷新失败不该抹掉上一次的总览
+      setScanError(String(e));
+      message.error(`扫描失败：${String(e)}`);
+    } finally {
+      setScanning(false);
+    }
+  }, [dirInput]);
+
+  const nodeCount = useMemo(() => (result ? countTreeNodes(result.root) : 0), [result]);
+  const guard = useMemo(() => treeGuard(nodeCount), [nodeCount]);
+  const bars = useMemo(
+    () => (result ? firstLevelBars(result.root) : null),
+    [result],
+  );
+  const exts = useMemo(
+    () => (result ? extBars(result.ext_stats, OVERVIEW_EXT_ROWS) : null),
+    [result],
+  );
+  const tops = useMemo(() => (result ? topFileRows(result.top_files) : []), [result]);
+  const topNote = useMemo(() => (result ? topFilesNote(result.top_files) : null), [result]);
+
+  const reveal = useCallback(async (path: string) => {
+    try {
+      message.success(
+        await invoke<string>("sk_clip_action_run", { id: "file_reveal", arg: path }),
+      );
+    } catch (e) {
+      message.error(`定位失败：${String(e)}`);
+    }
+  }, []);
+
+  const renderBarRows = (rows: OverviewBarRow[], clickable: boolean) =>
+    rows.map((r) => (
+      <div key={r.path || r.label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {clickable ? (
+          <Button
+            type="link"
+            size="small"
+            style={{
+              padding: 0,
+              width: 180,
+              display: "inline-flex",
+              justifyContent: "flex-start",
+              overflow: "hidden",
+              whiteSpace: "nowrap",
+              textOverflow: "ellipsis",
+            }}
+            title={`${r.path}（点击在下方「目录逐级展开」中下钻）`}
+            onClick={() => onDrill(r.path)}
+          >
+            {r.label}
+          </Button>
+        ) : (
+          <span
+            style={{ width: 180, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}
+            className="sk-hint"
+            title={r.label}
+          >
+            {r.label}
+          </span>
+        )}
+        <div style={{ flex: 1, minWidth: 120 }}>
+          <OverviewBar percent={r.percent} />
+        </div>
+        <span style={{ width: 96, textAlign: "right" }} className="sk-hint">
+          {humanSize(r.bytes)}
+        </span>
+      </div>
+    ));
+
+  return (
+    <Space direction="vertical" size={10} style={{ width: "100%" }}>
+      <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginBottom: 0 }}>
+        磁盘分析总览：输入绝对路径做全量扫描（无进度回调，大目录可能数十秒，可随时取消）。
+        总览只渲染根的一级子目录与全局统计；点子目录名在下方「目录逐级展开」中逐级下钻。
+      </Typography.Paragraph>
+
+      <Space wrap>
+        <Input
+          size="small"
+          style={{ width: 380 }}
+          placeholder="绝对目录路径，如 C:\Users\x\Downloads"
+          value={dirInput}
+          onChange={(e) => setDirInput(e.target.value)}
+          onPressEnter={() => void runScan()}
+          disabled={scanning}
+          aria-label="总览根路径"
+        />
+        <Button size="small" type="primary" loading={scanning} onClick={() => void runScan()}>
+          开始扫描
+        </Button>
+        {scanning && (
+          <Button size="small" onClick={() => void invoke("sk_disk_scan_cancel")}>
+            取消扫描
+          </Button>
+        )}
+      </Space>
+
+      {scanError && <Alert type="error" showIcon message={`扫描失败：${scanError}`} />}
+
+      {result && (
+        <>
+          <span className="sk-hint">
+            {result.root.name} · 递归 {humanSize(result.root.total)}（自身文件{" "}
+            {humanSize(result.root.size)}）· 文件 {result.file_count} · 目录{" "}
+            {nodeCount - 1} · 跳过 {result.error_count} · {result.duration_ms} ms{" "}
+            {/* 取消/整树失败都要如实标注，不得冒充完整或空目录 */}
+            {result.cancelled && <Tag color="red">已取消（结果不完整）</Tag>}
+            {!result.cancelled &&
+              result.error_count > 0 &&
+              result.root.children.length === 0 &&
+              result.file_count === 0 && <Tag color="red">扫描不到内容（目录不存在或无权限）</Tag>}
+          </span>
+
+          {guard.degraded && <Alert type="warning" showIcon message="目录树较大，已降级显示" description={guard.note ?? undefined} />}
+
+          <Card
+            size="small"
+            className="sk-card"
+            title="扩展名统计"
+            extra={
+              <span className="sk-hint">
+                {exts && exts.hidden > 0 ? `仅显示前 ${exts.rows.length} 类，其余 ${exts.hidden} 类` : `共 ${result.ext_stats.length} 类`}
+              </span>
+            }
+          >
+            {exts && exts.rows.length > 0 ? (
+              <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                {renderBarRows(exts.rows, false)}
+              </Space>
+            ) : (
+              <span className="sk-hint">（无文件）</span>
+            )}
+          </Card>
+
+          <Card
+            size="small"
+            className="sk-card"
+            title="最大文件 Top200"
+            extra={<span className="sk-hint">{topNote ?? `共 ${tops.length} 个`}</span>}
+          >
+            {tops.length > 0 ? (
+              <Table
+                size="small"
+                rowKey="path"
+                pagination={{ pageSize: 20, size: "small", showSizeChanger: false }}
+                dataSource={tops}
+                columns={[
+                  { title: "#", dataIndex: "rank", width: 52 },
+                  { title: "大小", dataIndex: "human", width: 92 },
+                  {
+                    title: "路径",
+                    dataIndex: "path",
+                    ellipsis: { showTitle: false },
+                    render: (p: string) => (
+                      <span title={p} style={{ fontFamily: "monospace", fontSize: 12 }}>
+                        {p}
+                      </span>
+                    ),
+                  },
+                  {
+                    title: "",
+                    width: 64,
+                    render: (_: unknown, r: { path: string }) => (
+                      <Button type="link" size="small" style={{ padding: 0 }} onClick={() => void reveal(r.path)}>
+                        定位
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
+            ) : (
+              <span className="sk-hint">（无文件）</span>
+            )}
+          </Card>
+
+          <Card
+            size="small"
+            className="sk-card"
+            title="一级子目录概览"
+            extra={
+              <span className="sk-hint">
+                {bars && bars.hidden > 0
+                  ? `仅显示最大的前 ${bars.rows.length} 项，其余 ${bars.hidden} 项请在下钻面板查看`
+                  : `共 ${result.root.children.length} 项 · 点击名称下钻`}
+              </span>
+            }
+          >
+            {bars && bars.rows.length > 0 ? (
+              <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                {renderBarRows(bars.rows, true)}
+              </Space>
+            ) : (
+              <span className="sk-hint">（无子目录）</span>
+            )}
+          </Card>
+        </>
+      )}
+    </Space>
+  );
+}
+
+/**
  * 目录逐级展开（下钻分析）：从绝对路径扫描直接子项，点目录行逐级下钻。
  * 展开状态仅内存态（不持久化）；扫描走 sk_disk_scan_children（一次只跑一个，
  * 与全量树共用取消令牌），取消沿用 sk_disk_scan_cancel。
+ * 总览面板点子目录会经 external 换根本面板（drillResetNeeded 判定新请求）。
  */
-export function DirDrillPanel() {
+export function DirDrillPanel({ external }: { external?: DrillRequest | null }) {
   const [dirInput, setDirInput] = useState("");
   const [root, setRoot] = useState<ChildrenScan | null>(null);
   const [scans, setScans] = useState<Record<string, ChildrenScan>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
+  /** 最近一次已应用的联动请求（token 相同的不重复换根）。 */
+  const appliedRef = useRef<DrillRequest | null>(null);
 
   const runScan = useCallback(
     async (dir: string, isRoot: boolean) => {
@@ -397,6 +669,18 @@ export function DirDrillPanel() {
     },
     [loadingPath],
   );
+
+  // 总览联动换根：新请求（token 变化）才作废缓存重新扫描——复用轮次112 的
+  // 换根作废逻辑（runScan 的 isRoot 分支 setRoot/setScans({})/setExpanded({})）。
+  // 忙碌时不抢 SCAN_STOP，挂到 loadingPath 清空后的 effect 重跑再应用。
+  useEffect(() => {
+    if (!external) return;
+    if (!drillResetNeeded(appliedRef.current, external)) return;
+    if (loadingPath !== null) return;
+    appliedRef.current = external;
+    setDirInput(external.path);
+    void runScan(external.path, true);
+  }, [external, loadingPath, runScan]);
 
   const toggleRow = useCallback(
     (row: ChildEntry) => {

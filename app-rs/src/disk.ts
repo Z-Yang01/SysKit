@@ -210,6 +210,171 @@ export function truncatedNote(
   return scan.truncated ? `仅显示最大的前 ${scan.children.length} 项` : null;
 }
 
+// ---------------- 磁盘分析总览（sk_disk_scan_tree） ----------------
+
+/**
+ * 后端 `sk_disk_scan_tree` 的树节点。**只有目录入树**——文件被聚合进
+ * 所在目录的 size/file_count（与后端 scan_tree 一致），所以一级 children
+ * 全是目录、全部可下钻。
+ */
+export interface DirNode {
+  name: string;
+  path: string;
+  /** 直接文件大小合计（不含子目录） */
+  size: number;
+  /** 递归总大小（含全部子目录） */
+  total: number;
+  file_count: number;
+  error_count: number;
+  children: DirNode[];
+}
+
+/** 后端 `sk_disk_scan_tree` 的返回（全量树 + 类型分布 + 大文件 Top200）。 */
+export interface ScanTreeResult {
+  root: DirNode;
+  /** 扩展名（小写、无点；无后缀归「无后缀」）→ 总字节，后端按字节降序 */
+  ext_stats: [string, number][];
+  /** 大文件 Top200（后端 TOP_FILES_LIMIT=200，按大小降序） */
+  top_files: { size: number; path: string }[];
+  file_count: number;
+  error_count: number;
+  duration_ms: number;
+  cancelled: boolean;
+}
+
+/** 树节点（目录）计数：降级决策的输入。 */
+export function countTreeNodes(root: DirNode): number {
+  return 1 + root.children.reduce((sum, c) => sum + countTreeNodes(c), 0);
+}
+
+/** 一级条形/扩展名条形最多渲染行数（防单目录几千子项撑爆 DOM）。 */
+export const OVERVIEW_MAX_ROWS = 100;
+
+/**
+ * 大树降级阈值（目录节点数）。轮次113 实测：C:\Windows\System32 全树
+ * 1769 节点≈0.37MB JSON；真实用户目录 152,754 节点≈34MB JSON/45 秒。
+ * 5000 在两个实测档之间留足余量：超过即降级提示。
+ */
+export const TREE_NODE_LIMIT = 5000;
+
+/** 大树降级决策：超过阈值只提示「总览仅一级 + 用下钻面板」。
+ *  「不整树渲染」不靠本判定——总览**无论是否降级都只渲染一级**（结构保证，
+ *  见 firstLevelBars），降级只决定要不要向用户解释为什么没有更深层。 */
+export interface TreeGuard {
+  degraded: boolean;
+  note: string | null;
+}
+
+export function treeGuard(nodeCount: number): TreeGuard {
+  if (nodeCount > TREE_NODE_LIMIT) {
+    return {
+      degraded: true,
+      note: `目录树过大（${nodeCount} 个目录），总览仅显示一级子目录，更深层请用下方「目录逐级展开」逐级下钻`,
+    };
+  }
+  return { degraded: false, note: null };
+}
+
+/** 条形宽度百分比（0-100）：total≤0 或 value≤0 → 0；非零值至少 1%
+ *  （否则小项宽度为 0 完全不可见，用户会以为没占空间）。 */
+export function barPercent(value: number, total: number): number {
+  if (total <= 0 || value <= 0) return 0;
+  return Math.min(100, Math.max(1, (value / total) * 100));
+}
+
+/** 总览条形的一行（一级子目录或扩展名）。 */
+export interface OverviewBarRow {
+  label: string;
+  /** 子目录行=可下钻路径；扩展名行=空串 */
+  path: string;
+  bytes: number;
+  percent: number;
+}
+
+/**
+ * 根的一级子目录条形行：total 降序（并列按名称稳定），占比分母=根递归总大小。
+ * **只取 children 一层、绝不递归**——这是「树再大 DOM 也不膨胀」的结构锁。
+ */
+export function firstLevelBars(
+  root: DirNode,
+  maxRows: number = OVERVIEW_MAX_ROWS,
+): { rows: OverviewBarRow[]; hidden: number } {
+  const sorted = [...root.children].sort(
+    (a, b) => b.total - a.total || a.name.localeCompare(b.name),
+  );
+  const rows = sorted.slice(0, maxRows).map<OverviewBarRow>((c) => ({
+    label: c.name,
+    path: c.path,
+    bytes: c.total,
+    percent: barPercent(c.total, root.total),
+  }));
+  return { rows, hidden: Math.max(0, sorted.length - maxRows) };
+}
+
+/** 扩展名统计条形行：后端已降序，这里防御性重排（契约锁双保险）+ 截 Top-N。 */
+export function extBars(
+  extStats: [string, number][],
+  maxRows: number,
+): { rows: OverviewBarRow[]; hidden: number } {
+  const total = extStats.reduce((s, [, b]) => s + b, 0);
+  const sorted = [...extStats].sort(
+    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+  );
+  const rows = sorted.slice(0, maxRows).map<OverviewBarRow>(([ext, bytes]) => ({
+    label: ext,
+    path: "",
+    bytes,
+    percent: barPercent(bytes, total),
+  }));
+  return { rows, hidden: Math.max(0, sorted.length - maxRows) };
+}
+
+/** Top200 展示行：名次从 1 起 + 人类可读大小（后端已按大小降序）。 */
+export function topFileRows(files: { size: number; path: string }[]): {
+  rank: number;
+  size: number;
+  human: string;
+  path: string;
+}[] {
+  return files.map((f, i) => ({
+    rank: i + 1,
+    size: f.size,
+    human: humanSize(f.size),
+    path: f.path,
+  }));
+}
+
+/** 后端大文件上限（diskusage.rs TOP_FILES_LIMIT，前端无法读取只能对齐）。 */
+export const TOP_FILES_BACKEND_LIMIT = 200;
+
+/** Top200 截断提示（null=未截断）：列表长度顶到后端上限时如实说明。 */
+export function topFilesNote(files: { size: number; path: string }[]): string | null {
+  return files.length >= TOP_FILES_BACKEND_LIMIT
+    ? `仅记录最大的前 ${files.length} 个文件`
+    : null;
+}
+
+// ---------------- 总览 → 下钻面板联动 ----------------
+
+/** 总览点击子目录 → 下钻面板换根请求；token 每次请求都不同。 */
+export interface DrillRequest {
+  path: string;
+  token: number;
+}
+
+/**
+ * 联动换根作废判定：token 变化才算新请求（同一路径重复点击也换根=刷新）；
+ * applied 为 null（从未应用过）时任何非空请求都触发；next 为 null（初始态）
+ * 不触发。下钻面板据此调用既有换根扫描（isRoot 分支作废全部缓存）。
+ */
+export function drillResetNeeded(
+  applied: DrillRequest | null,
+  next: DrillRequest | null,
+): boolean {
+  if (!next) return false;
+  return !applied || applied.token !== next.token;
+}
+
 /** 卷显示名：`C:` + 卷标。 */
 export function driveLabel(d: DriveRow): string {
   return d.label ? `${d.letter} ${d.label}` : d.letter;

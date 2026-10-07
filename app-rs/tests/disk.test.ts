@@ -7,13 +7,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   allTargetKeys,
+  barPercent,
   childIcon,
   cleanConfirmText,
   cleanResultSummary,
   collapsePath,
+  countTreeNodes,
   diskSummary,
   drillErrorText,
+  drillResetNeeded,
   driveLabel,
+  extBars,
+  firstLevelBars,
   flattenChildRows,
   hasSkipped,
   humanSize,
@@ -25,13 +30,20 @@ import {
   targetResultText,
   toggleExpanded,
   toggleKey,
+  topFileRows,
+  topFilesNote,
+  treeGuard,
   truncatedNote,
   usageColor,
   validateClean,
+  OVERVIEW_MAX_ROWS,
+  TREE_NODE_LIMIT,
   type ChildrenScan,
   type ChildEntry,
   type CleanRunResult,
   type CleanTargetInfo,
+  type DirNode,
+  type DrillRequest,
   type DriveRow,
 } from "../src/disk";
 
@@ -393,5 +405,150 @@ describe("下钻：不完整结果的如实呈现（轮次112 审计）", () => 
     expect(truncatedNote({ truncated: true, children: [child(), child()] })).toBe(
       "仅显示最大的前 2 项",
     );
+  });
+});
+
+// ---------------- 磁盘分析总览（轮次113：sk_disk_scan_tree 前端消费） ----------------
+
+/** 总览用树节点夹具：目录只有目录孩子（文件被后端聚合进 size/file_count）。 */
+const node = (over: Partial<DirNode> & { children?: DirNode[] }): DirNode => ({
+  name: "root",
+  path: "C:\data",
+  size: 0,
+  total: 100,
+  file_count: 0,
+  error_count: 0,
+  children: [],
+  ...over,
+});
+
+describe("总览：树计数与降级决策", () => {
+  it("countTreeNodes 递归计全部目录节点（含根）", () => {
+    const tree = node({
+      children: [
+        node({ name: "a", path: "C:\data\a", children: [node({ name: "deep", path: "C:\data\a\deep" })] }),
+        node({ name: "b", path: "C:\data\b" }),
+      ],
+    });
+    expect(countTreeNodes(tree)).toBe(4); // 根 + a + deep + b
+    expect(countTreeNodes(node({}))).toBe(1);
+  });
+
+  it("treeGuard 阈值边界：≤5000 正常，>5000 降级且提示用下钻面板", () => {
+    expect(treeGuard(TREE_NODE_LIMIT)).toEqual({ degraded: false, note: null });
+    expect(treeGuard(1769)).toEqual({ degraded: false, note: null }); // 实测 System32 档
+    const big = treeGuard(TREE_NODE_LIMIT + 1);
+    expect(big.degraded).toBe(true);
+    expect(big.note).toContain("目录树过大");
+    expect(big.note).toContain("目录逐级展开");
+    expect(treeGuard(152754).degraded).toBe(true); // 实测用户目录档
+  });
+});
+
+describe("总览：一级条形行（不整树渲染的结构锁）", () => {
+  const deep = node({
+    total: 900,
+    children: [
+      node({ name: "big", path: "C:\d\big", total: 600, children: [node({ name: "leaf", path: "C:\d\big\leaf", total: 1, children: [] })] }),
+      node({ name: "mid", path: "C:\d\mid", total: 250 }),
+      node({ name: "tiny", path: "C:\d\tiny", total: 50 }),
+    ],
+  });
+
+  it("只取一级子目录：多深的树也不产生第 2 层行（降级靠下钻面板，不靠本面板递归）", () => {
+    const { rows } = firstLevelBars(deep);
+    expect(rows.map((r) => r.label)).toEqual(["big", "mid", "tiny"]);
+    expect(rows.every((r) => !r.path.includes("leaf"))).toBe(true);
+    expect(rows.find((r) => r.label === "big")!.path).toBe("C:\d\big");
+  });
+
+  it("占比分母=根递归总大小；0 总量与非零小项按 barPercent 口径", () => {
+    const { rows } = firstLevelBars(deep);
+    expect(rows.map((r) => r.percent)).toEqual([barPercent(600, 900), barPercent(250, 900), barPercent(50, 900)]);
+    const empty = firstLevelBars(node({ total: 0, children: [node({ name: "z", path: "C:\d\z", total: 0 })] }));
+    expect(empty.rows[0].percent).toBe(0);
+  });
+
+  it("排序 total 降序（并列按名称稳定）+ 截断带 hidden 计数", () => {
+    const tie = node({
+      children: [
+        node({ name: "b", path: "C:\d\b", total: 10 }),
+        node({ name: "a", path: "C:\d\a", total: 10 }),
+        node({ name: "c", path: "C:\d\c", total: 20 }),
+      ],
+    });
+    expect(firstLevelBars(tie).rows.map((r) => r.label)).toEqual(["c", "a", "b"]);
+    const many = node({ children: Array.from({ length: 150 }, (_, i) => node({ name: `d${i}`, path: `C:\d\d${i}`, total: i })) });
+    const capped = firstLevelBars(many);
+    expect(capped.rows).toHaveLength(OVERVIEW_MAX_ROWS);
+    expect(capped.hidden).toBe(50);
+    // 自定义上限同样生效
+    expect(firstLevelBars(deep, 2).hidden).toBe(1);
+  });
+});
+
+describe("总览：条形宽度与扩展名统计", () => {
+  it("barPercent：0 总量/0 值→0，非零小项至少 1%，大项封顶 100", () => {
+    expect(barPercent(10, 0)).toBe(0);
+    expect(barPercent(0, 100)).toBe(0);
+    expect(barPercent(1, 10_000_000)).toBe(1); // 0.00001% 也要可见
+    expect(barPercent(50, 100)).toBe(50);
+    expect(barPercent(200, 100)).toBe(100);
+  });
+
+  it("extBars：后端降序之外仍防御性重排，截 Top-N 且 hidden 如实", () => {
+    const { rows, hidden } = extBars(
+      [
+        ["txt", 30],
+        ["bin", 100],
+        ["无后缀", 7],
+      ],
+      2,
+    );
+    expect(rows.map((r) => r.label)).toEqual(["bin", "txt"]);
+    expect(rows[0].percent).toBe(barPercent(100, 137));
+    expect(hidden).toBe(1);
+    expect(extBars([], 15)).toEqual({ rows: [], hidden: 0 });
+  });
+});
+
+describe("总览：Top200 行与截断提示", () => {
+  it("topFileRows 名次从 1 起连续编号，人类可读大小随行", () => {
+    const rows = topFileRows([
+      { size: 1024 * 1024, path: "C:\d\a.iso" },
+      { size: 5, path: "C:\d\b.log" },
+    ]);
+    expect(rows.map((r) => r.rank)).toEqual([1, 2]);
+    expect(rows[0].human).toBe("1.0 MB");
+    expect(rows[1].human).toBe("5 B");
+    expect(rows[1].path).toBe("C:\d\b.log");
+    expect(topFileRows([])).toEqual([]);
+  });
+
+  it("topFilesNote：顶到后端 200 上限才提示，199 个不提示", () => {
+    const f = (n: number) => Array.from({ length: n }, (_, i) => ({ size: i, path: `p${i}` }));
+    expect(topFilesNote(f(199))).toBeNull();
+    expect(topFilesNote(f(200))).toBe("仅记录最大的前 200 个文件");
+  });
+});
+
+describe("总览 → 下钻联动：换根作废判定", () => {
+  const req = (token: number, path = "C:\d\sub"): DrillRequest => ({ path, token });
+
+  it("初始态（applied=null）任何非空请求都触发换根", () => {
+    expect(drillResetNeeded(null, req(1))).toBe(true);
+  });
+
+  it("token 变化才算新请求；同 token 不重复换根", () => {
+    const applied = req(42);
+    expect(drillResetNeeded(applied, req(42))).toBe(false);
+    expect(drillResetNeeded(applied, req(43))).toBe(true);
+    // 同一路径重复点击（新 token）= 用户要刷新，也换根
+    expect(drillResetNeeded(applied, req(43, applied.path))).toBe(true);
+  });
+
+  it("next=null（面板初始/无请求）永不触发", () => {
+    expect(drillResetNeeded(null, null)).toBe(false);
+    expect(drillResetNeeded(req(1), null)).toBe(false);
   });
 });

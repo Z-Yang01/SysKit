@@ -23,10 +23,12 @@ import {
 } from "antd";
 
 import { ToolboxStartup } from "./ToolboxStartup";
-import { CleanupPanel, DiskPanel, DirDrillPanel } from "./ToolboxDisk";
+import { CleanupPanel, DiskOverviewPanel, DiskPanel, DirDrillPanel } from "./ToolboxDisk";
 import { BatteryPanel } from "./ToolboxBattery";
 import { ModesPanel } from "./ToolboxModes";
 import { WifiPage } from "./WifiPasswordPanel";
+
+import type { DrillRequest } from "./disk";
 
 import {
   SERIES_LEN,
@@ -55,6 +57,21 @@ function tokenColor(token: string): string {
     default:
       return "#8b949e";
   }
+}
+
+/**
+ * 磁盘分析 tab：总览（全量扫描）与下钻（逐级展开）两面板联动——
+ * 总览点一级子目录 → 发一条 DrillRequest（token 每次都不同）→
+ * DirDrillPanel 换根重扫并作废旧缓存（轮次112 换根作废逻辑复用）。
+ */
+function DiskAnalysisTab() {
+  const [drill, setDrill] = useState<DrillRequest | null>(null);
+  return (
+    <Space direction="vertical" size={24} style={{ width: "100%" }}>
+      <DiskOverviewPanel onDrill={(path) => setDrill({ path, token: Date.now() })} />
+      <DirDrillPanel external={drill} />
+    </Space>
+  );
 }
 
 /** 极简 sparkline（不引图表库：本页只需要一条折线）。 */
@@ -109,7 +126,7 @@ export function SystemPage({
             children: (
               <Space direction="vertical" size={24} style={{ width: "100%" }}>
                 <DiskPanel />
-                <DirDrillPanel />
+                <DiskAnalysisTab />
               </Space>
             ),
           },
