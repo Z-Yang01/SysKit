@@ -2461,13 +2461,15 @@ pub async fn sk_battery_health() -> Result<serde_json::Value, String> {
 // ---------------- M5 系统助手：磁盘空间 / 垃圾清理 ----------------
 
 /// 目录空间分析：递归扫描目录树（大小/文件数/类型分布/大文件 Top200）。
+/// 路径校验与 sk_disk_scan_children 完全同源（diskusage::validate_scan_dir，
+/// 轮次114 补齐：绝对路径/存在且为目录/拒绝设备命名空间与 DOS 保留设备名）。
 /// 取消走 sk_disk_scan_cancel（同一时刻只跑一个扫描）。
 #[tauri::command]
 pub async fn sk_disk_scan_tree(root: String) -> Result<serde_json::Value, String> {
+    let root = crate::diskusage::validate_scan_dir(&root)?;
     crate::diskusage::SCAN_STOP.reset();
     tauri::async_runtime::spawn_blocking(move || {
-        let r =
-            crate::diskusage::scan_tree(std::path::Path::new(&root), &crate::diskusage::SCAN_STOP);
+        let r = crate::diskusage::scan_tree(&root, &crate::diskusage::SCAN_STOP);
         serde_json::to_value(r).map_err(|e| e.to_string())
     })
     .await
@@ -3298,5 +3300,67 @@ mod tests {
         // 悄悄降级或截断——截断后的码扫出来是另一段内容，那是静默数据损坏
         let big = "a".repeat(4000);
         assert!(sk_clip_qr_svg(big).is_err(), "超容量输入必须 Err");
+    }
+
+    /// 回归锁（无人值守轮次114）：sk_disk_scan_tree 入口必须走
+    /// diskusage::validate_scan_dir 同一守卫——六类拒绝（空/非绝对/设备命名
+    /// 空间/DOS 保留名/不存在/非目录）逐类命中，且入口错误文案与守卫纯函数
+    /// **逐字节相等**（相等断言即单一事实源锁：tree 若复制第二份清单或漏校验，
+    /// 这里先红）。拒绝发生在 SCAN_STOP.reset 之前，测试不触碰全局令牌。
+    #[test]
+    fn tree_entry_guard_rejects_same_six_classes_as_children() {
+        // 存在但不是目录（测试二进制本身是真实的绝对文件路径）
+        let exe = std::env::current_exe().expect("取测试二进制路径");
+        let exe_s = exe.to_string_lossy().into_owned();
+        let cases: [(&str, &str); 8] = [
+            // 空与纯空白
+            ("", "不能为空"),
+            ("   ", "不能为空"),
+            // 非绝对路径
+            ("relative\\dir", "绝对路径"),
+            // 设备命名空间
+            (r"\\.\PhysicalDrive0", "设备命名空间"),
+            // DOS 保留设备名
+            (r"C:\Users\NUL\sub", "保留设备名"),
+            // 不存在
+            (r"C:\__syskit_no_such_dir_r114__", "不存在"),
+            // 存在但不是目录
+            (exe_s.as_str(), "不是目录"),
+            // 带首尾空白的相对路径：入口侧 trim 语义与守卫一致
+            ("  ./x  ", "绝对路径"),
+        ];
+        for (raw, reason) in cases {
+            let via_entry = tauri::async_runtime::block_on(sk_disk_scan_tree(raw.to_string()))
+                .expect_err("tree 入口必须拒绝可疑路径");
+            let via_fn =
+                crate::diskusage::validate_scan_dir(raw).expect_err("守卫纯函数必须拒绝同一输入");
+            assert!(
+                via_entry.contains(reason),
+                "输入 {raw:?} 的入口错误必须命中「{reason}」: {via_entry}"
+            );
+            assert_eq!(
+                via_entry, via_fn,
+                "tree 入口与 validate_scan_dir 必须是同一事实源（错误文案逐字节相等）"
+            );
+        }
+    }
+
+    /// 回归锁（无人值守轮次114）：合法目录放行——守卫不得误伤 tree 的正常
+    /// 使用（用户自输绝对路径只读扫描），入口返回可序列化的扫描结果。
+    #[test]
+    fn tree_entry_accepts_real_dir_and_scans() {
+        let root = std::env::temp_dir().join(format!("syskit_rs_tree_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), b"hello").unwrap();
+        // SCAN_STOP 是命令共用的全局令牌：与其它可能扫描的测试串行
+        let _g = crate::test_support::serial();
+        let v =
+            tauri::async_runtime::block_on(sk_disk_scan_tree(root.to_string_lossy().to_string()))
+                .expect("真实目录必须放行并完成扫描");
+        let v = v.as_object().expect("返回必须是 JSON 对象");
+        let name = v["root"]["name"].as_str().expect("root.name 必须是字符串");
+        assert_eq!(name, root.file_name().unwrap().to_string_lossy().as_ref());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

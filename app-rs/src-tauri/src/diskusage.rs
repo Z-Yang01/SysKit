@@ -467,9 +467,10 @@ pub fn scan_children(dir: &Path, stop: &ScanStop) -> ChildrenScan {
     result
 }
 
-/// `sk_disk_scan_children` 的路径守卫：绝对路径 / 存在且为目录 /
-/// 拒绝设备命名空间（`\\.\`、`\\?\`）与 DOS 保留设备名（CON/NUL/COM1…）。
-/// sk_disk_scan_tree 无校验是历史欠账，新命令不再复制这个口子。
+/// `sk_disk_scan_children` / `sk_disk_scan_tree` 共用的路径守卫（单一事实源）：
+/// 绝对路径 / 存在且为目录 / 拒绝设备命名空间（`\\.\`、`\\?\`）与
+/// DOS 保留设备名（CON/NUL/COM1…）。tree 一侧的校验是轮次114 补齐的历史欠账，
+/// 新命令不得再复制无守卫的口子。
 pub fn validate_scan_dir(raw: &str) -> Result<std::path::PathBuf, String> {
     let raw = raw.trim();
     if raw.is_empty() {
