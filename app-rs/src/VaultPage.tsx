@@ -13,6 +13,7 @@
  * 纯掩码（双击复制），显示/复制等行操作全部收进 ··· 菜单——行内不放图标）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFillRowHeight } from "./useFillRow";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Alert,
@@ -51,6 +52,8 @@ export function VaultPage() {
   const [password, setPassword] = useState("");
   const [newMode, setNewMode] = useState<"dpapi" | "password">("password");
   const [busy, setBusy] = useState(false);
+  // 两栏行高测量（解锁态才挂测量）：站点/账号再多只滚列表卡体
+  const row = useFillRowHeight(status?.unlocked === true);
   // 条目数据（解锁后从后端读）
   const [sites, setSites] = useState<SiteRow[]>([]);
   const [sitesLoading, setSitesLoading] = useState(false);
@@ -773,15 +776,26 @@ export function VaultPage() {
           description="点右上角「解锁…」：免密模式直接打开；主密码模式输入主密码验证后查看与编辑条目。"
         />
       ) : phase === "unlocked" ? (
-        // flex:1 占满根容器剩余高度——站点少/账号少时卡片仍满窗高，
-        // 不再在页面底部留一大段窗口底色（用户实锤「一大段留白」）
-        <div style={{ display: "flex", gap: 12, alignItems: "stretch", flex: 1, minHeight: 0 }}>
-          {/* 左栏：网站列表（固定 ~300px，搜索嵌在卡标题） */}
+        // 行高填满 Content 视口（useFillRow 实测）：站点/账号再多只滚列表卡体，
+        // 工具条与两栏框架不动；站点少时卡片仍满窗高不留底色
+        <div
+          ref={row.ref}
+          style={{
+            display: "flex",
+            gap: 12,
+            alignItems: "stretch",
+            flex: 1,
+            minHeight: 0,
+            height: row.h,
+            overflow: "hidden",
+          }}
+        >
+          {/* 左栏：网站列表（固定 ~300px，搜索嵌在卡标题）；列表在卡体内自滚 */}
           <Card
             size="small"
             className="sk-card"
-            style={{ width: 300, flexShrink: 0 }}
-            styles={{ body: { padding: "4px 4px 8px" } }}
+            style={{ width: 300, flexShrink: 0, display: "flex", flexDirection: "column" }}
+            styles={{ body: { padding: "4px 4px 8px", flex: 1, minHeight: 0, overflowY: "auto" } }}
             title={
               <Input.Search
                 size="small"
@@ -823,11 +837,12 @@ export function VaultPage() {
             />
           </Card>
 
-          {/* 右栏：该站账号（flex:1；未选中站点时给引导文案） */}
+          {/* 右栏：该站账号（flex:1；未选中站点时给引导文案）；账号多时卡体内滚 */}
           <Card
             size="small"
             className="sk-card"
-            style={{ flex: 1, minWidth: 0 }}
+            style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}
+            styles={{ body: { flex: 1, minHeight: 0, overflowY: "auto" } }}
             title={
               selSite ? (
                 // 面包屑形态「站点 › 名称（共 N 个账号）」；编辑/删除收进 ···

@@ -31,6 +31,7 @@ import {
 } from "antd";
 
 import { svgDataUrl } from "./qr";
+import { useFillRowHeight } from "./useFillRow";
 import {
   aggregateChannels,
   channelAdviceText,
@@ -570,15 +571,26 @@ function PasswordsTab(props: {
   }, [cred]);
 
   const strength = strengthHint(cred?.password ?? "");
+  // 行高填满 Content 视口：32+ 条 WiFi 时只滚左列表，标签栏与右栏不动
+  const row = useFillRowHeight(true);
 
   return (
-    <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
-      {/* 左栏：已存 WiFi 列表（固定 ~280px，刷新嵌在卡标题） */}
+    <div
+      ref={row.ref}
+      style={{
+        display: "flex",
+        gap: 12,
+        alignItems: "stretch",
+        height: row.h,
+        overflow: "hidden",
+      }}
+    >
+      {/* 左栏：已存 WiFi 列表（固定 ~280px，刷新嵌在卡标题）；列表在卡体内自滚 */}
       <Card
         size="small"
         className="sk-card"
-        style={{ width: 280, flexShrink: 0 }}
-        styles={{ body: { padding: "4px 4px 8px" } }}
+        style={{ width: 280, flexShrink: 0, display: "flex", flexDirection: "column" }}
+        styles={{ body: { padding: "4px 4px 8px", flex: 1, minHeight: 0, overflowY: "auto" } }}
         title={`已存 WiFi（${props.profiles.length}）`}
         extra={
           <Button size="small" loading={props.profilesLoading} onClick={props.onRefreshProfiles}>
@@ -623,7 +635,8 @@ function PasswordsTab(props: {
       <Card
         size="small"
         className="sk-card"
-        style={{ flex: 1, minWidth: 0 }}
+        style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}
+        styles={{ body: { flex: 1, minHeight: 0, overflowY: "auto" } }}
         title={selected ? `${selected} 的密钥` : "WiFi 密钥"}
       >
         {!selected ? (
