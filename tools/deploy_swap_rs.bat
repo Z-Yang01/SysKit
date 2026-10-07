@@ -51,8 +51,12 @@ if not errorlevel 1 (
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STAMP=%%i"
 
 rem -- Mode: with-data (carry APPDATA data into portable dir) --
-if /I "%~1"=="with-data" call :carry_data
-if errorlevel 1 exit /b 1
+rem 必须括号块：裸的 `if errorlevel 1 exit /b 1` 会在未调用时读到守卫
+rem find 留下的残留 errorlevel=1，整个脚本被静默击杀（exit=1 零输出）。
+if /I "%~1"=="with-data" (
+  call :carry_data
+  if errorlevel 1 exit /b 1
+)
 
 rem -- Exe swap with backup chain -------------------------------
 if exist "%DST%" (
@@ -63,7 +67,7 @@ copy /Y "%SRC%" "%DST%" >nul
 if errorlevel 1 ( echo [ABORT] exe copy failed & exit /b 1 )
 
 for %%S in ("%SRC%") do set "SRCSZ=%%~zS"
-for %%D in ("%DST%") do set "DSTSZ=%%~zS"
+for %%D in ("%DST%") do set "DSTSZ=%%~zD"
 if not "%SRCSZ%"=="%DSTSZ%" (
   echo [ABORT] size mismatch after copy ^(src %SRCSZ% vs dst %DSTSZ%^)
   exit /b 1
