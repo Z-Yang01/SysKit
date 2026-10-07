@@ -5,7 +5,7 @@
  * `sk_clip_*` 命令直读内存态。其余页面（诊断/修复/工具箱/系统助手/密码库/设置）
  * 属 M3-M7，先给明确的「里程碑待接入」占位而不是空白。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -104,6 +104,12 @@ export function App() {
   // 启动恢复上次页面（对齐 Python main_window 的 last_page 往返：索引起步、
   // 切页写回）。未知索引回落概览。
   const [page, setPageState] = useState("overview");
+  // Content 是唯一滚动容器（整窗 100vh 锁死）；切页回滚顶部——否则新页面
+  // 继承上一页的滚动位置，用户会看到"新页面从中间开始"
+  const contentRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [page]);
   const setPage = (key: string) => {
     setPageState(key);
     const idx = ORDER_KEYS.indexOf(key);
@@ -228,8 +234,20 @@ export function App() {
 
   return (
     <ConfigProvider theme={antdTheme}>
-      <Layout style={{ minHeight: "100vh", background: pal.bg }}>
-        <Layout.Sider theme={dark ? "dark" : "light"} width={200} style={{ position: "relative", background: pal.card, borderRight: `1px solid ${pal.border}` }}>
+      {/* 整窗锁死 100vh：滚动只发生在 Content 内部——Sider/Header 是固定框架，
+          文档级滚动会把侧栏一起带走（用户实测：设置页一滚侧栏跟着跑）。 */}
+      <Layout style={{ height: "100vh", overflow: "hidden", background: pal.bg }}>
+        <Layout.Sider
+          theme={dark ? "dark" : "light"}
+          width={200}
+          style={{
+            position: "relative",
+            height: "100vh",
+            overflowY: "auto",
+            background: pal.card,
+            borderRight: `1px solid ${pal.border}`,
+          }}
+        >
           {/* 品牌区（对齐 Python 版 brandCard）：渐变 S 标 + 两行文案，不引图片资源 */}
           <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 14px" }}>
             <div
@@ -307,7 +325,7 @@ export function App() {
           </div>
         </Layout.Sider>
 
-        <Layout style={{ background: pal.bg }}>
+        <Layout style={{ height: "100vh", minHeight: 0, overflow: "hidden", background: pal.bg }}>
           <Layout.Header
             style={{
               background: pal.card,
@@ -322,7 +340,7 @@ export function App() {
           >
           </Layout.Header>
 
-          <Layout.Content style={{ padding: 14, overflow: "auto" }}>
+          <Layout.Content ref={contentRef} style={{ padding: 14, minHeight: 0, overflow: "auto" }}>
             {/* key=page 强制切页淡入（sk-page 动画），替代硬切 */}
             <div key={page} className="sk-page">
               {pages[page] ?? <Pending title={page} milestone="—" detail="未知页面" />}
