@@ -524,7 +524,12 @@ function ShareTab(props: { profiles: string[]; profilesLoading: boolean }) {
 
 // ---------------- Tab 4：已存密码 ----------------
 
-/** 已存密码：枚举已保存配置文件，读取明文密钥（需管理员），复制走敏感路径。 */
+/**
+ * 已存密码：左栏已存 WiFi 列表（点击选中），右栏该网络的密钥详情——
+ * 与密码库同款两栏形态（用户指定交互）。
+ * 纪律不变：读取密钥需管理员（每次点击显式触发，**绝不自动读第一项**——
+ * 免得进页面就弹 UAC）；复制走敏感路径。
+ */
 function PasswordsTab(props: {
   profiles: string[];
   profilesLoading: boolean;
@@ -567,35 +572,72 @@ function PasswordsTab(props: {
   const strength = strengthHint(cred?.password ?? "");
 
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Space wrap>
-        <Select
-          style={{ minWidth: 260 }}
-          placeholder="选择已保存的 WiFi"
-          value={selected || undefined}
-          onChange={(v) => void read(v)}
+    <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
+      {/* 左栏：已存 WiFi 列表（固定 ~280px，刷新嵌在卡标题） */}
+      <Card
+        size="small"
+        className="sk-card"
+        style={{ width: 280, flexShrink: 0 }}
+        styles={{ body: { padding: "4px 4px 8px" } }}
+        title={`已存 WiFi（${props.profiles.length}）`}
+        extra={
+          <Button size="small" loading={props.profilesLoading} onClick={props.onRefreshProfiles}>
+            刷新
+          </Button>
+        }
+      >
+        <Table<string>
+          size="small"
+          rowKey={(r) => r}
+          showHeader={false}
           loading={props.profilesLoading}
-          options={props.profiles.map((p) => ({ value: p, label: p }))}
+          dataSource={props.profiles}
+          pagination={false}
+          onRow={(r) => ({
+            onClick: () => void read(r),
+            style: { cursor: "pointer" },
+          })}
+          rowClassName={(r) => (r === selected ? "ant-table-row-selected" : "")}
+          columns={[
+            {
+              key: "ssid",
+              render: (_: unknown, name: string) => (
+                <div
+                  style={{
+                    fontWeight: 500,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {name}
+                </div>
+              ),
+            },
+          ]}
+          locale={{ emptyText: "本机没有已保存的 WiFi 配置（或无线网卡被禁用）" }}
         />
-        <Button size="small" onClick={props.onRefreshProfiles}>
-          刷新列表
-        </Button>
-        {loading && <Spin size="small" />}
-      </Space>
+      </Card>
 
-      {props.profiles.length === 0 && !props.profilesLoading && (
-        <Alert
-          type="info"
-          showIcon
-          message="没有找到已保存的 WiFi 配置"
-          description="本机没有保存过 WLAN 配置文件，或无线网卡被禁用。这里只读取本机已保存的记录，不会扫描周边网络。"
-        />
-      )}
-
-      {err && <Alert type="warning" showIcon message="读取失败" description={err} />}
-
-      {cred && (
-        <Card size="small" title={`${cred.name} 的密钥`}>
+      {/* 右栏：所选网络的密钥详情（flex:1；未选中时给引导文案） */}
+      <Card
+        size="small"
+        className="sk-card"
+        style={{ flex: 1, minWidth: 0 }}
+        title={selected ? `${selected} 的密钥` : "WiFi 密钥"}
+      >
+        {!selected ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="点击左侧 WiFi 查看密钥——读取需要管理员权限，点一次读一个"
+          />
+        ) : loading ? (
+          <div style={{ textAlign: "center", padding: "28px 0" }}>
+            <Spin tip={`正在读取 ${selected} 的密钥…`} />
+          </div>
+        ) : err ? (
+          <Alert type="warning" showIcon message="读取失败" description={err} />
+        ) : cred ? (
           <Space direction="vertical" size={8} style={{ width: "100%" }}>
             <Descriptions size="small" column={1}>
               <Descriptions.Item label="认证方式">{cred.auth || "—"}</Descriptions.Item>
@@ -637,8 +679,8 @@ function PasswordsTab(props: {
               </Space>
             )}
           </Space>
-        </Card>
-      )}
-    </Space>
+        ) : null}
+      </Card>
+    </div>
   );
 }
