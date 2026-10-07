@@ -12,11 +12,10 @@ import { Card, Col, Empty, Radio, Row, Segmented, Space, Table, Tabs, Tag, Typog
 import ReactECharts from "echarts-for-react";
 
 import {
-  CHART_WINDOW,
   GRANULARITIES,
+  RATE_WINDOWS,
   REPORT_COLUMNS,
   axisTimeLabels,
-  clockTime,
   eventLine,
   formatAxisBps,
   formatDuration,
@@ -24,6 +23,8 @@ import {
   humanBytes,
   peakPoint,
   pushTick,
+  rateViewFromBuckets,
+  rateViewFromTicks,
   seriesPoints,
   stateLabel,
   summarizeReport,
@@ -31,7 +32,9 @@ import {
   type DayReport,
   type EventItem,
   type Granularity,
+  type RateWindow,
   type Series,
+  type SeriesRow,
   type Tick,
 } from "./dashboard";
 
@@ -94,9 +97,11 @@ const ACCENT = () => cssVar("--sk-accent", "#3576e0");
 const OK = () => cssVar("--sk-ok", "#2e9e44");
 const WARN = () => cssVar("--sk-warn", "#ef6c00");
 
-/** 曲线窗口时长文案：窗口按 tick 每秒一拍折算成时长（对外不出现「拍」这种内部字眼）。 */
-const WINDOW_LABEL =
-  CHART_WINDOW % 60 === 0 ? `最近 ${CHART_WINDOW / 60} 分钟` : `最近 ${CHART_WINDOW} 秒`;
+/** 速率窗口 → 桶取数参数：1h 用分钟桶 60 个，1d 用小时桶 24 个。 */
+const RATE_BUCKET_CFG: Record<Exclude<RateWindow, "1m">, { gran: Granularity; bucketSec: number; count: number }> = {
+  "1h": { gran: "minute", bucketSec: 60, count: 60 },
+  "1d": { gran: "hour", bucketSec: 3600, count: 24 },
+};
 
 export function Dashboard() {
   const [tick, setTick] = useState<Tick | null>(null);
@@ -108,7 +113,9 @@ export function Dashboard() {
   const [series, setSeries] = useState<Series | null>(null);
   const [reportDays, setReportDays] = useState<number>(7);
   const [report, setReport] = useState<DayReport[]>([]);
-  const [ready, setReady] = useState(false);
+  // 速率曲线窗口：1m=逐拍实时；1h/1d=后端分钟/小时桶的均值速率
+  const [rateWindow, setRateWindow] = useState<RateWindow>("1m");
+  const [rateBuckets, setRateBuckets] = useState<SeriesRow[]>([]);
 
   // ---------------- 初始加载 ----------------
   const init = useCallback(async () => {
@@ -123,7 +130,6 @@ export function Dashboard() {
     } catch {
       // 后端未就绪（例如纯浏览器预览）时保持空态，不弹错
     }
-    setReady(true);
   }, []);
 
   useEffect(() => {
@@ -170,6 +176,38 @@ export function Dashboard() {
     return () => window.clearInterval(t);
   }, []);
 
+  // ---------------- 速率窗口（1m 逐拍 / 1h 分钟桶 / 1d 小时桶） ----------------
+  const loadRateBuckets = useCallback(async () => {
+    if (rateWindow === "1m") return; // 逐拍窗口不读盘
+    try {
+      const cfg = RATE_BUCKET_CFG[rateWindow];
+      const s = await invoke<Series>("sk_stats_series", { granularity: cfg.gran, ssid: null });
+      setRateBuckets(s.rows ?? []);
+    } catch {
+      setRateBuckets([]); // 读盘失败画全 0 轴（桶窗口语义：无数据 ≠ 假曲线）
+    }
+  }, [rateWindow]);
+
+  useEffect(() => {
+    void loadRateBuckets();
+  }, [loadRateBuckets]);
+
+  // 桶窗口每分钟拉一次（进行中的最新桶要长大）；隐藏时跳过
+  useEffect(() => {
+    if (rateWindow === "1m") return;
+    const t = window.setInterval(() => {
+      if (!document.hidden) void loadRateBuckets();
+    }, 60_000);
+    return () => window.clearInterval(t);
+  }, [rateWindow, loadRateBuckets]);
+
+  // 速率图数据：统一到 RateView（1m 每秒重算，桶窗口只在桶更新时变）
+  const rateView = useMemo(() => {
+    if (rateWindow === "1m") return rateViewFromTicks(history);
+    const cfg = RATE_BUCKET_CFG[rateWindow];
+    return rateViewFromBuckets(rateBuckets, cfg.bucketSec, cfg.count);
+  }, [rateWindow, history, rateBuckets]);
+
   // ---------------- 日报 ----------------
   const loadReport = useCallback(async () => {
     try {
@@ -188,16 +226,16 @@ export function Dashboard() {
 
   // ---------------- 图表数据 ----------------
   const rateOption = useMemo(() => {
+    if (!rateView) return {};
     const base = baseChartOption();
-    const down = history.map((t) => t.down);
-    const up = history.map((t) => t.up);
+    const { labels, tips, down, up } = rateView;
     const peak = peakPoint(down);
     return {
       ...base,
       xAxis: {
         ...base.xAxis,
-        // 相对时刻刻度（-120s … 0s，0s 为最新一拍），不再用裸序号
-        data: axisTimeLabels(history),
+        // 1m=相对秒（-59s…0s）；1h/1d=桶标签（HH:MM / HH时）
+        data: labels,
         boundaryGap: false, // 曲线贴边，首尾即窗口两端
         axisLabel: { ...base.xAxis.axisLabel, hideOverlap: true },
       },
@@ -214,9 +252,8 @@ export function Dashboard() {
           >;
           const first = arr[0] ?? {};
           const idx = Number(first.dataIndex ?? 0);
-          // 标题给具体时刻 HH:MM:SS；缺 ts 的旧点退回轴标签（相对秒）
-          const title =
-            clockTime(history[idx]?.ts) ?? String(first.axisValueLabel ?? first.name ?? "");
+          // 1m：绝对时刻 HH:MM:SS（缺 ts 退回轴标签）；桶窗口：日期+桶标签
+          const title = tips[idx] || String(first.axisValueLabel ?? first.name ?? "");
           const rows = arr
             .map(
               (p) =>
@@ -263,7 +300,7 @@ export function Dashboard() {
         },
       ],
     };
-  }, [history]);
+  }, [rateView]);
 
   const usageOption = useMemo(() => {
     const base = baseChartOption();
@@ -533,9 +570,17 @@ export function Dashboard() {
         },
       ]}
       tabBarExtraContent={
-        <Typography.Text type="secondary" className="sk-hint">
-          {ready ? `曲线窗口 ${WINDOW_LABEL}` : "正在加载…"}
-        </Typography.Text>
+        <Space size={8}>
+          <Typography.Text type="secondary" className="sk-hint">
+            速率曲线窗口
+          </Typography.Text>
+          <Segmented
+            size="small"
+            value={rateWindow}
+            onChange={(v) => setRateWindow(v as RateWindow)}
+            options={RATE_WINDOWS.map((w) => ({ value: w.value, label: w.label }))}
+          />
+        </Space>
       }
     />
   );

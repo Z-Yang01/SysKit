@@ -159,6 +159,90 @@ export function formatAxisTime(deltaSec: number): string {
   return `${Math.round(deltaSec)}s`;
 }
 
+// ---------------- 速率曲线窗口（1 分钟 / 1 小时 / 1 天） ----------------
+
+/** 速率曲线窗口：1m=逐拍实时；1h/1d=分钟/小时桶的均值速率。 */
+export type RateWindow = "1m" | "1h" | "1d";
+
+export const RATE_WINDOWS: { value: RateWindow; label: string }[] = [
+  { value: "1m", label: "1 分钟" },
+  { value: "1h", label: "1 小时" },
+  { value: "1d", label: "1 天" },
+];
+
+/** 速率图统一数据形：labels 为类目轴；tips[i] 为该点 tooltip 标题。 */
+export interface RateView {
+  labels: string[];
+  tips: string[];
+  down: number[];
+  up: number[];
+}
+
+/** 1 分钟窗口：最近 60 拍。x 轴相对秒（-59s…0s），tooltip 绝对时刻 HH:MM:SS。 */
+export function rateViewFromTicks(history: Tick[]): RateView | null {
+  const h = history.slice(-60);
+  if (h.length === 0) return null;
+  return {
+    labels: axisTimeLabels(h),
+    tips: h.map((t) => clockTime(t.ts) ?? ""),
+    down: h.map((t) => t.down),
+    up: h.map((t) => t.up),
+  };
+}
+
+const pad2 = (x: number) => String(x).padStart(2, "0");
+
+/**
+ * 桶序列（sk_stats_series 的 minute/hour 行）→ 连续桶轴上的均值速率（B/s）。
+ *
+ * - rows 只含有流量的桶（无流量的分钟/小时没有 key），这里按当前时刻往回
+ *   生成 count 个连续桶标签把空桶补 0——否则曲线在稀疏点间拉直线，
+ *   看起来像持续速率（撒谎）。
+ * - 桶值 = 字节量 ÷ 桶秒数。**最新桶是进行中的**（分钟刚过 10 秒只有 10 秒
+ *   的量），除以整桶秒数会把当前速率压低一个量级——按实际经过秒数折算。
+ * - 匹配只靠标签（HH:MM / HH时 在窗口内唯一）：应用离线超过一个窗口再回
+ *   来时，旧桶标签可能与当前窗口别名重合（昨日 14:32 撞今日 14:32）——
+ *   离线期本无实时数据，此误差仅限离线场景，接受并在此明示。
+ */
+export function rateViewFromBuckets(
+  rows: SeriesRow[],
+  bucketSec: number,
+  count: number,
+  nowMs = Date.now(),
+): RateView {
+  const byLabel = new Map<string, [number, number]>();
+  for (const r of rows) byLabel.set(r.key, [r.sent, r.recv]);
+
+  const labels: string[] = [];
+  const tipDates: string[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const t = new Date(nowMs - i * bucketSec * 1000);
+    if (bucketSec === 60) {
+      labels.push(`${pad2(t.getHours())}:${pad2(t.getMinutes())}`);
+    } else {
+      labels.push(`${pad2(t.getHours())}时`);
+    }
+    tipDates.push(`${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`);
+  }
+
+  // 最新桶的已过秒数（≥1）：进行中桶按实际时长折算，别让刚开的桶显示成近零
+  const bucketStartMs = Math.floor(nowMs / (bucketSec * 1000)) * bucketSec * 1000;
+  const elapsedSec = Math.min(bucketSec, Math.max(1, Math.ceil((nowMs - bucketStartMs) / 1000)));
+
+  const down: number[] = [];
+  const up: number[] = [];
+  const tips: string[] = [];
+  labels.forEach((label, i) => {
+    const isLast = i === labels.length - 1;
+    const div = (isLast ? elapsedSec : bucketSec) || 1;
+    const hit = byLabel.get(label);
+    down.push(hit ? hit[1] / div : 0); // rows.sent=上行 / rows.recv=下行（与监控页同约定）
+    up.push(hit ? hit[0] / div : 0);
+    tips.push(`${tipDates[i]} ${label}`);
+  });
+  return { labels, tips, down, up };
+}
+
 /**
  * X 轴相对时间刻度：用 Tick.ts（前端订阅处打的毫秒戳）相对最新一拍换算。
  * 旧数据缺 ts 的点按「每拍 1 秒」用索引差兜底（tick 固定每秒一拍，误差可忽略）；

@@ -20,12 +20,15 @@ import {
   humanRate,
   peakPoint,
   pushTick,
+  rateViewFromBuckets,
+  rateViewFromTicks,
   seriesPoints,
   stateLabel,
   summarizeReport,
   trafficCell,
   type DayReport,
   type Series,
+  type SeriesRow,
   type Tick,
 } from "../src/dashboard";
 
@@ -291,5 +294,67 @@ describe("报表列签署", () => {
   it("五列口径固定（与 Python 日报表一致）", () => {
     expect(REPORT_COLUMNS).toHaveLength(5);
     expect(REPORT_COLUMNS[2]).toBe("累计断网时长");
+  });
+});
+
+describe("速率曲线窗口（1m / 1h / 1d）", () => {
+  const day = (over: Partial<Tick>): Tick => ({
+    down: 0, up: 0, cpu: 0, mem: 0, mem_used_gb: 0, disk_r: 0, disk_w: 0,
+    today_sent: 0, today_recv: 0, ...over,
+  });
+
+  it("1m 窗口：最近 60 拍、相对秒轴、tooltip 绝对时刻", () => {
+    const now = Date.now();
+    const history: Tick[] = [];
+    for (let i = 59; i >= 0; i--) history.push(day({ ts: now - i * 1000, down: 100, up: 10 }));
+    const v = rateViewFromTicks(history)!;
+    expect(v.labels).toHaveLength(60);
+    expect(v.labels[0]).toBe("-59s");
+    expect(v.labels[59]).toBe("0s");
+    expect(v.down.every((x) => x === 100)).toBe(true);
+    expect(v.tips[59]).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("1m 窗口空历史返回 null（组件保持空态）", () => {
+    expect(rateViewFromTicks([])).toBeNull();
+  });
+
+  it("1h 窗口：分钟桶补空桶为 0 + 字节量÷60=均速", () => {
+    const now = new Date(2026, 9, 7, 14, 32, 30).getTime(); // 14:32:30
+    const rows: SeriesRow[] = [
+      { key: "14:30", sent: 600, recv: 1200 },   // 整桶：/60 → 10 / 20 B/s
+      { key: "14:32", sent: 30, recv: 60 },      // 进行中桶：已过 30s → /30 → 1 / 2
+    ];
+    const v = rateViewFromBuckets(rows, 60, 60, now);
+    expect(v.labels).toHaveLength(60);
+    expect(v.labels[0]).toBe("13:33");
+    expect(v.labels[58]).toBe("14:31");
+    expect(v.labels[59]).toBe("14:32");
+    const i1430 = v.labels.indexOf("14:30");
+    expect(v.down[i1430]).toBeCloseTo(20); // recv=1200/60
+    expect(v.up[i1430]).toBeCloseTo(10);
+    const i1431 = v.labels.indexOf("14:31");
+    expect(v.down[i1431]).toBe(0);          // 无流量的分钟补 0
+    expect(v.down[59]).toBeCloseTo(2);      // 进行中桶 /30s
+    expect(v.up[59]).toBeCloseTo(1);
+    expect(v.tips[59]).toMatch(/^10-07 14:32$/);
+  });
+
+  it("1d 窗口：小时桶 24 点、HH时 标签", () => {
+    const now = new Date(2026, 9, 7, 5, 0, 0).getTime();
+    const rows: SeriesRow[] = [{ key: "04时", sent: 3600, recv: 7200 }];
+    const v = rateViewFromBuckets(rows, 3600, 24, now);
+    expect(v.labels).toHaveLength(24);
+    expect(v.labels[23]).toBe("05时");
+    const i = v.labels.indexOf("04时");
+    expect(v.down[i]).toBeCloseTo(2); // 7200/3600
+    expect(v.up[i]).toBeCloseTo(1);
+  });
+
+  it("进行中桶已过 0 秒时按 1s 兜底（除零防护）", () => {
+    const now = new Date(2026, 9, 7, 14, 32, 0).getTime(); // 桶起始瞬间
+    const rows: SeriesRow[] = [{ key: "14:32", sent: 10, recv: 0 }];
+    const v = rateViewFromBuckets(rows, 60, 60, now);
+    expect(Number.isFinite(v.up[59])).toBe(true);
   });
 });
