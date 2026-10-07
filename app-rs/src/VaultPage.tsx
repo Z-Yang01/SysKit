@@ -10,7 +10,7 @@
  * 右侧解锁/锁定/主密码/+ 网站全部收进同一排，「移除主密码」收纳进 ··· 菜单）；
  * 解锁后主体左右两栏——左栏固定宽网站列表（搜索嵌在卡标题），右栏该站账号表
  * （卡标题为「站点 › 名称（共 N 个账号）[编辑站点]」面包屑形态；密码列恒定
- * 纯掩码 + 👁️ 临时显示/📋 复制小图标，行操作收进 ··· 菜单）。
+ * 纯掩码（双击复制），显示/复制等行操作全部收进 ··· 菜单——行内不放图标）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -917,63 +917,39 @@ export function VaultPage() {
                     },
                     {
                       // 密码列恒定纯掩码（固定 8 圆点，长度不外泄）+ 单行 ellipsis，
-                      // 旁边才有 👁️/📋 两个小动作——此前「账号名紧贴掩码」在窄表里
-                      // 读起来像「1111••••」混排（用户实锤），图标动作也让列内容
-                      // 自成一体。双击复制语义保留。
+                      // 双击复制。显示/复制动作收进行尾 ··· 菜单——行内挂 👁️/📋
+                      // 两个图标太吵（用户实锤「不用这么多图标」），且窄表里
+                      // 图标排让列内容自成一体。
                       title: "密码",
                       key: "password",
-                      width: 190,
+                      width: 150,
                       ellipsis: true,
                       render: (_: unknown, a) => {
                         const revealed = reveal?.id === a.id;
                         return (
-                          <Space size={0} wrap={false}>
-                            <Tooltip
-                              title={
-                                revealed
-                                  ? "双击复制密码；点 👁️ 重新隐藏"
-                                  : "双击复制密码（敏感通道，25 秒后自动清空剪贴板）"
-                              }
+                          <Tooltip
+                            title={
+                              revealed
+                                ? "双击复制密码；显示/复制/隐藏都在行尾 ··· 菜单"
+                                : "双击复制密码（敏感通道，25 秒后自动清空剪贴板）；显示明文走 ··· 菜单"
+                            }
+                          >
+                            <span
+                              style={{
+                                cursor: "copy",
+                                display: "inline-block",
+                                verticalAlign: "bottom",
+                                whiteSpace: "nowrap", // 恒单行：掩码/明文都不得换行撑破布局
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                maxWidth: 120,
+                                letterSpacing: revealed ? 0 : 2,
+                              }}
+                              onDoubleClick={() => void copySecret(a.id, "password")}
                             >
-                              <span
-                                style={{
-                                  cursor: "copy",
-                                  display: "inline-block",
-                                  verticalAlign: "bottom",
-                                  whiteSpace: "nowrap", // 恒单行：掩码/明文都不得换行撑破布局
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  maxWidth: 108,
-                                  letterSpacing: revealed ? 0 : 2,
-                                }}
-                                onDoubleClick={() => void copySecret(a.id, "password")}
-                              >
-                                {revealed ? reveal?.text : maskedSecret()}
-                              </span>
-                            </Tooltip>
-                            <Tooltip title={revealed ? "隐藏密码" : "临时显示明文（30 秒后自动隐藏）"}>
-                              <Button
-                                type="text"
-                                size="small"
-                                aria-label={revealed ? "隐藏密码" : "显示密码"}
-                                style={{ marginLeft: 8 }}
-                                onClick={() => void toggleReveal(a)}
-                              >
-                                {revealed ? "🙈" : "👁️"}
-                              </Button>
-                            </Tooltip>
-                            <Tooltip title="复制密码（不进历史，25 秒后自动清空剪贴板）">
-                              <Button
-                                type="text"
-                                size="small"
-                                aria-label="复制密码"
-                                style={{ marginLeft: 8 }}
-                                onClick={() => void copySecret(a.id, "password")}
-                              >
-                                📋
-                              </Button>
-                            </Tooltip>
-                          </Space>
+                              {revealed ? reveal?.text : maskedSecret()}
+                            </span>
+                          </Tooltip>
                         );
                       },
                     },
@@ -986,17 +962,25 @@ export function VaultPage() {
                         v ? <span>{v}</span> : <span style={{ opacity: 0.35 }}>—</span>,
                     },
                     {
-                      // 操作列收进行尾「···」菜单：置顶/编辑/删除/动态码全部菜单化，
-                      // 窄表不再被一排文字按钮挤压（复制密码的 📋 就在密码列掩码旁）。
-                      // 删除仍带二次确认弹窗。
+                      // 操作列收进行尾「···」菜单：置顶/编辑/删除/动态码/显示密码/
+                      // 复制密码全部菜单化（密码列只留纯掩码，行内不放图标——
+                      // 用户实锤「不用这么多图标」）。删除仍带二次确认弹窗。
                       title: "操作",
                       key: "ops",
                       width: 64,
                       render: (_: unknown, a) => {
+                        const revealed = reveal?.id === a.id;
                         const items: MenuProps["items"] = [
                           ...(a.has_totp ? [{ key: "totp", label: "⏱ 动态码" }] : []),
                           { key: "fav", label: a.is_favorite ? "⭐ 取消置顶" : "📌 置顶" },
                           { key: "edit", label: "✏️ 编辑" },
+                          {
+                            key: "reveal",
+                            label: revealed
+                              ? "🙈 隐藏密码"
+                              : "👁️ 显示密码（30 秒后自动隐藏）",
+                          },
+                          { key: "copypw", label: "📋 复制密码" },
                           { type: "divider" as const },
                           { key: "del", danger: true, label: "🗑️ 删除" },
                         ];
@@ -1009,6 +993,8 @@ export function VaultPage() {
                                 if (key === "totp") showTotp(a);
                                 else if (key === "fav") toggleFav(a);
                                 else if (key === "edit") accountModal(a);
+                                else if (key === "reveal") void toggleReveal(a);
+                                else if (key === "copypw") void copySecret(a.id, "password");
                                 else if (key === "del") confirmDeleteAccount(a);
                               },
                             }}
