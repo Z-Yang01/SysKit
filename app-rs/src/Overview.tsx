@@ -108,13 +108,27 @@ export function Dashboard() {
   const [history, setHistory] = useState<Tick[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [ssids, setSsids] = useState<string[]>([]);
-  const [granularity, setGranularity] = useState<Granularity>("minute");
+  // 粒度/速率窗口选择持久化到 localStorage：页面切换会卸载重建 Dashboard，
+  // state 回默认值——用户调好的「1 天」看一眼别页回来就没了（CDP 往返实测丢失）。
+  const [granularity, setGranularity] = useState<Granularity>(() => {
+    const v = localStorage.getItem("sk.granularity");
+    return GRANULARITIES.some((g) => g.value === v) ? (v as Granularity) : "minute";
+  });
+  useEffect(() => {
+    localStorage.setItem("sk.granularity", granularity);
+  }, [granularity]);
   const [ssid, setSsid] = useState<string>("");
   const [series, setSeries] = useState<Series | null>(null);
   const [reportDays, setReportDays] = useState<number>(7);
   const [report, setReport] = useState<DayReport[]>([]);
   // 速率曲线窗口：1m=逐拍实时；1h/1d=后端分钟/小时桶的均值速率
-  const [rateWindow, setRateWindow] = useState<RateWindow>("1m");
+  const [rateWindow, setRateWindow] = useState<RateWindow>(() => {
+    const v = localStorage.getItem("sk.rateWindow");
+    return v === "1h" || v === "1d" ? (v as RateWindow) : "1m";
+  });
+  useEffect(() => {
+    localStorage.setItem("sk.rateWindow", rateWindow);
+  }, [rateWindow]);
   const [rateBuckets, setRateBuckets] = useState<SeriesRow[]>([]);
 
   // ---------------- 初始加载 ----------------
