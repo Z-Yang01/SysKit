@@ -2011,7 +2011,36 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "4MB 压力档：本机管道读速异常时挂满 60s 超时（2026-10-09）；drain 正确性由 400KB 档锁定，本档手工单独跑验收"]
+    fn run_capture_drains_output_beyond_pipe_buffer_400k() {
+        // 回归：子进程输出远超管道缓冲（约 4KB）时，旧实现「先等退出再读管道」
+        // 会让子进程阻塞在 write 上直到被超时 kill——修复动作被误报失败。
+        // 400KB 档在门禁里活跃锁定 drain 语义（4MB 压力档见下，#[ignore] 手工跑）。
+        let script = "$o = 'x' * 200; 1..2000 | ForEach-Object { $o }; 'END-MARKER-SYSKIT'";
+        let out = run_capture(
+            &[
+                "powershell".into(),
+                "-NoProfile".into(),
+                "-Command".into(),
+                script.into(),
+            ],
+            60,
+        )
+        .unwrap_or_else(|e| panic!("powershell 应能启动: {e}"));
+        assert!(out.ok, "大输出子进程必须正常退出（code={})", out.code);
+        assert_eq!(out.code, 0);
+        assert!(
+            out.stdout.contains("END-MARKER-SYSKIT"),
+            "结尾标记必须被捕获（输出被抽干且未截断）"
+        );
+        assert!(
+            out.stdout.len() >= 400_000,
+            "输出量应远超管道缓冲（实际 {} 字节）",
+            out.stdout.len()
+        );
+    }
+
+    #[test]
+    #[ignore = "4MB 压力档：本机管道读速异常时挂满 60s 超时（2026-10-09）；drain 正确性由上方 400KB 活跃档锁定，本档手工单独跑（cargo test -- --ignored）验收"]
     fn run_capture_drains_output_beyond_pipe_buffer_4mb() {
         // 回归：子进程输出远超管道缓冲（约 4KB）时，旧实现「先等退出再读管道」
         // 会让子进程阻塞在 write 上直到被超时 kill——修复动作被误报失败。
@@ -2034,7 +2063,7 @@ mod tests {
             "结尾标记必须被捕获（输出被抽干且未截断）"
         );
         assert!(
-            out.stdout.len() >= 400_000,
+            out.stdout.len() >= 4_000_000,
             "输出量应远超管道缓冲（实际 {} 字节）",
             out.stdout.len()
         );

@@ -2164,7 +2164,7 @@ mod tests {
 
     #[test]
     fn every_tauri_command_is_registered_in_lib() {
-        // 接线守卫：commands.rs 里声明的每个 #[tauri::command] 都必须出现在
+        // 接线守卫：commands/ 目录（mod.rs+各域文件）里声明的每个 #[tauri::command] 都必须出现在
         // lib.rs 的 generate_handler![...] 清单里。漏注册在编译期不报错、
         // 单测全绿，只在运行时 invoke 失败——sk_vault_copy_secret /
         // sk_clip_copy_plain 曾经就这样静默失联（前端按钮全废）。
@@ -2173,11 +2173,7 @@ mod tests {
         // 域文件（network/toolbox/vault/…）同样参与声明扫描：拆分后命令分散
         // 在子模块里，只读 mod.rs 会漏掉搬走的命令（漏注册运行时才炸）。
         let mut cmds_src_all = cmds_src;
-        for domain in [
-            "network.rs",
-            "toolbox.rs",
-            "vault.rs",
-        ] {
+        for domain in ["network.rs", "toolbox.rs", "vault.rs"] {
             cmds_src_all.push_str(
                 &std::fs::read_to_string(src_dir.join(domain))
                     .unwrap_or_else(|e| panic!("读 commands/{domain}: {e}")),

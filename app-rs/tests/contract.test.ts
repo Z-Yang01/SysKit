@@ -1,7 +1,7 @@
 /**
  * 前后端契约静态审计（vitest，Node 侧读源码）。
  *
- * 接线守卫（commands.rs::every_tauri_command_is_registered_in_lib）只保证
+ * 接线守卫（commands/mod.rs::every_tauri_command_is_registered_in_lib）只保证
  * "Rust 声明的命令都注册了"；本文件补上另一半：
  *   1. 前端 invoke 的每个命令名都在注册清单里（抓 invoke 拼写错）；
  *   2. 每个 invoke 点传的参数键都能对上 Rust 形参名（抓参数名漂移——
@@ -168,7 +168,14 @@ function collectRustCommands(): { registered: Set<string>; cmds: Map<string, Rus
   }
 
   const cmds = new Map<string, RustCmd>();
-  const src = read(join(TAURI, "commands.rs"));
+  // commands 已按域拆成目录（mod.rs + network/toolbox/vault/…）：必须拼接
+  // 全部域文件再扫 #[tauri::command]，只读 mod.rs 会漏掉搬走的命令、漏的
+  // 命令前端照常 invoke（运行时才炸）。目录遍历对后续拆分批次自动生效。
+  const src = walk(join(TAURI, "commands"))
+    .filter((p) => p.endsWith(".rs"))
+    .sort()
+    .map(read)
+    .join("\n");
   const chunks = src.split("#[tauri::command]");
   for (const chunk of chunks.slice(1)) {
     const sig = chunk.match(
