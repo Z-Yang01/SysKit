@@ -828,20 +828,41 @@ fn run_del_persistent_route(p: &BTreeMap<String, String>) -> RepairOutcome {
     }
 }
 
-/// 备份网卡的 v4+v6 DNS 静态配置。
+/// 备份网卡的 DNS 配置：v1.3 起结构化 JSON（dns_backup_<适配器净化名>.json）。
 ///
-/// **必须两段都备**：`dns_auto` 会同时清 v4/v6 的静态配置，只备 v4 会让 v6 的
-/// 静态值被永久清除且不可恢复（Python 注释里的同款结论）。
+/// 旧格式是 netsh 输出文本（随 Windows 版本漂移、无法自动还原，评审 4）——
+/// 新格式记录 `{adapter, mode, entries:[{family, mode, servers}]}`，回滚侧
+/// `backup_restore::restore("dns")` 直接 netsh 写回。服务器按是否含冒号
+/// 分流 v4/v6（快照的 dns 列表是混合的）；mode 取 `dns_is_static`。
 fn backup_dns(session: &crate::backup::BackupSession, adapter: &str) -> Result<String, String> {
-    let mut out = String::new();
-    for ip in ["ipv4", "ipv6"] {
-        let r = w32::run_capture(
-            &args(&["netsh", "interface", ip, "show", "dnsservers", adapter]),
-            10,
-        )?;
-        out.push_str(&format!("===== {ip} =====\n{}\n", r.stdout));
+    let snap = crate::snapshot::take();
+    let dns: Vec<String> = snap
+        .adapters
+        .iter()
+        .find(|a| a.name == adapter)
+        .map(|a| a.dns.clone())
+        .unwrap_or_default();
+    let (is_static, _) = crate::netcheck::dns_is_static(adapter);
+    let mode = if is_static { "static" } else { "dhcp" };
+    let v4: Vec<String> = dns.iter().filter(|s| !s.contains(':')).cloned().collect();
+    let v6: Vec<String> = dns.iter().filter(|s| s.contains(':')).cloned().collect();
+    let mut entries = Vec::new();
+    if !v4.is_empty() {
+        entries.push(serde_json::json!({"family": "ipv4", "mode": mode, "servers": v4}));
     }
-    session.save_note(&format!("dns_backup_{adapter}.txt"), &out)
+    if !v6.is_empty() {
+        entries.push(serde_json::json!({"family": "ipv6", "mode": mode, "servers": v6}));
+    }
+    if entries.is_empty() {
+        entries.push(serde_json::json!({"family": "ipv4", "mode": "dhcp", "servers": []}));
+    }
+    let payload = serde_json::json!({"adapter": adapter, "mode": mode, "entries": entries});
+    let safe = crate::backup::sanitize_name(adapter);
+    let fname = format!("dns_backup_{safe}.json");
+    session.save_note(
+        &fname,
+        &serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?,
+    )
 }
 
 /// 找一张配了静态 DNS 的在线物理网卡（对应 Python `_static_dns_adapter`）。

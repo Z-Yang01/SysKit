@@ -20,6 +20,7 @@
 mod appnet;
 mod apptraffic;
 mod backup;
+mod backup_restore;
 mod battery;
 mod cleanup;
 mod clipboard_history;
@@ -381,6 +382,10 @@ pub fn run() {
             commands::sk_repair_list,
             commands::sk_repair_plan,
             commands::sk_repair_run,
+            commands::sk_backup_list,
+            commands::sk_backup_restore,
+            commands::sk_backup_list,
+            commands::sk_backup_restore,
             commands::sk_log_event,
             commands::sk_diag_run,
             commands::sk_diag_one,

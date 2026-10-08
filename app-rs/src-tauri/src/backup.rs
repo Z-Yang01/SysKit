@@ -21,10 +21,10 @@ pub struct BackupSession {
 }
 
 impl BackupSession {
-    /// 开一个备份目录（`backup/<YYYYmmdd_HHMMSS>`）。
+    /// 开一个备份目录（`repair-backups/<YYYYmmdd_HHMMSS>`，v1.3 起新路径）。
     pub fn new() -> Result<Self, String> {
         let stamp = timefmt::now_fmt("%Y%m%d_%H%M%S");
-        let dir = paths::backup_dir().join(stamp);
+        let dir = paths::repair_backups_dir().join(stamp);
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("无法创建备份目录 {}: {e}", dir.display()))?;
         Ok(Self { dir })
@@ -125,15 +125,15 @@ mod tests {
     }
 
     #[test]
-    fn session_creates_timestamped_dir_under_backup_root() {
+    fn session_creates_timestamped_dir_under_repair_backups_root() {
         let _g = crate::test_support::serial();
         crate::test_support::isolate();
         let s = BackupSession::new().expect("应能创建备份目录");
         let dir = s.dir();
         assert!(dir.exists(), "备份目录必须真实存在");
         assert!(
-            dir.starts_with(paths::backup_dir()),
-            "必须落在 backup 根目录下: {}",
+            dir.starts_with(paths::repair_backups_dir()),
+            "必须落在 repair-backups 根目录下: {}",
             dir.display()
         );
         // 目录名是时间戳（15 字符：YYYYmmdd_HHMMSS）

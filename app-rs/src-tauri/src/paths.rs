@@ -111,6 +111,13 @@ pub fn backup_dir() -> PathBuf {
     localappdata_dir().join("backup")
 }
 
+/// 修复备份新路径（v1.3）：`%APPDATA%\SysKit\repair-backups\`——便携模式
+/// 自动落在 `<exe>\data\config\repair-backups\`，与「整体拷贝即迁移」对齐。
+/// 旧路径 backup_dir()（%LOCALAPPDATA%）里的会话仍可列出（legacy 标记）。
+pub fn repair_backups_dir() -> PathBuf {
+    appdata_dir().join("repair-backups")
+}
+
 /// 图片载荷的绝对路径：`clipboard_files/<name>`；name 为空返回 None。
 pub fn image_path(name: &str) -> Option<PathBuf> {
     if name.is_empty() {

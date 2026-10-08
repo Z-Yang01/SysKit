@@ -15,6 +15,7 @@
  * 体验纪律：非管理员提前标注跳过；执行中防重复触发；加载失败给重试入口
  * 而不是永远停在「正在读取」。
  */
+import { BackupRollbackCard } from "./BackupRollbackCard";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -863,8 +864,9 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         />
       )}
 
+      <BackupRollbackCard />
+
       <Card
-        size="small"
         className="sk-card"
         title="修复记录（本次运行）"
         extra={
