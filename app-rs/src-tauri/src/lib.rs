@@ -445,6 +445,7 @@ pub fn run() {
             commands::sk_vault_totp_code,
             commands::sk_vault_copy_secret,
             commands::sk_vault_generate_password,
+            commands::sk_vault_reused_passwords,
             commands::sk_clip_copy_plain,
             commands::sk_settings_all,
             commands::sk_settings_set,

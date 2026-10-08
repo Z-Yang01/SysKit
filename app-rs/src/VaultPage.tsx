@@ -193,6 +193,12 @@ export function VaultPage() {
   const [password, setPassword] = useState("");
   const [newMode, setNewMode] = useState<"dpapi" | "password">("password");
   const [busy, setBusy] = useState(false);
+  // 安全体检（重复密码检测）：显式触发，不进首屏；明文不出后端（掩码返回）
+  const [reused, setReused] = useState<{
+    open: boolean;
+    loading: boolean;
+    groups: { masked: string; accounts: { site: string; label: string }[] }[];
+  }>({ open: false, loading: false, groups: [] });
   // 两栏行高测量（解锁态才挂测量）：站点/账号再多只滚列表卡体
   const row = useFillRowHeight(status?.unlocked === true);
   // 条目数据（解锁后从后端读）
@@ -679,6 +685,19 @@ export function VaultPage() {
 
   // 设置/更改主密码：已是主密码模式时先验当前密码（对齐 Python 版，
   // 防止信任窗口内被静默换锁），再写新密码。
+  const runReuseCheck = useCallback(async () => {
+    setReused((r) => ({ ...r, open: true, loading: true }));
+    try {
+      const d = await invoke<{ count: number; groups: { masked: string; accounts: { site: string; label: string }[] }[] }>(
+        "sk_vault_reused_passwords",
+      );
+      setReused({ open: true, loading: false, groups: d.groups });
+    } catch (e) {
+      setReused({ open: false, loading: false, groups: [] });
+      message.error(String(e));
+    }
+  }, []);
+
   const setMaster = useCallback(() => {
     const changing = status?.has_master_password === true;
     let current = "";
@@ -854,9 +873,14 @@ export function VaultPage() {
                 <Dropdown
                   trigger={["click"]}
                   menu={{
-                    items: [{ key: "remove-master", danger: true, label: "移除主密码" }],
+                    items: [
+                      { key: "reuse-check", label: "🩺 安全体检（重复密码）" },
+                      { type: "divider" as const },
+                      { key: "remove-master", danger: true, label: "移除主密码" },
+                    ],
                     onClick: ({ key }) => {
                       if (key === "remove-master") removeMaster();
+                      else if (key === "reuse-check") void runReuseCheck();
                     },
                   }}
                 >
@@ -1192,6 +1216,42 @@ export function VaultPage() {
           </Card>
         </div>
       ) : null}
+
+      {/* 安全体检结果：重复密码组（掩码展示，明文不出后端） */}
+      <Modal
+        open={reused.open}
+        title="安全体检 · 重复密码"
+        footer={
+          <Button onClick={() => setReused((r) => ({ ...r, open: false }))}>关闭</Button>
+        }
+        onCancel={() => setReused((r) => ({ ...r, open: false }))}
+        width={520}
+      >
+        {reused.loading ? (
+          <Typography.Text type="secondary">正在解密比对全部账号…</Typography.Text>
+        ) : reused.groups.length === 0 ? (
+          <Typography.Text>✅ 没有发现重复使用的密码</Typography.Text>
+        ) : (
+          <Space direction="vertical" size={10} style={{ width: "100%" }}>
+            <Typography.Text type="warning">
+              发现 {reused.groups.length} 组重复密码——一处泄露会波及全部账号：
+            </Typography.Text>
+            {reused.groups.map((g) => (
+              <div key={g.masked}>
+                <Typography.Text code>{g.masked}</Typography.Text>
+                <ul style={{ margin: "4px 0 0", paddingLeft: 20 }}>
+                  {g.accounts.map((a, i) => (
+                    <li key={i} className="sk-hint">
+                      {a.site}
+                      {a.label ? ` · ${a.label}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </Space>
+        )}
+      </Modal>
   </div>
   );
 }

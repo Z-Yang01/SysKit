@@ -540,6 +540,25 @@ pub fn get_secrets_bulk(
 
 /// 全局搜索：空格分词 AND，命中网站名/域名/别名/标签/用户名/label 的拼接串。
 /// 只返回元数据，不解密。
+/// 全账号行（重复密码检测专用）。明文不出调用方比对聚合，不落日志。
+pub type AccountPasswordRow = (i64, String, String, Option<Vec<u8>>);
+
+pub fn all_accounts_with_passwords() -> rusqlite::Result<Vec<AccountPasswordRow>> {
+    let conn = conn()?;
+    let mut stmt = conn.prepare(
+        "SELECT a.id, coalesce(s.name,''), coalesce(a.label,''), a.password_enc          FROM accounts a JOIN sites s ON s.id=a.site_id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            r.get::<_, Option<Vec<u8>>>(3)?,
+        ))
+    })?;
+    rows.collect()
+}
+
 pub fn global_search(q: &str) -> rusqlite::Result<Vec<serde_json::Value>> {
     let tokens: Vec<String> = q
         .split_whitespace()

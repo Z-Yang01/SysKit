@@ -1874,6 +1874,64 @@ pub fn sk_vault_sites(
     serde_json::to_value(sites).map_err(|e| e.to_string())
 }
 
+/// 重复密码检测：全表解密 password 列（GCM 随机 nonce 无密文捷径），明文
+/// 在本函数内比对聚合、**掩码后**返回——明文不出后端。显式触发（安全体检
+/// 按钮），组数上限 50；耗时打日志供后续决定是否要分页优化。
+#[tauri::command]
+pub fn sk_vault_reused_passwords(
+    session: tauri::State<'_, VaultSession>,
+) -> Result<serde_json::Value, String> {
+    let guard = session_lock(&session)?;
+    let c = guard.as_ref().ok_or("密码库未解锁")?;
+    let started = std::time::Instant::now();
+    let rows = crate::vault_store::all_accounts_with_passwords()
+        .map_err(|e| format!("读取账号失败: {e}"))?;
+    let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    let mut decrypted = 0usize;
+    for (_id, site, label, enc) in rows {
+        let Some(enc) = enc.filter(|e| !e.is_empty()) else {
+            continue;
+        };
+        let Ok(pw) = c.decrypt(&enc) else {
+            continue; // 单条解密失败降级跳过（与 bulk 同语义）
+        };
+        let Ok(pw) = String::from_utf8(pw) else {
+            continue;
+        };
+        if pw.is_empty() {
+            continue;
+        }
+        decrypted += 1;
+        groups.entry(pw).or_default().push(serde_json::json!({
+            "site": site,
+            "label": label,
+        }));
+    }
+    let reused: Vec<serde_json::Value> = groups
+        .into_iter()
+        .filter(|(_, accs)| accs.len() > 1)
+        .map(|(pw, accs)| serde_json::json!({ "masked": mask_password(&pw), "accounts": accs }))
+        .take(50)
+        .collect();
+    log::info!(
+        "重复密码检测：解密 {decrypted} 条，耗时 {:?}",
+        started.elapsed()
+    );
+    Ok(serde_json::json!({ "groups": reused, "count": reused.len() }))
+}
+
+/// 密码掩码：前2 + **** + 后2；长度 <6 一律 `****`（防掩码等于原文）。
+fn mask_password(pw: &str) -> String {
+    let chars: Vec<char> = pw.chars().collect();
+    if chars.len() < 6 {
+        return "****".to_string();
+    }
+    let head: String = chars[..2].iter().collect();
+    let tail: String = chars[chars.len() - 2..].iter().collect();
+    format!("{head}****{tail}")
+}
+
 #[tauri::command]
 pub fn sk_vault_site_accounts(
     session: tauri::State<'_, VaultSession>,
@@ -2958,6 +3016,18 @@ pub async fn sk_lan_scan(prefix: Option<String>) -> Result<serde_json::Value, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mask_password_rules() {
+        // 长度 ≥6：前2 + **** + 后2
+        assert_eq!(mask_password("Str0ng!Pass"), "St****ss");
+        // 中文按字符计（不是字节）
+        assert_eq!(mask_password("密码测试一二"), "密码****一二");
+        // 长度 <6：一律 ****（防掩码等于原文）
+        assert_eq!(mask_password("abc"), "****");
+        assert_eq!(mask_password("abcde"), "****");
+        assert_eq!(mask_password(""), "****");
+    }
 
     #[test]
     fn modes_dual_keys_persist_only_on_decisive_outcomes() {
