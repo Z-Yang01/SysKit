@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFillRowHeight } from "./useFillRow";
+import { nonDefaultParams, parseOtpauth } from "./otpauth";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Alert,
@@ -523,8 +524,55 @@ export function VaultPage() {
                 if (el) el.value = pw;
               }}
             />
-            <Input id="vf-acc-totp" defaultValue={form.totp_secret} placeholder="TOTP 密钥（Base32，可留空）"
-                   onChange={(e) => (form.totp_secret = e.target.value)} />
+            <Space.Compact block style={{ width: "100%" }}>
+              <Input id="vf-acc-totp" defaultValue={form.totp_secret} placeholder="TOTP 密钥（Base32，可留空）"
+                     onChange={(e) => (form.totp_secret = e.target.value)} />
+              <Button
+                onClick={() => document.getElementById("vf-totp-qr-file")?.click()}
+              >
+                从图片导入
+              </Button>
+              <input
+                id="vf-totp-qr-file"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/bmp"
+                style={{ display: "none" }}
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!f) return;
+                  try {
+                    const buf = new Uint8Array(await f.arrayBuffer());
+                    let bin = "";
+                    for (let i = 0; i < buf.length; i += 0x8000) {
+                      bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+                    }
+                    const text = await invoke<string>("sk_qr_decode_image", {
+                      data: btoa(bin),
+                    });
+                    const info = parseOtpauth(text);
+                    if (!info) {
+                      message.warning("图中未识别到 otpauth:// 二维码");
+                      return;
+                    }
+                    form.totp_secret = info.secret;
+                    const el = document.getElementById("vf-acc-totp") as HTMLInputElement | null;
+                    if (el) el.value = info.secret;
+                    const bad = nonDefaultParams(info);
+                    if (bad.length) {
+                      message.warning(
+                        `该码使用非标准参数（${bad.join("、")}）——本库按默认 SHA1/6/30 生成动态码，导入后可能不匹配`,
+                        6,
+                      );
+                    } else {
+                      message.success(`已导入 ${info.issuer || info.label || "TOTP 密钥"}`);
+                    }
+                  } catch (err) {
+                    message.error(String(err));
+                  }
+                }}
+              />
+            </Space.Compact>
             <Input.TextArea id="vf-acc-notes" defaultValue={form.notes} placeholder="备注（加密存储）"
                             onChange={(e) => (form.notes = e.target.value)} />
           </Space>
