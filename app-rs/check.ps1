@@ -11,7 +11,10 @@ Write-Host "==== [2/5] cargo clippy -D warnings ====" -ForegroundColor Cyan
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 if ($LASTEXITCODE -ne 0) { $failed += "cargo clippy" }
 
-Write-Host "==== [3/5] cargo test（单线程：并行模式存在 0xc0000005 竞争，待排查） ====" -ForegroundColor Cyan
+Write-Host "==== [3/5] cargo test（单线程） ====" -ForegroundColor Cyan
+# 2026-10-08：三连并行 stress 全绿（831 例，v1.3.1 后）；历史 0xc0000005
+# 未再复现，暂留单线程为稳（夜间/无人值守宁慢勿偶发崩）——观察若干天后
+# 可尝试去掉 --test-threads=1（并行约 20s → ~8s）。
 cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 if ($LASTEXITCODE -ne 0) { $failed += "cargo test" }
 

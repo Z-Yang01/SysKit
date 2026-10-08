@@ -331,6 +331,7 @@ mod tests {
             kind: kind.to_string(),
             pinned: false,
             data: data.to_string(),
+            dhash: None,
             idx: None,
         }
     }

@@ -43,6 +43,8 @@ pub struct Captured {
     pub kind: String,
     /// 图片为 PNG 文件名；HTML 为原文；其余为空
     pub data: String,
+    /// 图片条目的感知哈希（v1.3.1；非图片为 None）
+    pub dhash: Option<u64>,
 }
 
 /// 剪贴板内容快照（读一次，供纯逻辑决策）。
@@ -64,6 +66,7 @@ pub fn decide_capture(snap: &ClipSnapshot, capture_images: bool) -> Option<Captu
             text: files.join("\n"),
             kind: "file".to_string(),
             data: String::new(),
+            dhash: None,
         });
     }
     // 2. 图片：内容由 `clip_capture_images` 控制；关掉时不记录，
@@ -73,6 +76,8 @@ pub fn decide_capture(snap: &ClipSnapshot, capture_images: bool) -> Option<Captu
             text: snap.text.clone().unwrap_or_default(),
             kind: "image".to_string(),
             data: String::new(),
+            // 真实指纹在 capture_image 里算（这里读不到 DIB）；None = 不做感知查重
+            dhash: None,
         });
     }
     let text = snap.text.as_deref().unwrap_or("");
@@ -82,6 +87,7 @@ pub fn decide_capture(snap: &ClipSnapshot, capture_images: bool) -> Option<Captu
             text: text.to_string(),
             kind: "html".to_string(),
             data: String::new(),
+            dhash: None,
         });
     }
     // 4. 纯文本：空白内容不入库（与 History::add 的判据一致）
@@ -92,6 +98,7 @@ pub fn decide_capture(snap: &ClipSnapshot, capture_images: bool) -> Option<Captu
         text: text.to_string(),
         kind: "text".to_string(),
         data: String::new(),
+        dhash: None,
     })
 }
 
@@ -267,7 +274,7 @@ pub fn capture_pending_sync() {
 
 /// 入库（图片与文本都直接进历史；图片的 PNG 已在调用方落盘）。
 fn store(cap: &Captured) -> bool {
-    let added = hist::with(|h| h.add(&cap.text, &cap.kind, &cap.data));
+    let added = hist::with(|h| h.add_with_dhash(&cap.text, &cap.kind, &cap.data, cap.dhash));
     if added {
         CAPTURED.fetch_add(1, Ordering::SeqCst);
     }
@@ -295,10 +302,13 @@ pub fn capture_image() -> Result<Option<String>, String> {
     if name.is_empty() {
         return Err("图片落盘失败".to_string());
     }
+    // 感知指纹：重编码的同一张截图 md5 不同，字节去重抓不住——结构查重兜住
+    let dhash = crate::dhash::dhash64(&png);
     store(&Captured {
         text: label.clone(),
         kind: "image".to_string(),
         data: name,
+        dhash,
     });
     Ok(Some(label))
 }
@@ -313,10 +323,12 @@ pub fn store_png(png: &[u8], label: &str) -> bool {
     if name.is_empty() {
         return false;
     }
+    let dhash = crate::dhash::dhash64(png);
     store(&Captured {
         text: label.to_string(),
         kind: "image".to_string(),
         data: name,
+        dhash,
     })
 }
 

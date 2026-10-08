@@ -28,6 +28,7 @@ mod clipboard_watch;
 mod clipboard_write;
 mod cliprules;
 mod commands;
+mod dhash;
 mod dib;
 mod disk;
 mod diskusage;

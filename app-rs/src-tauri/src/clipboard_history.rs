@@ -35,6 +35,9 @@ pub struct ClipItem {
     pub pinned: bool,
     #[serde(default)]
     pub data: String,
+    /// 图片条目的感知哈希（dHash 64 位）：结构查重用（v1.3.1；旧条目缺省）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dhash: Option<u64>,
     /// 搜索结果的原始下标（仅内存态，不落盘）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idx: Option<usize>,
@@ -52,6 +55,7 @@ impl ClipItem {
             kind,
             pinned: false,
             data,
+            dhash: None,
             idx: None,
         }
     }
@@ -260,6 +264,7 @@ impl History {
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string(),
+                        dhash: obj.get("dhash").and_then(Value::as_u64),
                         idx: None,
                     });
                 }
@@ -307,6 +312,8 @@ impl History {
                         "kind": it.kind,
                         "pinned": it.pinned,
                         "data": it.data,
+                        // dhash：serde default 语义，旧条目/老版本读取均兼容
+                        "dhash": it.dhash,
                     })
                 })
                 .collect(),
@@ -320,9 +327,37 @@ impl History {
     }
 
     /// 追加一条。空白/敏感/与最新相同/与置顶相同/同载荷重复 → 不入库。
+    ///
+    /// 便捷入口：生产入库路径全走 `add_with_dhash`（图片带指纹），本方法
+    /// 保留给测试与未来的导入类路径。
+    #[allow(dead_code)]
     pub fn add(&mut self, text: &str, kind: &str, data: &str) -> bool {
+        self.add_with_dhash(text, kind, data, None)
+    }
+
+    /// 带 dHash 的入库：图片条目传指纹后启用**感知查重**——与历史中已有
+    /// 指纹的汉明距离 ≤5 视为同一张图（重编码 md5 不同但结构相同）。
+    /// 比对范围 = 全部已有指纹（条目数受 max_items 上限约束，线性扫描微秒级）。
+    pub fn add_with_dhash(
+        &mut self,
+        text: &str,
+        kind: &str,
+        data: &str,
+        dhash: Option<u64>,
+    ) -> bool {
         if text.trim().is_empty() {
             return false;
+        }
+        if let (Some(new_h), true) = (dhash, kind == "image") {
+            let dup = self.items.iter().any(|it| {
+                it.kind == "image"
+                    && it.dhash.is_some_and(|h| {
+                        crate::dhash::hamming(h, new_h) <= crate::dhash::DUPLICATE_DISTANCE
+                    })
+            });
+            if dup {
+                return false;
+            }
         }
         let mut text = text.to_string();
         if is_sensitive(&text) || is_suppressed(&text) {
@@ -351,10 +386,9 @@ impl History {
         {
             return false;
         }
-        self.items.insert(
-            0,
-            ClipItem::new(now_secs() as i64, text, kind.to_string(), data.to_string()),
-        );
+        let mut item = ClipItem::new(now_secs() as i64, text, kind.to_string(), data.to_string());
+        item.dhash = dhash;
+        self.items.insert(0, item);
         self.resort();
         self.evict();
         self.mark_dirty();
@@ -570,6 +604,7 @@ mod tests {
             kind: "text".into(),
             pinned: false,
             data: String::new(),
+            dhash: None,
             idx: None,
         });
         h.items.push(ClipItem {
@@ -578,6 +613,7 @@ mod tests {
             kind: "text".into(),
             pinned: false,
             data: String::new(),
+            dhash: None,
             idx: None,
         });
         let removed = h.purge_older_than(1);
@@ -663,6 +699,46 @@ mod tests {
         );
         // 收尾恢复默认，免得并行用例读到本用例留下的 clipboard_max=0
         crate::test_support::reset_persistent_files();
+    }
+
+    #[test]
+    fn image_dhash_perceptual_dedup() {
+        let mut h = fresh();
+        // 首张图入库；指纹相近（距离 ≤5）的第二张被感知查重跳过
+        assert!(h.add_with_dhash(
+            "[图片 100×80]",
+            "image",
+            "a.png",
+            Some(0b1111_0000_1111_0000)
+        ));
+        assert!(
+            !h.add_with_dhash(
+                "[图片 100×80]",
+                "image",
+                "b.png",
+                Some(0b1111_0000_1111_0111)
+            ),
+            "汉明距离 3 应判重"
+        );
+        // 指纹差异大（距离 12）→ 正常入库
+        assert!(h.add_with_dhash(
+            "[图片 100×80]",
+            "image",
+            "c.png",
+            Some(0b0000_1111_0000_1111)
+        ));
+        // 文本条目不受指纹影响
+        assert!(h.add_with_dhash("hello", "text", "", None));
+        assert_eq!(h.items.iter().filter(|i| i.kind == "image").count(), 2);
+    }
+
+    #[test]
+    fn dhash_survives_save_reload() {
+        let mut h = fresh();
+        assert!(h.add_with_dhash("[图片 1×1]", "image", "k.png", Some(0xDEADBEEF_CAFEF00D)));
+        h.save();
+        let h2 = crate::clipboard_history::History::load();
+        assert_eq!(h2.items[0].dhash, Some(0xDEADBEEF_CAFEF00D), "指纹落盘往返");
     }
 
     #[test]

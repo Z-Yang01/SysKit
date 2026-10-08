@@ -245,6 +245,7 @@ pub fn sk_tray_ready<R: Runtime>(app: AppHandle<R>) -> bool {
 #[tauri::command]
 pub fn sk_write_item(kind: String, text: String, data: String) -> bool {
     let item = ClipItem {
+        dhash: None,
         ts: 0,
         text,
         kind,
@@ -2240,9 +2241,15 @@ pub fn sk_open_url(url: String) -> Result<(), String> {
         Err("只允许打开 http/https 链接".to_string())
     }
 }
+
+/// 图片条目缩略图（base64 PNG data URL）：列表内嵌显示用。
 ///
 /// 用 image crate 缩到最长边 96px 再编码——历史里可能几十张截图，
 /// 原图直出会把列表内存/传输量顶到几十 MB。点击放大由前端 AntD Image 预览承担。
+///
+/// **LRU 缓存**（v1.3.1）：PNG 文件名是 md5（内容寻址，不随时间变），
+/// 命中即免掉整图解码+缩放+编码（几十 MB 图 ~几十 ms → 微秒级）。容量
+/// 256 条 × 单条 ~几十 KB ≈ 最多几 MB 内存；超出按最近最少使用淘汰。
 #[tauri::command]
 pub async fn sk_clip_image_thumb(index: usize) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -2253,6 +2260,12 @@ pub async fn sk_clip_image_thumb(index: usize) -> Result<String, String> {
                 .map(|i| i.data.clone())
         })
         .ok_or_else(|| format!("找不到第 {index} 条图片历史（可能已被淘汰）"))?;
+
+        // LRU 命中：免解码免缩放
+        if let Some(cached) = thumb_cache_get(&name) {
+            return Ok(cached);
+        }
+
         let src =
             crate::paths::image_path(&name).ok_or_else(|| format!("图片文件名非法: {name}"))?;
         let bytes = std::fs::read(&src)
@@ -2264,13 +2277,68 @@ pub async fn sk_clip_image_thumb(index: usize) -> Result<String, String> {
             .write_to(&mut out, image::ImageFormat::Png)
             .map_err(|e| format!("缩略图编码失败: {e}"))?;
         use base64::Engine as _;
-        Ok(format!(
+        let data_url = format!(
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(out.into_inner())
-        ))
+        );
+        thumb_cache_put(name, data_url.clone());
+        Ok(data_url)
     })
     .await
     .map_err(|e| format!("缩略图线程失败: {e}"))?
+}
+
+// ---------------- 缩略图 LRU（key = PNG 文件名，value = data URL） ----------------
+
+const THUMB_CACHE_CAP: usize = 256;
+
+/// 缩略图缓存：访问顺序队列 + key→dataURL 表。
+type ThumbCache = (
+    std::collections::VecDeque<String>,
+    std::collections::HashMap<String, String>,
+);
+
+fn thumb_cache_state() -> &'static std::sync::Mutex<ThumbCache> {
+    use std::sync::{Mutex, OnceLock};
+    static STATE: OnceLock<Mutex<ThumbCache>> = OnceLock::new();
+    STATE.get_or_init(|| {
+        Mutex::new((
+            std::collections::VecDeque::new(),
+            std::collections::HashMap::new(),
+        ))
+    })
+}
+
+fn thumb_cache_get(key: &str) -> Option<String> {
+    let st = &mut *thumb_cache_state().lock().expect("thumb 缓存锁中毒");
+    if let Some(v) = st.1.get(key).cloned() {
+        // 刷新访问顺序
+        if let Some(pos) = st.0.iter().position(|k| k == key) {
+            st.0.remove(pos);
+        }
+        st.0.push_back(key.to_string());
+        Some(v)
+    } else {
+        None
+    }
+}
+
+fn thumb_cache_put(key: String, value: String) {
+    let st = &mut *thumb_cache_state().lock().expect("thumb 缓存锁中毒");
+    if st.1.contains_key(&key) {
+        if let Some(pos) = st.0.iter().position(|k| k == &key) {
+            st.0.remove(pos);
+        }
+    }
+    st.0.push_back(key.clone());
+    st.1.insert(key, value);
+    while st.1.len() > THUMB_CACHE_CAP {
+        if let Some(oldest) = st.0.pop_front() {
+            st.1.remove(&oldest);
+        } else {
+            break;
+        }
+    }
 }
 
 #[tauri::command]
@@ -3408,6 +3476,7 @@ mod tests {
             kind: "text".into(),
             pinned: true,
             data: String::new(),
+            dhash: None,
             idx: Some(3),
         };
         let row = ClipRow::from_item(&it);
@@ -3425,6 +3494,7 @@ mod tests {
             kind: "text".into(),
             pinned: false,
             data: String::new(),
+            dhash: None,
             idx: None,
         };
         assert_eq!(ClipRow::from_item(&it).idx, 0);
