@@ -275,7 +275,7 @@ export function App() {
   // palette quick:diag 的递增信号：Diagnose 挂载/更新时消费一次
   const [quickDiagRequest, setQuickDiagRequest] = useState(0);
   const pages: Record<string, React.ReactNode> = {
-    overview: <Dashboard />,
+    overview: <Dashboard dark={dark} />,
     clipboard: <ClipboardHistoryPanel />,
     diagnose: <Diagnose quickRequest={quickDiagRequest} />,
     toolbox: (

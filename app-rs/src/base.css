@@ -186,3 +186,85 @@ body {
   outline-offset: 1px;
   border-radius: 6px;
 }
+
+
+/* ---------------- AntD 全局抛光（S3：shadcn 细节语言一次覆盖全页） ---------------- */
+
+/* 卡片头：标题层级（15px/600）、头部与内容分离线极淡 */
+.ant-card .ant-card-head {
+  min-height: unset;
+  font-weight: 600;
+  border-bottom: 1px solid color-mix(in srgb, var(--sk-border) 55%, transparent);
+}
+.ant-card .ant-card-head-title {
+  font-size: 15px;
+}
+
+/* 表格：密度与圆角收口（首末行跟随容器圆角） */
+.ant-table-container table > thead > tr:first-child th:first-child {
+  border-start-start-radius: 10px;
+}
+.ant-table-container table > thead > tr:first-child th:last-child {
+  border-start-end-radius: 10px;
+}
+.ant-table-tbody > tr > td {
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+/* 主按钮：accent 光晕（玻璃语言的点睛，只给主按钮） */
+.ant-btn-primary:not(.ant-btn-dangerous) {
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--sk-accent) 35%, transparent);
+}
+.ant-btn-primary:not(.ant-btn-dangerous):hover {
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--sk-accent) 45%, transparent);
+}
+
+/* Modal：头部无分隔线（玻璃层自身分层），标题加重 */
+.ant-modal .ant-modal-header {
+  border-bottom: none;
+  margin-bottom: 4px;
+}
+.ant-modal .ant-modal-title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+/* 空态：收敛（图标缩小 + 淡字），避免大灰图抢视觉 */
+.ant-empty-image svg {
+  width: 52px;
+  height: 52px;
+  opacity: 0.55;
+}
+.ant-empty-description {
+  color: var(--sk-sub);
+  font-size: 13px;
+}
+
+/* message 通知：圆角玻璃（轻） */
+.ant-message .ant-message-notice-content {
+  border-radius: 10px;
+  border: 1px solid var(--sk-glass_border);
+  box-shadow: 0 6px 24px var(--sk-shadow_color);
+}
+
+/* Tooltip 玻璃圆角 */
+.ant-tooltip-inner {
+  border-radius: 8px;
+}
+
+/* Tabs：页签 hover 有底、字重分级 */
+.ant-tabs .ant-tabs-tab {
+  font-weight: 500;
+}
+.ant-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+  font-weight: 600;
+}
+
+/* Segmented 胶囊：容器玻璃化 */
+.ant-segmented {
+  border-radius: 8px;
+}
+.ant-segmented .ant-segmented-item {
+  border-radius: 6px;
+}

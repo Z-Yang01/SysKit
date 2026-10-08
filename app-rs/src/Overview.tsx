@@ -104,7 +104,7 @@ const RATE_BUCKET_CFG: Record<Exclude<RateWindow, "1m">, { gran: Granularity; bu
   "1d": { gran: "hour", bucketSec: 3600, count: 24 },
 };
 
-export function Dashboard() {
+export function Dashboard({ dark }: { dark: boolean }) {
   const [tick, setTick] = useState<Tick | null>(null);
   const [history, setHistory] = useState<Tick[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -315,7 +315,7 @@ export function Dashboard() {
         },
       ],
     };
-  }, [rateView]);
+  }, [rateView, dark]);
 
   const usageOption = useMemo(() => {
     const base = baseChartOption();
@@ -348,7 +348,7 @@ export function Dashboard() {
         },
       ],
     };
-  }, [history]);
+  }, [history, dark]);
 
   const trafficOption = useMemo(() => {
     const base = baseChartOption();
@@ -376,7 +376,7 @@ export function Dashboard() {
         { name: "上行", type: "bar", stack: "t", data: pts.sent, itemStyle: { color: OK() } },
       ],
     };
-  }, [series]);
+  }, [series, dark]);
 
   const summary = useMemo(() => summarizeReport(report), [report]);
   const currentState = tick ? "ok" : "offline";
