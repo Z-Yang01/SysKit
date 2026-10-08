@@ -114,6 +114,7 @@ pub struct WatchState {
     pub enabled: bool,
     pub captured: u64,
     pub skipped_blacklist: u64,
+    pub skipped_sensitive: u64,
     pub skipped_duplicate: u64,
 }
 
@@ -121,6 +122,7 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static CAPTURED: AtomicU32 = AtomicU32::new(0);
 static SKIPPED_BL: AtomicU32 = AtomicU32::new(0);
+static SKIPPED_SENSITIVE: AtomicU32 = AtomicU32::new(0);
 static SKIPPED_DUP: AtomicU32 = AtomicU32::new(0);
 
 /// 当前监听状态。
@@ -130,6 +132,7 @@ pub fn state() -> WatchState {
         enabled: ENABLED.load(Ordering::SeqCst),
         captured: CAPTURED.load(Ordering::SeqCst) as u64,
         skipped_blacklist: SKIPPED_BL.load(Ordering::SeqCst) as u64,
+        skipped_sensitive: SKIPPED_SENSITIVE.load(Ordering::SeqCst) as u64,
         skipped_duplicate: SKIPPED_DUP.load(Ordering::SeqCst) as u64,
     }
 }
@@ -207,6 +210,19 @@ fn capture_pass() {
         st.last_text = candidate;
         SKIPPED_BL.fetch_add(1, Ordering::SeqCst);
         return;
+    }
+    // 内容识别式敏感检测（信用卡/身份证/API 密钥）：命中不入库（与黑名单同
+    // 语义），并记为 last 防补录；开关 clip_sensitive_detect 可关
+    if crate::settings::get_bool("clip_sensitive_detect") {
+        if let Some(kind) = crate::sensrules::detect_sensitive(&candidate) {
+            st.last_text = candidate;
+            SKIPPED_SENSITIVE.fetch_add(1, Ordering::SeqCst);
+            log::info!(
+                "剪贴板内容疑似{}，未记录（clip_sensitive_detect 可关）",
+                kind
+            );
+            return;
+        }
     }
     let Some(cap) = decide_capture(&snap, capture_images) else {
         return;

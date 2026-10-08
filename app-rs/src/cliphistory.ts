@@ -33,6 +33,8 @@ export interface ClipSummary {
   max_items: number;
   watch_enabled: boolean;
   watch_paused: boolean;
+  /** 敏感内容拦截计数（clip_sensitive_detect 命中未入库的累计数；v1.3+） */
+  skipped_sensitive?: number;
   by_kind: Record<string, number>;
 }
 

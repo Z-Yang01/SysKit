@@ -53,6 +53,7 @@ mod rate_store;
 mod repairs;
 mod secure_store;
 mod sensitive;
+mod sensrules;
 mod settings;
 mod snapshot;
 mod startup;

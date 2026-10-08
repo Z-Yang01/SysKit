@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-/** python-final 时的对齐终态（24 键）。键序无关；literal 为源码字面量。 */
+/** python-final 对齐终态 + v1.3 新增 clip_sensitive_detect（25 键）。键序无关。 */
 type Kind = "bool" | "int" | "str";
 const FROZEN_DEFAULTS: Record<string, { literal: string; kind: Kind }> = {
   auto_repair_enabled: { literal: "true", kind: "bool" },
@@ -31,6 +31,7 @@ const FROZEN_DEFAULTS: Record<string, { literal: string; kind: Kind }> = {
   clipboard_retain_days: { literal: "30", kind: "int" },
   clip_process_blacklist: { literal: "keepass,bitwarden,1password,enpass", kind: "str" },
   clip_sensitive_ttl: { literal: "25", kind: "int" },
+  clip_sensitive_detect: { literal: "true", kind: "bool" },
   clip_capture_images: { literal: "true", kind: "bool" },
   vault_autolock_min: { literal: "30", kind: "int" },
   vault_trust_min: { literal: "30", kind: "int" },
@@ -97,7 +98,7 @@ const RS = parseRsDefaults();
 
 describe("settings defaults 冻结契约（settings.rs vs 快照）", () => {
   it("解析到全部键（解析器本身有效）", () => {
-    expect(RS.size).toBe(24);
+    expect(RS.size).toBe(25);
   });
 
   it("键集完全一致：无多、无少（死键不得复活）", () => {

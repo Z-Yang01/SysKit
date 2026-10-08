@@ -44,6 +44,7 @@ pub fn defaults() -> Vec<(&'static str, Value, Ty)> {
             Str,
         ),
         ("clip_sensitive_ttl", Value::from(25), Int),
+        ("clip_sensitive_detect", Value::Bool(true), Bool),
         ("clip_capture_images", Value::Bool(true), Bool),
         ("vault_autolock_min", Value::from(30), Int),
         ("vault_trust_min", Value::from(30), Int),
@@ -201,6 +202,10 @@ fn decoration(key: &str) -> Decoration {
             3600,
         ),
         "clip_capture_images" => Decoration::new("记录剪贴板图片", "关闭后只记录文本与文件路径"),
+        "clip_sensitive_detect" => Decoration::new(
+            "敏感内容不入库",
+            "复制的内容像信用卡号/身份证号/API 密钥时不记入剪贴板历史",
+        ),
         "vault_autolock_min" => Decoration::int(
             "密码库自动锁定（分）",
             "闲置（无密码库操作）超过该时长后，下一次操作会要求重新解锁；0=不自动锁定",
@@ -825,7 +830,11 @@ mod tests {
     #[test]
     fn defaults_cover_python_keys() {
         let keys: Vec<&str> = defaults().into_iter().map(|(k, _, _)| k).collect();
-        assert_eq!(keys.len(), 24, "DEFAULTS 键数应与 config.py 对齐");
+        assert_eq!(
+            keys.len(),
+            25,
+            "DEFAULTS 键数应与 config.py 对齐（25 = 24 + clip_sensitive_detect）"
+        );
         for must in [
             "clipboard_max",
             "clipboard_watch",

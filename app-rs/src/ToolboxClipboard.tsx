@@ -8,7 +8,7 @@
  * + 刷新 + 清理下拉；列表用 AntD List——点击整行即复制回剪贴板，行操作图标化，
  * 除 📋 复制外全部收进行尾「···」菜单，悬停行时才浮现（平时 25% 透明度）。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Alert,
@@ -259,6 +259,16 @@ export function ClipboardHistoryPanel() {
     void load();
   }, [load]);
 
+  // 首次拦截提示：从 0 → N 只提醒一次（之后 Tag 常驻，不重复打扰）
+  const lastSkipped = useRef(0);
+  useEffect(() => {
+    const n = summary?.skipped_sensitive ?? 0;
+    if (lastSkipped.current === 0 && n > 0) {
+      message.info(`已拦截 ${n} 条疑似敏感内容（信用卡/身份证/密钥），未记入历史`);
+    }
+    lastSkipped.current = n;
+  }, [summary?.skipped_sensitive]);
+
   const act = useCallback(
     async (fn: () => Promise<unknown>, okMsg: string) => {
       setBusy(true);
@@ -469,6 +479,9 @@ export function ClipboardHistoryPanel() {
                 : `监听中 · ${pauseHint(false, true)}`
               : "监听已关闭"}
           </span>
+          {(summary?.skipped_sensitive ?? 0) > 0 && (
+            <Tag color="orange">🛡 已拦截 {summary!.skipped_sensitive} 条敏感内容</Tag>
+          )}
           <Button size="small" type={enabled ? "default" : "primary"} onClick={watchToggleModal}>
             {enabled && !paused ? "⏸" : "▶"} {watchToggleLabel(enabled, paused)}
           </Button>

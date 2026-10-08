@@ -209,6 +209,7 @@ pub fn sk_clip_summary() -> serde_json::Value {
             "max_items": h.max_items,
             "by_kind": by_kind,
             "watch_enabled": crate::clipboard_watch::is_enabled(),
+            "skipped_sensitive": crate::clipboard_watch::state().skipped_sensitive,
             // 后端暂停=关闭（sk_clip_watch_set 二态合并），无独立暂停态
             "watch_paused": false,
         })
