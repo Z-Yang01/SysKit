@@ -46,6 +46,7 @@ mod palette;
 mod paths;
 mod portscan;
 mod pwgen;
+mod qrdecode;
 mod rate_stats;
 mod rate_store;
 mod repairs;
@@ -459,6 +460,10 @@ pub fn run() {
             commands::sk_clip_action_run,
             commands::sk_clip_qr_svg,
             commands::sk_clip_image_thumb,
+            commands::sk_qr_decode_image,
+            commands::sk_qr_decode_clipboard,
+            commands::sk_qr_decode_clip_item,
+            commands::sk_open_url,
             commands::sk_download_test_one,
             commands::sk_diag_export,
             commands::sk_palette_query,

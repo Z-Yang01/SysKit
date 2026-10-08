@@ -2069,7 +2069,66 @@ pub fn sk_vault_generate_password(
 /// 文本文件名做**路径分隔符消毒**：条目内容不可信，直接拼进默认文件名里
 /// 可能带 `..\` 之类的片段；虽然最终路径由用户在对话框里确认，默认值也不该
 /// 指向目录之外。
-/// 图片条目缩略图（base64 PNG data URL）：列表内嵌显示用。
+/// 解码任意图片字节里的二维码（base64）：工具箱「二维码识别」tab 的选图入口。
+#[tauri::command]
+pub async fn sk_qr_decode_image(data: String) -> Result<String, String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("图片数据不合法: {e}"))?;
+    tauri::async_runtime::spawn_blocking(move || crate::qrdecode::decode_image_bytes(&bytes))
+        .await
+        .map_err(|e| format!("解码线程失败: {e}"))?
+}
+
+/// 识别剪贴板当前图片（CF_DIB → PNG → 解码）：工具箱「从剪贴板识别」入口。
+#[tauri::command]
+pub async fn sk_qr_decode_clipboard() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dib = crate::w32::clipboard_get_dib().ok_or("剪贴板里没有图片")?;
+        let bmp = crate::dib::parse_dib(&dib).map_err(|e| format!("剪贴板图片解析失败: {e}"))?;
+        let png = crate::dib::encode_png(&bmp).map_err(|e| format!("图片转码失败: {e}"))?;
+        crate::qrdecode::decode_image_bytes(&png)
+    })
+    .await
+    .map_err(|e| format!("解码线程失败: {e}"))?
+}
+
+/// 识别剪贴板历史里的图片条目（index 与缩略图同语义，路径限定 clip_files）。
+#[tauri::command]
+pub async fn sk_qr_decode_clip_item(index: usize) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = hist::with(|h| {
+            h.search(None, None)
+                .get(index)
+                .filter(|i| i.kind == "image")
+                .map(|i| i.data.clone())
+        })
+        .ok_or_else(|| format!("找不到第 {index} 条图片历史（可能已被淘汰）"))?;
+        let src =
+            crate::paths::image_path(&name).ok_or_else(|| format!("图片文件名非法: {name}"))?;
+        let bytes = std::fs::read(&src)
+            .map_err(|e| format!("图片读取失败（{}）: {e}", src.to_string_lossy()))?;
+        crate::qrdecode::decode_image_bytes(&bytes)
+    })
+    .await
+    .map_err(|e| format!("解码线程失败: {e}"))?
+}
+
+/// 用系统默认浏览器/关联打开 URL（二维码识别结果的「打开链接」动作）。
+///
+/// **只放行 http/https**：shell_open 走 ShellExecuteW，任意串能触发任意
+/// 协议（ms-settings、file:、自定义协议＝可执行入口），二维码内容不可信，
+/// 白名单在命令边界做死。
+#[tauri::command]
+pub fn sk_open_url(url: String) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        crate::w32::shell_open(&url)
+    } else {
+        Err("只允许打开 http/https 链接".to_string())
+    }
+}
 ///
 /// 用 image crate 缩到最长边 96px 再编码——历史里可能几十张截图，
 /// 原图直出会把列表内存/传输量顶到几十 MB。点击放大由前端 AntD Image 预览承担。

@@ -28,6 +28,7 @@ import { ToolboxPorts } from "./ToolboxPorts";
 import { ToolboxDns } from "./ToolboxDns";
 import { ToolboxSpeed } from "./ToolboxSpeed";
 import { ToolboxAppNet } from "./ToolboxAppNet";
+import { ToolboxQr } from "./ToolboxQr";
 import { SystemPage } from "./SystemPage";
 import { VaultPage } from "./VaultPage";
 import { SettingsView } from "./SettingsView";
@@ -252,6 +253,7 @@ export function App() {
           { key: "dns", label: "DNS / 子网 / ping", children: <ToolboxDns /> },
           { key: "speed", label: "测速", children: <ToolboxSpeed /> },
           { key: "appnet", label: "应用联网", children: <ToolboxAppNet /> },
+          { key: "qrcode", label: "二维码识别", children: <ToolboxQr /> },
         ]}
       />
     ),

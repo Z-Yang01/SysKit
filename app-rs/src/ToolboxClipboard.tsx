@@ -61,6 +61,7 @@ import {
   type DetectResult,
 } from "./cliprules";
 import { svgDataUrl } from "./qr";
+import { ToolboxQr } from "./ToolboxQr";
 
 /** 图片条目缩略图：按需拉取后端 base64 缩略图；AntD Image 点击放大（56px，规格放大自 44px）。 */
 function ClipImageThumb({ index }: { index: number }) {
@@ -127,6 +128,8 @@ export function ClipboardHistoryPanel() {
   const [running, setRunning] = useState("");
   const [qrOf, setQrOf] = useState("");
   const [qrSvg, setQrSvg] = useState("");
+  // 图片条目「识别二维码」：>=-1 时弹结果卡（复用 ToolboxQr 的展示与动作）
+  const [qrDecodeIndex, setQrDecodeIndex] = useState(-1);
   const [colorOf, setColorOf] = useState("");
   const [debouncedKeyword, setDebouncedKeyword] = useState("");
   // 全文预览：列表只显示两行折叠，长条目从这里看全（Python「预览」同职责）
@@ -379,6 +382,9 @@ export function ClipboardHistoryPanel() {
           break;
         case "actions":
           void detect(r);
+          break;
+        case "qrdecode":
+          setQrDecodeIndex(r.idx);
           break;
         case "remove":
           remove(r);
@@ -796,6 +802,19 @@ export function ClipboardHistoryPanel() {
               关闭
             </Button>
           </Space>
+        </Modal>
+
+        {/* 图片条目识别二维码：复用工具箱的结果卡（WiFi 拆解/复制密码/打开链接） */}
+        <Modal
+          open={qrDecodeIndex >= 0}
+          title="识别二维码"
+          footer={null}
+          onCancel={() => setQrDecodeIndex(-1)}
+          width={560}
+        >
+          {qrDecodeIndex >= 0 && (
+            <ToolboxQr decodeClipItem={qrDecodeIndex} onDone={() => setQrDecodeIndex(-1)} />
+          )}
         </Modal>
 
         <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginBottom: 0 }}>

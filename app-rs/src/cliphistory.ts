@@ -195,7 +195,7 @@ export function canSaveAs(row: ClipRow): { ok: boolean; reason: string } {
 
 /** 行内「···」菜单的一项（纯数据：UI 映射为 antd Menu，vitest 可断言）。 */
 export interface RowMenuItem {
-  key: "preview" | "pin" | "save" | "actions" | "sep" | "remove";
+  key: "preview" | "qrdecode" | "pin" | "save" | "actions" | "sep" | "remove";
   label: string;
   danger?: boolean;
   disabled?: boolean;
@@ -203,11 +203,13 @@ export interface RowMenuItem {
   disabledReason?: string;
 }
 
-/** 行操作收拢进「···」菜单后的项序：全文/置顶/另存为/动作 + 分隔 + 删除。 */
+/** 行操作收拢进「···」菜单后的项序：全文/识别二维码/置顶/另存为/动作 + 分隔 + 删除。 */
 export function rowMenuItems(r: ClipRow): RowMenuItem[] {
   const items: RowMenuItem[] = [];
   // 图片条目的大图预览由缩略图（AntD Image）承担，全文只服务文本类条目
   if (r.kind !== "image" && r.text) items.push({ key: "preview", label: "📄 查看全文" });
+  // 图片条目：本机二维码识别（截图里的 WiFi 码/链接码是剪贴板高频内容）
+  if (r.kind === "image") items.push({ key: "qrdecode", label: "🔍 识别二维码" });
   items.push({ key: "pin", label: r.pinned ? "📌 取消置顶" : "📌 置顶" });
   const save = canSaveAs(r);
   items.push({

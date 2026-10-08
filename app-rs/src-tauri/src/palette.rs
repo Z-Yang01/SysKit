@@ -594,12 +594,13 @@ pub fn builtin_actions() -> Vec<PaletteAction> {
         })
         .collect();
     // 页内 tab（对齐 Python 的页内 Tab 动作；前端映射到子 tab key）
-    let tabs: [(&str, &str, &str, &str); 11] = [
+    let tabs: [(&str, &str, &str, &str); 12] = [
         ("toolbox", "hosts", "⚡ 工具箱", "Hosts 编辑"),
         ("toolbox", "ports", "⚡ 工具箱", "端口 / 局域网"),
         ("toolbox", "dns", "⚡ 工具箱", "DNS / 子网 / ping"),
         ("toolbox", "speed", "⚡ 工具箱", "测速"),
         ("toolbox", "appnet", "⚡ 工具箱", "应用联网"),
+        ("toolbox", "qrcode", "⚡ 工具箱", "二维码识别"),
         ("system", "perf", "💼 系统助手", "性能监控"),
         ("system", "startup", "💼 系统助手", "启动项管理"),
         ("system", "disk", "💼 系统助手", "磁盘空间"),
