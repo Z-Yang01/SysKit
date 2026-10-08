@@ -1,11 +1,11 @@
 :root {
-  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   font-size: 14px;
 }
 
-/* 主题切换平滑过渡：--sk-* 与 AntD token 是两套来源，applyTheme 与
-   ConfigProvider 重渲染不同帧生效，没有过渡时用户看到的是一次硬闪。
-   统一给颜色类属性 0.18s 过渡（人眼感知为"平滑变色"而非"闪烁"）。 */
+/* ---------------- 主题切换平滑过渡 ----------------
+   --sk-* 与 AntD token 是两套来源，applyTheme 与 ConfigProvider 重渲染
+   不同帧生效，没有过渡时用户看到的是一次硬闪。统一 0.18s 颜色过渡。 */
 body,
 .ant-layout,
 .ant-layout-sider,
@@ -27,73 +27,123 @@ body,
     border-color 0.18s ease;
 }
 
-/* 玻璃拟态基座：活跃渐变背景——大半径柔和色斑固定在 body 上，
-   透过上方半透明玻璃层显现，产生深度感（不引入图片资源）。 */
+/* ---------------- 玻璃氛围底（shadcn × 玻璃拟态） ----------------
+   多层柔和色斑固定在 body：主色（蓝）+ 语义绿 + 紫，营造空间深度；
+   半透明玻璃层叠在上面时色斑透出，是整套玻璃语言的「光源」。 */
 body {
   margin: 0;
   color: var(--sk-text);
   background:
-    radial-gradient(1100px 700px at 12% -8%, rgba(53, 118, 224, 0.16), transparent 60%),
-    radial-gradient(900px 650px at 105% 18%, rgba(46, 158, 132, 0.10), transparent 55%),
-    radial-gradient(800px 700px at 50% 115%, rgba(126, 87, 224, 0.10), transparent 55%),
+    radial-gradient(1200px 800px at 10% -10%, color-mix(in srgb, var(--sk-accent) 18%, transparent), transparent 62%),
+    radial-gradient(1000px 700px at 108% 16%, color-mix(in srgb, var(--sk-ok) 10%, transparent), transparent 58%),
+    radial-gradient(900px 760px at 46% 118%, color-mix(in srgb, #7c57e0 12%, transparent), transparent 60%),
     var(--sk-bg);
   background-attachment: fixed;
 }
 
 [data-theme="dark"] body {
   background:
-    radial-gradient(1100px 700px at 12% -8%, rgba(74, 138, 240, 0.14), transparent 60%),
-    radial-gradient(900px 650px at 105% 18%, rgba(46, 158, 132, 0.08), transparent 55%),
-    radial-gradient(800px 700px at 50% 115%, rgba(126, 87, 224, 0.12), transparent 55%),
+    radial-gradient(1200px 800px at 10% -10%, color-mix(in srgb, var(--sk-accent) 15%, transparent), transparent 62%),
+    radial-gradient(1000px 700px at 108% 16%, color-mix(in srgb, var(--sk-ok) 8%, transparent), transparent 58%),
+    radial-gradient(900px 760px at 46% 118%, color-mix(in srgb, #7c57e0 14%, transparent), transparent 60%),
     var(--sk-bg);
   background-attachment: fixed;
 }
 
-/* 玻璃层：表面半透明 + backdrop 模糊。直接覆写玻璃目标（Sider/Header/卡片）
-   的底色为半透明；AntD token 只保留边框/文字，避免与半透明底色打架。 */
-/* Sider/Header 是固定框架：backdrop blur 只在这两块大静态表面上启用；
-   卡片区只保留半透明底色（blur 逐帧重算在内容每秒变化的卡片上是 GPU 纯浪费） */
+/* ---------------- 玻璃层：backdrop-filter 只允许固定大表面 ----------------
+   （GPU 红线：逐帧内容更新的卡片禁用 blur，见 git 历史 d6354c5）
+   Sider/Header 是固定框架：blur(16px) + 提亮，是整窗玻璃语言的锚点。 */
 .ant-layout-sider,
 .ant-layout-header {
-  background: color-mix(in srgb, var(--sk-card) 72%, transparent) !important;
-  backdrop-filter: blur(14px) saturate(1.15);
-  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  background: color-mix(in srgb, var(--sk-card) 68%, transparent) !important;
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  border-inline-end: 1px solid var(--sk-glass_border);
 }
 
-.sk-card {
-  background: color-mix(in srgb, var(--sk-card) 82%, transparent) !important;
+/* 玻璃高光描边：浅色用白高光模拟「玻璃折边」，深色用微弱白线提层次 */
+[data-theme="light"] .ant-layout-sider,
+[data-theme="light"] .ant-layout-header {
+  border-color: var(--sk-glass_highlight);
+}
+[data-theme="dark"] .ant-layout-sider,
+[data-theme="dark"] .ant-layout-header {
+  border-color: var(--sk-glass_border);
 }
 
-/* 弹层玻璃（Modal/Dropdown/预览）：更高不透明度保证可读性 */
+/* 弹层玻璃（Modal/Dropdown/Select 浮层）：更高不透明度保证可读性 */
 .ant-modal .ant-modal-content,
 .ant-dropdown-menu,
 .ant-select-dropdown {
-  background: color-mix(in srgb, var(--sk-card) 88%, transparent) !important;
-  backdrop-filter: blur(18px) saturate(1.1);
-  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  background: color-mix(in srgb, var(--sk-card) 90%, transparent) !important;
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  border: 1px solid var(--sk-glass_border);
+  box-shadow: 0 12px 40px var(--sk-shadow_color);
 }
 
-/* 玻璃上的微妙边框：高光描边（浅色=白描边，深色=亮描边），层叠感来源 */
-[data-theme="light"] .ant-layout-sider,
-[data-theme="light"] .sk-card,
-[data-theme="light"] .ant-layout-header {
-  border-color: rgba(255, 255, 255, 0.55);
-}
-[data-theme="dark"] .ant-layout-sider,
-[data-theme="dark"] .sk-card,
-[data-theme="dark"] .ant-layout-header {
-  border-color: rgba(255, 255, 255, 0.08);
+/* ---------------- 卡片：伪玻璃（无 blur 的玻璃质感） ----------------
+   半透明底 + 高光描边（上亮下暗的 1px 渐变）+ 内侧高光 + 柔和投影，
+   叠在 body 色斑上产生「磨砂玻璃」观感，而 GPU 只付渐变的钱。 */
+.sk-card {
+  background: color-mix(in srgb, var(--sk-card) 78%, transparent) !important;
+  border: 1px solid var(--sk-glass_border) !important;
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 var(--sk-glass_highlight),
+    0 4px 16px var(--sk-shadow_color);
 }
 
-/* 页面切换防闪：内容区先撑住高度，避免滚动条出现/消失引起的横向跳动 */
+/* 静态玻璃面板（可显式加类）：含轻 blur，仅用于内容不逐帧变化的表面 */
+.sk-glass-strong {
+  background: color-mix(in srgb, var(--sk-card) 62%, transparent) !important;
+  backdrop-filter: blur(8px) saturate(1.15);
+  -webkit-backdrop-filter: blur(8px) saturate(1.15);
+}
+
+/* hover 浮起：卡片被指向时轻微上浮 + 投影加深（纯 transform/阴影，廉价） */
+.ant-card.sk-card {
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+/* ---------------- AntD 表面融入玻璃体系 ---------------- */
+.ant-card {
+  border: 1px solid var(--sk-glass_border);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 var(--sk-glass_highlight),
+    0 4px 16px var(--sk-shadow_color);
+}
+
+.ant-table {
+  border-radius: 12px;
+}
+
+/* 表格透明化：行 hover 用语义 hover 色，玻璃底从卡片透出 */
+.ant-table-thead > tr > th,
+.ant-table-tbody > tr > td {
+  background: transparent;
+}
+.ant-table-tbody > tr:hover > td,
+.ant-table-tbody > tr.ant-table-row-selected > td {
+  background: var(--sk-hover) !important;
+}
+
 .ant-layout-content {
   min-height: calc(100vh - 48px);
 }
 
-/* 页面淡入：侧栏切页时内容区 0.12s 淡入，替代硬切。
-   flex: 1 0 auto——Content 是 flex 列滚动容器，页面根撑满剩余高度：
-   短内容页（密码库两栏）不再在下方留一大段窗口底色；shrink 0 保证
-   长内容页照常把 Content 撑出滚动条。 */
+/* ---------------- 文本辅助类 ---------------- */
+.sk-hint {
+  color: var(--sk-sub);
+  font-size: 12px;
+}
+
+/* 页面切换淡入（Content 是 flex 列滚动容器，页面根撑满剩余高度） */
 .sk-page {
   animation: sk-page-in 0.12s ease-out;
   flex: 1 0 auto;
@@ -108,30 +158,32 @@ body {
   }
 }
 
-/* 卡片基形：圆角 + 边框（对应 Qt statCard/QGroupBox 形态） */
-.sk-card {
-  background: var(--sk-card);
-  border: 1px solid var(--sk-border);
-  border-radius: 10px;
-  padding: 14px 16px;
-}
-
-.sk-hint {
-  color: var(--sk-sub);
-  font-size: 12px;
-}
-
-/* 细滚动条（Win 默认滚动条在深色下非常突兀） */
-*::-webkit-scrollbar {
+/* ---------------- 滚动条 / 选区 / 焦点 ---------------- */
+::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
-*::-webkit-scrollbar-thumb {
-  background: var(--sk-scrollbar, #888);
-  border-radius: 5px;
+::-webkit-scrollbar-thumb {
+  background: var(--sk-scrollbar);
+  border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
-*::-webkit-scrollbar-track {
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--sk-sub);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
   background: transparent;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--sk-accent) 26%, transparent);
+}
+
+/* 键盘焦点环：可访问性 + 玻璃高光语言一致 */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--sk-accent) 55%, transparent);
+  outline-offset: 1px;
+  border-radius: 6px;
 }
