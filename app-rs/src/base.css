@@ -133,9 +133,8 @@ body {
   background: var(--sk-hover) !important;
 }
 
-.ant-layout-content {
-  min-height: calc(100vh - 48px);
-}
+/* Content 高度由 flex 布局约束（100vh 壳），无需 calc——保留规则会因
+   Header 移除后基准漂移而失准，故不再写死。 */
 
 /* ---------------- 文本辅助类 ---------------- */
 .sk-hint {

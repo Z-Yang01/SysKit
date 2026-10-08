@@ -304,24 +304,22 @@ export function App() {
       <Layout style={{ height: "100vh", overflow: "hidden", background: pal.bg }}>
         <Layout.Sider
           theme={dark ? "dark" : "light"}
-          width={200}
+          width={208}
           style={{
             position: "relative",
             height: "100vh",
             overflowY: "auto",
-            background: pal.card,
-            borderRight: `1px solid ${pal.border}`,
           }}
         >
-          {/* 品牌区（对齐 Python 版 brandCard）：渐变 S 标 + 两行文案，不引图片资源 */}
-          <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 14px" }}>
+          {/* 品牌区：渐变 S 标（accent 双色）+ 双行文案；徽标随主题取色 */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 16px 12px" }}>
             <div
               style={{
-                width: 34,
-                height: 34,
+                width: 36,
+                height: 36,
                 flexShrink: 0,
-                borderRadius: 8,
-                background: "linear-gradient(135deg, #1668dc, #4096ff)",
+                borderRadius: 10,
+                background: `linear-gradient(135deg, ${pal.accent}, ${pal.accent_soft2})`,
                 color: "#fff",
                 fontSize: 20,
                 fontWeight: 700,
@@ -329,12 +327,13 @@ export function App() {
                 alignItems: "center",
                 justifyContent: "center",
                 userSelect: "none",
+                boxShadow: `0 4px 12px ${pal.shadow_color}`,
               }}
             >
               S
             </div>
             <div style={{ lineHeight: 1.35, minWidth: 0 }}>
-              <Typography.Text strong style={{ display: "block" }}>
+              <Typography.Text strong style={{ display: "block", fontSize: 15 }}>
                 SysKit
               </Typography.Text>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -346,7 +345,11 @@ export function App() {
             mode="inline"
             selectedKeys={[page]}
             onClick={(e) => setPage(e.key)}
-            style={{ borderInlineEnd: "none" }}
+            style={{
+              borderInlineEnd: "none",
+              background: "transparent",
+              paddingInline: 8,
+            }}
             items={[
               {
                 type: "group",
@@ -373,16 +376,19 @@ export function App() {
               },
             ]}
           />
+          {/* 热键速查卡：玻璃化（强玻璃类，静态内容允许 blur） */}
           <div
+            className="sk-glass-strong"
             style={{
               position: "absolute",
               bottom: 12,
-              left: 16,
-              right: 16,
+              left: 12,
+              right: 12,
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: `1px solid ${pal.glass_border}`,
               fontSize: 11,
               lineHeight: 1.7,
-              // 主题单源：淡字用 brand_sub（原 pal.border==="#303030" 判定是旧深色
-              // 值，换 token 后恒假 → 深色下用浅色灰，对比度不足）
               color: pal.brand_sub,
             }}
           >
@@ -392,26 +398,20 @@ export function App() {
           </div>
         </Layout.Sider>
 
-        <Layout style={{ height: "100vh", minHeight: 0, overflow: "hidden", background: pal.bg }}>
-          <Layout.Header
+        <Layout style={{ height: "100vh", minHeight: 0, overflow: "hidden", background: "transparent" }}>
+          {/* Header 目前无实际内容：只保留玻璃带分层，压到 8px 细线避免空带占高 */}
+          <div
             style={{
-              background: pal.card,
-              borderBottom: `1px solid ${pal.border}`,
-              padding: "0 16px",
-              height: 48,
-              lineHeight: "48px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
+              height: 8,
+              background: "transparent",
             }}
-          >
-          </Layout.Header>
+          />
 
           {/* flex 列：让 .sk-page（flex:1 0 auto）撑满剩余高度——滚动仍发生在本容器 */}
           <Layout.Content
             ref={contentRef}
             style={{
-              padding: 14,
+              padding: "14px 16px 14px",
               minHeight: 0,
               overflow: "auto",
               display: "flex",
