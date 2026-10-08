@@ -98,6 +98,11 @@ pub fn netstats_file() -> PathBuf {
     appdata_dir().join("netstats_buckets.json")
 }
 
+/// 按应用流量桶（自有格式，非跨语言契约）。
+pub fn netstats_apps_file() -> PathBuf {
+    appdata_dir().join("netstats_apps.json")
+}
+
 pub fn log_dir() -> PathBuf {
     localappdata_dir().join("logs")
 }

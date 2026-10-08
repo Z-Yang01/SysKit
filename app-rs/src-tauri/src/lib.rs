@@ -18,6 +18,7 @@
 // 上述两批落地后本豁免必须收窄（README「已知缺口」有跟踪项）。
 
 mod appnet;
+mod apptraffic;
 mod backup;
 mod battery;
 mod cleanup;
@@ -368,6 +369,7 @@ pub fn run() {
             commands::sk_write_item,
             commands::sk_tick,
             commands::sk_stats_series,
+            commands::sk_apptraffic_summary,
             commands::sk_known_ssids,
             commands::sk_daily_report,
             commands::sk_events,

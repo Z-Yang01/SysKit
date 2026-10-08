@@ -38,6 +38,7 @@ qrcode = "0.14"
 rusqlite = { version = "0.32", features = ["bundled"] }
 hmac = "0.12"
 rqrr = "0.10.1"
+ferrisetw = "1.2.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

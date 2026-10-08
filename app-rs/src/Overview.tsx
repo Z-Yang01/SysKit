@@ -37,6 +37,7 @@ import {
   type SeriesRow,
   type Tick,
 } from "./dashboard";
+import { AppTrafficCard } from "./AppTrafficCard";
 
 interface OverviewInit {
   tick: Tick | null;
@@ -503,6 +504,8 @@ export function Dashboard() {
                 </Row>
                 <ReactECharts option={trafficOption} style={{ height: 240 }} lazyUpdate />
               </div>
+
+              <AppTrafficCard />
 
               <Row gutter={14}>
                 <Col span={12}>

@@ -262,6 +262,42 @@ pub fn sk_tick(hub: State<'_, Arc<Hub>>) -> Option<Tick> {
     hub.latest_tick()
 }
 
+/// 按应用的流量汇总：今天 / 本周（ISO） / 本月 × 应用名过滤 × 降序 Top。
+///
+/// `available=false` 时 rows 为空并带 reason（非管理员 / ETW 会话被占），
+/// 前端据此展示诚实降级提示而不是一张空表。
+#[tauri::command]
+pub fn sk_apptraffic_summary(
+    hub: State<'_, Arc<Hub>>,
+    range: String,
+    q: Option<String>,
+    top: Option<usize>,
+) -> serde_json::Value {
+    let (available, reason) = hub.app_traffic.status();
+    let rows = if available {
+        let agg = hub.app_traffic.agg.lock().expect("应用流量锁中毒");
+        let all = agg.summary(
+            &range,
+            q.as_deref().unwrap_or(""),
+            crate::timefmt::now_local(),
+        );
+        let limit = top.unwrap_or(15).clamp(1, 100);
+        all.into_iter().take(limit).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let sent: i64 = rows.iter().map(|r| r.sent).sum();
+    let recv: i64 = rows.iter().map(|r| r.recv).sum();
+    serde_json::json!({
+        "available": available,
+        "reason": reason,
+        "range": range,
+        "rows": rows,
+        "sent": sent,
+        "recv": recv,
+    })
+}
+
 /// 多粒度流量序列（minute/hour/day/month × 可选网络名）。
 #[tauri::command]
 pub fn sk_stats_series(

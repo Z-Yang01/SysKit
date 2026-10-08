@@ -33,6 +33,7 @@ pub struct Hub {
     traffic: Mutex<TrafficStore>,
     rates: Mutex<RateStatsStore>,
     events: Mutex<EventStore>,
+    pub app_traffic: std::sync::Arc<crate::apptraffic::AppTrafficState>,
     stop: AtomicBool,
 }
 
@@ -43,6 +44,9 @@ impl Hub {
             traffic: Mutex::new(TrafficStore::new()),
             rates: Mutex::new(RateStatsStore::new()),
             events: Mutex::new(EventStore::new(500)),
+            app_traffic: std::sync::Arc::new(crate::apptraffic::AppTrafficState::new(
+                crate::apptraffic::AppTrafficAgg::with_path(crate::paths::netstats_apps_file()),
+            )),
             stop: AtomicBool::new(false),
         })
     }
@@ -86,6 +90,9 @@ impl Hub {
     pub fn flush(&self) {
         self.traffic.lock().expect("流量锁中毒").save_if_dirty();
         self.rates.lock().expect("流量桶锁中毒").save_if_dirty();
+        if let Ok(mut agg) = self.app_traffic.agg.lock() {
+            agg.save_if_dirty();
+        }
     }
 
     #[cfg(test)]
@@ -100,6 +107,9 @@ impl Hub {
 
 /// 起采样线程（Tauri setup 阶段调用一次）。
 pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
+    // 按应用流量 ETW 采集：与秒级遥测同期启动；失败（非管理员/会话被占）
+    // 只降状态不阻塞遥测主链路
+    crate::apptraffic::spawn_etw(hub.app_traffic.clone());
     std::thread::Builder::new()
         .name("sk-telemetry".into())
         .spawn(move || {
