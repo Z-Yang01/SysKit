@@ -36,6 +36,7 @@ import {
   Tooltip,
   Typography,
   message,
+  Switch,
 } from "antd";
 
 import {
@@ -105,6 +106,8 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   const [openIds, setOpenIds] = useState<string[]>([]);
   /** 修复记录（手动/组合/后台监控自动修复共用，最新在前，上限 60 条）。 */
   const [records, setRecords] = useState<RepairRecord[]>([]);
+  // 报告脱敏开关（v1.3）：默认关 = 导出/复制走分级脱敏；本机自用可开完整信息
+  const [fullInfo, setFullInfo] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -474,14 +477,20 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         title="网络诊断"
         extra={
           <Space>
+            <span className="sk-hint" style={{ userSelect: "none" }}>
+              含完整信息
+            </span>
+            <Switch size="small" checked={fullInfo} onChange={setFullInfo} />
             <Button
               size="small"
               disabled={!report || diagBusy !== ""}
               onClick={() => {
                 if (!report || diagBusy) return;
                 navigator.clipboard
-                  .writeText(formatReportForCopy(report))
-                  .then(() => message.success("诊断报告已复制到剪贴板"))
+                  .writeText(formatReportForCopy(report, new Date(), fullInfo))
+                  .then(() =>
+                    message.success(fullInfo ? "诊断报告已复制（含完整信息）" : "诊断报告已复制（已脱敏）"),
+                  )
                   .catch(() => message.error("复制失败：剪贴板不可用"));
               }}
             >
@@ -493,7 +502,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
               onClick={() => {
                 if (!report || diagBusy) return;
                 void invoke<string>("sk_diag_export", {
-                  content: formatReportForCopy(report),
+                  content: formatReportForCopy(report, new Date(), fullInfo),
                 })
                   .then((target) => {
                     if (target) message.success(`已导出：${target}`);
@@ -639,7 +648,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
                             style={{ height: "auto", padding: "0 4px" }}
                             onClick={() => {
                               navigator.clipboard
-                                .writeText(formatCheckForCopy(row))
+                                .writeText(formatCheckForCopy(row, fullInfo))
                                 .then(() => message.success(`已复制「${row.name}」详情`))
                                 .catch(() => message.error("复制失败：剪贴板不可用"));
                             }}

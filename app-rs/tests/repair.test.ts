@@ -19,6 +19,7 @@ import {
   groupByRisk,
   hhmmss,
   loadReportFrom,
+  maskSensitive,
   needsConfirm,
   outcomeLevel,
   outcomeTag,
@@ -361,7 +362,8 @@ describe("报告全文复制（formatReportForCopy）", () => {
       ],
       verdict_text: "外网不可达；失败项: 1 个",
     });
-    const text = formatReportForCopy(r, new Date(2026, 9, 3, 14, 5));
+    // full=true：格式同构锁用完整信息；脱敏行为由下面的独立断言覆盖
+    const text = formatReportForCopy(r, new Date(2026, 9, 3, 14, 5), true);
     const lines = text.split("\n");
     expect(lines[0]).toBe("SysKit 诊断报告  2026-10-03 14:05");
     expect(lines[1]).toBe("-".repeat(50));
@@ -371,6 +373,10 @@ describe("报告全文复制（formatReportForCopy）", () => {
     expect(lines[5]).toBe("      存在持久默认路由 → 172.16.2.1");
     expect(lines[6]).toBe("-".repeat(50));
     expect(lines[7]).toBe("结论：外网不可达；失败项: 1 个");
+
+    // 默认（full=false）：内网 IP 保留前两段
+    const masked = formatReportForCopy(r, new Date(2026, 9, 3, 14, 5));
+    expect(masked.split("\n")[5]).toBe("      存在持久默认路由 → 172.16.*.*");
   });
 
   it("时间戳两位数补零（凌晨/早盘不出现 9:5 这种歧义时间）", () => {
@@ -498,5 +504,51 @@ describe("诊断报告会话保存（saveReportTo / loadReportFrom）", () => {
         throw new Error("quota");
       }),
     ).not.toThrow();
+  });
+});
+
+describe("maskSensitive（诊断报告脱敏 v1.3）", () => {
+  it("内网 IPv4 保留前两段，公网全打", () => {
+    expect(maskSensitive("网关 192.168.1.100 不可达")).toBe("网关 192.168.*.* 不可达");
+    expect(maskSensitive("DNS 10.0.0.2 超时")).toBe("DNS 10.0.*.* 超时");
+    expect(maskSensitive("公网 223.5.5.5 解析正常")).toBe("公网 *.*.*.* 解析正常");
+    expect(maskSensitive("链路本地 169.254.3.4")).toBe("链路本地 169.254.*.*");
+    expect(maskSensitive("回环 127.0.0.1")).toBe("回环 127.0.*.*");
+  });
+
+  it("IPv6 保留前两组其余打码", () => {
+    const out = maskSensitive("地址 2408:8207:1851:01a2:b1c2:d3e4:f506:a7b8 可用");
+    expect(out).toContain("2408:8207:****");
+    expect(out).not.toContain("b1c2");
+  });
+
+  it("MAC 保留 OUI 前缀（冒号与连字符两种分隔）", () => {
+    expect(maskSensitive("MAC AA-BB-CC-DD-EE-FF 异常")).toBe("MAC AA-BB-CC-**-**-** 异常");
+    const out = maskSensitive("mac 11:22:33:44:55:66");
+    expect(out).toContain("11:22:33");
+    expect(out).not.toContain("44:55:66");
+  });
+
+  it("代理 URL 凭据打码", () => {
+    expect(maskSensitive("代理 http://user:secret@proxy.corp.com:8080 已设")).toBe(
+      "代理 http://***:***@proxy.corp.com:8080 已设",
+    );
+  });
+
+  it("SSID 打码（已连接/SSID 两种形态）", () => {
+    expect(maskSensitive("已连接: ziroom402_5G（信号 90%）")).toBe(
+      "已连接: «SSID»（信号 90%）",
+    );
+    expect(maskSensitive("SSID: home-wifi; 信号弱")).toBe("SSID: «SSID»; 信号弱");
+  });
+
+  it("无敏感内容的文本原样返回", () => {
+    expect(maskSensitive("NlaSvc 服务正在运行，启动类型: 自动")).toBe(
+      "NlaSvc 服务正在运行，启动类型: 自动",
+    );
+  });
+
+  it("port 数字不被误当 IPv4 打码", () => {
+    expect(maskSensitive("端口 8080 与版本 1.2.3.4 混排")).toBe("端口 8080 与版本 *.*.*.* 混排");
   });
 });

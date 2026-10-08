@@ -326,12 +326,55 @@ export function actionableFixes(
  *
  * 带上状态与建议动作，贴给别人才是自包含的一段信息，而不是光秃秃的 detail。
  */
-export function formatCheckForCopy(r: CheckResult): string {
-  const lines = [`【${statusLabel(r.status)}】${r.name}：${r.detail}`];
+export function formatCheckForCopy(r: CheckResult, full = false): string {
+  const detail = full ? r.detail : maskSensitive(r.detail);
+  const lines = [`【${statusLabel(r.status)}】${r.name}：${detail}`];
   if (r.fix_ids.length > 0) {
     lines.push(`建议动作：${r.fix_ids.join("、")}`);
   }
   return lines.join("\n");
+}
+
+
+/**
+ * 报告脱敏（v1.3）：分级规则——
+ * - IPv4：内网/回环/链路本地（10. / 172.16-31. / 192.168. / 127. / 169.254.）
+ *   保留前两段（`192.168.*.*`），公网全打（保留「是不是网段问题」的诊断价值）；
+ * - IPv6：保留前两组，其余打码（Windows 默认双栈，不处理会漏）；
+ * - MAC：保留 OUI 前缀（`AA-BB-CC-**-**-**`，看得出网卡厂商）；
+ * - 代理 URL 的 `user:pass@` 打码；「已连接: X / SSID: X」的 SSID 打码。
+ */
+export function maskSensitive(text: string): string {
+  let out = text;
+  out = out.replace(
+    /([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^\/\s:@]+):([^\/\s@]+)@/g,
+    "$1***:***@",
+  );
+  // MAC 必须在 IPv6 之前：冒号分隔的 MAC 会被「1-4 位 hex 组」的 IPv6 规则整段吃掉
+  out = out.replace(
+    /\b([0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2})\b/g,
+    "$1-**-**-**",
+  );
+  out = out.replace(
+    /\b([0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4})(:[0-9A-Fa-f]{0,4}){2,6}\b/g,
+    "$1:****",
+  );
+  out = out.replace(
+    /\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/g,
+    (m: string, a: string, b: string) => {
+      void m;
+      const x = Number(a);
+      const y = Number(b);
+      const isPrivate =
+        x === 10 || x === 127 ||
+        (x === 172 && y >= 16 && y <= 31) ||
+        (x === 192 && y === 168) ||
+        (x === 169 && y === 254);
+      return isPrivate ? `${a}.${b}.*.*` : "*.*.*.*";
+    },
+  );
+  out = out.replace(/(已连接:\s*|SSID:\s*)[^\s,，;；()（）]+/g, "$1«SSID»");
+  return out;
 }
 
 /**
@@ -340,7 +383,11 @@ export function formatCheckForCopy(r: CheckResult): string {
  * 时间戳可注入便于测试；格式与 Python 逐行一致（报告头 / [√] 标题 / 缩进详情 /
  * 分隔线 / 结论行），用户把 Rust 版报告贴进旧的求助帖也不违和。
  */
-export function formatReportForCopy(report: DiagReport, now: Date = new Date()): string {
+export function formatReportForCopy(
+  report: DiagReport,
+  now: Date = new Date(),
+  full = false,
+): string {
   const p = (n: number) => String(n).padStart(2, "0");
   const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(
     now.getHours(),
@@ -348,7 +395,7 @@ export function formatReportForCopy(report: DiagReport, now: Date = new Date()):
   const lines = [`SysKit 诊断报告  ${stamp}`, "-".repeat(50)];
   for (const r of report.results) {
     lines.push(`[${statusMark(r.status)}] ${r.name}`);
-    lines.push(`      ${r.detail}`);
+    lines.push(`      ${full ? r.detail : maskSensitive(r.detail)}`);
   }
   lines.push("-".repeat(50));
   lines.push(`结论：${report.verdict_text}`);
