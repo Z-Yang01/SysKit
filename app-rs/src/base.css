@@ -94,6 +94,14 @@ body {
     0 4px 16px var(--sk-shadow_color);
 }
 
+/* 裸 div 卡片（非 AntD Card）：内边距由本类提供。S1 重写时把 padding 从
+   .sk-card 挪走，AntD Card 走自身 body 内边距没问题，但 App Pending 页、
+   备份回滚卡等裸 div 内容直接贴边（轮次115 审计实锤）——只对非 ant-card
+   补回原 14px 16px，避免 AntD Card 双重内边距。 */
+.sk-card:not(.ant-card) {
+  padding: 14px 16px;
+}
+
 /* 静态玻璃面板（可显式加类）：含轻 blur，仅用于内容不逐帧变化的表面 */
 .sk-glass-strong {
   background: color-mix(in srgb, var(--sk-card) 62%, transparent) !important;
@@ -267,4 +275,38 @@ body {
 }
 .ant-segmented .ant-segmented-item {
   border-radius: 6px;
+}
+
+/* ---------------- 降级：动效敏感 / 低配 GPU / 省电模式（轮次115 审计补） ----------------
+   S 系列玻璃化此前没有任何系统降级路径。这里按媒体查询逐级退化：
+   - prefers-reduced-motion：停页面淡入（0.12s 位移动画之外只剩透明度渐变，
+     对前庭敏感用户仍是动效）；0.18s 颜色过渡保留——主题切换需要的正是渐变。
+   - prefers-reduced-transparency（Chromium/WebView2 118+）：玻璃整体退化
+     实底——全部 backdrop-filter 停用、body 色斑停用。blur 合成是玻璃化唯一
+     的重 GPU 项，低配机/省电模式直接省掉；实底取同一 token，对比度不变。
+     不支持的引擎忽略整块，默认玻璃外观不受影响。 */
+@media (prefers-reduced-motion: reduce) {
+  .sk-page {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  body,
+  [data-theme="dark"] body {
+    background: var(--sk-bg);
+  }
+  .ant-layout-sider,
+  .ant-layout-header,
+  .ant-modal .ant-modal-content,
+  .ant-dropdown-menu,
+  .ant-select-dropdown,
+  .sk-glass-strong {
+    background: var(--sk-card) !important;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .sk-card {
+    background: var(--sk-card) !important;
+  }
 }

@@ -237,7 +237,10 @@ export function App() {
       colorText: pal.text,
       colorTextSecondary: pal.sub,
       colorBorder: pal.border,
-      colorBorderSecondary: pal.glass_border,
+      // 内层分隔线（表格行线/下拉分割等）：用不透明 border，不能用 glass_border——
+      // 亮色 glass_border 是 65% 白，叠白卡上对比度 1.01:1，表格行线整列消失
+      // （轮次115 审计实锤；玻璃描边由 base.css 只施加在玻璃表面上）
+      colorBorderSecondary: pal.border,
       borderRadius: 10,
       borderRadiusLG: 14,
       fontSize: 14,

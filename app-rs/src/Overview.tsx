@@ -3,7 +3,8 @@
  *
  * 数据来源：`sk://tick` 事件（每秒一拍）+ `sk_overview_init` / `sk_stats_series` /
  * `sk_daily_report` / `sk_events` 命令。图表用 ECharts（与 Python 侧 pyqtgraph 的
- * 曲线/柱状职责对应），主题取 `--sk-*` CSS 变量。
+ * 曲线/柱状职责对应），主题色经 chartTheme 直取 palette(dark)（切主题当帧
+ * 换色，不依赖 CSS 变量写入时序，见 src/chartTheme.ts 头注）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,6 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Card, Col, Empty, Radio, Row, Segmented, Space, Table, Tabs, Tag, Typography } from "antd";
 import ReactECharts from "echarts-for-react";
 
+import { baseChartOption, chartAccent, chartOk, chartWarn } from "./chartTheme";
 import {
   GRANULARITIES,
   RATE_WINDOWS,
@@ -48,55 +50,12 @@ interface OverviewInit {
 }
 
 /**
- * 读主题 token 成具体色值：canvas 画笔吃的是颜色字符串本身（zrender 不解析 var() 引用），
- * 所以必须在建 option 时经 getComputedStyle 取值；option 每秒随 history 重建，
- * 切主题最迟一拍（1 秒）内自然生效。
+ * 图表取色统一走 chartTheme（palette(dark) 直取）。历史教训（轮次115）：
+ * 此前经 getComputedStyle 读 --sk-*，而 applyTheme 在 App 的 effect 里
+ * （渲染提交后）才写变量——切主题瞬间 option memo 重算读到的还是旧主题色，
+ * 速率图在桶窗口下会一直停在旧色直到换窗口。现 option 是 (data, dark) 的
+ * 纯函数，切主题立即换色。
  */
-function cssVar(name: string, fallback: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-}
-
-/** 图表统一风格：透明底 + 取主题变量，切主题时随 CSS 变量自动变。 */
-function baseChartOption() {
-  return {
-    // 实时监控图每秒 setOption：关动画省 GPU/CPU（动画重放在 1s 数据节拍下
-    // 是纯开销，且会造成曲线"呼吸"感）
-    animation: false as const,
-    textStyle: { color: cssVar("--sk-text", "#2d3748"), fontSize: 12 },
-    grid: { left: 8, right: 8, top: 28, bottom: 4, containLabel: true },
-    tooltip: {
-      trigger: "axis" as const,
-      axisPointer: {
-        type: "line" as const, // 悬浮垂直参考线
-        lineStyle: { color: cssVar("--sk-sub", "#7b8794") },
-      },
-      confine: true, // 卡片较窄时 tooltip 不出界
-      // tooltip 走主题的 tooltip token（与 Qt 弹层同源），避免玻璃卡片上突兀的白底硬块
-      backgroundColor: cssVar("--sk-tooltip-bg", "#2f3a48"),
-      borderWidth: 0,
-      padding: [6, 10],
-      textStyle: { color: cssVar("--sk-tooltip-text", "#ffffff"), fontSize: 12 },
-      extraCssText: "border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);",
-    },
-    legend: { textStyle: { color: cssVar("--sk-sub", "#7b8794") }, top: 0 },
-    xAxis: {
-      type: "category" as const,
-      axisLine: { lineStyle: { color: cssVar("--sk-grid", "#d0d7e0") } },
-      axisTick: { show: false },
-      axisLabel: { color: cssVar("--sk-sub", "#7b8794") },
-    },
-    yAxis: {
-      type: "value" as const,
-      splitLine: { lineStyle: { color: cssVar("--sk-grid", "#d0d7e0") } },
-      axisLabel: { color: cssVar("--sk-sub", "#7b8794") },
-    },
-  };
-}
-
-/** 语义色：建 option 时解析成具体色值（同 cssVar 的原因）。 */
-const ACCENT = () => cssVar("--sk-accent", "#3576e0");
-const OK = () => cssVar("--sk-ok", "#2e9e44");
-const WARN = () => cssVar("--sk-warn", "#ef6c00");
 
 /** 速率窗口 → 桶取数参数：1h 用分钟桶 60 个，1d 用小时桶 24 个。 */
 const RATE_BUCKET_CFG: Record<Exclude<RateWindow, "1m">, { gran: Granularity; bucketSec: number; count: number }> = {
@@ -242,7 +201,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
   // ---------------- 图表数据 ----------------
   const rateOption = useMemo(() => {
     if (!rateView) return {};
-    const base = baseChartOption();
+    const base = baseChartOption(dark);
     const { labels, tips, down, up } = rateView;
     const peak = peakPoint(down);
     return {
@@ -287,17 +246,17 @@ export function Dashboard({ dark }: { dark: boolean }) {
           smooth: true,
           showSymbol: false, // 端点不落点，读值一律走 axis 触发的 tooltip
           data: down,
-          lineStyle: { color: ACCENT(), width: 2 },
-          areaStyle: { color: ACCENT(), opacity: 0.12 }, // 只给下行轻填充
+          lineStyle: { color: chartAccent(dark), width: 2 },
+          areaStyle: { color: chartAccent(dark), opacity: 0.12 }, // 只给下行轻填充
           markPoint: {
             symbol: "circle",
             symbolSize: 7,
-            itemStyle: { color: ACCENT() },
+            itemStyle: { color: chartAccent(dark) },
             label: {
               show: true,
               position: "top",
               fontSize: 11,
-              color: ACCENT(),
+              color: chartAccent(dark),
               formatter: () => `峰值 ${humanBps(peak?.value ?? 0)}`,
             },
             // 全 0 窗口给空 data：合并模式下显式清空，防止残留上一窗口的旧峰
@@ -311,14 +270,14 @@ export function Dashboard({ dark }: { dark: boolean }) {
           showSymbol: false,
           data: up,
           // 虚线 + 不填充：与实线轻填充的下行双通道区分，避免被下行面积盖住
-          lineStyle: { color: OK(), width: 1.5, type: "dashed" },
+          lineStyle: { color: chartOk(dark), width: 1.5, type: "dashed" },
         },
       ],
     };
   }, [rateView, dark]);
 
   const usageOption = useMemo(() => {
-    const base = baseChartOption();
+    const base = baseChartOption(dark);
     return {
       ...base,
       xAxis: {
@@ -336,7 +295,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
           smooth: true,
           showSymbol: false,
           data: history.map((t) => Number(t.cpu.toFixed(1))),
-          lineStyle: { color: WARN(), width: 1.5 },
+          lineStyle: { color: chartWarn(dark), width: 1.5 },
         },
         {
           name: "内存",
@@ -344,14 +303,14 @@ export function Dashboard({ dark }: { dark: boolean }) {
           smooth: true,
           showSymbol: false,
           data: history.map((t) => Number(t.mem.toFixed(1))),
-          lineStyle: { color: ACCENT(), width: 1.5 },
+          lineStyle: { color: chartAccent(dark), width: 1.5 },
         },
       ],
     };
   }, [history, dark]);
 
   const trafficOption = useMemo(() => {
-    const base = baseChartOption();
+    const base = baseChartOption(dark);
     const pts = seriesPoints(series);
     return {
       ...base,
@@ -371,9 +330,9 @@ export function Dashboard({ dark }: { dark: boolean }) {
           type: "bar",
           stack: "t",
           data: pts.recv,
-          itemStyle: { color: ACCENT() },
+          itemStyle: { color: chartAccent(dark) },
         },
-        { name: "上行", type: "bar", stack: "t", data: pts.sent, itemStyle: { color: OK() } },
+        { name: "上行", type: "bar", stack: "t", data: pts.sent, itemStyle: { color: chartOk(dark) } },
       ],
     };
   }, [series, dark]);
@@ -408,13 +367,13 @@ export function Dashboard({ dark }: { dark: boolean }) {
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span style={{ color: OK() }}>↑</span>
+                      <span style={{ color: chartOk(dark) }}>↑</span>
                       <span style={{ fontSize: 18, fontWeight: 600 }}>
                         {tick ? humanBps(tick.up) : "—"}
                       </span>
                     </div>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span style={{ color: ACCENT() }}>↓</span>
+                      <span style={{ color: chartAccent(dark) }}>↓</span>
                       <span style={{ fontSize: 18, fontWeight: 600 }}>
                         {tick ? humanBps(tick.down) : "—"}
                       </span>
