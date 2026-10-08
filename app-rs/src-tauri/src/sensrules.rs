@@ -84,21 +84,25 @@ const ID_WEIGHTS: [u32; 17] = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4,
 const ID_CHECK: [char; 11] = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'];
 
 /// 18 位身份证（末位可为 X/x）：前 17 位加权模 11 对应校验码。
+///
+/// 全程按 **char 窗口**切分（`&[char]`），不做 `String[..n]` 字节切片——
+/// 剪贴板文本任由多字节字符（中文）开头，字节下标会落在字符中间直接 panic
+/// （轮次116 回归锁 `multibyte_text_never_panics_id_window` 的教训）。
 fn has_id_number(text: &str) -> bool {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() < 18 {
         return false;
     }
     for win in chars.windows(18) {
-        let s: String = win.iter().collect();
-        if !s[..17].chars().all(|c| c.is_ascii_digit()) {
+        let head: &[char] = &win[..17];
+        if !head.iter().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        let last = s.chars().last().unwrap().to_ascii_uppercase();
-        let sum: u32 = s[..17]
-            .chars()
+        let last = win[17].to_ascii_uppercase();
+        let sum: u32 = head
+            .iter()
             .enumerate()
-            .map(|(i, c)| (c as u8 - b'0') as u32 * ID_WEIGHTS[i])
+            .map(|(i, c)| (*c as u8 - b'0') as u32 * ID_WEIGHTS[i])
             .sum();
         if ID_CHECK[(sum % 11) as usize] == last {
             return true;
@@ -276,5 +280,20 @@ mod tests {
     fn short_and_empty_text_are_noops() {
         assert_eq!(detect_sensitive(""), None);
         assert_eq!(detect_sensitive("41111111"), None); // 太短
+    }
+
+    #[test]
+    fn multibyte_text_never_panics_id_window() {
+        // 回归锁（轮次116）：has_id_number 曾对 18 字符窗口做 `s[..17]`
+        // **字节**切片——多字节字符（中文）落在字节 17 边界内时直接 panic。
+        // 剪贴板监听线程每轮都会喂中文文本，该 panic 曾被 catch_tick 吞成
+        // 「本轮捕获丢失」：内容永远不进历史（且默认开启，普通中文句子即可触发）。
+        let zh = "中文中文中文中文，测试一下剪贴板敏感检测路径";
+        assert_eq!(detect_sensitive(zh), None);
+        // 多字节前缀 + 合法身份证：窗口滑动后仍要能命中（不因前缀失效）
+        assert_eq!(
+            detect_sensitive("示例文本11010519491231002X结尾"),
+            Some("身份证号")
+        );
     }
 }

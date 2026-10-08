@@ -57,3 +57,15 @@ function unescapeWifi(s: string): string {
 export function isHttpUrl(text: string): boolean {
   return /^https?:\/\//i.test(text.trim());
 }
+
+/**
+ * 「复制内容」的通道判定（轮次116）：WiFi 码含密码时整串必须走敏感通道。
+ *
+ * 口径与同卡「复制密码」一致（不进历史 / 不进 Win+V / 到期清空）：WIFI 串
+ * 的 P 字段就是明文密码，走普通复制会被剪贴板监听记录进历史——内容识别
+ * 规则（信用卡/身份证/API 密钥）既不该也不可能兜住每一类密码。
+ */
+export function copyChannel(text: string): "plain" | "sensitive" {
+  const wifi = text ? parseWifiQr(text) : null;
+  return wifi && wifi.password ? "sensitive" : "plain";
+}

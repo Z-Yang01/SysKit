@@ -23,7 +23,7 @@ import {
   message,
 } from "antd";
 
-import { isHttpUrl, parseWifiQr, type WifiQrInfo } from "./qrdecode";
+import { copyChannel, isHttpUrl, parseWifiQr, type WifiQrInfo } from "./qrdecode";
 import { SENSITIVE_COPY_COMMAND } from "./wifipassword";
 
 interface Props {
@@ -117,14 +117,24 @@ export function ToolboxQr({ initialText, decodeClipItem, onDone }: Props) {
   const wifi: WifiQrInfo | null = text ? parseWifiQr(text) : null;
   const url = text && isHttpUrl(text) ? text : null;
 
-  const copyPlain = useCallback(async (t: string, label: string) => {
-    try {
-      await invoke("sk_clip_copy_plain", { text: t });
-      message.success(`${label}已复制`);
-    } catch (e) {
-      message.error(String(e));
-    }
-  }, []);
+  const copyContent = useCallback(
+    async (t: string, label: string) => {
+      try {
+        // 轮次116：WiFi 码整串含明文密码（P 字段）——复制走敏感通道，
+        // 与「复制密码」同口径（不进历史 / 不进 Win+V / 到期清空）
+        if (copyChannel(t) === "sensitive") {
+          await invoke(SENSITIVE_COPY_COMMAND, { text: t });
+          message.success(`${label}已复制（含密码，敏感通道，到期自动清空）`);
+        } else {
+          await invoke("sk_clip_copy_plain", { text: t });
+          message.success(`${label}已复制`);
+        }
+      } catch (e) {
+        message.error(String(e));
+      }
+    },
+    [],
+  );
 
   const copyPassword = useCallback(async () => {
     if (!wifi?.password) return;
@@ -244,7 +254,7 @@ export function ToolboxQr({ initialText, decodeClipItem, onDone }: Props) {
             />
           )}
           <Space wrap>
-            <Button size="small" onClick={() => void copyPlain(text, "内容")}>
+            <Button size="small" onClick={() => void copyContent(text, "内容")}>
               复制内容
             </Button>
             {url && (

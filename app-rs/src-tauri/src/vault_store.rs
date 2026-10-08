@@ -538,11 +538,11 @@ pub fn get_secrets_bulk(
     Ok(out)
 }
 
-/// 全局搜索：空格分词 AND，命中网站名/域名/别名/标签/用户名/label 的拼接串。
-/// 只返回元数据，不解密。
 /// 全账号行（重复密码检测专用）。明文不出调用方比对聚合，不落日志。
 pub type AccountPasswordRow = (i64, String, String, Option<Vec<u8>>);
 
+/// 全账号行读取（重复密码检测专用）：JOIN sites 取站名；`password_enc` 可为
+/// NULL（未设密码），由调用方跳过。
 pub fn all_accounts_with_passwords() -> rusqlite::Result<Vec<AccountPasswordRow>> {
     let conn = conn()?;
     let mut stmt = conn.prepare(
@@ -559,6 +559,8 @@ pub fn all_accounts_with_passwords() -> rusqlite::Result<Vec<AccountPasswordRow>
     rows.collect()
 }
 
+/// 全局搜索：空格分词 AND，命中网站名/域名/别名/标签/用户名/label 的拼接串。
+/// 只返回元数据，不解密。
 pub fn global_search(q: &str) -> rusqlite::Result<Vec<serde_json::Value>> {
     let tokens: Vec<String> = q
         .split_whitespace()

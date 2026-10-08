@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { isHttpUrl, parseWifiQr } from "../src/qrdecode";
+import { copyChannel, isHttpUrl, parseWifiQr } from "../src/qrdecode";
 
 describe("parseWifiQr", () => {
   it("标准 WPA 码：转义字段还原（; : , \" 均可）", () => {
@@ -41,5 +41,20 @@ describe("isHttpUrl", () => {
     expect(isHttpUrl("file:///C:/x")).toBe(false);
     expect(isHttpUrl("WIFI:T:WPA;;")).toBe(false);
     expect(isHttpUrl("  https://space.com  ")).toBe(true);
+  });
+});
+
+describe("copyChannel（轮次116 回归锁）", () => {
+  it("WiFi 码含密码 → sensitive（整串含 P 字段明文，不得进剪贴板历史）", () => {
+    expect(copyChannel("WIFI:T:WPA;S:Home;P:p@ss;;")).toBe("sensitive");
+    // 密码带转义分号同样命中
+    expect(copyChannel("WIFI:T:WPA;S:Home\\;5G;P:p@ss\\;word;;")).toBe("sensitive");
+  });
+
+  it("开放网络 / 非 WiFi 内容 → plain", () => {
+    expect(copyChannel("WIFI:T:nopass;S:Office;;")).toBe("plain");
+    expect(copyChannel("https://example.com")).toBe("plain");
+    expect(copyChannel("随便一段文本")).toBe("plain");
+    expect(copyChannel("")).toBe("plain");
   });
 });

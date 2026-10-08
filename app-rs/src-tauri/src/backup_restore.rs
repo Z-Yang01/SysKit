@@ -180,26 +180,14 @@ struct DnsBackupFile {
 }
 
 /// 回滚 DNS：按 dns_backup_*.json 逐 family 还原（static 列表 / dhcp）。
+///
+/// **两段式（轮次116）**：先解析全部备份文件、全部合法后才开始 netsh 写回——
+/// 否则多文件会话里第 2 个文件损坏时，第 1 个适配器已被改而整体报错，
+/// 留下半应用的系统状态（原子性：要么没动，要么每个文件各自完整应用）。
 fn restore_dns(dir: &std::path::Path) -> Result<String, String> {
-    let mut files = Vec::new();
-    for e in std::fs::read_dir(dir)
-        .map_err(|e| format!("读取备份目录失败: {e}"))?
-        .flatten()
-    {
-        let name = e.file_name().to_string_lossy().to_string();
-        let lower = name.to_ascii_lowercase();
-        if lower.starts_with("dns_backup_") && lower.ends_with(".json") {
-            files.push(e.path());
-        }
-    }
-    if files.is_empty() {
-        return Err("该会话没有结构化 DNS 备份（旧 .txt 仅存档，需手工还原）".to_string());
-    }
+    let backups = parse_dns_backups(dir)?;
     let mut notes: Vec<String> = Vec::new();
-    for f in files {
-        let raw = std::fs::read_to_string(&f).map_err(|e| format!("读取 DNS 备份失败: {e}"))?;
-        let bk: DnsBackupFile =
-            serde_json::from_str(&raw).map_err(|e| format!("DNS 备份损坏: {e}"))?;
+    for bk in &backups {
         for entry in &bk.entries {
             let fam = match entry.family.as_str() {
                 "ipv4" => "ipv4",
@@ -237,6 +225,40 @@ fn restore_dns(dir: &std::path::Path) -> Result<String, String> {
         }
     }
     Ok(format!("DNS 已回滚（{}）", notes.join("，")))
+}
+
+/// 解析会话目录里的全部结构化 DNS 备份。任一文件缺失/损坏即整体报错
+/// （报错发生在任何系统写入之前）。文件按目录名排序，应用顺序可复现。
+fn parse_dns_backups(dir: &std::path::Path) -> Result<Vec<DnsBackupFile>, String> {
+    let mut files = Vec::new();
+    for e in std::fs::read_dir(dir)
+        .map_err(|e| format!("读取备份目录失败: {e}"))?
+        .flatten()
+    {
+        let name = e.file_name().to_string_lossy().to_string();
+        let lower = name.to_ascii_lowercase();
+        if lower.starts_with("dns_backup_") && lower.ends_with(".json") {
+            files.push(e.path());
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err("该会话没有结构化 DNS 备份（旧 .txt 仅存档，需手工还原）".to_string());
+    }
+    let mut out = Vec::new();
+    for f in &files {
+        let raw = std::fs::read_to_string(f).map_err(|e| format!("读取 DNS 备份失败: {e}"))?;
+        let bk: DnsBackupFile = serde_json::from_str(&raw).map_err(|e| {
+            format!(
+                "DNS 备份损坏（{}）: {e}",
+                f.file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default()
+            )
+        })?;
+        out.push(bk);
+    }
+    Ok(out)
 }
 
 /// 回滚 NCSI：`reg import` 会话里的 .reg 备份（通常为 NCSI 注册表键）。
@@ -339,5 +361,37 @@ mod tests {
         assert!(find_session_dir("a/b").is_err());
         assert!(find_session_dir("").is_err());
         assert!(find_session_dir("不存在_会话").is_err());
+    }
+
+    #[test]
+    fn parse_dns_backups_two_phase_rejects_any_corrupt_file() {
+        // 回归锁（轮次116）：回滚曾「边解析边应用」——多文件会话里后面的文件
+        // 损坏时，前面的适配器已被 netsh 改掉才整体报错。现在解析必须全部
+        // 通过才可能开始写回：任一文件损坏 → 在纯解析阶段就整体报错。
+        let root = std::env::temp_dir().join(format!(
+            "sk-bkparse-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let ok_json = r#"{"adapter":"WLAN","mode":"static","entries":[{"family":"ipv4","mode":"static","servers":["192.168.1.1"]}]}"#;
+        std::fs::write(root.join("dns_backup_WLAN.json"), ok_json).unwrap();
+        std::fs::write(root.join("dns_backup_以太网.json"), "{not json").unwrap();
+        let err = parse_dns_backups(&root).unwrap_err();
+        assert!(err.contains("损坏"), "{err}");
+        assert!(err.contains("以太网"), "错误应指名损坏文件: {err}");
+        // 全部合法 → 按文件名排序返回
+        std::fs::write(root.join("dns_backup_以太网.json"), ok_json).unwrap();
+        let parsed = parse_dns_backups(&root).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].adapter, "WLAN");
+        // 无结构化备份 → 明确报错
+        let empty = root.join("e");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(parse_dns_backups(&empty).is_err());
+        std::fs::remove_dir_all(&root).ok();
     }
 }
