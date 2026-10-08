@@ -1706,6 +1706,9 @@ pub fn sk_vault_status(
         "unlocked": session_unlocked,
         "has_master_password": has_pw,
         "mode": meta.mode,
+        // KDF 算法（"pbkdf2" | "argon2id"；DPAPI/未初始化为 null）——加字段向后兼容，
+        // 前端检测 argon2id 时提示「回退 v1.2.0 将无法打开」
+        "kdf": c.kdf_algo(),
         "trusted_until": trusted_until,
         // 各能力可用性：界面据此决定按钮能不能点、要不要显示说明
         "capabilities": {

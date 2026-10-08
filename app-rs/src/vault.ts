@@ -12,6 +12,8 @@ export interface VaultStatus {
   unlocked: boolean;
   has_master_password: boolean;
   mode: string;
+  /** KDF 算法（v1.3+ 返回 "pbkdf2" | "argon2id"，旧后端缺省 undefined） */
+  kdf?: "pbkdf2" | "argon2id" | null;
   /** 免重复输入窗口剩余秒数（undefined/0 = 无窗口）。 */
   trusted_until?: number;
   capabilities: {

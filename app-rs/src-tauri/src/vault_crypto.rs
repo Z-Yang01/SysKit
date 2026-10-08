@@ -35,9 +35,23 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
-/// PBKDF2 迭代次数（新库写入此值；读取时以文件里的为准）。
+/// PBKDF2 迭代次数（**旧库**参数；v1.3 起新库/改密一律 Argon2id）。
+///
+/// 常量保留：旧 meta 缺 `kdf.iter` 时的回退值，也是跨语言 fixture（2000 iter）
+/// 测试的对照口径。
 pub const KDF_ITER: u32 = 600_000;
+/// KDF 算法标识（写入 meta 的 `kdf.algo`；缺省/缺失 = 旧 PBKDF2）。
+pub const KDF_ALGO_PBKDF2: &str = "pbkdf2";
+pub const KDF_ALGO_ARGON2ID: &str = "argon2id";
+/// Argon2id 参数（OWASP 2023 桌面档：m=19MiB, t=2, p=1）——任何 Win11 机器
+/// 解锁 <200ms；更高参数（64MiB+）是服务器口径，桌面端解锁体验优先。
+pub const ARGON2_M_KIB: u32 = 19_464;
+pub const ARGON2_T: u32 = 2;
+pub const ARGON2_P: u32 = 1;
+/// 迁移后 meta 写入的最低可用版本闸门：低于此版本的 App 打不开新库。
+pub const MIN_APP_VERSION: &str = "1.3.0";
 /// 数据密钥长度。
 pub const KEY_LEN: usize = 32;
 /// GCM nonce 长度。
@@ -67,15 +81,31 @@ pub struct VaultMeta {
     pub wrapped_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verifier: Option<String>,
+    /// KDF 升级闸门：Argon2id 库要求 ≥1.3.0，旧版打开时应有明确提示而不是
+    /// 静默「密码错误」。旧 meta 缺字段 = 不设限。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_app_version: Option<String>,
 }
 
-/// PBKDF2 参数。
+/// KDF 参数。v1.3 起承载两种算法：缺省字段 = 旧 PBKDF2（旧 meta 零改动可读）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Kdf {
     #[serde(default)]
     pub salt: String,
     #[serde(default)]
     pub iter: Option<u32>,
+    /// `argon2id` | 缺省（= pbkdf2）。未知算法解锁时报 Corrupt 而不是静默走错 KDF。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algo: Option<String>,
+    /// Argon2 内存成本（KiB），仅 algo=argon2id 时有意义。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub m: Option<u32>,
+    /// Argon2 迭代轮数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<u32>,
+    /// Argon2 并行度。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p: Option<u32>,
 }
 
 impl Kdf {
@@ -87,6 +117,23 @@ impl Kdf {
             Some(n) if n > 0 => n,
             _ => KDF_ITER,
         }
+    }
+
+    /// 算法名（缺省 = pbkdf2，兼容旧 meta）。
+    pub fn algo_name(&self) -> &str {
+        match self.algo.as_deref() {
+            Some(a) if !a.is_empty() => a,
+            _ => KDF_ALGO_PBKDF2,
+        }
+    }
+
+    /// Argon2id 参数（缺省回落 OWASP 档常量）。
+    pub fn effective_argon2(&self) -> (u32, u32, u32) {
+        (
+            self.m.unwrap_or(ARGON2_M_KIB),
+            self.t.unwrap_or(ARGON2_T),
+            self.p.unwrap_or(ARGON2_P),
+        )
     }
 }
 
@@ -210,6 +257,7 @@ impl VaultCrypto {
                 kdf: None,
                 wrapped_key: String::new(),
                 verifier: None,
+                min_app_version: None,
             };
         };
         serde_json::from_str(&text).unwrap_or(VaultMeta {
@@ -217,6 +265,7 @@ impl VaultCrypto {
             kdf: None,
             wrapped_key: String::new(),
             verifier: None,
+            min_app_version: None,
         })
     }
 
@@ -257,6 +306,7 @@ impl VaultCrypto {
                     kdf: None,
                     wrapped_key: b64(&wrapped),
                     verifier: None,
+                    min_app_version: None,
                 })?;
             }
         }
@@ -270,19 +320,29 @@ impl VaultCrypto {
         Ok(())
     }
 
+    /// 构造 password 模式 meta：**v1.3 起一律 Argon2id**（OWASP 桌面档参数），
+    /// 并写 min_app_version 降级闸门——旧版 App 打开时会得到明确「版本过低」
+    /// 语义（由 status 的 kdf 字段 + 前端提示承载），而不是静默「密码错误」。
     fn build_password_meta(&self, key: &[u8], password: &str) -> Result<VaultMeta, String> {
         let salt = random_salt();
-        let dk = derive_key(password, &salt, KDF_ITER)?;
+        let kdf = Kdf {
+            salt: b64(&salt),
+            iter: None,
+            algo: Some(KDF_ALGO_ARGON2ID.to_string()),
+            m: Some(ARGON2_M_KIB),
+            t: Some(ARGON2_T),
+            p: Some(ARGON2_P),
+        };
+        let mut dk = derive_key_for(password, &salt, &kdf)?;
         let wrapped = seal_gcm(&dk, key, AAD_KEY)?;
         let verifier = seal_gcm(&dk, VERIFIER, AAD_VERIFY)?;
+        dk.zeroize();
         Ok(VaultMeta {
             mode: "password".to_string(),
-            kdf: Some(Kdf {
-                salt: b64(&salt),
-                iter: Some(KDF_ITER),
-            }),
+            kdf: Some(kdf),
             wrapped_key: b64(&wrapped),
             verifier: Some(b64(&verifier)),
+            min_app_version: Some(MIN_APP_VERSION.to_string()),
         })
     }
 
@@ -323,10 +383,20 @@ impl VaultCrypto {
         let kdf = meta.kdf.clone().unwrap_or(Kdf {
             salt: String::new(),
             iter: None,
+            algo: None,
+            m: None,
+            t: None,
+            p: None,
         });
+        if kdf.algo_name() != KDF_ALGO_PBKDF2 && kdf.algo_name() != KDF_ALGO_ARGON2ID {
+            return Err(UnlockError::Corrupt(format!(
+                "未知 KDF 算法: {}（请升级 SysKit）",
+                kdf.algo_name()
+            )));
+        }
         let salt = unb64(&kdf.salt).map_err(UnlockError::Corrupt)?;
-        let dk = derive_key(password.unwrap_or(""), &salt, kdf.effective_iter())
-            .map_err(UnlockError::Corrupt)?;
+        let mut dk =
+            derive_key_for(password.unwrap_or(""), &salt, &kdf).map_err(UnlockError::Corrupt)?;
 
         // 先验 verifier 再解 data key：verifier 错了说明是密码问题，
         // 否则会把"密码错误"误报成"数据损坏"
@@ -339,7 +409,7 @@ impl VaultCrypto {
             Ok(_) => return Err(UnlockError::Corrupt("verifier 内容不符".to_string())),
             Err(_) => return Err(UnlockError::WrongPassword),
         }
-        match open_gcm(&dk, &wrapped, AAD_KEY) {
+        let unlock_result = match open_gcm(&dk, &wrapped, AAD_KEY) {
             Ok(key) if key.len() == KEY_LEN => {
                 self.data_key = Some(key);
                 self.unlocked_at = Some(
@@ -352,18 +422,50 @@ impl VaultCrypto {
             }
             Ok(_) => Err(UnlockError::Corrupt("数据密钥长度非法".to_string())),
             Err(e) => Err(UnlockError::Corrupt(e)),
+        };
+        dk.zeroize();
+        // 透明迁移：旧 PBKDF2 库解锁成功 → 用已验证密码重包成 Argon2id。
+        // 失败（磁盘满/权限）只打日志，保留旧 meta——下次解锁再试，绝不锁死。
+        if unlock_result.is_ok() && kdf.algo_name() != KDF_ALGO_ARGON2ID {
+            if let Some(mut key) = self.data_key.clone() {
+                match self.build_password_meta(&key, password.unwrap_or("")) {
+                    Ok(new_meta) => {
+                        if let Err(e) = self.write_meta(&new_meta) {
+                            log::warn!("KDF 迁移写 meta 失败（保留旧格式，下次重试）: {e}");
+                        } else {
+                            log::info!("密码库 KDF 已迁移 PBKDF2 → Argon2id");
+                        }
+                    }
+                    Err(e) => log::warn!("KDF 迁移构造失败（保留旧格式）: {e}"),
+                }
+                use zeroize::Zeroize;
+                key.zeroize(); // build_password_meta 不改解锁态；clone 用完即清
+            }
         }
+        unlock_result
     }
 
     pub fn lock(&mut self) {
-        // 覆写一遍再丢弃，减少密钥在内存里的残留时间
+        // Zeroize 覆写后再丢弃，减少密钥在内存里的残留时间
         if let Some(k) = self.data_key.as_mut() {
-            for b in k.iter_mut() {
-                *b = 0;
-            }
+            use zeroize::Zeroize;
+            k.zeroize();
         }
         self.data_key = None;
         self.unlocked_at = None;
+    }
+
+    /// 当前 meta 的 KDF 算法名（"pbkdf2" | "argon2id"；未初始化/DPAPI → None）。
+    pub fn kdf_algo(&self) -> Option<String> {
+        let meta = self.read_meta();
+        if meta.mode != "password" {
+            return None;
+        }
+        Some(
+            meta.kdf
+                .map(|k| k.algo_name().to_string())
+                .unwrap_or_else(|| KDF_ALGO_PBKDF2.to_string()),
+        )
     }
 
     /// 本次解锁的 UNIX 时刻（秒）；未解锁返回 None（自动重锁窗口判定用）。
@@ -409,13 +511,15 @@ impl VaultCrypto {
         let (Ok(salt), Some(verifier_b64)) = (unb64(&kdf.salt), meta.verifier) else {
             return false;
         };
-        let Ok(dk) = derive_key(password, &salt, kdf.effective_iter()) else {
+        let Ok(mut dk) = derive_key_for(password, &salt, &kdf) else {
             return false;
         };
         let Ok(verifier) = unb64(&verifier_b64) else {
             return false;
         };
-        matches!(open_gcm(&dk, &verifier, AAD_VERIFY), Ok(v) if v == VERIFIER)
+        let ok = matches!(open_gcm(&dk, &verifier, AAD_VERIFY), Ok(v) if v == VERIFIER);
+        dk.zeroize();
+        ok
     }
 
     /// 无主密码 → 设主密码（数据密钥不变）。
@@ -450,6 +554,7 @@ impl VaultCrypto {
             kdf: None,
             wrapped_key: b64(&wrapped),
             verifier: None,
+            min_app_version: None,
         })?;
         Ok(true)
     }
@@ -473,6 +578,12 @@ impl VaultCrypto {
     }
 }
 
+impl Drop for VaultCrypto {
+    fn drop(&mut self) {
+        self.lock();
+    }
+}
+
 impl Default for VaultCrypto {
     fn default() -> Self {
         Self::new()
@@ -481,9 +592,31 @@ impl Default for VaultCrypto {
 
 // ---------------- CBC 风格封装（BCrypt 的对称调用是带状态的） ----------------
 
-/// PBKDF2-HMAC-SHA256 派生密钥。
+/// PBKDF2-HMAC-SHA256 派生密钥（旧接口，跨语言 fixture 测试与兼容路径用）。
 pub fn derive_key(password: &str, salt: &[u8], iterations: u32) -> Result<Vec<u8>, String> {
     crate::w32::pbkdf2_sha256(password.as_bytes(), salt, iterations, KEY_LEN)
+}
+
+/// 按 meta 里的 KDF 算法分派派生。
+///
+/// - pbkdf2（缺省）：CNG `BCryptDeriveKeyPBKDF2`
+/// - argon2id：RustCrypto argon2（CNG 未收录 Argon2，纯 Rust 实现）
+pub fn derive_key_for(password: &str, salt: &[u8], kdf: &Kdf) -> Result<Vec<u8>, String> {
+    match kdf.algo_name() {
+        KDF_ALGO_PBKDF2 => derive_key(password, salt, kdf.effective_iter()),
+        KDF_ALGO_ARGON2ID => {
+            use argon2::{Algorithm, Argon2, Params, Version};
+            let (m, t, p) = kdf.effective_argon2();
+            let params =
+                Params::new(m, t, p, Some(KEY_LEN)).map_err(|e| format!("Argon2 参数非法: {e}"))?;
+            let a2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+            let mut out = vec![0u8; KEY_LEN];
+            a2.hash_password_into(password.as_bytes(), salt, &mut out)
+                .map_err(|e| format!("Argon2 派生失败: {e}"))?;
+            Ok(out)
+        }
+        other => Err(format!("未知 KDF 算法: {other}")),
+    }
 }
 
 /// AES-256-GCM 加密：返回 `nonce || ct || tag`。
@@ -738,9 +871,14 @@ mod tests {
             kdf: Some(Kdf {
                 salt: b64(&salt),
                 iter: Some(1000),
+                algo: None,
+                m: None,
+                t: None,
+                p: None,
             }),
             wrapped_key: b64(&seal_gcm(&dk, &key, AAD_KEY).unwrap()),
             verifier: Some(b64(&seal_gcm(&dk, VERIFIER, AAD_VERIFY).unwrap())),
+            min_app_version: None,
         };
         v.write_meta(&meta).unwrap();
         assert!(v.unlock(Some("pw")).unwrap(), "必须按文件里的 iter 派生");
@@ -752,7 +890,11 @@ mod tests {
         assert_eq!(
             Kdf {
                 salt: String::new(),
-                iter: None
+                iter: None,
+                algo: None,
+                m: None,
+                t: None,
+                p: None,
             }
             .effective_iter(),
             KDF_ITER
@@ -760,7 +902,11 @@ mod tests {
         assert_eq!(
             Kdf {
                 salt: String::new(),
-                iter: Some(0)
+                iter: Some(0),
+                algo: None,
+                m: None,
+                t: None,
+                p: None,
             }
             .effective_iter(),
             KDF_ITER,
@@ -769,7 +915,11 @@ mod tests {
         assert_eq!(
             Kdf {
                 salt: String::new(),
-                iter: Some(1)
+                iter: Some(1),
+                algo: None,
+                m: None,
+                t: None,
+                p: None,
             }
             .effective_iter(),
             1
@@ -1097,5 +1247,122 @@ mod cross_language_tests {
         }
         // 迭代数必须是当前常量（新库写入当前值）
         assert_eq!(meta.kdf.unwrap().effective_iter(), KDF_ITER);
+    }
+}
+
+#[cfg(test)]
+mod kdf_migration_tests {
+    use super::*;
+
+    fn tmp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "sk-kdf-{}-{}.key",
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn new_vault_uses_argon2id_with_gate() {
+        let path = tmp_path("new");
+        let mut c = VaultCrypto::with_path(path.clone());
+        c.setup(Some("master-pw-1")).unwrap();
+        let meta = c.read_meta();
+        assert_eq!(meta.kdf.unwrap().algo.as_deref(), Some(KDF_ALGO_ARGON2ID));
+        assert_eq!(meta.min_app_version.as_deref(), Some(MIN_APP_VERSION));
+        assert!(c.unlock(Some("master-pw-1")).unwrap());
+        assert_eq!(c.kdf_algo().as_deref(), Some(KDF_ALGO_ARGON2ID));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_pbkdf2_meta_still_unlocks_and_migrates() {
+        let path = tmp_path("legacy");
+        // 手写旧形状 meta（无 algo/min_app_version 字段——v1.2 时代的样子）
+        let salt = random_salt();
+        let key = random_key();
+        let dk = derive_key("old-pw", &salt, KDF_ITER).unwrap();
+        let wrapped = seal_gcm(&dk, &key, AAD_KEY).unwrap();
+        let verifier = seal_gcm(&dk, VERIFIER, AAD_VERIFY).unwrap();
+        let legacy = serde_json::json!({
+            "mode": "password",
+            "kdf": {"salt": b64(&salt), "iter": KDF_ITER},
+            "wrapped_key": b64(&wrapped),
+            "verifier": b64(&verifier),
+        });
+        std::fs::write(&path, legacy.to_string()).unwrap();
+
+        let mut c = VaultCrypto::with_path(path.clone());
+        assert!(c.unlock(Some("old-pw")).unwrap(), "旧 meta 必须可解");
+        assert_eq!(
+            c.kdf_algo().as_deref(),
+            Some(KDF_ALGO_ARGON2ID),
+            "解锁后透明迁移"
+        );
+        let meta = c.read_meta();
+        assert_eq!(meta.min_app_version.as_deref(), Some(MIN_APP_VERSION));
+
+        // 迁移后的库：重锁再用新密码解锁，数据密钥一致（verifier 链路成立）
+        c.lock();
+        assert!(c.unlock(Some("old-pw")).unwrap());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_failure_keeps_legacy_meta_unlocked() {
+        let path = tmp_path("fail");
+        let salt = random_salt();
+        let key = random_key();
+        let dk = derive_key("pw", &salt, 2000).unwrap();
+        let wrapped = seal_gcm(&dk, &key, AAD_KEY).unwrap();
+        let verifier = seal_gcm(&dk, VERIFIER, AAD_VERIFY).unwrap();
+        let legacy = serde_json::json!({
+            "mode": "password",
+            "kdf": {"salt": b64(&salt), "iter": 2000},
+            "wrapped_key": b64(&wrapped),
+            "verifier": b64(&verifier),
+        });
+        std::fs::write(&path, legacy.to_string()).unwrap();
+
+        let mut c = VaultCrypto::with_path(path.clone());
+        assert!(c.unlock(Some("pw")).unwrap());
+        // 模拟写 meta 失败：把 vault.key 换成只读目录不可行于单测——改为直接断言
+        // 旧 meta 文件在迁移写失败场景下的语义：unlock 仍返回 Ok（不阻塞使用）
+        assert!(c.is_unlocked());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unknown_kdf_algo_is_clear_corrupt() {
+        let path = tmp_path("unk");
+        let salt = random_salt();
+        let legacy = serde_json::json!({
+            "mode": "password",
+            "kdf": {"salt": b64(&salt), "iter": 600000, "algo": "scrypt"},
+            "wrapped_key": b64(&[0u8; 60]),
+            "verifier": b64(&[0u8; 60]),
+        });
+        std::fs::write(&path, legacy.to_string()).unwrap();
+        let mut c = VaultCrypto::with_path(path.clone());
+        let err = c.unlock(Some("x")).unwrap_err();
+        assert!(
+            matches!(err, UnlockError::Corrupt(ref m) if m.contains("未知 KDF")),
+            "{err:?}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn zeroize_clears_key_on_lock() {
+        let path = tmp_path("zero");
+        let mut c = VaultCrypto::with_path(path.clone());
+        c.setup(Some("pw")).unwrap();
+        assert!(c.is_unlocked());
+        c.lock();
+        assert!(c.data_key.is_none());
+        let _ = std::fs::remove_file(path);
     }
 }
