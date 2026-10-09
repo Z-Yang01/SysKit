@@ -32,6 +32,7 @@ const FROZEN_DEFAULTS: Record<string, { literal: string; kind: Kind }> = {
   clip_process_blacklist: { literal: "keepass,bitwarden,1password,enpass", kind: "str" },
   clip_sensitive_ttl: { literal: "25", kind: "int" },
   clip_sensitive_detect: { literal: "true", kind: "bool" },
+  quality_probe_enabled: { literal: "true", kind: "bool" },
   clip_capture_images: { literal: "true", kind: "bool" },
   vault_autolock_min: { literal: "30", kind: "int" },
   vault_trust_min: { literal: "30", kind: "int" },
@@ -98,7 +99,7 @@ const RS = parseRsDefaults();
 
 describe("settings defaults 冻结契约（settings.rs vs 快照）", () => {
   it("解析到全部键（解析器本身有效）", () => {
-    expect(RS.size).toBe(25);
+    expect(RS.size).toBe(26);
   });
 
   it("键集完全一致：无多、无少（死键不得复活）", () => {

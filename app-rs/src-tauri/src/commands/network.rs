@@ -72,6 +72,21 @@ pub fn sk_known_ssids(hub: State<'_, Arc<Hub>>) -> Vec<String> {
     crate::netstats::known_ssids(&hub.stats_snapshot())
 }
 
+/// 网络质量序列（minute/hour/day）：延迟均值、丢包率、DNS 耗时。
+/// loss%/均值在后端算好；探测由后台 `sk-netquality` 线程持续进行。
+#[tauri::command]
+pub fn sk_quality_series(
+    hub: State<'_, Arc<Hub>>,
+    granularity: String,
+) -> Result<serde_json::Value, String> {
+    let agg = hub
+        .quality
+        .lock()
+        .map_err(|e| format!("质量桶锁中毒: {e}"))?;
+    let rows = agg.series(&granularity)?;
+    Ok(serde_json::json!({ "granularity": granularity, "rows": rows }))
+}
+
 /// 近 N 天日报（断网次数/累计时长 + 每日流量）。
 #[tauri::command]
 pub fn sk_daily_report(hub: State<'_, Arc<Hub>>, days: Option<i64>) -> serde_json::Value {

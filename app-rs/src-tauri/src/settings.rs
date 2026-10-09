@@ -45,6 +45,7 @@ pub fn defaults() -> Vec<(&'static str, Value, Ty)> {
         ),
         ("clip_sensitive_ttl", Value::from(25), Int),
         ("clip_sensitive_detect", Value::Bool(true), Bool),
+        ("quality_probe_enabled", Value::Bool(true), Bool),
         ("clip_capture_images", Value::Bool(true), Bool),
         ("vault_autolock_min", Value::from(30), Int),
         ("vault_trust_min", Value::from(30), Int),
@@ -205,6 +206,10 @@ fn decoration(key: &str) -> Decoration {
         "clip_sensitive_detect" => Decoration::new(
             "敏感内容不入库",
             "复制的内容像信用卡号/身份证号/API 密钥时不记入剪贴板历史",
+        ),
+        "quality_probe_enabled" => Decoration::new(
+            "网络质量探测",
+            "周期探测网关/公网延迟与丢包，驱动「网络质量」趋势卡",
         ),
         "vault_autolock_min" => Decoration::int(
             "密码库自动锁定（分）",
@@ -832,8 +837,8 @@ mod tests {
         let keys: Vec<&str> = defaults().into_iter().map(|(k, _, _)| k).collect();
         assert_eq!(
             keys.len(),
-            25,
-            "DEFAULTS 键数应与 config.py 对齐（25 = 24 + clip_sensitive_detect）"
+            26,
+            "DEFAULTS 键数（24 Python 对齐 + clip_sensitive_detect + quality_probe_enabled）"
         );
         for must in [
             "clipboard_max",

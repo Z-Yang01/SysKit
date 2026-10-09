@@ -40,6 +40,7 @@ import {
   type Tick,
 } from "./dashboard";
 import { AppTrafficCard } from "./AppTrafficCard";
+import { QualityCard } from "./QualityCard";
 
 interface OverviewInit {
   tick: Tick | null;
@@ -465,6 +466,8 @@ export function Dashboard({ dark }: { dark: boolean }) {
               </div>
 
               <AppTrafficCard />
+
+              <QualityCard dark={dark} />
 
               <Row gutter={14}>
                 <Col span={12}>

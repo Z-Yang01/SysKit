@@ -34,6 +34,8 @@ pub struct Hub {
     rates: Mutex<RateStatsStore>,
     events: Mutex<EventStore>,
     pub app_traffic: std::sync::Arc<crate::apptraffic::AppTrafficState>,
+    /// 网络质量桶：探测线程写，命令层读。
+    pub quality: std::sync::Arc<std::sync::Mutex<crate::netquality::QualityStore>>,
     stop: AtomicBool,
 }
 
@@ -46,6 +48,9 @@ impl Hub {
             events: Mutex::new(EventStore::new(500)),
             app_traffic: std::sync::Arc::new(crate::apptraffic::AppTrafficState::new(
                 crate::apptraffic::AppTrafficAgg::with_path(crate::paths::netstats_apps_file()),
+            )),
+            quality: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::netquality::QualityStore::with_path(crate::paths::netstats_quality_file()),
             )),
             stop: AtomicBool::new(false),
         })
@@ -93,6 +98,9 @@ impl Hub {
         if let Ok(mut agg) = self.app_traffic.agg.lock() {
             agg.save_if_dirty();
         }
+        if let Ok(mut q) = self.quality.lock() {
+            q.save_if_dirty();
+        }
     }
 
     #[cfg(test)]
@@ -110,6 +118,8 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
     // 按应用流量 ETW 采集：与秒级遥测同期启动；失败（非管理员/会话被占）
     // 只降状态不阻塞遥测主链路
     crate::apptraffic::spawn_etw(hub.app_traffic.clone());
+    // 网络质量探测：10 秒一轮 网关/公网 ICMP + 系统 DNS 计时
+    crate::netquality::spawn_probe(hub.quality.clone());
     std::thread::Builder::new()
         .name("sk-telemetry".into())
         .spawn(move || {

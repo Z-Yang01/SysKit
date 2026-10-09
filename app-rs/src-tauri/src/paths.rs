@@ -103,6 +103,11 @@ pub fn netstats_apps_file() -> PathBuf {
     appdata_dir().join("netstats_apps.json")
 }
 
+/// 网络质量桶（自有格式，非跨语言契约）。
+pub fn netstats_quality_file() -> PathBuf {
+    appdata_dir().join("netstats_quality.json")
+}
+
 pub fn log_dir() -> PathBuf {
     localappdata_dir().join("logs")
 }

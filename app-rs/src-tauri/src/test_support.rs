@@ -53,6 +53,7 @@ pub fn reset_persistent_files() {
         "traffic.json",
         "events.json",
         "netstats_buckets.json",
+        "netstats_quality.json",
         "settings.json",
     ] {
         let _ = std::fs::remove_file(dir.join(name));

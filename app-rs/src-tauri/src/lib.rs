@@ -44,6 +44,7 @@ mod modes;
 mod monitor;
 mod netcheck;
 mod netdl;
+mod netquality;
 mod netstats;
 mod palette;
 mod paths;
@@ -402,6 +403,7 @@ pub fn run() {
             commands::sk_kill_process,
             commands::sk_lan_scan,
             commands::sk_wol_send,
+            commands::sk_quality_series,
             commands::sk_subnet_calc,
             commands::sk_dns_query,
             commands::sk_ping,
