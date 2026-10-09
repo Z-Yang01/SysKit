@@ -273,8 +273,21 @@ export function App() {
   };
 
   // 子 tab 受控：palette 动作直达页内 tab（不再 DOM 点击 hack）
-  const [toolboxTab, setToolboxTab] = useState("hosts");
-  const [systemTab, setSystemTab] = useState("perf");
+  // 子 tab 记忆（localStorage）：切页回来不丢——与概览速率窗口同一手法
+  const [toolboxTab, setToolboxTab] = useState<string>(() => {
+    const v = localStorage.getItem("sk.toolboxTab");
+    return v || "hosts";
+  });
+  const [systemTab, setSystemTab] = useState<string>(() => {
+    const v = localStorage.getItem("sk.systemTab");
+    return v || "perf";
+  });
+  useEffect(() => {
+    localStorage.setItem("sk.toolboxTab", toolboxTab);
+  }, [toolboxTab]);
+  useEffect(() => {
+    localStorage.setItem("sk.systemTab", systemTab);
+  }, [systemTab]);
   // palette quick:diag 的递增信号：Diagnose 挂载/更新时消费一次
   const [quickDiagRequest, setQuickDiagRequest] = useState(0);
   const pages: Record<string, React.ReactNode> = {

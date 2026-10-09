@@ -109,6 +109,8 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   const [records, setRecords] = useState<RepairRecord[]>([]);
   // 报告脱敏开关（v1.3）：默认关 = 导出/复制走分级脱敏；本机自用可开完整信息
   const [fullInfo, setFullInfo] = useState(false);
+  // 只看未通过（v1.4 操作优化）：通过/提示行折叠，失败与警告顶上去
+  const [failedOnly, setFailedOnly] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -479,6 +481,10 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         extra={
           <Space>
             <span className="sk-hint" style={{ userSelect: "none" }}>
+              只看未通过
+            </span>
+            <Switch size="small" checked={failedOnly} onChange={setFailedOnly} />
+            <span className="sk-hint" style={{ userSelect: "none" }}>
               含完整信息
             </span>
             <Switch size="small" checked={fullInfo} onChange={setFullInfo} />
@@ -574,7 +580,9 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
                 size="small"
                 rowKey="id"
                 pagination={false}
-                dataSource={sortBySeverity(report.results)}
+                dataSource={sortBySeverity(report.results).filter(
+                  (r) => !failedOnly || r.status !== "pass",
+                )}
                 columns={[
                   {
                     title: "",

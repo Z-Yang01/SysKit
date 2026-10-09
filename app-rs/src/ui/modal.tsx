@@ -13,6 +13,7 @@ export function Modal({
   children,
   footer,
   width = 520,
+  onEnter,
 }: {
   open: boolean;
   title: string;
@@ -20,15 +21,24 @@ export function Modal({
   children: ReactNode;
   footer?: ReactNode;
   width?: number;
+  /** Enter 触发的提交回调（表单模态用；busy 时调用方自己挡重复） */
+  onEnter?: () => void;
 }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      if (e.key === "Enter" && onEnter) {
+        // 输入框内 Enter 不插入换行直接提交；TextArea 例外（留给换行）
+        const t = e.target as HTMLElement | null;
+        if (t?.tagName === "TEXTAREA") return;
+        e.preventDefault();
+        onEnter();
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, onEnter]);
 
   if (!open) return null;
 

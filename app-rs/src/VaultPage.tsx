@@ -1189,6 +1189,9 @@ export function VaultPage() {
         open={siteForm?.open === true}
         title={siteForm?.site ? `编辑站点「${siteForm.site.name}」` : "添加站点"}
         onClose={() => setSiteForm(null)}
+        onEnter={() => {
+          if (siteForm) void saveSite(siteForm).then((ok) => ok && setSiteForm(null));
+        }}
         width={520}
         footer={
           <>
@@ -1248,6 +1251,11 @@ export function VaultPage() {
         open={accountForm?.open === true}
         title={accountForm?.account ? `编辑账号「${accountTitle(accountForm.account)}」` : "添加账号"}
         onClose={() => setAccountForm(null)}
+        onEnter={() => {
+          if (accountForm) {
+            void saveAccount(accountForm).then((ok) => ok && setAccountForm(null));
+          }
+        }}
         width={520}
         footer={
           <>
