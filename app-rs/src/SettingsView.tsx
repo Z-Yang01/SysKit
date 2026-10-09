@@ -540,6 +540,7 @@ function LogPanel() {
   );
 }
 
+/** 设置页（设置 + 后台监控两个页签；日志 v1.4 起独立侧栏入口）。 */
 export function SettingsView() {
   return (
     <Card>
@@ -547,9 +548,17 @@ export function SettingsView() {
         items={[
           { key: "settings", label: "设置", children: <SettingsPanel /> },
           { key: "monitor", label: "后台监控", children: <MonitorPanel /> },
-          { key: "logs", label: "日志", children: <LogPanel /> },
         ]}
       />
+    </Card>
+  );
+}
+
+/** 日志页（独立侧栏入口，v1.4 从「设置 / 日志」拆出）。 */
+export function LogsView() {
+  return (
+    <Card>
+      <LogPanel />
     </Card>
   );
 }

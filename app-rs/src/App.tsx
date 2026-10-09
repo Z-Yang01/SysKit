@@ -31,7 +31,7 @@ import { ToolboxAppNet } from "./ToolboxAppNet";
 import { ToolboxQr } from "./ToolboxQr";
 import { SystemPage } from "./SystemPage";
 import { VaultPage } from "./VaultPage";
-import { SettingsView } from "./SettingsView";
+import { SettingsView, LogsView } from "./SettingsView";
 import type { SettingsAll } from "./settingsPage";
 import { applyHotkeyEcho, type HotkeyHints } from "./settingsPage";
 import { applyTheme, palette, type Palette } from "./theme";
@@ -70,6 +70,7 @@ const ORDER_KEYS = [
   "system",
   "vault",
   "settings",
+  "logs",
 ];
 
 export function App() {
@@ -311,6 +312,7 @@ export function App() {
     system: <SystemPage initialTab={systemTab} onTabChange={setSystemTab} />,
     vault: <VaultPage />,
     settings: <SettingsView />,
+    logs: <LogsView />,
   };
 
   return (
@@ -373,7 +375,8 @@ export function App() {
               { key: "toolbox", label: "⚡ 工具箱" },
               { key: "system", label: "💼 系统助手" },
               { key: "vault", label: "🔒 密码库" },
-              { key: "settings", label: "⚙ 设置 / 日志" },
+              { key: "settings", label: "⚙ 设置" },
+              { key: "logs", label: "📜 日志" },
             ]}
           />
           {/* 热键速查卡：玻璃化（强玻璃类，静态内容允许 blur） */}
@@ -394,7 +397,7 @@ export function App() {
           >
             <div>快速粘贴：{hotkeys.quick}</div>
             <div>命令面板：{hotkeys.palette}</div>
-            <div style={{ marginTop: 4, opacity: 0.7 }}>可在「设置 / 日志」改键</div>
+            <div style={{ marginTop: 4, opacity: 0.7 }}>可在「设置」改键</div>
           </div>
         </Layout.Sider>
 
