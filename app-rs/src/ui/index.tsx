@@ -39,9 +39,16 @@ const BUTTON_SIZES: Record<ButtonSize, string> = {
 export function Button({
   variant = "default",
   size = "md",
+  loading,
   className,
+  children,
+  disabled,
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant; size?: ButtonSize }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  loading?: boolean;
+}) {
   return (
     <button
       className={cx(
@@ -53,8 +60,17 @@ export function Button({
         BUTTON_SIZES[size],
         className,
       )}
+      disabled={disabled || loading}
       {...rest}
-    />
+    >
+      {loading && (
+        <span
+          aria-hidden
+          className="mr-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent"
+        />
+      )}
+      {children}
+    </button>
   );
 }
 
