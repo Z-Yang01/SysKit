@@ -271,3 +271,12 @@ export function Empty({ description }: { description: string }) {
     </div>
   );
 }
+
+// ---------------- 第三批（表单/表格/菜单/进度） ----------------
+export { Slider } from './slider';
+export { Checkbox, Radio } from './checkbox';
+export { Table } from './table';
+export type { Column } from './table';
+export { Dropdown } from './dropdown';
+export type { MenuItem } from './dropdown';
+export { Progress } from './progress';
