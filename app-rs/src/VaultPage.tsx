@@ -36,6 +36,10 @@ import {
   message,
   type MenuProps,
 } from "antd";
+import { useToast } from "./ui/toast";
+import { confirm } from "./ui/confirm";
+import { Modal as UiModal } from "./ui/modal";
+import { Input as UiInput, Textarea as UiTextarea, Button as UiButton, PasswordInput } from "./ui";
 
 import {
   PWGEN_DEFAULT_LENGTH,
@@ -73,6 +77,7 @@ import {
  * 生成只填充输入框，不自动保存——保存与否始终由用户点「保存」决定。
  */
 function PasswordGenPanel({ onGenerated }: { onGenerated: (pw: string) => void }) {
+  const toast = useToast();
   const [length, setLength] = useState(PWGEN_DEFAULT_LENGTH);
   const [upper, setUpper] = useState(true);
   const [lower, setLower] = useState(true);
@@ -111,7 +116,7 @@ function PasswordGenPanel({ onGenerated }: { onGenerated: (pw: string) => void }
         setGenerated(pw);
         onGenerated(pw);
       })
-      .catch((e) => message.error(String(e)))
+      .catch((e) => toast.error(String(e)))
       .finally(() => setBusy(false));
   };
 
@@ -119,9 +124,9 @@ function PasswordGenPanel({ onGenerated }: { onGenerated: (pw: string) => void }
     // 未保存的生成密码同为凭据材料：必须走敏感通道（见组件头注释）
     void invoke<{ note: string; ttl: number }>("sk_clip_copy_sensitive", { text: generated })
       .then((r) =>
-        message.success(r.ttl > 0 ? `已复制；${r.ttl} 秒后自动清空剪贴板` : "已复制（不会进入历史）"),
+        toast.success(r.ttl > 0 ? `已复制；${r.ttl} 秒后自动清空剪贴板` : "已复制（不会进入历史）"),
       )
-      .catch((e) => message.error(String(e)));
+      .catch((e) => toast.error(String(e)));
   };
 
   return (
@@ -190,6 +195,7 @@ function PasswordGenPanel({ onGenerated }: { onGenerated: (pw: string) => void }
 }
 
 export function VaultPage() {
+  const toast = useToast();
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [password, setPassword] = useState("");
   const [newMode, setNewMode] = useState<"dpapi" | "password">("password");
@@ -200,6 +206,24 @@ export function VaultPage() {
     loading: boolean;
     groups: { masked: string; accounts: { site: string; label: string }[] }[];
   }>({ open: false, loading: false, groups: [] });
+  // ---------------- 状态化模态（v1.4 UI 迁移：AntD Modal.confirm → ui/Modal） ----------------
+  // 表单模态全部受控：输入值进 React state，不再用「闭包 form + DOM 取值」
+  const [siteForm, setSiteForm] = useState<{
+    open: boolean; site?: SiteRow;
+    name: string; domain: string; url: string; aliases: string; tags: string;
+  } | null>(null);
+  const [accountForm, setAccountForm] = useState<{
+    open: boolean; account?: AccountRow;
+    label: string; username: string; password: string; totp_secret: string; notes: string;
+  } | null>(null);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const [unlockPw, setUnlockPw] = useState("");
+  const [unlockErr, setUnlockErr] = useState("");
+  const [masterForm, setMasterForm] = useState<{ changing: boolean; current: string; next: string } | null>(null);
+  const [masterErr, setMasterErr] = useState("");
+  const [removeMasterOpen, setRemoveMasterOpen] = useState(false);
+  const [removeMasterPw, setRemoveMasterPw] = useState("");
+  const [removeMasterErr, setRemoveMasterErr] = useState("");
   // 两栏行高测量（解锁态才挂测量）：站点/账号再多只滚列表卡体
   const row = useFillRowHeight(status?.unlocked === true);
   // 条目数据（解锁后从后端读）
@@ -216,6 +240,7 @@ export function VaultPage() {
   // 敏感通道；get_secret 是后端为「看一眼手抄」专开的使用时解密口子。
   const [reveal, setReveal] = useState<{ id: number; text: string } | null>(null);
   const revealTimer = useRef<number | undefined>(undefined);
+  const totpFileRef = useRef<HTMLInputElement | null>(null);
   // 解锁保持时长（vault_autolock_min 分钟；0=不自动锁）——锁定态显示在工具条
   const [autolockMin, setAutolockMin] = useState<number | null>(null);
   const phase = vaultPhase(status);
@@ -237,7 +262,7 @@ export function VaultPage() {
     try {
       setStatus(await invoke<VaultStatus>("sk_vault_status"));
     } catch (e) {
-      message.error(`读取密码库状态失败：${String(e)}`);
+      toast.error(`读取密码库状态失败：${String(e)}`);
     }
   }, []);
 
@@ -306,7 +331,7 @@ export function VaultPage() {
       accountId,
       field,
     });
-    message.success(r.ttl > 0 ? `已复制；${r.ttl} 秒后自动清空剪贴板` : "已复制（不会进入历史）");
+    toast.success(r.ttl > 0 ? `已复制；${r.ttl} 秒后自动清空剪贴板` : "已复制（不会进入历史）");
   }, []);
 
   // 👁️ 掩码 ↔ 明文切换。30 秒自动熄灭：用户「看一眼手抄」是常态场景，
@@ -323,14 +348,14 @@ export function VaultPage() {
           field: "password",
         });
         if (!text) {
-          message.error("该账号没有存储密码");
+          toast.error("该账号没有存储密码");
           return;
         }
         setReveal({ id: a.id, text });
         if (revealTimer.current !== undefined) window.clearTimeout(revealTimer.current);
         revealTimer.current = window.setTimeout(() => setReveal(null), 30_000);
       } catch (e) {
-        message.error(String(e));
+        toast.error(String(e));
       }
     },
     [reveal],
@@ -357,7 +382,7 @@ export function VaultPage() {
           .then((code) => {
             if (!code) {
               stop();
-              message.error("TOTP 密钥无效（含字母表外字符？）");
+              toast.error("TOTP 密钥无效（含字母表外字符？）");
               return;
             }
             const remain = 30 - (Math.floor(Date.now() / 1000) % 30);
@@ -387,11 +412,11 @@ export function VaultPage() {
                         text: code,
                       })
                         .then((r) =>
-                          message.success(
+                          toast.success(
                             r.ttl > 0 ? `动态码已复制；${r.ttl} 秒后自动清空` : "动态码已复制",
                           ),
                         )
-                        .catch((e) => message.error(String(e)));
+                        .catch((e) => toast.error(String(e)));
                     }}
                   >
                     复制
@@ -405,7 +430,7 @@ export function VaultPage() {
           })
           .catch((e) => {
             stop();
-            message.error(String(e));
+            toast.error(String(e));
           });
       };
       render();
@@ -417,199 +442,135 @@ export function VaultPage() {
 
   const siteModal = useCallback(
     (site?: SiteRow) => {
-      let form = { name: site?.name ?? "", domain: site?.domain ?? "", url: site?.url ?? "",
-                   aliases: site?.aliases ?? "", tags: site?.tags ?? "" };
-      Modal.confirm({
-        title: site ? `编辑站点「${site.name}」` : "添加站点",
-        width: 520,
-        content: (
-          <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Input id="vf-site-name" defaultValue={form.name} placeholder="名称 *"
-                   onChange={(e) => (form.name = e.target.value)} />
-            <Input id="vf-site-domain" defaultValue={form.domain} placeholder="域名（如 github.com）"
-                   onChange={(e) => (form.domain = e.target.value)} />
-            <Input id="vf-site-url" defaultValue={form.url} placeholder="URL（填后自动带出域名）"
-                   onChange={(e) => (form.url = e.target.value)}
-                   onBlur={() => {
-                     const u = form.url.trim();
-                     if (!u || form.domain) return;
-                     try {
-                       const host = new URL(u.includes("://") ? u : `https://${u}`).hostname;
-                       if (host) {
-                         form.domain = host;
-                         const el = document.getElementById("vf-site-domain") as HTMLInputElement | null;
-                         if (el && !el.value) el.value = host;
-                       }
-                     } catch { /* 非 URL 文本：留空手填 */ }
-                   }} />
-            <Input id="vf-site-aliases" defaultValue={form.aliases} placeholder="别名（逗号分隔）"
-                   onChange={(e) => (form.aliases = e.target.value)} />
-            <Input id="vf-site-tags" defaultValue={form.tags} placeholder="标签（逗号分隔）"
-                   onChange={(e) => (form.tags = e.target.value)} />
-          </Space>
-        ),
-        okText: "保存",
-        cancelText: "取消",
-        onOk: async () => {
-          if (!form.name.trim()) {
-            message.error("名称不能为空");
-            throw new Error("empty name");
-          }
-          if (site) {
-            await invoke("sk_vault_update_site", { siteId: site.id, ...form });
-          } else {
-            const id = await invoke<number>("sk_vault_add_site", { ...form });
-            setSelectedSite(id);
-          }
-          message.success("已保存");
-          await loadSites(search);
-        },
+      setSiteForm({
+        open: true, site,
+        name: site?.name ?? "", domain: site?.domain ?? "", url: site?.url ?? "",
+        aliases: site?.aliases ?? "", tags: site?.tags ?? "",
       });
     },
-    [search, loadSites],
+    [],
+  );
+
+  /** 站点表单保存（受控值直接来自 state；URL 失焦自动带出域名的逻辑在输入框上）。 */
+  const saveSite = useCallback(
+    async (f: NonNullable<typeof siteForm>) => {
+      if (!f.name.trim()) {
+        toast.error("名称不能为空");
+        return false;
+      }
+      const form = { name: f.name, domain: f.domain, url: f.url, aliases: f.aliases, tags: f.tags };
+      if (f.site) {
+        await invoke("sk_vault_update_site", { siteId: f.site.id, ...form });
+      } else {
+        const id = await invoke<number>("sk_vault_add_site", { ...form });
+        setSelectedSite(id);
+      }
+      toast.success("已保存");
+      await loadSites(search);
+      return true;
+    },
+    [search, loadSites, toast],
   );
 
   const addSiteModal = useCallback(() => siteModal(), [siteModal]);
 
   const confirmDeleteSite = useCallback(
     (r: SiteRow) => {
-      Modal.confirm({
+      confirm({
         title: `删除站点「${r.name}」`,
         content: `将同时删除其下 ${r.n_accounts} 个账号，且不可恢复。`,
         okText: "删除",
-        okButtonProps: { danger: true },
-        cancelText: "取消",
+        danger: true,
         onOk: async () => {
           await invoke("sk_vault_delete_site", { siteId: r.id });
-          message.success("已删除");
+          toast.success("已删除");
           if (selectedSite === r.id) setSelectedSite(null);
           await loadSites(search);
         },
       });
     },
-    [selectedSite, loadSites, search],
+    [selectedSite, loadSites, search, toast],
   );
 
   const accountModal = useCallback(
     (account?: AccountRow) => {
       if (selectedSite === null) return;
-      let form = {
+      setAccountForm({
+        open: true, account,
         label: account?.label ?? "",
         username: account?.username ?? "",
         password: "",
         totp_secret: "",
         notes: "",
-      };
-      Modal.confirm({
-        title: account ? `编辑账号「${accountTitle(account)}」` : "添加账号",
-        width: 520,
-        content: (
-          <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Input id="vf-acc-label" defaultValue={form.label} placeholder="标签（如 主账号）"
-                   onChange={(e) => (form.label = e.target.value)} />
-            <Input id="vf-acc-username" defaultValue={form.username} placeholder="用户名"
-                   onChange={(e) => (form.username = e.target.value)} />
-            <Input.Password
-              id="vf-acc-password"
-              placeholder={account ? "留空 = 不修改密码" : "密码 *"}
-              onChange={(e) => (form.password = e.target.value)}
-            />
-            <PasswordGenPanel
-              onGenerated={(pw) => {
-                // 生成结果只填表单不落库（保存与否仍由用户点「保存」决定）。
-                // Input.Password 非受控（onChange 只写闭包 form），直接同步
-                // DOM 值——与 vf-site-domain 的 URL 自动带出同款手法。
-                form.password = pw;
-                const el = document.getElementById("vf-acc-password") as HTMLInputElement | null;
-                if (el) el.value = pw;
-              }}
-            />
-            <Space.Compact block style={{ width: "100%" }}>
-              <Input id="vf-acc-totp" defaultValue={form.totp_secret} placeholder="TOTP 密钥（Base32，可留空）"
-                     onChange={(e) => (form.totp_secret = e.target.value)} />
-              <Button
-                onClick={() => document.getElementById("vf-totp-qr-file")?.click()}
-              >
-                从图片导入
-              </Button>
-              <input
-                id="vf-totp-qr-file"
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/bmp"
-                style={{ display: "none" }}
-                onChange={async (e) => {
-                  const f = e.target.files?.[0];
-                  e.target.value = "";
-                  if (!f) return;
-                  try {
-                    const buf = new Uint8Array(await f.arrayBuffer());
-                    let bin = "";
-                    for (let i = 0; i < buf.length; i += 0x8000) {
-                      bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-                    }
-                    const text = await invoke<string>("sk_qr_decode_image", {
-                      data: btoa(bin),
-                    });
-                    const info = parseOtpauth(text);
-                    if (!info) {
-                      message.warning("图中未识别到 otpauth:// 二维码");
-                      return;
-                    }
-                    form.totp_secret = info.secret;
-                    const el = document.getElementById("vf-acc-totp") as HTMLInputElement | null;
-                    if (el) el.value = info.secret;
-                    const bad = nonDefaultParams(info);
-                    if (bad.length) {
-                      message.warning(
-                        `该码使用非标准参数（${bad.join("、")}）——本库按默认 SHA1/6/30 生成动态码，导入后可能不匹配`,
-                        6,
-                      );
-                    } else {
-                      message.success(`已导入 ${info.issuer || info.label || "TOTP 密钥"}`);
-                    }
-                  } catch (err) {
-                    message.error(String(err));
-                  }
-                }}
-              />
-            </Space.Compact>
-            <Input.TextArea id="vf-acc-notes" defaultValue={form.notes} placeholder="备注（加密存储）"
-                            onChange={(e) => (form.notes = e.target.value)} />
-          </Space>
-        ),
-        okText: "保存",
-        cancelText: "取消",
-        onOk: async () => {
-          if (!account && !form.password) {
-            message.error("密码不能为空");
-            throw new Error("empty password");
-          }
-          if (account) {
-            await invoke("sk_vault_update_account", {
-              accountId: account.id,
-              label: form.label,
-              username: form.username,
-              password: form.password,          // 空串=不改（后端口径）
-              totpSecret: form.totp_secret,
-              notes: form.notes,
-            });
-          } else {
-            await invoke("sk_vault_add_account", {
-              siteId: selectedSite,
-              password: form.password,
-              label: form.label || form.username,   // 标签留空 = 用用户名，列表更好认
-              username: form.username,
-              totpSecret: form.totp_secret,
-              notes: form.notes,
-            });
-          }
-          message.success("已保存");
-          await loadAccounts();
-          await loadSites(search);
-        },
       });
     },
-    [selectedSite, loadAccounts, loadSites, search],
+    [selectedSite],
+  );
+
+  /** 账号表单的 TOTP 图片导入（受控 state 版，不再走 DOM 取值）。 */
+  const importTotpQr = useCallback(
+    async (file: File) => {
+      if (!accountForm) return;
+      try {
+        const buf = new Uint8Array(await file.arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < buf.length; i += 0x8000) {
+          bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+        }
+        const text = await invoke<string>("sk_qr_decode_image", { data: btoa(bin) });
+        const info = parseOtpauth(text);
+        if (!info) {
+          toast.info("图中未识别到 otpauth:// 二维码");
+          return;
+        }
+        setAccountForm((f) => (f ? { ...f, totp_secret: info.secret } : f));
+        const bad = nonDefaultParams(info);
+        if (bad.length) {
+          toast.info(
+            `该码使用非标准参数（${bad.join("、")}）——本库按默认 SHA1/6/30 生成动态码，导入后可能不匹配`,
+          );
+        } else {
+          toast.success(`已导入 ${info.issuer || info.label || "TOTP 密钥"}`);
+        }
+      } catch (err) {
+        toast.error(String(err));
+      }
+    },
+    [accountForm, toast],
+  );
+
+  /** 账号表单保存（受控值来自 state）。返回 true = 成功并关闭。 */
+  const saveAccount = useCallback(
+    async (f: NonNullable<typeof accountForm>): Promise<boolean> => {
+      if (!f.account && !f.password) {
+        toast.error("密码不能为空");
+        return false;
+      }
+      if (f.account) {
+        await invoke("sk_vault_update_account", {
+          accountId: f.account.id,
+          label: f.label,
+          username: f.username,
+          password: f.password,          // 空串=不改（后端口径）
+          totpSecret: f.totp_secret,
+          notes: f.notes,
+        });
+      } else {
+        await invoke("sk_vault_add_account", {
+          siteId: selectedSite,
+          password: f.password,
+          label: f.label || f.username,   // 标签留空 = 用用户名，列表更好认
+          username: f.username,
+          totpSecret: f.totp_secret,
+          notes: f.notes,
+        });
+      }
+      toast.success("已保存");
+      await loadAccounts();
+      await loadSites(search);
+      return true;
+    },
+    [selectedSite, loadAccounts, loadSites, search, toast],
   );
 
   const addAccountModal = useCallback(() => accountModal(), [accountModal]);
@@ -617,11 +578,10 @@ export function VaultPage() {
   // 删除账号确认（操作列「···」菜单入口）：危险操作保持显式二次确认
   const confirmDeleteAccount = useCallback(
     (a: AccountRow) => {
-      Modal.confirm({
+      confirm({
         title: `删除账号「${accountTitle(a)}」`,
         okText: "删除",
-        okButtonProps: { danger: true },
-        cancelText: "取消",
+        danger: true,
         onOk: async () => {
           await invoke("sk_vault_delete_account", { accountId: a.id });
           await loadAccounts();
@@ -636,7 +596,7 @@ export function VaultPage() {
     (a: AccountRow) => {
       void invoke("sk_vault_toggle_favorite", { accountId: a.id })
         .then(() => void loadAccounts())
-        .catch((e) => message.error(String(e)));
+        .catch((e) => toast.error(String(e)));
     },
     [loadAccounts],
   );
@@ -644,45 +604,40 @@ export function VaultPage() {
   // ---------------- 解锁 / 主密码（全部收进顶部工具条） ----------------
 
   const setup = useCallback(() => {
-    Modal.confirm({
+    confirm({
       title: newMode === "password" ? "创建密码库（主密码模式）" : "创建密码库（免密模式）",
       width: 560,
-      content: (
-        <Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>
-          {setupConfirmText(newMode)}
-        </Typography.Paragraph>
-      ),
+      content: setupConfirmText(newMode),
       okText: "创建",
-      cancelText: "取消",
       onOk: async () => {
         setBusy(true);
         try {
           const r = await invoke<{ message: string }>("sk_vault_setup", {
             password: newMode === "password" ? password : null,
           });
-          message.success(r.message);
+          toast.success(r.message);
           setPassword("");
           await load();
         } catch (e) {
-          message.error(String(e));
+          toast.error(String(e));
         } finally {
           setBusy(false);
         }
       },
     });
-  }, [newMode, password, load]);
+  }, [newMode, password, load, toast]);
 
   const unlock = useCallback(
     async (pw: string | null) => {
       setBusy(true);
       try {
         const r = await invoke<{ message: string }>("sk_vault_unlock", { password: pw });
-        message.success(r.message);
+        toast.success(r.message);
         setPassword("");
         await load();
       } catch (e) {
         // 后端区分「密码错误」与「文件损坏」，原样展示
-        message.error(String(e));
+        toast.error(String(e));
       } finally {
         setBusy(false);
       }
@@ -691,42 +646,39 @@ export function VaultPage() {
   );
 
   // 「解锁…」：免密模式（DPAPI）直接静默解锁，对齐 Python 版语义；
-  // 主密码模式弹出输入框验证。
+  // 主密码模式弹出状态化输入框（受控 + 行内错误，AntD 时代的静态快照/
+  // 非受控 DOM hack 不再需要——那个「输入和显示不一样」的根因随之消失）。
   const openUnlock = useCallback(() => {
     if (!status?.has_master_password) {
       void unlock(null);
       return;
     }
-    // Modal.confirm 的 content 是打开瞬间的静态快照：受控组件在弹窗内不
-    // 重渲染（输入显示不更新、闭包值不更新）——必须用非受控捕获。
-    // 这是「输入和显示不一样 + 不能解密」的根因（真机实锤 2026-10-05）。
-    let input = "";
-    Modal.confirm({
-      title: "解锁密码库",
-      width: 440,
-      content: (
-        <Input.Password
-          autoFocus
-          placeholder="主密码"
-          onChange={(e) => (input = e.target.value)}
-          onPressEnter={() => {
-            // 回车 = 确定：触发确认框的 OK 按钮
-            const ok = document.querySelector<HTMLButtonElement>(
-              ".ant-modal-confirm-btns .ant-btn-primary",
-            );
-            ok?.click();
-          }}
-        />
-      ),
-      okText: "解锁",
-      cancelText: "取消",
-      onOk: () => unlock(input),
-    });
+    setUnlockPw("");
+    setUnlockErr("");
+    setUnlockOpen(true);
   }, [status, unlock]);
+
+  /** 解锁模态提交：错误行内显示，弹窗不关（用户可改密码重试）。 */
+  const submitUnlock = useCallback(async () => {
+    setBusy(true);
+    setUnlockErr("");
+    try {
+      const r = await invoke<{ message: string }>("sk_vault_unlock", { password: unlockPw });
+      toast.success(r.message);
+      setUnlockOpen(false);
+      setPassword("");
+      await load();
+    } catch (e) {
+      // 后端区分「密码错误」与「文件损坏」，行内原样展示
+      setUnlockErr(String(e).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  }, [unlockPw, load, toast]);
 
   const lock = useCallback(async () => {
     await invoke("sk_vault_lock");
-    message.success("已锁定");
+    toast.success("已锁定");
     setPassword("");
     await load();
   }, [load]);
@@ -742,93 +694,60 @@ export function VaultPage() {
       setReused({ open: true, loading: false, groups: d.groups });
     } catch (e) {
       setReused({ open: false, loading: false, groups: [] });
-      message.error(String(e));
+      toast.error(String(e));
     }
   }, []);
 
   const setMaster = useCallback(() => {
     const changing = status?.has_master_password === true;
-    let current = "";
-    let next = "";
-    Modal.confirm({
-      title: changing ? "更改主密码" : "设置主密码",
-      width: 520,
-      content: (
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-          <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
-            {setupConfirmText("password")}
-          </Typography.Paragraph>
-          {changing && (
-            <Input.Password
-              id="vf-master-current"
-              placeholder="当前主密码"
-              onChange={(e) => (current = e.target.value)}
-            />
-          )}
-          <Input.Password
-            placeholder="新主密码（至少 8 位更稳）"
-            onChange={(e) => (next = e.target.value)}
-          />
-        </Space>
-      ),
-      okText: changing ? "更改" : "设置",
-      cancelText: "取消",
-      onOk: async () => {
-        try {
-          if (changing) {
-            const ok = await invoke<boolean>("sk_vault_verify_password", { password: current });
-            if (!ok) {
-              message.error("当前主密码错误，未做改动");
-              throw new Error("wrong password");
-            }
-          }
-          message.success(await invoke<string>("sk_vault_set_password", { password: next }));
-          setPassword("");
-          await load();
-        } catch (e) {
-          if (String(e) !== "Error: wrong password") message.error(String(e));
-          throw e; // 保持对话框打开，用户可修正
+    setMasterErr("");
+    setMasterForm({ changing, current: "", next: "" });
+  }, [status]);
+
+  /** 主密码表单提交：改密前先验当前密码（信任窗口内防静默换锁）。错误行内显示。 */
+  const submitMaster = useCallback(async () => {
+    if (!masterForm) return;
+    setMasterErr("");
+    try {
+      if (masterForm.changing) {
+        const ok = await invoke<boolean>("sk_vault_verify_password", { password: masterForm.current });
+        if (!ok) {
+          setMasterErr("当前主密码错误，未做改动");
+          return;
         }
-      },
-    });
-  }, [status, load]);
+      }
+      toast.success(await invoke<string>("sk_vault_set_password", { password: masterForm.next }));
+      setPassword("");
+      setMasterForm(null);
+      await load();
+    } catch (e) {
+      setMasterErr(String(e).replace(/^Error:\s*/, ""));
+    }
+  }, [masterForm, load, toast]);
 
   const removeMaster = useCallback(() => {
-    let current = "";
-    Modal.confirm({
-      title: "移除主密码",
-      content: (
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-          <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
-            移除后回到**免密模式**：数据密钥改由 Windows DPAPI 保护，绑定当前 Windows
-            用户。任何人用你的 Windows 账户都能打开密码库。
-          </Typography.Paragraph>
-          <Input.Password
-            placeholder="当前主密码"
-            onChange={(e) => (current = e.target.value)}
-          />
-        </Space>
-      ),
-      okText: "移除",
-      okButtonProps: { danger: true },
-      cancelText: "取消",
-      onOk: async () => {
-        try {
-          const ok = await invoke<boolean>("sk_vault_remove_password", { current });
-          if (!ok) {
-            message.error("主密码错误，未做改动");
-            throw new Error("wrong password");
-          }
-          message.success("已移除主密码，当前为免密模式");
-          setPassword("");
-          await load();
-        } catch (e) {
-          if (String(e) !== "Error: wrong password") message.error(String(e));
-          throw e;
-        }
-      },
-    });
-  }, [password, load]);
+    setRemoveMasterPw("");
+    setRemoveMasterErr("");
+    setRemoveMasterOpen(true);
+  }, []);
+
+  /** 移除主密码提交：验证当前密码，错误行内显示、弹窗不关。 */
+  const submitRemoveMaster = useCallback(async () => {
+    setRemoveMasterErr("");
+    try {
+      const ok = await invoke<boolean>("sk_vault_remove_password", { current: removeMasterPw });
+      if (!ok) {
+        setRemoveMasterErr("主密码错误，未做改动");
+        return;
+      }
+      toast.success("已移除主密码，当前为免密模式");
+      setRemoveMasterOpen(false);
+      setPassword("");
+      await load();
+    } catch (e) {
+      setRemoveMasterErr(String(e).replace(/^Error:\s*/, ""));
+    }
+  }, [removeMasterPw, load, toast]);
 
   return (
     <div
@@ -882,8 +801,8 @@ export function VaultPage() {
                   onChange={(v) => {
                     setAutolockMin(v);
                     void invoke("sk_settings_set", { key: "vault_autolock_min", value: v })
-                      .then(() => message.success(v === 0 ? "已设为不自动锁定" : `解锁后将保持 ${v === 1440 ? "1 天" : `${v} 分钟`}`))
-                      .catch((e) => message.error(String(e)));
+                      .then(() => toast.success(v === 0 ? "已设为不自动锁定" : `解锁后将保持 ${v === 1440 ? "1 天" : `${v} 分钟`}`))
+                      .catch((e) => toast.error(String(e)));
                   }}
                   options={[
                     { value: 30, label: "保持 30 分钟" },
@@ -1154,8 +1073,8 @@ export function VaultPage() {
                               style={{ cursor: "copy", whiteSpace: "nowrap" }}
                               onDoubleClick={() =>
                                 void invoke("sk_clip_copy_plain", { text: a.username })
-                                  .then(() => message.success("用户名已复制"))
-                                  .catch((e) => message.error(String(e)))
+                                  .then(() => toast.success("用户名已复制"))
+                                  .catch((e) => toast.error(String(e)))
                               }
                             >
                               {a.username}
@@ -1264,6 +1183,228 @@ export function VaultPage() {
           </Card>
         </div>
       ) : null}
+
+      {/* 站点表单（受控；URL 失焦自动带出域名） */}
+      <UiModal
+        open={siteForm?.open === true}
+        title={siteForm?.site ? `编辑站点「${siteForm.site.name}」` : "添加站点"}
+        onClose={() => setSiteForm(null)}
+        width={520}
+        footer={
+          <>
+            <UiButton onClick={() => setSiteForm(null)}>取消</UiButton>
+            <UiButton
+              variant="primary"
+              onClick={() =>
+                siteForm && void saveSite(siteForm).then((ok) => ok && setSiteForm(null))
+              }
+            >
+              保存
+            </UiButton>
+          </>
+        }
+      >
+        {siteForm && (
+          <div className="flex flex-col gap-2">
+            <UiInput
+              placeholder="名称 *"
+              value={siteForm.name}
+              onChange={(e) => setSiteForm({ ...siteForm, name: e.target.value })}
+            />
+            <UiInput
+              placeholder="域名（如 github.com）"
+              value={siteForm.domain}
+              onChange={(e) => setSiteForm({ ...siteForm, domain: e.target.value })}
+            />
+            <UiInput
+              placeholder="URL（填后自动带出域名）"
+              value={siteForm.url}
+              onChange={(e) => setSiteForm({ ...siteForm, url: e.target.value })}
+              onBlur={() => {
+                const u = siteForm.url.trim();
+                if (!u || siteForm.domain) return;
+                try {
+                  const host = new URL(u.includes("://") ? u : `https://${u}`).hostname;
+                  if (host) setSiteForm({ ...siteForm, domain: host });
+                } catch { /* 非 URL 文本：留空手填 */ }
+              }}
+            />
+            <UiInput
+              placeholder="别名（逗号分隔）"
+              value={siteForm.aliases}
+              onChange={(e) => setSiteForm({ ...siteForm, aliases: e.target.value })}
+            />
+            <UiInput
+              placeholder="标签（逗号分隔）"
+              value={siteForm.tags}
+              onChange={(e) => setSiteForm({ ...siteForm, tags: e.target.value })}
+            />
+          </div>
+        )}
+      </UiModal>
+
+      {/* 账号表单（受控；内嵌密码生成面板 + TOTP 扫码导入） */}
+      <UiModal
+        open={accountForm?.open === true}
+        title={accountForm?.account ? `编辑账号「${accountTitle(accountForm.account)}」` : "添加账号"}
+        onClose={() => setAccountForm(null)}
+        width={520}
+        footer={
+          <>
+            <UiButton onClick={() => setAccountForm(null)}>取消</UiButton>
+            <UiButton
+              variant="primary"
+              onClick={() =>
+                accountForm &&
+                void saveAccount(accountForm).then((ok) => ok && setAccountForm(null))
+              }
+            >
+              保存
+            </UiButton>
+          </>
+        }
+      >
+        {accountForm && (
+          <div className="flex flex-col gap-2">
+            <UiInput
+              placeholder="标签（如 主账号）"
+              value={accountForm.label}
+              onChange={(e) => setAccountForm({ ...accountForm, label: e.target.value })}
+            />
+            <UiInput
+              placeholder="用户名"
+              value={accountForm.username}
+              onChange={(e) => setAccountForm({ ...accountForm, username: e.target.value })}
+            />
+            <PasswordInput
+              placeholder={accountForm.account ? "留空 = 不修改密码" : "密码 *"}
+              value={accountForm.password}
+              onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })}
+            />
+            <PasswordGenPanel
+              onGenerated={(pw) => setAccountForm((f) => (f ? { ...f, password: pw } : f))}
+            />
+            <div className="flex w-full">
+              <UiInput
+                className="flex-1 rounded-r-none"
+                placeholder="TOTP 密钥（Base32，可留空）"
+                value={accountForm.totp_secret}
+                onChange={(e) => setAccountForm({ ...accountForm, totp_secret: e.target.value })}
+              />
+              <UiButton className="rounded-l-none border-l-0" onClick={() => totpFileRef.current?.click()}>
+                从图片导入
+              </UiButton>
+              <input
+                ref={totpFileRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/bmp"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (f) void importTotpQr(f);
+                }}
+              />
+            </div>
+            <UiTextarea
+              placeholder="备注（加密存储）"
+              value={accountForm.notes}
+              onChange={(e) => setAccountForm({ ...accountForm, notes: e.target.value })}
+            />
+          </div>
+        )}
+      </UiModal>
+
+      {/* 解锁（受控密码框 + 行内错误；回车提交） */}
+      <UiModal
+        open={unlockOpen}
+        title="解锁密码库"
+        onClose={() => setUnlockOpen(false)}
+        width={440}
+        footer={
+          <>
+            <UiButton onClick={() => setUnlockOpen(false)}>取消</UiButton>
+            <UiButton variant="primary" loading={busy} onClick={() => void submitUnlock()}>
+              解锁
+            </UiButton>
+          </>
+        }
+      >
+        <PasswordInput
+          autoFocus
+          placeholder="主密码"
+          value={unlockPw}
+          onChange={(e) => setUnlockPw(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !busy) void submitUnlock();
+          }}
+        />
+        {unlockErr && <div className="mt-2 text-xs text-sk-err">{unlockErr}</div>}
+      </UiModal>
+
+      {/* 设置/更改主密码（改密前先验当前密码） */}
+      <UiModal
+        open={masterForm !== null}
+        title={masterForm?.changing ? "更改主密码" : "设置主密码"}
+        onClose={() => setMasterForm(null)}
+        width={520}
+        footer={
+          <>
+            <UiButton onClick={() => setMasterForm(null)}>取消</UiButton>
+            <UiButton variant="primary" loading={busy} onClick={() => void submitMaster()}>
+              {masterForm?.changing ? "更改" : "设置"}
+            </UiButton>
+          </>
+        }
+      >
+        {masterForm && (
+          <div className="flex flex-col gap-2">
+            <div className="whitespace-pre-wrap">{setupConfirmText("password")}</div>
+            {masterForm.changing && (
+              <PasswordInput
+                placeholder="当前主密码"
+                value={masterForm.current}
+                onChange={(e) => setMasterForm({ ...masterForm, current: e.target.value })}
+              />
+            )}
+            <PasswordInput
+              placeholder="新主密码（至少 8 位更稳）"
+              value={masterForm.next}
+              onChange={(e) => setMasterForm({ ...masterForm, next: e.target.value })}
+            />
+            {masterErr && <div className="mt-1 text-xs text-sk-err">{masterErr}</div>}
+          </div>
+        )}
+      </UiModal>
+
+      {/* 移除主密码（危险；验证当前密码） */}
+      <UiModal
+        open={removeMasterOpen}
+        title="移除主密码"
+        onClose={() => setRemoveMasterOpen(false)}
+        width={480}
+        footer={
+          <>
+            <UiButton onClick={() => setRemoveMasterOpen(false)}>取消</UiButton>
+            <UiButton variant="danger" loading={busy} onClick={() => void submitRemoveMaster()}>
+              移除
+            </UiButton>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-2">
+          <div className="whitespace-pre-wrap text-sk-sub">
+            移除后回到免密模式：数据密钥改由 Windows DPAPI 保护，绑定当前 Windows
+            用户。任何人用你的 Windows 账户都能打开密码库。
+          </div>
+          <PasswordInput
+            placeholder="当前主密码"
+            value={removeMasterPw}
+            onChange={(e) => setRemoveMasterPw(e.target.value)}
+          />
+          {removeMasterErr && <div className="mt-1 text-xs text-sk-err">{removeMasterErr}</div>}
+        </div>
+      </UiModal>
 
       {/* 安全体检结果：重复密码组（掩码展示，明文不出后端） */}
       <Modal

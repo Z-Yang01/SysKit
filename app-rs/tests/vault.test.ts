@@ -351,11 +351,12 @@ describe("生成面板接线（源码守卫）", () => {
     expect(panel).not.toContain("sk_clip_copy_plain");
   });
 
-  it("表单接线：密码输入框在生成回调里被填充（form.password + vf-acc-password 同步）", () => {
-    expect(accRegion).toContain('id="vf-acc-password"');
-    expect(accRegion).toContain("PasswordGenPanel");
-    expect(accRegion).toContain("form.password = pw");
-    expect(accRegion).toContain('getElementById("vf-acc-password")');
+  it("表单接线：生成回调把结果写进受控 state（v1.4 迁移后不再走 DOM 同步）", () => {
+    // accountModal 只负责开模态（setAccountForm 初始化）；生成面板在模态 JSX 里
+    expect(accRegion).toContain("setAccountForm");
+    // 生成面板挂在模态 JSX 中，生成结果经 onGenerated 落到受控 password 字段
+    expect(pageSrc).toContain("PasswordGenPanel");
+    expect(pageSrc).toContain('onGenerated={(pw) => setAccountForm((f) => (f ? { ...f, password: pw } : f))}');
   });
 });
 

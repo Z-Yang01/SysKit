@@ -280,3 +280,6 @@ export type { Column } from './table';
 export { Dropdown } from './dropdown';
 export type { MenuItem } from './dropdown';
 export { Progress } from './progress';
+
+// 密码输入语义别名（type=password 由调用方传；占位圆点渲染同 Input）
+export { Input as PasswordInput };

@@ -8,6 +8,7 @@ import { applyTheme } from "./theme";
 import "./base.css";
 import "./tw.css";
 import { ToastProvider } from "./ui/toast";
+import { ConfirmHost } from "./ui/confirm";
 
 /**
  * 三窗口共用一个前端入口（Tauri devUrl / frontendDist 只有一个）：
@@ -48,6 +49,6 @@ const root =
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {/* 三种窗口都兜：任一页面渲染抛错显示兜底界面+上报日志，而不是白屏 */}
-    <ErrorBoundary><ToastProvider>{root}</ToastProvider></ErrorBoundary>
+    <ErrorBoundary><ToastProvider><ConfirmHost />{root}</ToastProvider></ErrorBoundary>
   </React.StrictMode>,
 );
