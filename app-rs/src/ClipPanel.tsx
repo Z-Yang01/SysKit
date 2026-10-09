@@ -7,12 +7,13 @@
  *
  * 业务规则全部在 `pastePanel.ts` 的 reducer 里（无 DOM 依赖，可被 vitest 全覆盖），
  * 本组件只负责把原生事件翻译成动作、调用后端并渲染。
+ *
+ * v1.4 UI 迁移：本组件是**首个脱离 AntD 的页面**——全部交互件来自 src/ui/
+ * （shadcn 风格自建组件），作为后续逐页迁移的样板与组件库完备性验证。
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Button, Image, Input, List, Modal, Typography } from "antd";
-import type { InputRef } from "antd";
 
 import {
   initialState,
@@ -22,6 +23,8 @@ import {
   rowLabel,
   type ClipRow,
 } from "./pastePanel";
+import { Button, Empty, Input, cx } from "./ui";
+import { Modal } from "./ui/modal";
 
 /** 后端 `sk_panel_init` 的返回。 */
 interface PanelInit {
@@ -64,12 +67,12 @@ function PanelThumb({ index }: { index: number }) {
   if (failed) return null; // 图片文件缺失时退回 emoji 标记
   if (!src) return <span className="sk-hint">…</span>;
   return (
-    <Image
+    <img
       src={src}
       width={36}
       height={36}
-      style={{ objectFit: "cover", borderRadius: 4, flexShrink: 0 }}
-      preview={{ mask: null }}
+      alt=""
+      className="shrink-0 rounded object-cover"
     />
   );
 }
@@ -78,7 +81,7 @@ export function ClipPanel() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [init, setInit] = useState<PanelInit | null>(null);
   const [preview, setPreview] = useState<ClipRow | null>(null);
-  const inputRef = useRef<InputRef | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   /** 呼出/重呼出：取一次快照，重置查询，聚焦输入框。 */
   const reload = useCallback(async () => {
@@ -197,19 +200,8 @@ export function ClipPanel() {
   const visible = state.visible;
 
   return (
-    <div
-      style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        background: "var(--sk-card)",
-        color: "var(--sk-text)",
-        border: "1px solid var(--sk-border)",
-        borderRadius: 10,
-        overflow: "hidden",
-      }}
-    >
-      <div style={{ padding: 10, paddingBottom: 6 }}>
+    <div className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-sk-border bg-sk-card text-sk-text">
+      <div className="px-2.5 pb-1.5 pt-2.5">
         <Input
           ref={inputRef}
           autoFocus
@@ -217,116 +209,79 @@ export function ClipPanel() {
           onChange={(e) => dispatch({ type: "query", value: e.target.value })}
           onKeyDown={onKeyDown}
           placeholder="搜索剪贴板历史…　↑↓ 选择 · Enter/1-9 直接粘贴到原窗口 · Esc 取消"
-          allowClear
         />
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "0 10px" }}>
+      <div className="flex-1 overflow-y-auto px-2.5">
         {state.loading ? (
-          <Typography.Text type="secondary">正在读取历史…</Typography.Text>
+          <div className="text-sk-sub">正在读取历史…</div>
         ) : visible.length === 0 ? (
-          <div style={{ padding: "16px 4px" }}>
+          <div className="px-1 py-4">
             {state.all.length === 0 && init && !init.watch_enabled ? (
               <>
-                <Typography.Text type="secondary">
-                  剪贴板监听未开启，还没有可粘贴的历史。
-                </Typography.Text>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 6 }}>
+                <div className="text-sk-sub">剪贴板监听未开启，还没有可粘贴的历史。</div>
+                <div className="mt-1.5 text-xs text-sk-sub">
                   到主窗口「剪贴板历史」页点「开启监听」——之后复制的文本会自动出现在这里。
-                </Typography.Paragraph>
+                </div>
               </>
             ) : (
-              <Typography.Text type="secondary">
-                {state.all.length === 0 ? "剪贴板历史为空" : "没有匹配的条目"}
-              </Typography.Text>
+              <Empty
+                description={state.all.length === 0 ? "剪贴板历史为空" : "没有匹配的条目"}
+              />
             )}
           </div>
         ) : (
-          <List
-            size="small"
-            split={false}
-            dataSource={visible}
-            renderItem={(row, i) => (
-              <List.Item
-                onMouseEnter={() => dispatch({ type: "select", idx: row.idx })}
-                onDoubleClick={() => void execute(i)}
-                style={{
-                  cursor: "pointer",
-                  padding: "4px 8px",
-                  borderRadius: 6,
-                  background: i === state.cursor ? "var(--sk-sel_bg)" : undefined,
-                  color: i === state.cursor ? "var(--sk-sel_text)" : undefined,
-                  display: "flex",
-                  gap: 8,
-                  alignItems: "center",
-                }}
-              >
-                {row.kind === "image" && <PanelThumb index={row.idx} />}
-                <span
-                  style={{
-                    flex: 1,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+          visible.map((row, i) => (
+            <div
+              key={row.idx}
+              onMouseEnter={() => dispatch({ type: "select", idx: row.idx })}
+              onDoubleClick={() => void execute(i)}
+              className={cx(
+                "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1",
+                i === state.cursor ? "bg-sk-hover" : "",
+              )}
+            >
+              {row.kind === "image" && <PanelThumb index={row.idx} />}
+              <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap" title={row.text}>
+                {row.kind === "image" ? row.preview || rowLabel(row) : rowLabel(row)}
+              </span>
+              {row.text.length > PREVIEW_THRESHOLD && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPreview(row);
                   }}
-                  title={row.text}
                 >
-                  {row.kind === "image" ? row.preview || rowLabel(row) : rowLabel(row)}
-                </span>
-                {row.text.length > PREVIEW_THRESHOLD && (
-                  <Button
-                    size="small"
-                    type="link"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setPreview(row);
-                    }}
-                  >
-                    全文
-                  </Button>
-                )}
-                <Button size="small" type="link" onClick={() => void togglePin(row)}>
-                  {row.pinned ? "取消置顶" : "置顶"}
+                  全文
                 </Button>
-                <Button size="small" type="link" danger onClick={() => void remove(row)}>
-                  删除
-                </Button>
-              </List.Item>
-            )}
-          />
+              )}
+              <Button size="sm" variant="ghost" onClick={() => void togglePin(row)}>
+                {row.pinned ? "取消置顶" : "置顶"}
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => void remove(row)}>
+                删除
+              </Button>
+            </div>
+          ))
         )}
       </div>
 
-      <div
-        style={{
-          padding: "6px 12px",
-          borderTop: "1px solid var(--sk-border)",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-        }}
-      >
-        <span className="sk-hint" style={{ flex: 1 }}>
-          {state.notice || hint}
-        </span>
+      <div className="flex items-center gap-2.5 border-t border-sk-border px-3 py-1.5">
+        <span className="sk-hint flex-1">{state.notice || hint}</span>
         <span className="sk-hint">
           共 {state.all.length} 条 / 上限 {init?.max_items ?? "—"}
         </span>
-        <Button size="small" onClick={() => void quickPaste()}>
+        <Button size="sm" onClick={() => void quickPaste()}>
           直贴最新
         </Button>
       </div>
 
-      <Modal
-        open={preview !== null}
-        title="条目全文"
-        footer={null}
-        onCancel={() => setPreview(null)}
-        width={640}
-      >
-        <Typography.Paragraph style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+      <Modal open={preview !== null} title="条目全文" onClose={() => setPreview(null)} width={640}>
+        <div className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-all">
           {preview?.text}
-        </Typography.Paragraph>
+        </div>
       </Modal>
     </div>
   );

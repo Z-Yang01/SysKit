@@ -6,6 +6,7 @@ import { ClipPanel } from "./ClipPanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { applyTheme } from "./theme";
 import "./base.css";
+import "./tw.css";
 
 /**
  * 三窗口共用一个前端入口（Tauri devUrl / frontendDist 只有一个）：
