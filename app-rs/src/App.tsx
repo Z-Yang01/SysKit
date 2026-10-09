@@ -367,29 +367,13 @@ export function App() {
               paddingInline: 8,
             }}
             items={[
-              {
-                type: "group",
-                label: "网络",
-                children: [
-                  { key: "overview", label: "🏠 概览 / 网络监控" },
-                  { key: "clipboard", label: "📋 剪贴板历史" },
-                  { key: "diagnose", label: "🔍 诊断 / 修复" },
-                ],
-              },
-              {
-                type: "group",
-                label: "工具",
-                children: [
-                  { key: "toolbox", label: "⚡ 工具箱" },
-                  { key: "system", label: "💼 系统助手" },
-                  { key: "vault", label: "🔒 密码库" },
-                ],
-              },
-              {
-                type: "group",
-                label: "其他",
-                children: [{ key: "settings", label: "⚙ 设置 / 日志" }],
-              },
+              { key: "overview", label: "🏠 概览 / 网络监控" },
+              { key: "clipboard", label: "📋 剪贴板历史" },
+              { key: "diagnose", label: "🔍 诊断 / 修复" },
+              { key: "toolbox", label: "⚡ 工具箱" },
+              { key: "system", label: "💼 系统助手" },
+              { key: "vault", label: "🔒 密码库" },
+              { key: "settings", label: "⚙ 设置 / 日志" },
             ]}
           />
           {/* 热键速查卡：玻璃化（强玻璃类，静态内容允许 blur） */}
