@@ -195,6 +195,112 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
     }
   }, []);
 
+  /**
+   * 一键智能修复（傻瓜化，给不懂网络的用户）：点一个按钮完成
+   * 「完整诊断 → 收集失败/警告项的可用修复 → 确认一次 → 逐个执行 → 自动复检」。
+   *
+   * 安全模型不降级：确认框一次性列出全部将执行的动作（含风险标签）；
+   * 非管理员的改配置/强力类动作由后端跳过并在结果里注明；
+   * 改配置动作执行前自动备份原值（可在「备份与回滚」还原）。
+   */
+  const smartRepair = useCallback(async () => {
+    if (busy || comboRun || diagBusy) return;
+    // 第一步：完整诊断（永远跑全量拿完整失败清单，快速档会漏项）
+    setDiagBusy("full");
+    let rep: DiagReport;
+    try {
+      rep = await invoke<DiagReport>("sk_diag_run", { quick: false });
+      setReport(rep);
+      saveReport(rep);
+    } catch (e) {
+      setDiagBusy("");
+      message.error(`诊断失败：${String(e)}`);
+      return;
+    }
+    setDiagBusy("");
+
+    // 第二步：只收「失败/警告」行的建议动作（通过/提示/跳过不执行），
+    // 与已移植动作表求交集，Set 去重（flush_dns 可能被多项同时建议）
+    const known = new Set((data?.actions ?? []).map((a) => a.id));
+    const ids: string[] = [];
+    for (const r of rep.results) {
+      if (r.status !== "fail" && r.status !== "warn") continue;
+      for (const id of r.fix_ids) {
+        if (known.has(id) && !ids.includes(id)) ids.push(id);
+      }
+    }
+    if (ids.length === 0) {
+      message.success("诊断未发现可自动修复的问题——网络看起来正常，或失败项需要人工处理（见详情列）");
+      return;
+    }
+    const acts = ids
+      .map((id) => (data?.actions ?? []).find((a) => a.id === id))
+      .filter((a): a is RepairAction => !!a);
+
+    // 第三步：一次确认列明全部动作（知情同意一次给足，而不是逐个弹窗打断）
+    Modal.confirm({
+      title: `一键智能修复：将执行以下 ${acts.length} 项`,
+      width: 560,
+      content: (
+        <div>
+          <div style={{ whiteSpace: "pre-wrap", marginBottom: 8 }}>
+            {acts.map((a) => `· ${a.title}（${riskLabel(a.risk)}类）`).join("\n")}
+            {!isAdmin ? "\n\n当前不是管理员身份：改配置类与强力类动作会被跳过。" : ""}
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            执行完成后自动复检展示修复效果；改配置类动作先备份原值，可在「备份与回滚」还原。
+          </Typography.Text>
+        </div>
+      ),
+      okText: "开始修复",
+      cancelText: "取消",
+      onOk: async () => {
+        let ok = 0;
+        let fail = 0;
+        // 复用组合修复的进度形态（卡片按钮同步转圈 + 进度条）
+        setComboRun({ key: "smart", title: "一键智能修复", total: acts.length, done: 0, current: "" });
+        for (const a of acts) {
+          setComboRun((r) => (r ? { ...r, current: a.title } : r));
+          setBusy(a.id);
+          try {
+            const out = await invoke<RepairOutcome>("sk_repair_run", {
+              id: a.id,
+              params: paramValues[a.id] ?? {},
+            });
+            setOutcomes((m) => ({ ...m, [a.id]: out }));
+            setRecords((list) =>
+              pushRecord(list, {
+                time: hhmmss(new Date()),
+                mark: out.success ? "√" : "×",
+                text: `${a.title} — ${clipText(out.message || (out.success ? "完成" : "失败"), 90)}`,
+              }),
+            );
+            if (out.success) ok += 1;
+            else fail += 1;
+          } catch (e) {
+            fail += 1;
+            setRecords((list) =>
+              pushRecord(list, {
+                time: hhmmss(new Date()),
+                mark: "×",
+                text: `${a.title} — ${clipText(String(e), 90)}`,
+              }),
+            );
+          } finally {
+            setBusy("");
+            setComboRun((r) => (r ? { ...r, done: r.done + 1 } : r));
+          }
+        }
+        setComboRun(null);
+        // 第四步：自动复检（快速档闭环）
+        await refreshAfterCombo();
+        message[fail === 0 ? "success" : "warning"](
+          `一键修复完成：成功 ${ok} 项${fail > 0 ? `，失败/跳过 ${fail} 项（详见修复记录）` : ""}，已自动复检`,
+        );
+      },
+    });
+  }, [report, data, busy, comboRun, diagBusy, paramValues, isAdmin, refreshAfterCombo]);
+
   /** 执行一个动作（改配置/强力类先确认）。 */
   const run = useCallback(
     async (action: RepairAction) => {
@@ -518,6 +624,15 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
               }}
             >
               导出报告
+            </Button>
+            <Button
+              type="primary"
+              size="small"
+              onClick={() => void smartRepair()}
+              disabled={!!diagBusy || comboRun !== null}
+              title="自动诊断并修复可自动处理的问题，全程无需理解网络术语"
+            >
+              🔧 一键智能修复
             </Button>
             <Button
               size="small"
