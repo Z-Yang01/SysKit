@@ -589,7 +589,7 @@ pub fn sk_clean_targets() -> serde_json::Value {
             .map(|(t, title)| serde_json::json!({
                 "key": t.key(),
                 "title": title,
-                "root": t.root().map(|p| p.to_string_lossy().to_string()),
+                "roots": t.roots().iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>()
     })
@@ -612,7 +612,7 @@ pub async fn sk_clean_scan() -> Result<serde_json::Value, String> {
                     "title": title,
                     "bytes": bytes,
                     "human": crate::disk::human_size(bytes),
-                    "root": t.root().map(|p| p.to_string_lossy().to_string()),
+                    "roots": t.roots().iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -665,8 +665,7 @@ pub async fn sk_clean_run(keys: Vec<String>) -> Result<serde_json::Value, String
                     }));
                 }
                 _ => {
-                    let Some(root) = t.root() else { continue };
-                    let out = crate::cleanup::clean_dir(t, &root);
+                    let out = crate::cleanup::clean_target(t);
                     per_target.push(serde_json::json!({
                         "key": t.key(),
                         "title": t.title(),

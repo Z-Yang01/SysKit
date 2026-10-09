@@ -31,7 +31,9 @@ export interface DiskList {
 export interface CleanTargetInfo {
   key: string;
   title: string;
-  root: string | null;
+  /** v1.3：多根目录（崩溃转储在用户与系统两处）；旧后端单根形态兼容 root */
+  roots?: string[];
+  root?: string | null;
   bytes?: number;
   human?: string;
 }

@@ -2,15 +2,16 @@
 //!
 //! ## 安全模型（三条，缺一不可）
 //!
-//! 1. **白名单**：只清理写死的四类位置（用户临时目录、Windows 临时目录、缩略图
-//!    缓存、回收站），不接受调用方传入任意路径。
+//! 1. **白名单**：只清理写死的位置（用户临时目录、Windows 临时目录、缩略图
+//!    缓存、回收站、Windows 更新缓存、崩溃转储、错误报告队列、着色器缓存），
+//!    不接受调用方传入任意路径。
 //! 2. **只删文件，不删目录**：目录（含空目录）一律保留。删目录会连带删掉正在使用
 //!    的文件所属结构，且一旦误删空目录，某些程序的缓存目录就不再自动重建。
 //! 3. **正在使用的文件跳过并计数**：被独占的文件删不掉是**正常情况**，
 //!    必须汇报"跳过了多少"，否则用户以为清干净了、实际一个都没动。
 //!
-//! 这里不做"智能判断"（比如按扩展名筛选）：清理工具最大的风险是把用户文件当垃圾。
-//! 白名单 + 只删文件是最保守且够用的组合。
+//! 这里不做"智能判断"（比如按内容筛选）：清理工具最大的风险是把用户文件当垃圾。
+//! 白名单 + 只删文件 + 名字过滤（缩略图/转储）是最保守且够用的组合。
 
 use std::path::{Path, PathBuf};
 
@@ -18,7 +19,7 @@ use serde::Serialize;
 
 use crate::disk::human_size;
 
-/// 清理目标的 key（与 Python `CLEAN_TARGETS` 一致）。
+/// 清理目标（v1.3 从 4 类扩到 8 类；前 4 个 key 与 Python 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CleanTarget {
@@ -26,14 +27,22 @@ pub enum CleanTarget {
     WinTemp,
     ThumbCache,
     Recycle,
+    WinUpdateCache,
+    CrashDumps,
+    WerReports,
+    ShaderCache,
 }
 
-/// 全部清理目标及其显示名（顺序与 Python 一致）。
-pub const CLEAN_TARGETS: [(CleanTarget, &str); 4] = [
+/// 全部清理目标及其显示名（前 4 个顺序与 Python 一致；v1.3 新增 4 类排后）。
+pub const CLEAN_TARGETS: [(CleanTarget, &str); 8] = [
     (CleanTarget::UserTemp, "用户临时文件"),
     (CleanTarget::WinTemp, "Windows 临时文件"),
     (CleanTarget::ThumbCache, "缩略图缓存"),
     (CleanTarget::Recycle, "回收站"),
+    (CleanTarget::WinUpdateCache, "Windows 更新缓存"),
+    (CleanTarget::CrashDumps, "崩溃转储文件"),
+    (CleanTarget::WerReports, "错误报告队列"),
+    (CleanTarget::ShaderCache, "着色器缓存"),
 ];
 
 impl CleanTarget {
@@ -43,16 +52,19 @@ impl CleanTarget {
             CleanTarget::WinTemp => "win_temp",
             CleanTarget::ThumbCache => "thumbcache",
             CleanTarget::Recycle => "recycle",
+            CleanTarget::WinUpdateCache => "win_update_cache",
+            CleanTarget::CrashDumps => "crash_dumps",
+            CleanTarget::WerReports => "wer_reports",
+            CleanTarget::ShaderCache => "shader_cache",
         }
     }
 
     pub fn title(self) -> &'static str {
-        match self {
-            CleanTarget::UserTemp => "用户临时文件",
-            CleanTarget::WinTemp => "Windows 临时文件",
-            CleanTarget::ThumbCache => "缩略图缓存",
-            CleanTarget::Recycle => "回收站",
-        }
+        CLEAN_TARGETS
+            .iter()
+            .find(|(t, _)| *t == self)
+            .map(|(_, title)| *title)
+            .unwrap_or("未知")
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
@@ -62,30 +74,62 @@ impl CleanTarget {
             .map(|(t, _)| *t)
     }
 
-    /// 该目标的根目录（回收站走 Shell COM，没有普通路径）。
-    pub fn root(self) -> Option<PathBuf> {
+    /// 该目标的候选根目录（可多个：崩溃转储在用户与系统两处；回收站走 Shell
+    /// COM 清空，不是普通目录遍历）。全部不存在时该目标计 0。
+    pub fn roots(self) -> Vec<PathBuf> {
+        let env_dir = |var: &str, sub: &str| {
+            std::env::var(var)
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(|s| PathBuf::from(s).join(sub))
+        };
         match self {
             CleanTarget::UserTemp => std::env::var("TEMP")
                 .ok()
                 .filter(|s| !s.is_empty())
-                .map(PathBuf::from),
-            CleanTarget::WinTemp => Some(PathBuf::from(r"C:\Windows\Temp")),
-            CleanTarget::ThumbCache => std::env::var("LOCALAPPDATA")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(|s| PathBuf::from(s).join(r"Microsoft\Windows\Explorer")),
-            // 回收站由 Shell COM 清空，不是普通目录遍历
-            CleanTarget::Recycle => None,
+                .map(PathBuf::from)
+                .into_iter()
+                .collect(),
+            CleanTarget::WinTemp => vec![PathBuf::from(r"C:\Windows\Temp")],
+            CleanTarget::ThumbCache => env_dir("LOCALAPPDATA", r"Microsoft\Windows\Explorer")
+                .into_iter()
+                .collect(),
+            CleanTarget::Recycle => Vec::new(),
+            CleanTarget::WinUpdateCache => {
+                vec![PathBuf::from(r"C:\Windows\SoftwareDistribution\Download")]
+            }
+            CleanTarget::CrashDumps => {
+                let mut v = env_dir("LOCALAPPDATA", "CrashDumps")
+                    .map(|p| vec![p])
+                    .unwrap_or_default();
+                v.push(PathBuf::from(r"C:\Windows\Minidump"));
+                v
+            }
+            CleanTarget::WerReports => {
+                vec![PathBuf::from(r"C:\ProgramData\Microsoft\Windows\WER")]
+            }
+            CleanTarget::ShaderCache => env_dir("LOCALAPPDATA", r"Microsoft\DirectX Shader Cache")
+                .into_iter()
+                .collect(),
         }
     }
 
-    /// 该目标是否只会清理"缓存类"文件（缩略图缓存只动 thumbcache*）。
-    pub fn name_filter(self) -> Option<&'static str> {
+    /// 该目标的文件名过滤（None = 全部文件都算；详见 [`should_clean`]）。
+    pub fn name_filter(self) -> Option<NameFilter> {
         match self {
-            CleanTarget::ThumbCache => Some("thumbcache"),
+            CleanTarget::ThumbCache => Some(NameFilter::Prefix("thumbcache")),
+            // 崩溃转储目录里偶尔混有非转储文件（如进程存活时的临时写入）
+            CleanTarget::CrashDumps => Some(NameFilter::Ext(".dmp")),
             _ => None,
         }
     }
+}
+
+/// 文件名过滤器：前缀（缩略图）或扩展名（转储）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameFilter {
+    Prefix(&'static str),
+    Ext(&'static str),
 }
 
 /// 一次清理的结果。
@@ -149,13 +193,11 @@ impl CleanOutcome {
     }
 }
 
-/// 该文件是否应被清理（白名单的名字过滤）。
-///
-/// 只有缩略图缓存有名字过滤：`Explorer` 目录里还放着用户的其他资源管理器配置，
-/// 无差别清空会把它们一起删掉。
+/// 该文件是否应被清理（名字过滤：缩略图前缀 / 转储扩展名）。
 pub fn should_clean(target: CleanTarget, file_name: &str) -> bool {
     match target.name_filter() {
-        Some(prefix) => file_name.to_lowercase().starts_with(prefix),
+        Some(NameFilter::Prefix(p)) => file_name.to_lowercase().starts_with(p),
+        Some(NameFilter::Ext(ext)) => file_name.to_lowercase().ends_with(ext),
         None => true,
     }
 }
@@ -210,12 +252,13 @@ pub fn collect_files(root: &Path, target: CleanTarget) -> Vec<PathBuf> {
     out
 }
 
-/// 扫描目标大小（不删除）。
+/// 扫描目标大小（不删除；多根目录求和）。
 pub fn scan_target(target: CleanTarget) -> u64 {
-    match target.root() {
-        Some(root) => scan_dir(target, &root),
-        None => 0,
-    }
+    target
+        .roots()
+        .iter()
+        .map(|root| scan_dir(target, root))
+        .sum()
 }
 
 /// 扫描指定根目录的大小（与 [`scan_target`] 同一口径，可注入路径以便测试）。
@@ -228,6 +271,15 @@ pub fn scan_dir(target: CleanTarget, root: &Path) -> u64 {
         .filter_map(|p| std::fs::metadata(p).ok())
         .map(|m| m.len())
         .sum()
+}
+
+/// 清理一个目标的全部根目录（多根求和合并；回收站无根返回空结果）。
+pub fn clean_target(target: CleanTarget) -> CleanOutcome {
+    let mut out = CleanOutcome::empty();
+    for root in target.roots() {
+        out = out.merge(clean_dir(target, &root));
+    }
+    out
 }
 
 /// 清理一个目标目录下的文件（只删文件）。
@@ -286,7 +338,20 @@ mod tests {
     #[test]
     fn target_keys_match_python() {
         let keys: Vec<&str> = CLEAN_TARGETS.iter().map(|(t, _)| t.key()).collect();
-        assert_eq!(keys, vec!["user_temp", "win_temp", "thumbcache", "recycle"]);
+        // 前 4 个与 Python 顺序一致；v1.3 新增 4 类排后
+        assert_eq!(
+            keys,
+            vec![
+                "user_temp",
+                "win_temp",
+                "thumbcache",
+                "recycle",
+                "win_update_cache",
+                "crash_dumps",
+                "wer_reports",
+                "shader_cache",
+            ]
+        );
         for (t, title) in CLEAN_TARGETS {
             assert_eq!(CleanTarget::from_key(t.key()), Some(t));
             assert_eq!(t.title(), title, "显示名应与常量一致");
@@ -296,10 +361,17 @@ mod tests {
 
     #[test]
     fn only_thumbcache_has_name_filter() {
-        assert_eq!(CleanTarget::ThumbCache.name_filter(), Some("thumbcache"));
+        assert_eq!(
+            CleanTarget::ThumbCache.name_filter(),
+            Some(NameFilter::Prefix("thumbcache"))
+        );
         assert_eq!(CleanTarget::UserTemp.name_filter(), None);
         assert_eq!(CleanTarget::WinTemp.name_filter(), None);
         assert_eq!(CleanTarget::Recycle.name_filter(), None);
+        assert_eq!(
+            CleanTarget::CrashDumps.name_filter(),
+            Some(NameFilter::Ext(".dmp"))
+        );
     }
 
     #[test]
@@ -530,15 +602,18 @@ mod tests {
     #[test]
     fn recycle_has_no_plain_root() {
         // 回收站走 Shell COM；把它当普通目录遍历会删到别的东西
-        assert_eq!(CleanTarget::Recycle.root(), None);
+        assert!(
+            CleanTarget::Recycle.roots().is_empty(),
+            "回收站走 Shell COM，无根目录"
+        );
     }
 
     #[test]
     fn roots_are_plausible_on_real_machine() {
         // 真机：临时目录与缩略图目录应能解析出来（不实际清理）
-        let ut = CleanTarget::UserTemp.root();
+        let ut = CleanTarget::UserTemp.roots().into_iter().next();
         assert!(ut.is_some(), "TEMP 环境变量应可解析");
-        let wt = CleanTarget::WinTemp.root().unwrap();
+        let wt = CleanTarget::WinTemp.roots().into_iter().next().unwrap();
         assert_eq!(wt.to_string_lossy(), r"C:\Windows\Temp");
     }
 }

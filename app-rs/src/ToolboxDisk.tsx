@@ -363,7 +363,7 @@ export function CleanupPanel() {
                     {(r.bytes ?? 0) > 0 ? (r.human ?? humanSize(r.bytes ?? 0)) : "无"}
                   </Tag>
                   <span className="sk-hint" style={{ fontSize: 12 }}>
-                    {r.root ?? "（Shell COM 清空）"}
+                    {(r.roots ?? (r.root ? [r.root] : [])).join("；") || "（Shell COM 清空）"}
                   </span>
                 </Space>
               </List.Item>
