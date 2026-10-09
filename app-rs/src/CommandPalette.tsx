@@ -6,12 +6,12 @@
  * 也放回内容）。计算器 / 页面跳转 / 快捷动作（Python palette.py 的
  * `_dynamic_actions`）经 `sk_palette_query` 已接入：动作区在前端执行
  * （nav: 跳页 / tab: 跳页+子tab / quick: 触发既有按钮或命令）。
+ *
+ * v1.4 UI 迁移：脱离 AntD，交互件来自 src/ui/（与 ClipPanel 同批样板）。
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Input, List, Typography } from "antd";
-import type { InputRef } from "antd";
 
 import {
   initialState,
@@ -21,6 +21,7 @@ import {
   rowLabel,
   type ClipRow,
 } from "./pastePanel";
+import { Empty, Input, cx } from "./ui";
 
 /** 命令面板条目：与剪贴板条目同形，外加动作名以便后续接 provider。 */
 interface PaletteEntry extends ClipRow {
@@ -37,7 +38,7 @@ export function CommandPalette() {
   /** 动作区结果（sk_palette_query；输入停顿 200ms 才查） */
   const [actions, setActions] = useState<{ id: string; label: string; hint: string }[]>([]);
   const [actionsOpen, setActionsOpen] = useState(false);
-  const inputRef = useRef<InputRef | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -203,19 +204,8 @@ export function CommandPalette() {
   );
 
   return (
-    <div
-      style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        background: "var(--sk-card)",
-        color: "var(--sk-text)",
-        border: "1px solid var(--sk-border)",
-        borderRadius: 10,
-        overflow: "hidden",
-      }}
-    >
-      <div style={{ padding: 10, paddingBottom: 6 }}>
+    <div className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-sk-border bg-sk-card text-sk-text">
+      <div className="px-2.5 pb-1.5 pt-2.5">
         <Input
           ref={inputRef}
           autoFocus
@@ -223,83 +213,51 @@ export function CommandPalette() {
           onChange={(e) => dispatch({ type: "query", value: e.target.value })}
           onKeyDown={onKeyDown}
           placeholder="搜索剪贴板条目…"
-          allowClear
         />
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "0 10px" }}>
+      <div className="flex-1 overflow-y-auto px-2.5">
         {actionsOpen && actions.length > 0 && (
           <>
-            <div className="sk-hint" style={{ padding: "6px 4px 2px" }}>
+            <div className="sk-hint px-1 pb-0.5 pt-1.5">
               动作（Enter 执行第一个；剪贴板结果见下方）
             </div>
-            <List
-              size="small"
-              split={false}
-              dataSource={actions.slice(0, 8)}
-              renderItem={(a) => (
-                <List.Item
-                  onClick={() => void runAction(a.id)}
-                  style={{ cursor: "pointer", padding: "3px 8px", borderRadius: 6 }}
-                >
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {a.label}
-                    <span className="sk-hint" style={{ marginLeft: 6 }}>{a.hint}</span>
-                  </span>
-                </List.Item>
-              )}
-            />
-            <div style={{ borderTop: "1px solid var(--sk-border)", margin: "4px 0" }} />
+            {actions.slice(0, 8).map((a) => (
+              <div
+                key={a.id}
+                onClick={() => void runAction(a.id)}
+                className="cursor-pointer rounded-md px-2 py-[3px] hover:bg-sk-hover"
+              >
+                <span className="block flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+                  {a.label}
+                  <span className="sk-hint ml-1.5">{a.hint}</span>
+                </span>
+              </div>
+            ))}
+            <div className="my-1 border-t border-sk-border" />
           </>
         )}
         {state.visible.length === 0 ? (
-          <Typography.Text type="secondary">
-            {state.all.length === 0 ? "剪贴板历史为空" : "没有匹配的条目"}
-          </Typography.Text>
+          <Empty description={state.all.length === 0 ? "剪贴板历史为空" : "没有匹配的条目"} />
         ) : (
-          <List
-            size="small"
-            split={false}
-            dataSource={state.visible}
-            renderItem={(row, i) => (
-              <List.Item
-                onMouseEnter={() => dispatch({ type: "select", idx: row.idx })}
-                onDoubleClick={() => void execute(i)}
-                style={{
-                  cursor: "pointer",
-                  padding: "4px 8px",
-                  borderRadius: 6,
-                  background: i === state.cursor ? "var(--sk-sel_bg)" : undefined,
-                  color: i === state.cursor ? "var(--sk-sel_text)" : undefined,
-                }}
-              >
-                <span
-                  style={{
-                    flex: 1,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                  title={row.text}
-                >
-                  {rowLabel(row)}
-                </span>
-              </List.Item>
-            )}
-          />
+          state.visible.map((row, i) => (
+            <div
+              key={row.idx}
+              onMouseEnter={() => dispatch({ type: "select", idx: row.idx })}
+              onDoubleClick={() => void execute(i)}
+              className={cx(
+                "cursor-pointer rounded-md px-2 py-1",
+                i === state.cursor ? "bg-sk-hover" : "",
+              )}
+            >
+              <span className="block flex-1 overflow-hidden text-ellipsis whitespace-nowrap" title={row.text}>
+                {rowLabel(row)}
+              </span>
+            </div>
+          ))
         )}
       </div>
-      <div
-        style={{
-          padding: "6px 12px",
-          borderTop: "1px solid var(--sk-border)",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-        }}
-      >
-        <span className="sk-hint" style={{ flex: 1 }}>
-          {footer}
-        </span>
+      <div className="flex items-center gap-2.5 border-t border-sk-border px-3 py-1.5">
+        <span className="sk-hint flex-1">{footer}</span>
         <span className="sk-hint">共 {state.all.length} 条</span>
       </div>
     </div>
