@@ -70,6 +70,7 @@ mod vault_crypto;
 mod vault_store;
 mod w32;
 mod wifi;
+mod wol;
 
 use tauri::{Emitter, Manager};
 
@@ -400,6 +401,7 @@ pub fn run() {
             commands::sk_ports_list,
             commands::sk_kill_process,
             commands::sk_lan_scan,
+            commands::sk_wol_send,
             commands::sk_subnet_calc,
             commands::sk_dns_query,
             commands::sk_ping,

@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 /**
  * 端口/进程页与局域网页纯逻辑（无 React/DOM，vitest 覆盖）。
  *
@@ -131,4 +133,20 @@ export function sortDevices(devices: LanDevice[]): LanDevice[] {
 export function lanSummary(result: LanResult | null): string {
   if (!result) return "尚未扫描";
   return `网段 ${result.prefix}.0/24 · 扫描 ${result.scanned} 个地址 · 发现 ${result.count} 台设备`;
+}
+
+// ---------------- Wake-on-LAN（v1.4） ----------------
+
+/** 前端侧 MAC 形态预检（与后端 wol::parse_mac 同口径：12 位十六进制）。 */
+export function isValidMac(s: string): boolean {
+  return /^[0-9A-Fa-f]{2}([-:][0-9A-Fa-f]{2}){5}$|^[0-9A-Fa-f]{12}$/.test(s.trim());
+}
+
+/** 唤醒设备：后端发魔术包（全局广播 + 可选定向广播），返回结果文案。 */
+export function sendWol(mac: string, directBroadcast?: string): Promise<string> {
+  return invoke<string>("sk_wol_send", {
+    mac,
+    port: null,
+    directBroadcast: directBroadcast || null,
+  });
 }

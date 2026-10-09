@@ -807,6 +807,24 @@ pub fn sk_wifi_info() -> serde_json::Value {
     })
 }
 
+/// Wake-on-LAN：向指定 MAC 发魔术包（UDP 广播，默认端口 9）。
+///
+/// `direct_broadcast` 可选：网段定向广播地址（如 `192.168.1.255`），与全局
+/// 广播各发一次提高命中率；MAC 解析失败（位数/非法字符）返回 Err 由前端提示。
+#[tauri::command]
+pub async fn sk_wol_send(
+    mac: String,
+    port: Option<u16>,
+    direct_broadcast: Option<String>,
+) -> Result<String, String> {
+    let parsed = crate::wol::parse_mac(&mac)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::wol::send_wol(&parsed, port.unwrap_or(9), direct_broadcast.as_deref())
+    })
+    .await
+    .map_err(|e| format!("WOL 线程失败: {e}"))?
+}
+
 // ---------------- M4 工具箱：局域网设备 ----------------
 
 /// 扫描本机所在 /24 网段：并发 ping 唤醒邻居 → 读 ARP 表列出存活设备。

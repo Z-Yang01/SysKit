@@ -35,6 +35,8 @@ import {
   type LanDevice,
   type LanResult,
   type PortRow,
+  isValidMac,
+  sendWol,
 } from "./ports";
 
 function PortPanel() {
@@ -170,6 +172,9 @@ function PortPanel() {
 function LanPanel() {
   const [result, setResult] = useState<LanResult | null>(null);
   const [scanning, setScanning] = useState(false);
+  // Wake-on-LAN：手动输 MAC 唤醒 + 行级快捷唤醒（扫描结果里的设备）
+  const [wakeMac, setWakeMac] = useState("");
+  const [waking, setWaking] = useState(""); // 正在唤醒的 MAC（防重复点击）
   // 扫描已用时（秒）。后端是一次 invoke 拿全量结果、没有进度事件，百分比只能是编的；
   // 真实秒数同样能回答「卡住了吗」——预期 8~15 秒，超过就该怀疑网络而不是界面
   const [elapsed, setElapsed] = useState(0);
@@ -194,6 +199,25 @@ function LanPanel() {
     }
   }, []);
 
+  const wake = useCallback(
+    async (mac: string) => {
+      if (!isValidMac(mac)) {
+        message.error("MAC 地址格式不正确（示例 AA-BB-CC-DD-EE-FF）");
+        return;
+      }
+      setWaking(mac);
+      try {
+        // 定向广播：用扫描结果的网段前缀拼（192.168.1.255）
+        message.success(await sendWol(mac, result ? `${result.prefix}.255` : undefined));
+      } catch (e) {
+        message.error(`唤醒失败：${String(e)}`);
+      } finally {
+        setWaking("");
+      }
+    },
+    [result],
+  );
+
   const devices = useMemo(() => (result ? sortDevices(result.devices) : []), [result]);
 
   return (
@@ -206,6 +230,23 @@ function LanPanel() {
       <Space>
         <Button size="small" type="primary" loading={scanning} onClick={() => void scan()}>
           扫描局域网
+        </Button>
+        <Input
+          size="small"
+          allowClear
+          style={{ width: 210, fontFamily: "Consolas, monospace" }}
+          placeholder="MAC 手动唤醒，如 AA-BB-CC-DD-EE-FF"
+          value={wakeMac}
+          onChange={(e) => setWakeMac(e.target.value)}
+          onPressEnter={() => wakeMac.trim() && void wake(wakeMac.trim())}
+        />
+        <Button
+          size="small"
+          loading={waking === wakeMac.trim()}
+          disabled={!wakeMac.trim()}
+          onClick={() => void wake(wakeMac.trim())}
+        >
+          唤醒
         </Button>
         <span className="sk-hint">
           {scanning ? `扫描中… 已用时 ${elapsed} 秒（并发 ping 254 个地址 + 读 ARP，约 8~15 秒）` : lanSummary(result)}
@@ -238,6 +279,20 @@ function LanPanel() {
               render: (v: number | null) => formatLatency(v),
             },
             { title: "类型", dataIndex: "kind", width: 100 },
+            {
+              title: "操作",
+              key: "wol",
+              width: 90,
+              render: (_: unknown, r: LanDevice) => (
+                <Button
+                  size="small"
+                  loading={waking === r.mac}
+                  onClick={() => void wake(r.mac)}
+                >
+                  唤醒
+                </Button>
+              ),
+            },
           ]}
         />
       )}
