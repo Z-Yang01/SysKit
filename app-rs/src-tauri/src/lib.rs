@@ -477,6 +477,8 @@ pub fn run() {
             commands::sk_qr_decode_clip_item,
             commands::sk_open_url,
             commands::sk_download_test_one,
+            commands::sk_download_cancel,
+            commands::sk_download_reset,
             commands::sk_diag_export,
             commands::sk_palette_query,
             commands::sk_palette_toggle,

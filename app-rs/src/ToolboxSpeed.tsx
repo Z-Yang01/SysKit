@@ -4,7 +4,7 @@
  * 下载测速走 WinInet（系统 TLS + 系统根证书 + 跟随系统代理），与 Python 版
  * urllib 同构：逐源独立开窗下载、峰值/平均速率、下载即断不落盘。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Alert,
@@ -214,7 +214,26 @@ function DownloadSpeedPanel() {
 
   // 逐源调用（真进度）：每源完成即入表——原来一次 invoke 3 源，用户盯
   // 空表格 24 秒不知道在干嘛。失败的单源照常入表（err 字段展示）。
+  // 中止：本地标志停发后续源 + 后端 CANCEL 让当前源尽快收尾。
+  // ref 立即生效（state 异步，连点「停止」会漏）；新一轮 start 时复位。
+  const abortedRef = useRef(false);
+  const stop = useCallback(async () => {
+    abortedRef.current = true;
+    try {
+      await invoke("sk_download_cancel");
+    } catch {
+      // 后端标志仅加速当前源收尾；本地循环已停，失败不影响正确性
+    }
+  }, []);
+
   const start = useCallback(async () => {
+    if (running) return;
+    abortedRef.current = false;
+    try {
+      await invoke("sk_download_reset");
+    } catch {
+      // 复位失败仍可测（首轮场景标志本为 false）
+    }
     setRunning(true);
     setErr("");
     setResult(null);
@@ -227,6 +246,7 @@ function DownloadSpeedPanel() {
     const acc: DownloadUrlResult[] = [];
     try {
       for (const url of urls) {
+        if (abortedRef.current) break; // 停止后不再发下一源
         try {
           acc.push(
             await invoke<DownloadUrlResult>("sk_download_test_one", {
@@ -235,6 +255,7 @@ function DownloadSpeedPanel() {
             }),
           );
         } catch (e) {
+          if (abortedRef.current) break;
           acc.push({ url, ok: false, err: String(e), bytes: 0, avg_bps: 0, peak_bps: 0 });
         }
         const okCount = acc.filter((r) => r.ok).length;
@@ -246,7 +267,7 @@ function DownloadSpeedPanel() {
     } finally {
       setRunning(false);
     }
-  }, [status]);
+  }, [status, running]);
 
   const available = downloadSpeedAvailable(status);
   const best = result ? formatBps(result.best_peak_bps) : "—";
@@ -267,9 +288,15 @@ function DownloadSpeedPanel() {
       ) : (
         <>
           <Space wrap>
-            <Button type="primary" size="small" loading={running} onClick={() => void start()}>
-              {running ? `测速中… ${elapsed} / 约 ${estimate} 秒` : "开始下载测速"}
-            </Button>
+            {running ? (
+              <Button size="small" onClick={() => void stop()}>
+                停止（已用时 {elapsed} / 约 {estimate} 秒）
+              </Button>
+            ) : (
+              <Button type="primary" size="small" onClick={() => void start()}>
+                开始下载测速
+              </Button>
+            )}
             <span className="sk-hint">
               {status?.urls.length ?? 3} 个源 × 8 秒，下载即断不落盘（约消耗几十 MB 流量）
             </span>

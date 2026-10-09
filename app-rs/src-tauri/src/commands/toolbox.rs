@@ -342,6 +342,20 @@ pub fn sk_palette_query(q: String) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// 中止进行中的下载测速：当前 URL 尽快收尾（已计量部分照常返回），
+/// 前端同时停发后续源。新开一轮前必须调 `sk_download_reset` 清标志，
+/// 否则首个源会立刻中断。
+#[tauri::command]
+pub fn sk_download_cancel() {
+    crate::netdl::cancel();
+}
+
+/// 清除测速中止标志（前端「开始测速」时调用，确保新一轮不受上轮取消影响）。
+#[tauri::command]
+pub fn sk_download_reset() {
+    crate::netdl::reset_cancel();
+}
+
 /// 单源下载测速（前端逐源调用实现真进度：每源完成即点亮一行）。
 #[tauri::command]
 pub async fn sk_download_test_one(
