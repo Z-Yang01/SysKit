@@ -10,6 +10,8 @@ mod network;
 pub use network::*;
 mod toolbox;
 pub use toolbox::*;
+mod diag;
+pub use diag::*;
 mod clipboard;
 mod vault;
 pub use clipboard::*;
@@ -64,50 +66,6 @@ pub fn sk_version() -> serde_json::Value {
     serde_json::json!({
         "version": crate::paths::VERSION,
         "display_name": crate::paths::DISPLAY_NAME,
-    })
-}
-
-// ---------------- 后台监控 / 自动修复 ----------------
-
-/// 监控状态（状态码、失败连击、已执行修复次数、最近梯度）。
-#[tauri::command]
-pub fn sk_monitor_state() -> serde_json::Value {
-    serde_json::to_value(crate::monitor::state()).unwrap_or(serde_json::json!({}))
-}
-
-/// 请求立即检查一次（不必等满 `poll_interval_sec`）。
-#[tauri::command]
-pub fn sk_monitor_force_check() -> serde_json::Value {
-    crate::monitor::force_check();
-    serde_json::json!({ "ok": true, "message": "已请求立即检查" })
-}
-
-/// 预览当前梯度（按配置与 VPN 护栏算出，**不执行任何动作**）。
-///
-/// 让用户在自动修复真的动网卡之前就能看到"会发生什么、哪些被跳过"。
-#[tauri::command]
-pub fn sk_monitor_preview() -> serde_json::Value {
-    let cfg = crate::monitor::MonitorConfig::from_settings();
-    let snap = crate::snapshot::take();
-    let vpn_up = snap.adapters.iter().any(|a| {
-        a.status.eq_ignore_ascii_case("up")
-            && (crate::netcheck::is_tunnel(&a.desc) || crate::netcheck::is_tunnel(&a.name))
-    });
-    let (keep, skip) = crate::monitor::build_ladder(cfg.max_level, vpn_up);
-    serde_json::json!({
-        "enabled": cfg.enabled,
-        "max_level": cfg.max_level,
-        "poll_interval_sec": cfg.poll_interval_sec,
-        "fail_threshold": cfg.fail_threshold,
-        "cooldown_sec": cfg.cooldown_sec,
-        "vpn_up": vpn_up,
-        "ladder": keep,
-        "skipped_by_vpn": skip,
-        "vpn_note": if vpn_up { crate::monitor::vpn_guard_note() } else { "" },
-        "suggestions": crate::monitor::suggestions()
-            .iter()
-            .map(|(id, reason)| serde_json::json!({ "id": id, "reason": reason }))
-            .collect::<Vec<_>>(),
     })
 }
 
