@@ -12,5 +12,15 @@ export default defineConfig({
   build: {
     target: "es2022",
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        // echarts 占产物约 2/3 且跨版本基本不变：拆独立 chunk，发版时命中缓存；
+        // react 同理。也消除 >500kB 单 chunk 告警。
+        manualChunks: {
+          echarts: ["echarts", "echarts-for-react"],
+          react: ["react", "react-dom"],
+        },
+      },
+    },
   },
 });

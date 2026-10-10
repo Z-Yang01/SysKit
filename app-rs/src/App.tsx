@@ -273,8 +273,9 @@ export function App() {
     /* 整窗锁死 100vh：滚动只发生在 Content 内部——Sider/Header 是固定框架，
         文档级滚动会把侧栏一起带走（用户实测：设置页一滚侧栏跟着跑）。 */
     <div className="flex h-screen overflow-hidden" style={{ background: "var(--sk-bg)" }}>
-      {/* 侧栏：自建（AntD Sider/Menu 替代），固定 208px，自身可滚（项少实际不滚） */}
-      <div className="relative h-screen w-[208px] shrink-0 overflow-y-auto border-r border-sk-glass">
+      {/* 侧栏：自建（AntD Sider/Menu 替代），固定 208px，自身可滚（项少实际不滚）；
+          sk-sider 玻璃配方沿用旧 Sider（base.css：blur 16px + 高光描边） */}
+      <div className="sk-sider relative h-screen w-[208px] shrink-0 overflow-y-auto">
         {/* 品牌区：渐变 S 标（accent 双色）+ 双行文案；徽标随主题取色 */}
         <div className="flex items-center gap-2.5 px-4 pb-3 pt-4">
           <div

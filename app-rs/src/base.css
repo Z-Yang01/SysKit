@@ -4,27 +4,12 @@
 }
 
 /* ---------------- 主题切换平滑过渡 ----------------
-   --sk-* 与 AntD token 是两套来源，applyTheme 与 ConfigProvider 重渲染
-   不同帧生效，没有过渡时用户看到的是一次硬闪。统一 0.18s 颜色过渡。 */
-body,
-.ant-layout,
-.ant-layout-sider,
-.ant-layout-header,
-.ant-layout-content,
-.ant-card,
-.ant-table,
-.ant-table-thead > tr > th,
-.ant-table-tbody > tr > td,
-.ant-btn,
-.ant-input,
-.ant-select .ant-select-selector,
-.ant-switch,
-.ant-modal .ant-modal-content,
-.ant-alert {
+   0.18s 颜色过渡（v1.4 起 AntD 已卸载，组件各自的 transition-colors
+   由 ui 件自带，这里只兜 body 底色的渐变）。 */
+body {
   transition:
     background-color 0.18s ease,
-    color 0.18s ease,
-    border-color 0.18s ease;
+    color 0.18s ease;
 }
 
 /* ---------------- 玻璃氛围底（shadcn × 玻璃拟态） ----------------
@@ -50,36 +35,20 @@ body {
   background-attachment: fixed;
 }
 
-/* ---------------- 玻璃层：backdrop-filter 只允许固定大表面 ----------------
-   （GPU 红线：逐帧内容更新的卡片禁用 blur，见 git 历史 d6354c5）
-   Sider/Header 是固定框架：blur(16px) + 提亮，是整窗玻璃语言的锚点。 */
-.ant-layout-sider,
-.ant-layout-header {
-  background: color-mix(in srgb, var(--sk-card) 68%, transparent) !important;
+/* ---------------- 固定大表面玻璃（GPU 红线：只允许不逐帧变化的表面） ----------------
+   （逐帧内容更新的卡片禁用 blur，见 git 历史 d6354c5）
+   侧栏是固定框架：blur(16px) + 提亮，是整窗玻璃语言的锚点
+   （v1.4 自建侧栏沿用旧 AntD Sider 的配方）。 */
+.sk-sider {
+  background: color-mix(in srgb, var(--sk-card) 68%, transparent);
   backdrop-filter: blur(16px) saturate(1.2);
   -webkit-backdrop-filter: blur(16px) saturate(1.2);
-  border-inline-end: 1px solid var(--sk-glass_border);
+  border-right: 1px solid var(--sk-glass_border);
 }
 
 /* 玻璃高光描边：浅色用白高光模拟「玻璃折边」，深色用微弱白线提层次 */
-[data-theme="light"] .ant-layout-sider,
-[data-theme="light"] .ant-layout-header {
-  border-color: var(--sk-glass_highlight);
-}
-[data-theme="dark"] .ant-layout-sider,
-[data-theme="dark"] .ant-layout-header {
-  border-color: var(--sk-glass_border);
-}
-
-/* 弹层玻璃（Modal/Dropdown/Select 浮层）：更高不透明度保证可读性 */
-.ant-modal .ant-modal-content,
-.ant-dropdown-menu,
-.ant-select-dropdown {
-  background: color-mix(in srgb, var(--sk-card) 90%, transparent) !important;
-  backdrop-filter: blur(18px) saturate(1.15);
-  -webkit-backdrop-filter: blur(18px) saturate(1.15);
-  border: 1px solid var(--sk-glass_border);
-  box-shadow: 0 12px 40px var(--sk-shadow_color);
+[data-theme="light"] .sk-sider {
+  border-right-color: var(--sk-glass_highlight);
 }
 
 /* ---------------- 卡片：伪玻璃（无 blur 的玻璃质感） ----------------
@@ -92,13 +61,7 @@ body {
   box-shadow:
     inset 0 1px 0 var(--sk-glass_highlight),
     0 4px 16px var(--sk-shadow_color);
-}
-
-/* 裸 div 卡片（非 AntD Card）：内边距由本类提供。S1 重写时把 padding 从
-   .sk-card 挪走，AntD Card 走自身 body 内边距没问题，但 App Pending 页、
-   备份回滚卡等裸 div 内容直接贴边（轮次115 审计实锤）——只对非 ant-card
-   补回原 14px 16px，避免 AntD Card 双重内边距。 */
-.sk-card:not(.ant-card) {
+  /* 裸 div 卡片的内边距（ui Card 自带头/体内边距，不用本类） */
   padding: 14px 16px;
 }
 
@@ -108,41 +71,6 @@ body {
   backdrop-filter: blur(8px) saturate(1.15);
   -webkit-backdrop-filter: blur(8px) saturate(1.15);
 }
-
-/* hover 浮起：卡片被指向时轻微上浮 + 投影加深（纯 transform/阴影，廉价） */
-.ant-card.sk-card {
-  transition:
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    transform 0.18s ease;
-}
-
-/* ---------------- AntD 表面融入玻璃体系 ---------------- */
-.ant-card {
-  border: 1px solid var(--sk-glass_border);
-  border-radius: 14px;
-  box-shadow:
-    inset 0 1px 0 var(--sk-glass_highlight),
-    0 4px 16px var(--sk-shadow_color);
-}
-
-.ant-table {
-  border-radius: 12px;
-}
-
-/* 表格透明化：行 hover 用语义 hover 色，玻璃底从卡片透出 */
-.ant-table-thead > tr > th,
-.ant-table-tbody > tr > td {
-  background: transparent;
-}
-.ant-table-tbody > tr:hover > td,
-.ant-table-tbody > tr.ant-table-row-selected > td {
-  background: var(--sk-hover) !important;
-}
-
-/* Content 高度由 flex 布局约束（100vh 壳），无需 calc——保留规则会因
-   Header 移除后基准漂移而失准，故不再写死。 */
 
 /* ---------------- 文本辅助类 ---------------- */
 .sk-hint {
@@ -195,92 +123,10 @@ body {
   border-radius: 6px;
 }
 
-
-/* ---------------- AntD 全局抛光（S3：shadcn 细节语言一次覆盖全页） ---------------- */
-
-/* 卡片头：标题层级（15px/600）、头部与内容分离线极淡 */
-.ant-card .ant-card-head {
-  min-height: unset;
-  font-weight: 600;
-  border-bottom: 1px solid color-mix(in srgb, var(--sk-border) 55%, transparent);
-}
-.ant-card .ant-card-head-title {
-  font-size: 15px;
-}
-
-/* 表格：密度与圆角收口（首末行跟随容器圆角） */
-.ant-table-container table > thead > tr:first-child th:first-child {
-  border-start-start-radius: 10px;
-}
-.ant-table-container table > thead > tr:first-child th:last-child {
-  border-start-end-radius: 10px;
-}
-.ant-table-tbody > tr > td {
-  padding-top: 9px;
-  padding-bottom: 9px;
-}
-
-/* 主按钮：accent 光晕（玻璃语言的点睛，只给主按钮） */
-.ant-btn-primary:not(.ant-btn-dangerous) {
-  box-shadow: 0 2px 10px color-mix(in srgb, var(--sk-accent) 35%, transparent);
-}
-.ant-btn-primary:not(.ant-btn-dangerous):hover {
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--sk-accent) 45%, transparent);
-}
-
-/* Modal：头部无分隔线（玻璃层自身分层），标题加重 */
-.ant-modal .ant-modal-header {
-  border-bottom: none;
-  margin-bottom: 4px;
-}
-.ant-modal .ant-modal-title {
-  font-weight: 600;
-  font-size: 15px;
-}
-
-/* 空态：收敛（图标缩小 + 淡字），避免大灰图抢视觉 */
-.ant-empty-image svg {
-  width: 52px;
-  height: 52px;
-  opacity: 0.55;
-}
-.ant-empty-description {
-  color: var(--sk-sub);
-  font-size: 13px;
-}
-
-/* message 通知：圆角玻璃（轻） */
-.ant-message .ant-message-notice-content {
-  border-radius: 10px;
-  border: 1px solid var(--sk-glass_border);
-  box-shadow: 0 6px 24px var(--sk-shadow_color);
-}
-
-/* Tooltip 玻璃圆角 */
-.ant-tooltip-inner {
-  border-radius: 8px;
-}
-
-/* Tabs：页签 hover 有底、字重分级 */
-.ant-tabs .ant-tabs-tab {
-  font-weight: 500;
-}
-.ant-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
-  font-weight: 600;
-}
-
-/* Segmented 胶囊：容器玻璃化 */
-.ant-segmented {
-  border-radius: 8px;
-}
-.ant-segmented .ant-segmented-item {
-  border-radius: 6px;
-}
-
 /* ---------------- 降级：动效敏感 / 低配 GPU / 省电模式（轮次115 审计补） ----------------
-   S 系列玻璃化此前没有任何系统降级路径。这里按媒体查询逐级退化：
-   - prefers-reduced-motion：停页面淡入（0.12s 位移动画之外只剩透明度渐变，
-     对前庭敏感用户仍是动效）；0.18s 颜色过渡保留——主题切换需要的正是渐变。
+   按媒体查询逐级退化：
+   - prefers-reduced-motion：停页面淡入；0.18s 颜色过渡保留——主题切换
+     需要的正是渐变。
    - prefers-reduced-transparency（Chromium/WebView2 118+）：玻璃整体退化
      实底——全部 backdrop-filter 停用、body 色斑停用。blur 合成是玻璃化唯一
      的重 GPU 项，低配机/省电模式直接省掉；实底取同一 token，对比度不变。
@@ -296,11 +142,7 @@ body {
   [data-theme="dark"] body {
     background: var(--sk-bg);
   }
-  .ant-layout-sider,
-  .ant-layout-header,
-  .ant-modal .ant-modal-content,
-  .ant-dropdown-menu,
-  .ant-select-dropdown,
+  .sk-sider,
   .sk-glass-strong {
     background: var(--sk-card) !important;
     backdrop-filter: none;
