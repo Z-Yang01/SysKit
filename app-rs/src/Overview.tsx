@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import ReactECharts from "echarts-for-react";
+import { EChart as ReactECharts } from "./EChart";
 
 import { baseChartOption, chartAccent, chartOk, chartWarn } from "./chartTheme";
 import {

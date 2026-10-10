@@ -22,5 +22,8 @@ export default defineConfig({
         },
       },
     },
+    // echarts 按需注册后仍有 ~540KB（折线/柱状 + 组件族），这是下限了；
+    // 阈值提到 600 让告警继续盯其他 chunk 的异常膨胀
+    chunkSizeWarningLimit: 600,
   },
 });

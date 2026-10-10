@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import ReactECharts from "echarts-for-react";
+import { EChart as ReactECharts } from "./EChart";
 import { Badge as UiBadge, Segmented } from "./ui";
 
 import {
