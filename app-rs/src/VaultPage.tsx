@@ -11,32 +11,35 @@
  * 解锁后主体左右两栏——左栏固定宽网站列表（搜索嵌在卡标题），右栏该站账号表
  * （卡标题为「站点 › 名称（共 N 个账号）[编辑站点]」面包屑形态；密码列恒定
  * 纯掩码（双击复制），显示/复制等行操作全部收进 ··· 菜单——行内不放图标）。
+ *
+ * v1.4 UI 迁移：脱离 AntD（antd 引用清零；TOTP 动态码由 message.open 气泡
+ * 改为页内常驻卡——30s 滚动 + 倒计时 + 复制/关闭，不再会过期消失）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFillRowHeight } from "./useFillRow";
 import { nonDefaultParams, parseOtpauth } from "./otpauth";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Alert,
-  Button,
-  Card,
-  Dropdown,
-  Input,
-  Modal,
-  Radio,
-  Select,
-  Space,
-  Table,
-  Tag,
-  Tooltip,
-  Typography,
-  message,
-  type MenuProps,
-} from "antd";
 import { useToast } from "./ui/toast";
 import { confirm } from "./ui/confirm";
 import { Modal as UiModal } from "./ui/modal";
-import { Input as UiInput, Textarea as UiTextarea, Button as UiButton, PasswordInput } from "./ui";
+import {
+  Badge,
+  Button as UiButton,
+  Card,
+  CardBody,
+  CardHeader,
+  CardTitle,
+  Empty,
+  Input as UiInput,
+  PasswordInput,
+  Table,
+  type Column,
+} from "./ui";
+import { Textarea as UiTextarea } from "./ui";
+import { Alert } from "./ui/alert";
+import { Dropdown, type MenuItem } from "./ui/dropdown";
+import { Radio } from "./ui/checkbox";
+import { Select } from "./ui/select";
 import { Slider as UiSlider } from "./ui/slider";
 import { Checkbox as UiCheckbox } from "./ui/checkbox";
 import { Progress as UiProgress } from "./ui/progress";
@@ -67,8 +70,8 @@ import {
 /**
  * 账号表单内嵌的密码生成面板。
  *
- * 为什么是自持 state 的独立组件：Modal.confirm 的 content 是打开瞬间的静态
- * 快照，父组件不重渲染（openUnlock 注释里的同根源问题）——选项滑杆/勾选要
+ * 为什么是自持 state 的独立组件：确认弹窗的内容是打开瞬间的静态快照，
+ * 父组件不重渲染（openUnlock 注释里的同根源问题）——选项滑杆/勾选要
  * 在弹窗内联动（强度条实时重算），必须让组件自己持有 state 自己重渲染。
  *
  * 纪律：生成的密码在点「保存」前只活在表单输入框里，但已经是凭据材料——
@@ -199,7 +202,7 @@ export function VaultPage() {
     loading: boolean;
     groups: { masked: string; accounts: { site: string; label: string }[] }[];
   }>({ open: false, loading: false, groups: [] });
-  // ---------------- 状态化模态（v1.4 UI 迁移：AntD Modal.confirm → ui/Modal） ----------------
+  // ---------------- 状态化模态（v1.4 UI 迁移：确认弹窗 → ui/Modal） ----------------
   // 表单模态全部受控：输入值进 React state，不再用「闭包 form + DOM 取值」
   const [siteForm, setSiteForm] = useState<{
     open: boolean; site?: SiteRow;
@@ -236,11 +239,35 @@ export function VaultPage() {
   const totpFileRef = useRef<HTMLInputElement | null>(null);
   // 解锁保持时长（vault_autolock_min 分钟；0=不自动锁）——锁定态显示在工具条
   const [autolockMin, setAutolockMin] = useState<number | null>(null);
+  // TOTP 动态码：页内常驻卡（30s 滚动 + 倒计时 + 复制/关闭）。
+  // 旧实现用 message.open 气泡：自定义内容 + 常驻 + 每轮重渲在迁移后没有对应件，
+  // 且气泡会被后续 toast 顶掉——页内卡更可靠，也符合「动态码的价值是贴到别处」。
+  // 复制处理器在 showTotp 内构造并存入 state：动态码的展示与复制是同一条
+  // 纪律单元（源码守卫 tests/vault.test.ts 切 showTotp 区块锁定敏感通道）。
+  const [totp, setTotp] = useState<{
+    account: AccountRow;
+    code: string;
+    remain: number;
+    copy: () => void;
+  } | null>(null);
+  const totpTimer = useRef<number | undefined>(undefined);
   const phase = vaultPhase(status);
   const trustSecs = status?.trusted_until ?? 0;
   // 右栏展示的站点：必须在当前（过滤后的）站点列表里，否则视为未选中
   const selSite = selectedSite !== null ? (sites.find((s) => s.id === selectedSite) ?? null) : null;
   const setPwCheck = canSetMasterPassword(status);
+
+  const stopTotp = useCallback(() => {
+    if (totpTimer.current !== undefined) window.clearInterval(totpTimer.current);
+    totpTimer.current = undefined;
+    setTotp(null);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (totpTimer.current !== undefined) window.clearInterval(totpTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     void invoke<{ items: { key: string; current: unknown }[] }>("sk_settings_all")
@@ -257,7 +284,7 @@ export function VaultPage() {
     } catch (e) {
       toast.error(`读取密码库状态失败：${String(e)}`);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
@@ -271,7 +298,7 @@ export function VaultPage() {
       setSearch(q);
       try {
         setSites(await invoke<SiteRow[]>("sk_vault_sites", { q }));
-      } catch (e) {
+      } catch {
         // 未解锁等后端原因：不弹错（面板已表达状态），仅清空
         setSites([]);
       } finally {
@@ -315,6 +342,7 @@ export function VaultPage() {
   useEffect(() => {
     // 行数据即将整体刷新（换站/保存/删除），旧明文展示不再可信
     setReveal(null);
+    stopTotp();
     if (selectedSite !== null) void loadAccounts("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSite]);
@@ -325,7 +353,7 @@ export function VaultPage() {
       field,
     });
     toast.success(r.ttl > 0 ? `已复制；${r.ttl} 秒后自动清空剪贴板` : "已复制（不会进入历史）");
-  }, []);
+  }, [toast]);
 
   // 👁️ 掩码 ↔ 明文切换。30 秒自动熄灭：用户「看一眼手抄」是常态场景，
   // 忘了点回去也不能让明文常驻屏幕（截图/旁视风险）。换行显示即作废。
@@ -351,86 +379,49 @@ export function VaultPage() {
         toast.error(String(e));
       }
     },
-    [reveal],
+    [reveal, toast],
   );
 
+  // 到期自动滚动到下一个码：TOTP 30s 一轮，静态显示会让用户抄到过期码
+  // （真机走查实锤）。常驻卡同时提供「复制」——动态码的价值就是贴到别处。
+  // 复制必须走敏感通道（不进本应用历史/不进 Win+V 与云剪贴板/到期清空）——
+  // Python _copy_totp 走 _copy_sensitive 同纪律。此前误接明文复制通道，
+  // 监听器会把动态码当普通文本记进历史（源码守卫锁死）。
   const showTotp = useCallback(
     (a: AccountRow) => {
-      // 到期自动滚动到下一个码：TOTP 30s 一轮，静态显示会让用户抄到过期码
-      // （真机走查实锤）。同时提供「复制」按钮——动态码的价值就是贴到别处。
-      let info: ReturnType<typeof message.open> | null = message.open({
-        type: "loading",
-        content: "正在生成动态码…",
-        duration: 0,
-      });
-      let timer: number | undefined;
-      const stop = () => {
-        if (timer !== undefined) window.clearInterval(timer);
-        timer = undefined;
-        info?.();
-        info = null;
+      const copy = (c: string) => {
+        void invoke<{ note: string; ttl: number }>("sk_clip_copy_sensitive", { text: c })
+          .then((r) =>
+            toast.success(r.ttl > 0 ? `动态码已复制；${r.ttl} 秒后自动清空` : "动态码已复制"),
+          )
+          .catch((e) => toast.error(String(e)));
       };
+      if (totpTimer.current !== undefined) window.clearInterval(totpTimer.current);
+      totpTimer.current = undefined;
       const render = () => {
         void invoke<string>("sk_vault_totp_code", { accountId: a.id })
           .then((code) => {
             if (!code) {
-              stop();
+              stopTotp();
               toast.error("TOTP 密钥无效（含字母表外字符？）");
               return;
             }
             const remain = 30 - (Math.floor(Date.now() / 1000) % 30);
-            info?.();
-            info = message.open({
-              key: `totp-${a.id}`,
-              type: "info",
-              duration: 0,
-              content: (
-                <Space size={8}>
-                  <span>
-                    {accountTitle(a)} 动态码：
-                    <Typography.Text code style={{ fontSize: 15, fontWeight: 600 }}>
-                      {code}
-                    </Typography.Text>
-                    <span className="sk-hint">（{remain}s 后滚动）</span>
-                  </span>
-                  <Button
-                    size="small"
-                    onClick={() => {
-                      // 动态码是一次性凭证，必须走敏感通道（不进本应用历史/
-                      // 不进 Win+V 与云剪贴板/到期清空）——Python _copy_totp
-                      // 走 _copy_sensitive 同纪律。此前误接明文复制通道，
-                      // 监听器会把动态码当普通文本记进历史（源码守卫锁死：
-                      // tests/vault.test.ts「TOTP 复制走敏感通道」）。
-                      void invoke<{ note: string; ttl: number }>("sk_clip_copy_sensitive", {
-                        text: code,
-                      })
-                        .then((r) =>
-                          toast.success(
-                            r.ttl > 0 ? `动态码已复制；${r.ttl} 秒后自动清空` : "动态码已复制",
-                          ),
-                        )
-                        .catch((e) => toast.error(String(e)));
-                    }}
-                  >
-                    复制
-                  </Button>
-                </Space>
-              ),
-            });
-            if (timer === undefined) {
-              timer = window.setInterval(() => render(), Math.max(remain, 1) * 1000);
-            }
+            setTotp({ account: a, code, remain, copy: () => copy(code) });
           })
           .catch((e) => {
-            stop();
+            stopTotp();
             toast.error(String(e));
           });
       };
       render();
+      totpTimer.current = window.setInterval(render, 1000);
       // 兜底清理：90s 后若用户没关，停止滚动避免无限轮询（再点「动态码」重启）
-      window.setTimeout(stop, 90_000);
+      window.setTimeout(() => {
+        if (totpTimer.current !== undefined) stopTotp();
+      }, 90_000);
     },
-    [],
+    [stopTotp, toast],
   );
 
   const siteModal = useCallback(
@@ -591,7 +582,7 @@ export function VaultPage() {
         .then(() => void loadAccounts())
         .catch((e) => toast.error(String(e)));
     },
-    [loadAccounts],
+    [loadAccounts, toast],
   );
 
   // ---------------- 解锁 / 主密码（全部收进顶部工具条） ----------------
@@ -674,7 +665,7 @@ export function VaultPage() {
     toast.success("已锁定");
     setPassword("");
     await load();
-  }, [load]);
+  }, [load, toast]);
 
   // 设置/更改主密码：已是主密码模式时先验当前密码（对齐 Python 版，
   // 防止信任窗口内被静默换锁），再写新密码。
@@ -689,7 +680,7 @@ export function VaultPage() {
       setReused({ open: false, loading: false, groups: [] });
       toast.error(String(e));
     }
-  }, []);
+  }, [toast]);
 
   const setMaster = useCallback(() => {
     const changing = status?.has_master_password === true;
@@ -742,437 +733,417 @@ export function VaultPage() {
     }
   }, [removeMasterPw, load, toast]);
 
+  const accountColumns: Column<AccountRow>[] = [
+    {
+      title: "账号",
+      key: "title",
+      render: (_: unknown, a) => (
+        <span className="inline-flex items-center gap-1">
+          {a.is_favorite && <span>⭐</span>}
+          <span>{accountTitle(a)}</span>
+        </span>
+      ),
+    },
+    {
+      title: "用户名",
+      key: "username",
+      render: (_: unknown, a) =>
+        a.username ? (
+          <UiTooltip title="双击复制用户名（不进剪贴板历史）">
+            <span
+              className="cursor-copy whitespace-nowrap"
+              onDoubleClick={() =>
+                void invoke("sk_clip_copy_plain", { text: a.username })
+                  .then(() => toast.success("用户名已复制"))
+                  .catch((e) => toast.error(String(e)))
+              }
+            >
+              {a.username}
+            </span>
+          </UiTooltip>
+        ) : (
+          <span className="sk-hint">—</span>
+        ),
+    },
+    {
+      // 密码列恒定纯掩码（固定 8 圆点，长度不外泄）+ 单行 ellipsis，
+      // 双击复制。显示/复制动作收进行尾 ··· 菜单——行内挂 👁️/📋
+      // 两个图标太吵（用户实锤「不用这么多图标」），且窄表里
+      // 图标排让列内容自成一体。
+      title: "密码",
+      key: "password",
+      width: 150,
+      render: (_: unknown, a) => {
+        const revealed = reveal?.id === a.id;
+        return (
+          <UiTooltip
+            title={
+              revealed
+                ? "双击复制密码；显示/复制/隐藏都在行尾 ··· 菜单"
+                : "双击复制密码（敏感通道，25 秒后自动清空剪贴板）；显示明文走 ··· 菜单"
+            }
+          >
+            <span
+              className="inline-block max-w-[120px] cursor-copy overflow-hidden align-bottom text-ellipsis whitespace-nowrap"
+              style={{ letterSpacing: revealed ? 0 : 2 }}
+              onDoubleClick={() => void copySecret(a.id, "password")}
+            >
+              {revealed ? reveal?.text : maskedSecret()}
+            </span>
+          </UiTooltip>
+        );
+      },
+    },
+    {
+      title: "标签",
+      dataIndex: "label",
+      width: 120,
+      render: (v: string) => (v ? <span>{v}</span> : <span style={{ opacity: 0.35 }}>—</span>),
+    },
+    {
+      // 操作列收进行尾「···」菜单：置顶/编辑/删除/动态码/显示密码/
+      // 复制密码全部菜单化（密码列只留纯掩码，行内不放图标——
+      // 用户实锤「不用这么多图标」）。删除仍带二次确认弹窗。
+      title: "操作",
+      key: "ops",
+      width: 64,
+      render: (_: unknown, a) => {
+        const revealed = reveal?.id === a.id;
+        const items: MenuItem[] = [
+          ...(a.has_totp ? [{ key: "totp", label: "⏱ 动态码" }] : []),
+          { key: "fav", label: a.is_favorite ? "⭐ 取消置顶" : "📌 置顶" },
+          { key: "edit", label: "✏️ 编辑" },
+          {
+            key: "reveal",
+            label: revealed ? "🙈 隐藏密码" : "👁️ 显示密码（30 秒后自动隐藏）",
+          },
+          { key: "copypw", label: "📋 复制密码" },
+          { key: "sep", type: "divider" as const, label: "" },
+          { key: "del", danger: true, label: "🗑️ 删除" },
+        ];
+        return (
+          <Dropdown
+            trigger={
+              <UiButton size="sm" aria-label="更多操作">
+                ···
+              </UiButton>
+            }
+            items={items}
+            onItemClick={(key) => {
+              if (key === "totp") showTotp(a);
+              else if (key === "fav") toggleFav(a);
+              else if (key === "edit") accountModal(a);
+              else if (key === "reveal") void toggleReveal(a);
+              else if (key === "copypw") void copySecret(a.id, "password");
+              else if (key === "del") confirmDeleteAccount(a);
+            }}
+          />
+        );
+      },
+    },
+  ];
+
   return (
     <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-        width: "100%",
-        minWidth: 0,
-        paddingRight: 4,
-        minHeight: "100%", // 两栏行 flex:1 的前提：根至少撑满 Content 视口高
-      }}
+      className="flex w-full min-w-0 flex-col gap-3 pr-1"
+      style={{ minHeight: "100%" }} // 两栏行 flex:1 的前提：根至少撑满 Content 视口高
     >
       {/* 顶部工具条：左侧状态徽章，右侧全部主密码操作（一排式，对齐 Python 版） */}
-      <div
-        className="sk-card"
-        style={{ padding: "8px 12px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
-      >
-          <Space size={8} wrap>
-            {phase === "unlocked" ? (
-              // 状态徽章与自动锁定合并为倒计时标签（分钟粒度）：trusted_until
-              // 有窗口时按它倒计时（后端给的是剩余秒）；无窗口时退回
-              // 「闲置 autolockMin 后」口径——后端重锁按闲置计时（每次操作
-              // 续期），前端没有闲置钟，不做会撒谎的假秒表。
-              <Tooltip title="解锁在此时长内免输主密码；闲置到期自动重新锁定，操作会续期">
-                <Tag color="green" style={{ marginInlineEnd: 0 }}>
-                  {trustSecs > 0
-                    ? `🔓 已解锁 · ${Math.max(1, Math.ceil(trustSecs / 60))} 分钟后自动锁`
-                    : autolockMin === 0
-                      ? "🔓 已解锁"
-                      : autolockMin === null
-                        ? "🔓 已解锁 · …"
-                        : `🔓 已解锁 · 闲置 ${autolockMin === 1440 ? "1 天" : `${autolockMin} 分钟`}后自动锁`}
-                </Tag>
-              </Tooltip>
-            ) : (
-              <Tag
-                color={phase === "locked" ? "orange" : "default"}
-                style={{ marginInlineEnd: 0 }}
-              >
-                {phase === "locked" ? "🔒 已锁定" : "未初始化"}
-              </Tag>
-            )}
-            <span className="sk-hint">{modeLabel(status?.mode ?? "")}</span>
-            {phase === "locked" && (
-              <Tooltip title="解锁在此时长内免输主密码；到期自动重新锁定">
-                <Select
-                  size="small"
-                  style={{ width: 150 }}
-                  value={autolockMin ?? 30}
-                  onChange={(v) => {
-                    setAutolockMin(v);
-                    void invoke("sk_settings_set", { key: "vault_autolock_min", value: v })
-                      .then(() => toast.success(v === 0 ? "已设为不自动锁定" : `解锁后将保持 ${v === 1440 ? "1 天" : `${v} 分钟`}`))
-                      .catch((e) => toast.error(String(e)));
-                  }}
-                  options={[
-                    { value: 30, label: "保持 30 分钟" },
-                    { value: 1440, label: "保持 1 天" },
-                    { value: 0, label: "不自动锁定" },
-                  ]}
-                />
-              </Tooltip>
-            )}
-          </Space>
-          <div style={{ flex: 1, minWidth: 8 }} />
-          <Space size={8} wrap>
-            {phase === "locked" && (
-              <Button size="small" type="primary" loading={busy} onClick={openUnlock}>
-                解锁…
-              </Button>
-            )}
-            {phase === "unlocked" && (
-              <Button size="small" onClick={() => void lock()}>
-                锁定
-              </Button>
-            )}
-            {phase === "unlocked" && setPwCheck.ok && (
-              <Button size="small" onClick={setMaster}>
-                设置主密码…
-              </Button>
-            )}
-            {phase === "unlocked" && status?.has_master_password && (
-              <>
-                <Button size="small" onClick={setMaster}>
-                  更改主密码…
-                </Button>
-                {/* 移除主密码是危险操作：从常驻红按钮收进「···」，点开仍走
-                    输入当前主密码的确认 Modal（后端校验，误触第一层被挡） */}
-                <Dropdown
-                  trigger={["click"]}
-                  menu={{
-                    items: [
-                      { key: "reuse-check", label: "🩺 安全体检（重复密码）" },
-                      { type: "divider" as const },
-                      { key: "remove-master", danger: true, label: "移除主密码" },
-                    ],
-                    onClick: ({ key }) => {
-                      if (key === "remove-master") removeMaster();
-                      else if (key === "reuse-check") void runReuseCheck();
-                    },
-                  }}
-                >
-                  <Button size="small" aria-label="更多主密码操作">
+      <div className="sk-card flex flex-wrap items-center gap-2 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {phase === "unlocked" ? (
+            // 状态徽章与自动锁定合并为倒计时标签（分钟粒度）：trusted_until
+            // 有窗口时按它倒计时（后端给的是剩余秒）；无窗口时退回
+            // 「闲置 autolockMin 后」口径——后端重锁按闲置计时（每次操作
+            // 续期），前端没有闲置钟，不做会撒谎的假秒表。
+            <UiTooltip title="解锁在此时长内免输主密码；闲置到期自动重新锁定，操作会续期">
+              <Badge tone="ok">
+                {trustSecs > 0
+                  ? `🔓 已解锁 · ${Math.max(1, Math.ceil(trustSecs / 60))} 分钟后自动锁`
+                  : autolockMin === 0
+                    ? "🔓 已解锁"
+                    : autolockMin === null
+                      ? "🔓 已解锁 · …"
+                      : `🔓 已解锁 · 闲置 ${autolockMin === 1440 ? "1 天" : `${autolockMin} 分钟`}后自动锁`}
+              </Badge>
+            </UiTooltip>
+          ) : (
+            <Badge tone={phase === "locked" ? "warn" : "neutral"}>
+              {phase === "locked" ? "🔒 已锁定" : "未初始化"}
+            </Badge>
+          )}
+          <span className="sk-hint">{modeLabel(status?.mode ?? "")}</span>
+          {phase === "locked" && (
+            <UiTooltip title="解锁在此时长内免输主密码；到期自动重新锁定">
+              <Select
+                className="w-[150px] text-xs"
+                value={String(autolockMin ?? 30)}
+                onChange={(v) => {
+                  const n = Number(v);
+                  setAutolockMin(n);
+                  const keep = n === 0 ? "已设为不自动锁定" : `解锁后将保持 ${n === 1440 ? "1 天" : `${n} 分钟`}`;
+                  void invoke("sk_settings_set", { key: "vault_autolock_min", value: n })
+                    .then(() => toast.success(keep))
+                    .catch((e) => toast.error(String(e)));
+                }}
+                options={[
+                  { value: "30", label: "保持 30 分钟" },
+                  { value: "1440", label: "保持 1 天" },
+                  { value: "0", label: "不自动锁定" },
+                ]}
+              />
+            </UiTooltip>
+          )}
+        </div>
+        <div className="min-w-2 flex-1" />
+        <div className="flex flex-wrap items-center gap-2">
+          {phase === "locked" && (
+            <UiButton size="sm" variant="primary" loading={busy} onClick={openUnlock}>
+              解锁…
+            </UiButton>
+          )}
+          {phase === "unlocked" && (
+            <UiButton size="sm" onClick={() => void lock()}>
+              锁定
+            </UiButton>
+          )}
+          {phase === "unlocked" && setPwCheck.ok && (
+            <UiButton size="sm" onClick={setMaster}>
+              设置主密码…
+            </UiButton>
+          )}
+          {phase === "unlocked" && status?.has_master_password && (
+            <>
+              <UiButton size="sm" onClick={setMaster}>
+                更改主密码…
+              </UiButton>
+              {/* 移除主密码是危险操作：从常驻红按钮收进「···」，点开仍走
+                  输入当前主密码的确认弹窗（后端校验，误触第一层被挡） */}
+              <Dropdown
+                trigger={
+                  <UiButton size="sm" aria-label="更多主密码操作">
                     ···
-                  </Button>
-                </Dropdown>
-              </>
-            )}
-            {phase === "unlocked" && storageAvailable(status) && (
-              <Button size="small" type="primary" onClick={addSiteModal}>
-                + 网站
-              </Button>
-            )}
-          </Space>
+                  </UiButton>
+                }
+                items={[
+                  { key: "reuse-check", label: "🩺 安全体检（重复密码）" },
+                  { key: "sep", type: "divider", label: "" },
+                  { key: "remove-master", danger: true, label: "移除主密码" },
+                ]}
+                onItemClick={(key) => {
+                  if (key === "remove-master") removeMaster();
+                  else if (key === "reuse-check") void runReuseCheck();
+                }}
+              />
+            </>
+          )}
+          {phase === "unlocked" && storageAvailable(status) && (
+            <UiButton size="sm" variant="primary" onClick={addSiteModal}>
+              + 网站
+            </UiButton>
+          )}
+        </div>
       </div>
 
       {phase === "unprovisioned" && (
-        <Card size="small" className="sk-card" title="创建密码库">
-          <Space direction="vertical" size={10} style={{ width: "100%" }}>
-            <Radio.Group value={newMode} onChange={(e) => setNewMode(e.target.value)}>
-              <Radio value="password">主密码模式（推荐）</Radio>
-              <Radio value="dpapi">免密模式（DPAPI，绑定当前 Windows 用户）</Radio>
-            </Radio.Group>
-            {newMode === "password" && (
-              <>
-                <Input.Password
-                  style={{ maxWidth: 380 }}
-                  placeholder="主密码（至少 8 位更稳）"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-                {password && (
-                  <Tag
-                    color={
-                      passwordStrength(password).level === "good"
-                        ? "green"
-                        : passwordStrength(password).level === "fair"
-                          ? "orange"
-                          : "red"
-                    }
-                  >
-                    {passwordStrength(password).hint}
-                  </Tag>
-                )}
-              </>
-            )}
-            <Button type="primary" size="small" loading={busy} onClick={setup}>
-              创建密码库
-            </Button>
-          </Space>
+        <Card>
+          <CardHeader>
+            <CardTitle>创建密码库</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <div className="flex flex-col gap-2.5">
+              <Radio<"dpapi" | "password">
+                value={newMode}
+                onChange={setNewMode}
+                options={[
+                  { value: "password", label: "主密码模式（推荐）" },
+                  { value: "dpapi", label: "免密模式（DPAPI，绑定当前 Windows 用户）" },
+                ]}
+              />
+              {newMode === "password" && (
+                <>
+                  <PasswordInput
+                    className="max-w-[380px]"
+                    placeholder="主密码（至少 8 位更稳）"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  {password && (
+                    <Badge
+                      tone={
+                        passwordStrength(password).level === "good"
+                          ? "ok"
+                          : passwordStrength(password).level === "fair"
+                            ? "warn"
+                            : "err"
+                      }
+                    >
+                      {passwordStrength(password).hint}
+                    </Badge>
+                  )}
+                </>
+              )}
+              <UiButton variant="primary" size="sm" loading={busy} onClick={setup}>
+                创建密码库
+              </UiButton>
+            </div>
+          </CardBody>
         </Card>
       )}
 
       {!storageAvailable(status) ? (
         // capability 门兜底（正常恒走解锁分支）：仅在后端异常时出现
-        <Alert
-          type="warning"
-          showIcon
-          message="密码库存取暂不可用"
-          description="后端数据层异常，请查看日志并重启应用。"
-        />
+        <Alert tone="warning" title="密码库存取暂不可用">
+          后端数据层异常，请查看日志并重启应用。
+        </Alert>
       ) : phase === "locked" ? (
-        <Alert
-          type="info"
-          showIcon
-          message="密码库已锁定"
-          description="点右上角「解锁…」：免密模式直接打开；主密码模式输入主密码验证后查看与编辑条目。"
-        />
+        <Alert tone="info" title="密码库已锁定">
+          点右上角「解锁…」：免密模式直接打开；主密码模式输入主密码验证后查看与编辑条目。
+        </Alert>
       ) : phase === "unlocked" ? (
         // 行高填满 Content 视口（useFillRow 实测）：站点/账号再多只滚列表卡体，
         // 工具条与两栏框架不动；站点少时卡片仍满窗高不留底色
         <div
           ref={row.ref}
-          style={{
-            display: "flex",
-            gap: 12,
-            alignItems: "stretch",
-            flex: 1,
-            minHeight: 0,
-            height: row.h,
-            overflow: "hidden",
-          }}
+          className="flex flex-1 items-stretch gap-3 overflow-hidden"
+          style={{ minHeight: 0, height: row.h }}
         >
           {/* 左栏：网站列表（固定 ~300px，搜索嵌在卡标题）；列表在卡体内自滚 */}
-          <Card
-            size="small"
-            className="sk-card"
-            style={{ width: 300, flexShrink: 0, display: "flex", flexDirection: "column" }}
-            styles={{ body: { padding: "4px 4px 8px", flex: 1, minHeight: 0, overflowY: "auto" } }}
-            title={
-              <Input.Search
-                size="small"
-                allowClear
-                placeholder="搜索站点…"
-                style={{ width: 190 }}
-                onSearch={(q) => void loadSites(q)}
-              />
-            }
-          >
-            <Table<SiteRow>
-              size="small"
-              rowKey="id"
-              showHeader={false}
-              loading={sitesLoading}
-              dataSource={sites}
-              pagination={false}
-              onRow={(r) => ({
-                onClick: () => setSelectedSite(r.id),
-                style: { cursor: "pointer" },
-              })}
-              rowClassName={(r) => (r.id === selectedSite ? "ant-table-row-selected" : "")}
-              columns={[
-                {
-                  key: "site",
-                  render: (_: unknown, r) => (
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {r.name}
-                      </div>
-                      <div className="sk-hint" style={{ fontSize: 11 }}>
+          <Card className="flex w-[300px] flex-none flex-col">
+            <CardHeader>
+              <div className="min-w-0 flex-1">
+                <UiInput
+                  className="h-7 w-full text-xs"
+                  placeholder="搜索站点…（回车）"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void loadSites(search);
+                  }}
+                />
+              </div>
+            </CardHeader>
+            <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+              {sitesLoading ? (
+                <div className="py-4 text-center text-sm text-sk-sub">读取中…</div>
+              ) : sites.length === 0 ? (
+                <div className="px-2 py-4 text-center text-[13px] text-sk-sub">
+                  暂无站点——点右上角「+ 网站」开始
+                </div>
+              ) : (
+                sites.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => setSelectedSite(r.id)}
+                    className={
+                      "block w-full cursor-pointer rounded-md px-2 py-1.5 text-left transition-colors " +
+                      (r.id === selectedSite
+                        ? "bg-sk-accent/12"
+                        : "hover:bg-sk-hover")
+                    }
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-sk-text">{r.name}</div>
+                      <div className="sk-hint text-[11px]">
                         {r.n_accounts} 个账号{r.domain ? ` · ${r.domain}` : ""}
                       </div>
                     </div>
-                  ),
-                },
-              ]}
-              locale={{ emptyText: "暂无站点——点右上角「+ 网站」开始" }}
-            />
+                  </button>
+                ))
+              )}
+            </div>
           </Card>
 
           {/* 右栏：该站账号（flex:1；未选中站点时给引导文案）；账号多时卡体内滚 */}
-          <Card
-            size="small"
-            className="sk-card"
-            style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}
-            styles={{ body: { flex: 1, minHeight: 0, overflowY: "auto" } }}
-            title={
-              selSite ? (
+          <Card className="flex min-w-0 flex-1 flex-col">
+            <CardHeader>
+              {selSite ? (
                 // 面包屑形态「站点 › 名称（共 N 个账号）」；编辑/删除收进 ···
                 // 菜单（右上角只留主按钮「+ 账号」，操作区不再拥挤）
-                <Space size={6} wrap>
+                <span className="flex flex-wrap items-center gap-1.5">
                   <span className="sk-hint">站点</span>
                   <span className="sk-hint">›</span>
-                  <span style={{ fontWeight: 600 }}>{selSite.name}</span>
+                  <span className="font-semibold">{selSite.name}</span>
                   <span className="sk-hint">（共 {selSite.n_accounts} 个账号）</span>
                   <Dropdown
-                    trigger={["click"]}
-                    menu={{
-                      items: [
-                        { key: "edit", label: "✏️ 编辑站点" },
-                        { type: "divider" as const },
-                        {
-                          key: "del",
-                          danger: true,
-                          label: `🗑️ 删除站点（波及 ${selSite.n_accounts} 个账号）`,
-                        },
-                      ],
-                      onClick: ({ key }) => {
-                        if (key === "edit") siteModal(selSite);
-                        else if (key === "del") confirmDeleteSite(selSite);
+                    trigger={
+                      <UiButton variant="ghost" size="sm" aria-label="站点操作">
+                        ···
+                      </UiButton>
+                    }
+                    items={[
+                      { key: "edit", label: "✏️ 编辑站点" },
+                      { key: "sep", type: "divider", label: "" },
+                      {
+                        key: "del",
+                        danger: true,
+                        label: `🗑️ 删除站点（波及 ${selSite.n_accounts} 个账号）`,
                       },
+                    ]}
+                    onItemClick={(key) => {
+                      if (key === "edit") siteModal(selSite);
+                      else if (key === "del") confirmDeleteSite(selSite);
                     }}
-                  >
-                    <Button type="text" size="small" aria-label="站点操作">
-                      ···
-                    </Button>
-                  </Dropdown>
-                </Space>
+                  />
+                </span>
               ) : (
-                "账号"
-              )
-            }
-            extra={
-              selSite ? (
-                <Button size="small" type="primary" onClick={addAccountModal}>
+                <CardTitle>账号</CardTitle>
+              )}
+              {selSite && (
+                <UiButton size="sm" variant="primary" onClick={addAccountModal}>
                   + 账号
-                </Button>
-              ) : undefined
-            }
-          >
-            {!selSite ? (
-              <Typography.Text type="secondary">
-                左侧点一个网站，这里会显示它的账号；还没有站点就点右上角「+ 网站」新建。
-              </Typography.Text>
-            ) : (
-              <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                <Input.Search
-                  size="small"
-                  allowClear
-                  placeholder="搜索账号：用户名 / 标签"
-                  style={{ width: 260 }}
-                  value={accSearch}
-                  onChange={(e) => setAccSearch(e.target.value)}
-                  onSearch={(q) => void loadAccounts(q)}
-                />
-                <Table<AccountRow>
-                  size="small"
-                  rowKey="id"
-                  loading={accountsLoading}
-                  dataSource={accounts}
-                  pagination={false}
-                  columns={[
-                    {
-                      title: "账号",
-                      key: "title",
-                      ellipsis: true,
-                      render: (_: unknown, a) => (
-                        <Space size={4}>
-                          {a.is_favorite && <span>⭐</span>}
-                          <span>{accountTitle(a)}</span>
-                        </Space>
-                      ),
-                    },
-                    {
-                      title: "用户名",
-                      key: "username",
-                      ellipsis: true,
-                      render: (_: unknown, a) =>
-                        a.username ? (
-                          <Tooltip title="双击复制用户名（不进剪贴板历史）">
-                            <span
-                              style={{ cursor: "copy", whiteSpace: "nowrap" }}
-                              onDoubleClick={() =>
-                                void invoke("sk_clip_copy_plain", { text: a.username })
-                                  .then(() => toast.success("用户名已复制"))
-                                  .catch((e) => toast.error(String(e)))
-                              }
-                            >
-                              {a.username}
-                            </span>
-                          </Tooltip>
-                        ) : (
-                          <span className="sk-hint">—</span>
-                        ),
-                    },
-                    {
-                      // 密码列恒定纯掩码（固定 8 圆点，长度不外泄）+ 单行 ellipsis，
-                      // 双击复制。显示/复制动作收进行尾 ··· 菜单——行内挂 👁️/📋
-                      // 两个图标太吵（用户实锤「不用这么多图标」），且窄表里
-                      // 图标排让列内容自成一体。
-                      title: "密码",
-                      key: "password",
-                      width: 150,
-                      ellipsis: true,
-                      render: (_: unknown, a) => {
-                        const revealed = reveal?.id === a.id;
-                        return (
-                          <Tooltip
-                            title={
-                              revealed
-                                ? "双击复制密码；显示/复制/隐藏都在行尾 ··· 菜单"
-                                : "双击复制密码（敏感通道，25 秒后自动清空剪贴板）；显示明文走 ··· 菜单"
-                            }
-                          >
-                            <span
-                              style={{
-                                cursor: "copy",
-                                display: "inline-block",
-                                verticalAlign: "bottom",
-                                whiteSpace: "nowrap", // 恒单行：掩码/明文都不得换行撑破布局
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                maxWidth: 120,
-                                letterSpacing: revealed ? 0 : 2,
-                              }}
-                              onDoubleClick={() => void copySecret(a.id, "password")}
-                            >
-                              {revealed ? reveal?.text : maskedSecret()}
-                            </span>
-                          </Tooltip>
-                        );
-                      },
-                    },
-                    {
-                      title: "标签",
-                      dataIndex: "label",
-                      width: 120,
-                      ellipsis: true,
-                      render: (v: string) =>
-                        v ? <span>{v}</span> : <span style={{ opacity: 0.35 }}>—</span>,
-                    },
-                    {
-                      // 操作列收进行尾「···」菜单：置顶/编辑/删除/动态码/显示密码/
-                      // 复制密码全部菜单化（密码列只留纯掩码，行内不放图标——
-                      // 用户实锤「不用这么多图标」）。删除仍带二次确认弹窗。
-                      title: "操作",
-                      key: "ops",
-                      width: 64,
-                      render: (_: unknown, a) => {
-                        const revealed = reveal?.id === a.id;
-                        const items: MenuProps["items"] = [
-                          ...(a.has_totp ? [{ key: "totp", label: "⏱ 动态码" }] : []),
-                          { key: "fav", label: a.is_favorite ? "⭐ 取消置顶" : "📌 置顶" },
-                          { key: "edit", label: "✏️ 编辑" },
-                          {
-                            key: "reveal",
-                            label: revealed
-                              ? "🙈 隐藏密码"
-                              : "👁️ 显示密码（30 秒后自动隐藏）",
-                          },
-                          { key: "copypw", label: "📋 复制密码" },
-                          { type: "divider" as const },
-                          { key: "del", danger: true, label: "🗑️ 删除" },
-                        ];
-                        return (
-                          <Dropdown
-                            trigger={["click"]}
-                            menu={{
-                              items,
-                              onClick: ({ key }) => {
-                                if (key === "totp") showTotp(a);
-                                else if (key === "fav") toggleFav(a);
-                                else if (key === "edit") accountModal(a);
-                                else if (key === "reveal") void toggleReveal(a);
-                                else if (key === "copypw") void copySecret(a.id, "password");
-                                else if (key === "del") confirmDeleteAccount(a);
-                              },
-                            }}
-                          >
-                            <Button size="small" aria-label="更多操作">
-                              ···
-                            </Button>
-                          </Dropdown>
-                        );
-                      },
-                    },
-                  ]}
-                  locale={{ emptyText: "该站点暂无账号——点右上角「+ 账号」添加" }}
-                />
-              </Space>
-            )}
+                </UiButton>
+              )}
+            </CardHeader>
+            <CardBody className="min-h-0 flex-1 overflow-y-auto">
+              {!selSite ? (
+                <div className="text-sk-sub">
+                  左侧点一个网站，这里会显示它的账号；还没有站点就点右上角「+ 网站」新建。
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <div>
+                    <UiInput
+                      className="h-7 w-[260px] text-xs"
+                      placeholder="搜索账号：用户名 / 标签（回车）"
+                      value={accSearch}
+                      onChange={(e) => setAccSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void loadAccounts();
+                      }}
+                    />
+                  </div>
+                  {totp && (
+                    // TOTP 动态码常驻卡：30s 一轮自动滚动（静态显示会让人抄到过期码）
+                    <div className="rounded-[10px] border border-sk-accent/35 bg-sk-accent/8 px-3 py-2.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm text-sk-text">
+                          {accountTitle(totp.account)} 动态码：
+                          <code className="mx-1 rounded bg-sk-hover px-1.5 py-0.5 text-[15px] font-semibold">
+                            {totp.code}
+                          </code>
+                          <span className="sk-hint">（{totp.remain}s 后滚动）</span>
+                        </span>
+                        <UiButton size="sm" onClick={totp.copy}>
+                          复制
+                        </UiButton>
+                        <UiButton variant="ghost" size="sm" onClick={stopTotp}>
+                          关闭
+                        </UiButton>
+                      </div>
+                    </div>
+                  )}
+                  <Table<AccountRow>
+                    rowKey={(r) => r.id}
+                    loading={accountsLoading}
+                    dataSource={accounts}
+                    columns={accountColumns}
+                    empty={<Empty description="该站点暂无账号——点右上角「+ 账号」添加" />}
+                  />
+                </div>
+              )}
+            </CardBody>
           </Card>
         </div>
       ) : null}
@@ -1408,28 +1379,28 @@ export function VaultPage() {
       </UiModal>
 
       {/* 安全体检结果：重复密码组（掩码展示，明文不出后端） */}
-      <Modal
+      <UiModal
         open={reused.open}
         title="安全体检 · 重复密码"
-        footer={
-          <Button onClick={() => setReused((r) => ({ ...r, open: false }))}>关闭</Button>
-        }
-        onCancel={() => setReused((r) => ({ ...r, open: false }))}
+        onClose={() => setReused((r) => ({ ...r, open: false }))}
         width={520}
+        footer={
+          <UiButton onClick={() => setReused((r) => ({ ...r, open: false }))}>关闭</UiButton>
+        }
       >
         {reused.loading ? (
-          <Typography.Text type="secondary">正在解密比对全部账号…</Typography.Text>
+          <div className="text-sk-sub">正在解密比对全部账号…</div>
         ) : reused.groups.length === 0 ? (
-          <Typography.Text>✅ 没有发现重复使用的密码</Typography.Text>
+          <div>✅ 没有发现重复使用的密码</div>
         ) : (
-          <Space direction="vertical" size={10} style={{ width: "100%" }}>
-            <Typography.Text type="warning">
+          <div className="flex flex-col gap-2.5">
+            <div className="text-sk-warn">
               发现 {reused.groups.length} 组重复密码——一处泄露会波及全部账号：
-            </Typography.Text>
+            </div>
             {reused.groups.map((g) => (
               <div key={g.masked}>
-                <Typography.Text code>{g.masked}</Typography.Text>
-                <ul style={{ margin: "4px 0 0", paddingLeft: 20 }}>
+                <code className="rounded bg-sk-hover px-1.5 py-0.5 font-mono text-xs">{g.masked}</code>
+                <ul className="mb-0 mt-1 list-disc pl-5">
                   {g.accounts.map((a, i) => (
                     <li key={i} className="sk-hint">
                       {a.site}
@@ -1439,9 +1410,9 @@ export function VaultPage() {
                 </ul>
               </div>
             ))}
-          </Space>
+          </div>
         )}
-      </Modal>
-  </div>
+      </UiModal>
+    </div>
   );
 }
