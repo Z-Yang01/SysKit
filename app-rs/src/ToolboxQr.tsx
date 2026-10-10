@@ -9,22 +9,17 @@
  * 结果动作按文本类型路由（routeQrResult，纯函数在 qrdecode.ts 有测试）：
  * URL → 打开；WIFI: → 拆解 SSID/密码/认证 + 复制密码走敏感通道；
  * 已存 WiFi 命中时给「查看该网密钥」跳转；其余 → 复制。
+ *
+ * v1.4 UI 迁移：脱离 AntD（Alert/Descriptions/Spin/Tag/copyable → ui 件 + KV 行）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Alert,
-  Button,
-  Descriptions,
-  Space,
-  Spin,
-  Tag,
-  Typography,
-  message,
-} from "antd";
 
 import { copyChannel, isHttpUrl, parseWifiQr, type WifiQrInfo } from "./qrdecode";
 import { SENSITIVE_COPY_COMMAND } from "./wifipassword";
+import { Badge, Button } from "./ui";
+import { Alert } from "./ui/alert";
+import { useToast } from "./ui/toast";
 
 interface Props {
   /** 剪贴板历史 ··· 菜单复用本组件的结果卡时，外部已拿到文本，跳过识别步骤 */
@@ -43,7 +38,18 @@ async function knownSsids(): Promise<string[]> {
   }
 }
 
+/** 键值行（AntD Descriptions 的替代，同 ToolboxBattery）。 */
+function KV({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-3 py-1">
+      <span className="w-32 shrink-0 text-sk-sub">{label}</span>
+      <span className="min-w-0 text-sk-text">{children}</span>
+    </div>
+  );
+}
+
 export function ToolboxQr({ initialText, decodeClipItem, onDone }: Props) {
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState<string | null>(initialText ?? null);
   const [err, setErr] = useState("");
@@ -124,16 +130,16 @@ export function ToolboxQr({ initialText, decodeClipItem, onDone }: Props) {
         // 与「复制密码」同口径（不进历史 / 不进 Win+V / 到期清空）
         if (copyChannel(t) === "sensitive") {
           await invoke(SENSITIVE_COPY_COMMAND, { text: t });
-          message.success(`${label}已复制（含密码，敏感通道，到期自动清空）`);
+          toast.success(`${label}已复制（含密码，敏感通道，到期自动清空）`);
         } else {
           await invoke("sk_clip_copy_plain", { text: t });
-          message.success(`${label}已复制`);
+          toast.success(`${label}已复制`);
         }
       } catch (e) {
-        message.error(String(e));
+        toast.error(String(e));
       }
     },
-    [],
+    [toast],
   );
 
   const copyPassword = useCallback(async () => {
@@ -141,32 +147,30 @@ export function ToolboxQr({ initialText, decodeClipItem, onDone }: Props) {
     try {
       // 纪律同 WiFi 密钥：密码走敏感通道（不进历史 / 不进 Win+V / 到期清空）
       await invoke(SENSITIVE_COPY_COMMAND, { text: wifi.password });
-      message.success("密码已复制（敏感通道，到期自动清空）");
+      toast.success("密码已复制（敏感通道，到期自动清空）");
     } catch (e) {
-      message.error(String(e));
+      toast.error(String(e));
     }
-  }, [wifi]);
+  }, [wifi, toast]);
 
-  const openUrl = useCallback(async (u: string) => {
-    try {
-      await invoke("sk_open_url", { url: u });
-    } catch (e) {
-      message.error(String(e));
-    }
-  }, []);
+  const openUrl = useCallback(
+    async (u: string) => {
+      try {
+        await invoke("sk_open_url", { url: u });
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+    [toast],
+  );
 
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Space wrap>
-        <Button
-          type="primary"
-          size="small"
-          loading={busy}
-          onClick={() => fileRef.current?.click()}
-        >
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="primary" loading={busy} onClick={() => fileRef.current?.click()}>
           选择图片…
         </Button>
-        <Button size="small" loading={busy} onClick={() => void decodeClipboard()}>
+        <Button loading={busy} onClick={() => void decodeClipboard()}>
           从剪贴板识别
         </Button>
         <input
@@ -180,92 +184,78 @@ export function ToolboxQr({ initialText, decodeClipItem, onDone }: Props) {
             e.target.value = ""; // 同一张图可重选
           }}
         />
-        <Typography.Text type="secondary" className="sk-hint">
-          支持截图 / 图片文件里的二维码；识别在本机完成，不联网
-        </Typography.Text>
-      </Space>
+        <span className="sk-hint">支持截图 / 图片文件里的二维码；识别在本机完成，不联网</span>
+      </div>
 
-      {busy && (
-        <div style={{ textAlign: "center", padding: "18px 0" }}>
-          <Spin tip="正在识别…" />
-        </div>
+      {busy && <div className="py-4 text-center text-sm text-sk-sub">正在识别…</div>}
+
+      {err && (
+        <Alert tone="warning" title="识别失败">
+          {err}
+        </Alert>
       )}
-
-      {err && <Alert type="warning" showIcon message="识别失败" description={err} />}
 
       {text !== null && !busy && (
         <>
           {wifi ? (
-            <Alert
-              type="success"
-              showIcon
-              message="识别到 WiFi 二维码"
-              description={
-                <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                  <Descriptions size="small" column={1}>
-                    <Descriptions.Item label="网络名（SSID）">
-                      {wifi.ssid}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="认证方式">
-                      {wifi.auth.toUpperCase()}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="密码">
-                      {wifi.password ? (
-                        <Space size={8}>
-                          <Typography.Text code>{wifi.password}</Typography.Text>
-                          <Button size="small" type="link" onClick={() => void copyPassword()}>
-                            复制密码
-                          </Button>
-                        </Space>
-                      ) : (
-                        <Typography.Text type="secondary">（无密码，开放网络）</Typography.Text>
-                      )}
-                    </Descriptions.Item>
-                    {wifi.hidden && (
-                      <Descriptions.Item label="隐藏网络">是</Descriptions.Item>
+            <Alert tone="success" title="识别到 WiFi 二维码">
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-col divide-y divide-sk-border/60">
+                  <KV label="网络名（SSID）">{wifi.ssid}</KV>
+                  <KV label="认证方式">{wifi.auth.toUpperCase()}</KV>
+                  <KV label="密码">
+                    {wifi.password ? (
+                      <span className="inline-flex items-center gap-2">
+                        <code className="rounded bg-sk-hover px-1.5 py-0.5 font-mono text-xs">
+                          {wifi.password}
+                        </code>
+                        <Button variant="ghost" size="sm" onClick={() => void copyPassword()}>
+                          复制密码
+                        </Button>
+                      </span>
+                    ) : (
+                      <span className="text-sk-sub">（无密码，开放网络）</span>
                     )}
-                  </Descriptions>
-                  {ssids.includes(wifi.ssid) && (
-                    <Typography.Text type="secondary" className="sk-hint">
-                      该网络已在本机已存列表——密钥可在「系统助手 → WiFi 密码 → 已存密码」查看
-                    </Typography.Text>
-                  )}
-                </Space>
-              }
-            />
+                  </KV>
+                  {wifi.hidden && <KV label="隐藏网络">是</KV>}
+                </div>
+                {ssids.includes(wifi.ssid) && (
+                  <div className="sk-hint">
+                    该网络已在本机已存列表——密钥可在「系统助手 → WiFi 密码 → 已存密码」查看
+                  </div>
+                )}
+              </div>
+            </Alert>
           ) : (
             <Alert
-              type="success"
-              showIcon
-              message={
-                <Space size={6}>
+              tone="success"
+              title={
+                <span className="inline-flex items-center gap-1.5">
                   识别结果
-                  {url ? <Tag color="blue">链接</Tag> : <Tag>文本</Tag>}
-                </Space>
+                  {url ? <Badge tone="accent">链接</Badge> : <Badge>文本</Badge>}
+                </span>
               }
-              description={
-                <Typography.Paragraph
-                  copyable
-                  style={{ marginBottom: 0, wordBreak: "break-all", whiteSpace: "pre-wrap" }}
-                >
-                  {text}
-                </Typography.Paragraph>
-              }
-            />
+            >
+              <div className="break-all whitespace-pre-wrap">{text}</div>
+            </Alert>
           )}
-          <Space wrap>
-            <Button size="small" onClick={() => void copyContent(text, "内容")}>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => void copyContent(text, "内容")}>
               复制内容
             </Button>
             {url && (
-              <Button size="small" type="primary" onClick={() => void openUrl(url)}>
+              <Button variant="primary" size="sm" onClick={() => void openUrl(url)}>
                 打开链接
               </Button>
             )}
-            {onDone && <Button size="small" onClick={onDone}>关闭</Button>}
-          </Space>
+            {onDone && (
+              <Button size="sm" onClick={onDone}>
+                关闭
+              </Button>
+            )}
+          </div>
         </>
       )}
-    </Space>
+    </div>
   );
 }
