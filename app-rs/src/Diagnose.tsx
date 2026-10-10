@@ -90,6 +90,8 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   const [report, setReport] = useState<DiagReport | null>(null);
   // 单项重查进行中的检查 id（"" = 空闲）；替换该行结果而不是整轮重跑
   const [recheckId, setRecheckId] = useState("");
+  // 批量重查「全部失败/警告项」（v1.4 操作优化）：跑完修复动作后逐项确认效果
+  const [batchRechecking, setBatchRechecking] = useState(false);
   const [diagBusy, setDiagBusy] = useState<"" | "quick" | "full">("");
   /** 组合修复执行中的进度（null = 空闲）；total 只数真正会跑的步。 */
   const [comboRun, setComboRun] = useState<{
@@ -300,6 +302,46 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       },
     });
   }, [report, data, busy, comboRun, diagBusy, paramValues, isAdmin, refreshAfterCombo]);
+
+  /** 重查全部失败/警告项（只读检查，安全）：跑完修复后逐项确认效果。
+   * 逐项替换结果（与单项重查同一口径），全部完成后不自动刷新整轮——
+   * 失败项在重查后转好的会即时变绿。 */
+  const recheckAllFailed = useCallback(async () => {
+    if (!report || batchRechecking || diagBusy || comboRun) return;
+    const failed = report.results.filter((r) => r.status === "fail" || r.status === "warn");
+    if (failed.length === 0) {
+      message.info("没有失败/警告项需要重查");
+      return;
+    }
+    setBatchRechecking(true);
+    let nowOk = 0;
+    try {
+      for (const r of failed) {
+        setRecheckId(r.id);
+        try {
+          const fresh = await invoke<CheckResult>("sk_diag_one", { id: r.id });
+          setReport((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  results: prev.results.map((x) => (x.id === fresh.id ? fresh : x)),
+                }
+              : prev,
+          );
+          if (fresh.status === "pass") nowOk += 1;
+        } catch (e) {
+          // 单项失败不中断批量（与单项重查同语义），结果行保持原状
+          console.warn(`重查 ${r.id} 失败`, e);
+        }
+      }
+      message[nowOk > 0 ? "success" : "info"](
+        `重查完成：${failed.length} 项中 ${nowOk} 项已转为通过`,
+      );
+    } finally {
+      setRecheckId("");
+      setBatchRechecking(false);
+    }
+  }, [report, batchRechecking, diagBusy, comboRun]);
 
   /** 执行一个动作（改配置/强力类先确认）。 */
   const run = useCallback(
@@ -633,6 +675,20 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
               title="自动诊断并修复可自动处理的问题，全程无需理解网络术语"
             >
               🔧 一键智能修复
+            </Button>
+            <Button
+              size="small"
+              onClick={() => void recheckAllFailed()}
+              loading={batchRechecking}
+              disabled={
+                !!diagBusy ||
+                comboRun !== null ||
+                recheckId !== "" ||
+                !report ||
+                !report.results.some((r) => r.status === "fail" || r.status === "warn")
+              }
+            >
+              重查失败项
             </Button>
             <Button
               size="small"
