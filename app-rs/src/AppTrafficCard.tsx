@@ -3,20 +3,11 @@
  *
  * 数据 ETW 采集（需管理员）：available=false 时给诚实的降级说明——
  * 一张空表会让人误以为「真的没流量」。
+ *
+ * v1.4 UI 迁移：脱离 AntD（Table/Progress/Segmented/Row/Col → ui 件 + flex）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Alert,
-  Col,
-  Input,
-  Progress,
-  Row,
-  Segmented,
-  Space,
-  Table,
-  Typography,
-} from "antd";
 
 import {
   APP_RANGES,
@@ -27,6 +18,8 @@ import {
   type AppUsageRow,
 } from "./apptraffic";
 import { humanBytes } from "./dashboard";
+import { Empty, Input, Progress, Segmented, Table, type Column } from "./ui";
+import { Alert } from "./ui/alert";
 
 const COLUMNS = ["应用", "下载", "上传", "合计", "占比"] as const;
 
@@ -66,38 +59,37 @@ export function AppTrafficCard() {
 
   const rows = useMemo(() => topRows(data?.rows ?? []), [data]);
 
-  const columns = [
+  const columns: Column<AppUsageRow>[] = [
     {
       title: COLUMNS[0],
       dataIndex: "app",
-      ellipsis: true,
-      render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
+      render: (v: string) => (
+        <code className="rounded bg-sk-hover px-1.5 py-0.5 font-mono text-xs">{v}</code>
+      ),
     },
     {
       title: COLUMNS[1],
       dataIndex: "recv",
       width: 96,
-      align: "right" as const,
+      align: "right",
       render: (v: number) => humanBytes(v),
     },
     {
       title: COLUMNS[2],
       dataIndex: "sent",
       width: 96,
-      align: "right" as const,
+      align: "right",
       render: (v: number) => humanBytes(v),
     },
     {
       title: COLUMNS[3],
       key: "total",
       width: 110,
-      align: "right" as const,
+      align: "right",
       render: (_: unknown, r: AppUsageRow) => {
         const total = r.sent + r.recv;
         return (
-          <Typography.Text strong={r === rows[0]}>
-            {humanBytes(total)}
-          </Typography.Text>
+          <span className={r === rows[0] ? "font-semibold" : undefined}>{humanBytes(total)}</span>
         );
       },
     },
@@ -108,15 +100,10 @@ export function AppTrafficCard() {
       render: (_: unknown, r: AppUsageRow) => {
         const pct = sharePct(r, data?.sent ?? 0, data?.recv ?? 0);
         return (
-          <Space size={6} style={{ width: "100%" }}>
-            <Progress
-              percent={pct}
-              showInfo={false}
-              size="small"
-              style={{ width: 64, marginBottom: 0 }}
-            />
+          <span className="flex w-full items-center gap-1.5">
+            <Progress percent={pct} showInfo={false} className="w-16 flex-none" />
             <span className="sk-hint">{pct.toFixed(0)}%</span>
-          </Space>
+          </span>
         );
       },
     },
@@ -124,56 +111,46 @@ export function AppTrafficCard() {
 
   return (
     <div className="sk-card">
-      <Row justify="space-between" align="middle" style={{ marginBottom: 8 }}>
-        <Space>
-          <Typography.Text strong>应用流量</Typography.Text>
-          <span className="sk-hint">
-            按进程实时统计（ETW），复制/下载全计入；仅本机留存
-          </span>
-        </Space>
-        <Space>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[15px] font-semibold text-sk-text">应用流量</span>
+          <span className="sk-hint">按进程实时统计（ETW），复制/下载全计入；仅本机留存</span>
+        </div>
+        <div className="flex items-center gap-2">
           <Input
-            size="small"
-            allowClear
+            className="h-7 w-[150px] text-xs"
             placeholder="搜应用名…"
-            style={{ width: 150 }}
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
-          <Segmented
-            size="small"
+          <Segmented<AppTrafficRange>
+            size="sm"
             value={range}
-            onChange={(v) => setRange(v as AppTrafficRange)}
+            onChange={setRange}
             options={APP_RANGES.map((r) => ({ value: r.value, label: r.label }))}
           />
-        </Space>
-      </Row>
+        </div>
+      </div>
 
       {data && !data.available ? (
-        <Alert
-          type="info"
-          showIcon
-          message="应用流量暂不可用"
-          description={data.reason || "需要管理员身份运行"}
-        />
+        <Alert tone="info" title="应用流量暂不可用">
+          {data.reason || "需要管理员身份运行"}
+        </Alert>
       ) : (
         <>
           <Table<AppUsageRow>
-            size="small"
-            rowKey="app"
+            rowKey={(r) => r.app}
             loading={loading}
-            pagination={false}
             dataSource={rows}
-            locale={{ emptyText: "暂无数据——刚开启时需要等流量经过；或换个时间范围" }}
+            empty={<Empty description="暂无数据——刚开启时需要等流量经过；或换个时间范围" />}
             columns={columns}
           />
-          <Typography.Text type="secondary" className="sk-hint">
+          <div className="sk-hint mt-1">
             本范围合计：下行 {humanBytes(data?.recv ?? 0)} · 上行{" "}
             {humanBytes(data?.sent ?? 0)}（Top 15 之外的应用不计入此合计）
-          </Typography.Text>
+          </div>
         </>
       )}
-      {!data && !loading && <Col />}
     </div>
   );
 }
