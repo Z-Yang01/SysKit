@@ -4,22 +4,15 @@
  * M0 的骨架页已替换为真实页面：概览/网络监控（M2）。剪贴板历史复用 M1 已有的
  * `sk_clip_*` 命令直读内存态。其余页面（诊断/修复/工具箱/系统助手/密码库/设置）
  * 属 M3-M7，先给明确的「里程碑待接入」占位而不是空白。
+ *
+ * v1.4 UI 迁移：脱离 AntD——ConfigProvider/AntD 主题映射随之移除（全部页面
+ * 已用 ui 件，色板只经 CSS 变量消费）；Sider/Menu → 自建侧栏（brand 渐变与
+ * 热键速查卡样式原样保留）。
  */
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  ConfigProvider,
-  Empty,
-  Layout,
-  Menu,
-  Space,
-  Tabs,
-  theme as antdThemeApi,
-  Tag,
-  Typography,
-  message,
-} from "antd";
+
 import { Dashboard } from "./Overview";
 import { ClipboardHistoryPanel } from "./ToolboxClipboard";
 import { Diagnose } from "./Diagnose";
@@ -35,7 +28,9 @@ import { SettingsView, LogsView } from "./SettingsView";
 import type { SettingsAll } from "./settingsPage";
 import { applyHotkeyEcho, type HotkeyHints } from "./settingsPage";
 import { applyTheme, palette, type Palette } from "./theme";
-
+import { Badge, Empty } from "./ui";
+import { Tabs } from "./ui/tabs";
+import { useToast } from "./ui/toast";
 
 /** 里程碑占位页：说清「这块归属哪个 M」，不留白。 */
 function Pending({
@@ -49,14 +44,12 @@ function Pending({
 }) {
   return (
     <div className="sk-card">
-      <Space direction="vertical" size={10}>
-        <Typography.Title level={5} style={{ margin: 0 }}>
-          {title}
-        </Typography.Title>
-        <Tag color="blue">{milestone}</Tag>
-        <Typography.Text type="secondary">{detail}</Typography.Text>
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未接入" />
-      </Space>
+      <div className="flex flex-col gap-2.5 p-4">
+        <div className="text-[15px] font-semibold text-sk-text">{title}</div>
+        <Badge tone="accent">{milestone}</Badge>
+        <div className="text-sk-sub">{detail}</div>
+        <Empty description="尚未接入" />
+      </div>
     </div>
   );
 }
@@ -73,7 +66,19 @@ const ORDER_KEYS = [
   "logs",
 ];
 
+const NAV_ITEMS = [
+  { key: "overview", label: "🏠 概览 / 网络监控" },
+  { key: "clipboard", label: "📋 剪贴板历史" },
+  { key: "diagnose", label: "🔍 诊断 / 修复" },
+  { key: "toolbox", label: "⚡ 工具箱" },
+  { key: "system", label: "💼 系统助手" },
+  { key: "vault", label: "🔒 密码库" },
+  { key: "settings", label: "⚙ 设置" },
+  { key: "logs", label: "📜 日志" },
+];
+
 export function App() {
+  const toast = useToast();
   const [dark, setDark] = useState(false);
   // 深色偏好持久化：启动读 dark_mode 设置，切换写回（此前每次启动都回浅色）
   useEffect(() => {
@@ -108,7 +113,7 @@ export function App() {
   const [page, setPageState] = useState("overview");
   // Content 是唯一滚动容器（整窗 100vh 锁死）；切页回滚顶部——否则新页面
   // 继承上一页的滚动位置，用户会看到"新页面从中间开始"
-  const contentRef = useRef<HTMLElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
   }, [page]);
@@ -193,11 +198,12 @@ export function App() {
       .catch(() => setVersion(""));
     // 后端气泡通知（托盘/粘贴降级提示）
     const un = listen<{ title: string; body: string }>("sk://notify", (ev) => {
-      message.info(`${ev.payload.title}：${ev.payload.body}`);
+      toast.info(`${ev.payload.title}：${ev.payload.body}`);
     });
     const un2 = listen<{ ok: boolean; message: string }>("sk://paste-result", (ev) => {
       if (ev.payload.message) {
-        (ev.payload.ok ? message.success : message.warning)(ev.payload.message);
+        if (ev.payload.ok) toast.success(ev.payload.message);
+        else toast.info(ev.payload.message);
       }
     });
     // 命令面板动作分发：nav/tab 跳页（tab 同时受控切子 tab）、quick:diag 触发
@@ -217,61 +223,9 @@ export function App() {
       void un2.then((f) => f());
       void un3.then((f) => f());
     };
-  }, []);
+  }, [toast]);
 
   const pal: Palette = palette(dark);
-
-  const antdTheme = {
-    // 深浅算法必须跟着切：只叠深色 token 不够——AntD 组件（Alert/表格/弹窗）
-    // 仍按亮色算法推导派生色，出现浅蓝底配暗字的不可读组合（真机实锤）
-    algorithm: dark ? antdThemeApi.darkAlgorithm : antdThemeApi.defaultAlgorithm,
-    token: {
-      colorPrimary: pal.accent,
-      colorInfo: pal.info,
-      colorSuccess: pal.ok,
-      colorWarning: pal.warn,
-      colorError: pal.err,
-      colorBgBase: pal.bg,
-      colorBgContainer: pal.card,
-      colorBgElevated: pal.card,
-      colorBgLayout: pal.bg,
-      colorText: pal.text,
-      colorTextSecondary: pal.sub,
-      colorBorder: pal.border,
-      // 内层分隔线（表格行线/下拉分割等）：用不透明 border，不能用 glass_border——
-      // 亮色 glass_border 是 65% 白，叠白卡上对比度 1.01:1，表格行线整列消失
-      // （轮次115 审计实锤；玻璃描边由 base.css 只施加在玻璃表面上）
-      colorBorderSecondary: pal.border,
-      borderRadius: 10,
-      borderRadiusLG: 14,
-      fontSize: 14,
-      fontFamily:
-        '"Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif',
-      boxShadow: `0 8px 24px ${pal.shadow_color}`,
-      boxShadowSecondary: `0 2px 8px ${pal.shadow_color}`,
-    },
-    components: {
-      Card: { borderRadiusLG: 14, paddingLG: 18 },
-      Table: {
-        headerBg: "transparent",
-        headerColor: pal.sub,
-        rowHoverBg: pal.hover,
-        borderRadius: 12,
-      },
-      Menu: {
-        itemBorderRadius: 8,
-        itemMarginInline: 8,
-        itemSelectedBg: pal.accent_soft,
-        itemSelectedColor: pal.accent,
-      },
-      Button: { borderRadius: 8, controlHeight: 32 },
-      Input: { borderRadius: 8 },
-      Modal: { borderRadiusLG: 14 },
-      Segmented: { itemSelectedBg: pal.card, borderRadius: 8 },
-      Tabs: { inkBarColor: pal.accent, itemSelectedColor: pal.accent },
-      Tag: { borderRadiusSM: 6 },
-    },
-  };
 
   // 子 tab 受控：palette 动作直达页内 tab（不再 DOM 点击 hack）
   // 子 tab 记忆（localStorage）：切页回来不丢——与概览速率窗口同一手法
@@ -316,119 +270,84 @@ export function App() {
   };
 
   return (
-    <ConfigProvider theme={antdTheme}>
-      {/* 整窗锁死 100vh：滚动只发生在 Content 内部——Sider/Header 是固定框架，
-          文档级滚动会把侧栏一起带走（用户实测：设置页一滚侧栏跟着跑）。 */}
-      <Layout style={{ height: "100vh", overflow: "hidden", background: pal.bg }}>
-        <Layout.Sider
-          theme={dark ? "dark" : "light"}
-          width={208}
+    /* 整窗锁死 100vh：滚动只发生在 Content 内部——Sider/Header 是固定框架，
+        文档级滚动会把侧栏一起带走（用户实测：设置页一滚侧栏跟着跑）。 */
+    <div className="flex h-screen overflow-hidden" style={{ background: "var(--sk-bg)" }}>
+      {/* 侧栏：自建（AntD Sider/Menu 替代），固定 208px，自身可滚（项少实际不滚） */}
+      <div className="relative h-screen w-[208px] shrink-0 overflow-y-auto border-r border-sk-glass">
+        {/* 品牌区：渐变 S 标（accent 双色）+ 双行文案；徽标随主题取色 */}
+        <div className="flex items-center gap-2.5 px-4 pb-3 pt-4">
+          <div
+            className="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-[10px] text-xl font-bold text-white"
+            style={{
+              background: `linear-gradient(135deg, ${pal.accent}, ${pal.accent_soft2})`,
+              boxShadow: `0 4px 12px ${pal.shadow_color}`,
+            }}
+          >
+            S
+          </div>
+          <div className="min-w-0 leading-tight">
+            <div className="block text-[15px] font-semibold text-sk-text">SysKit</div>
+            <div className="text-xs text-sk-sub">{version ? `v${version} ` : ""}系统工具箱</div>
+          </div>
+        </div>
+        <nav className="flex flex-col gap-0.5 px-2">
+          {NAV_ITEMS.map((it) => {
+            const selected = page === it.key;
+            return (
+              <button
+                key={it.key}
+                onClick={() => setPage(it.key)}
+                className={
+                  "cursor-pointer rounded-[8px] border-0 px-2.5 py-2 text-left text-sm transition-colors duration-150 " +
+                  (selected
+                    ? "font-medium text-sk-accent"
+                    : "text-sk-text hover:bg-sk-hover")
+                }
+                style={selected ? { background: "var(--sk-accent_soft)" } : { background: "transparent" }}
+              >
+                {it.label}
+              </button>
+            );
+          })}
+        </nav>
+        {/* 热键速查卡：玻璃化（强玻璃类，静态内容允许 blur） */}
+        <div
+          className="sk-glass-strong"
           style={{
-            position: "relative",
-            height: "100vh",
-            overflowY: "auto",
+            position: "absolute",
+            bottom: 12,
+            left: 12,
+            right: 12,
+            padding: "8px 10px",
+            borderRadius: 10,
+            border: `1px solid ${pal.glass_border}`,
+            fontSize: 11,
+            lineHeight: 1.7,
+            color: pal.brand_sub,
           }}
         >
-          {/* 品牌区：渐变 S 标（accent 双色）+ 双行文案；徽标随主题取色 */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 16px 12px" }}>
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                flexShrink: 0,
-                borderRadius: 10,
-                background: `linear-gradient(135deg, ${pal.accent}, ${pal.accent_soft2})`,
-                color: "#fff",
-                fontSize: 20,
-                fontWeight: 700,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                userSelect: "none",
-                boxShadow: `0 4px 12px ${pal.shadow_color}`,
-              }}
-            >
-              S
-            </div>
-            <div style={{ lineHeight: 1.35, minWidth: 0 }}>
-              <Typography.Text strong style={{ display: "block", fontSize: 15 }}>
-                SysKit
-              </Typography.Text>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {version ? `v${version} ` : ""}系统工具箱
-              </Typography.Text>
-            </div>
-          </div>
-          <Menu
-            mode="inline"
-            selectedKeys={[page]}
-            onClick={(e) => setPage(e.key)}
-            style={{
-              borderInlineEnd: "none",
-              background: "transparent",
-              paddingInline: 8,
-            }}
-            items={[
-              { key: "overview", label: "🏠 概览 / 网络监控" },
-              { key: "clipboard", label: "📋 剪贴板历史" },
-              { key: "diagnose", label: "🔍 诊断 / 修复" },
-              { key: "toolbox", label: "⚡ 工具箱" },
-              { key: "system", label: "💼 系统助手" },
-              { key: "vault", label: "🔒 密码库" },
-              { key: "settings", label: "⚙ 设置" },
-              { key: "logs", label: "📜 日志" },
-            ]}
-          />
-          {/* 热键速查卡：玻璃化（强玻璃类，静态内容允许 blur） */}
-          <div
-            className="sk-glass-strong"
-            style={{
-              position: "absolute",
-              bottom: 12,
-              left: 12,
-              right: 12,
-              padding: "8px 10px",
-              borderRadius: 10,
-              border: `1px solid ${pal.glass_border}`,
-              fontSize: 11,
-              lineHeight: 1.7,
-              color: pal.brand_sub,
-            }}
-          >
-            <div>快速粘贴：{hotkeys.quick}</div>
-            <div>命令面板：{hotkeys.palette}</div>
-            <div style={{ marginTop: 4, opacity: 0.7 }}>可在「设置」改键</div>
-          </div>
-        </Layout.Sider>
+          <div>快速粘贴：{hotkeys.quick}</div>
+          <div>命令面板：{hotkeys.palette}</div>
+          <div style={{ marginTop: 4, opacity: 0.7 }}>可在「设置」改键</div>
+        </div>
+      </div>
 
-        <Layout style={{ height: "100vh", minHeight: 0, overflow: "hidden", background: "transparent" }}>
-          {/* Header 目前无实际内容：只保留玻璃带分层，压到 8px 细线避免空带占高 */}
-          <div
-            style={{
-              height: 8,
-              background: "transparent",
-            }}
-          />
+      <div className="flex h-screen min-h-0 flex-col overflow-hidden">
+        {/* Header 目前无实际内容：只保留玻璃带分层，压到 8px 细线避免空带占高 */}
+        <div className="h-2 shrink-0" />
 
-          {/* flex 列：让 .sk-page（flex:1 0 auto）撑满剩余高度——滚动仍发生在本容器 */}
-          <Layout.Content
-            ref={contentRef}
-            style={{
-              padding: "14px 16px 14px",
-              minHeight: 0,
-              overflow: "auto",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            {/* key=page 强制切页淡入（sk-page 动画），替代硬切 */}
-            <div key={page} className="sk-page">
-              {pages[page] ?? <Pending title={page} milestone="—" detail="未知页面" />}
-            </div>
-          </Layout.Content>
-        </Layout>
-      </Layout>
-    </ConfigProvider>
+        {/* flex 列：让 .sk-page（flex:1 0 auto）撑满剩余高度——滚动仍发生在本容器 */}
+        <div
+          ref={contentRef}
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-3.5 pt-3.5"
+        >
+          {/* key=page 强制切页淡入（sk-page 动画），替代硬切 */}
+          <div key={page} className="sk-page">
+            {pages[page] ?? <Pending title={page} milestone="—" detail="未知页面" />}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
-
