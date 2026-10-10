@@ -7,28 +7,12 @@
  * - 二维码的 WIFI: 编码串含明文密码——**只渲染成图，绝不显示串本身、
  *   不写日志**；页面上只展示 SSID 与认证方式；
  * - 扫描结果不含凭据，可随意展示与自动刷新。
+ *
+ * v1.4 UI 迁移：脱离 AntD（Table/Select/Radio.Group/Descriptions/Progress → ui 件；
+ * 已存密码左列表由 Table 改为纯列表行）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Alert,
-  Button,
-  Card,
-  Descriptions,
-  Empty,
-  Input,
-  Progress,
-  Radio,
-  Select,
-  Space,
-  Spin,
-  Switch,
-  Table,
-  Tabs,
-  Tag,
-  Typography,
-  message,
-} from "antd";
 
 import { svgDataUrl } from "./qr";
 import { useFillRowHeight } from "./useFillRow";
@@ -56,9 +40,20 @@ import {
   type ScannedAp,
   type SensitiveCopyResult,
 } from "./wifipassword";
+import { Badge, Button, Card, CardBody, CardHeader, CardTitle, Empty, Input, Progress, Segmented, Switch, Table, type Column } from "./ui";
+import { Select } from "./ui/select";
+import { Alert } from "./ui/alert";
+import { Tabs } from "./ui/tabs";
+import { useToast } from "./ui/toast";
+
+/** "green"/"orange"/"red" 分档 → Badge tone（signalTag/channelLoadTag 共用）。 */
+function colorTone(c: string): "ok" | "warn" | "err" {
+  return c === "green" ? "ok" : c === "orange" ? "warn" : "err";
+}
 
 /** WiFi 工具页容器：扫描结果与配置文件列表在父级持有，四个 tab 共享。 */
 export function WifiPage() {
+  const toast = useToast();
   const [aps, setAps] = useState<ScannedAp[]>([]);
   const [scanning, setScanning] = useState(false);
   const [scanErr, setScanErr] = useState("");
@@ -88,8 +83,8 @@ export function WifiPage() {
     }
   }, []);
 
-  // Python 版在 showEvent 首显时才扫描：AntD Tabs 的 pane 首次激活才挂载，
-  // 挂载即首显——用户不开 WiFi 页就不会白跑 netsh
+  // ui Tabs keepMounted：本组件挂载（用户切到 WiFi 密码页）即首扫——
+  // 用户不开 WiFi 页就不会白跑 netsh（对齐 Python showEvent 首显扫描）
   useEffect(() => {
     void scan();
   }, [scan]);
@@ -110,11 +105,11 @@ export function WifiPage() {
       const r = await invoke<ProfilesResult>("sk_wifi_profiles");
       setProfiles(r.profiles);
     } catch (e) {
-      message.error(String(e));
+      toast.error(String(e));
     } finally {
       setProfilesLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void loadProfiles();
@@ -162,6 +157,8 @@ export function WifiPage() {
 
 // ---------------- Tab 1：周边 AP ----------------
 
+const SCAN_PAGE_SIZE = 20;
+
 function ScanTab(props: {
   aps: ScannedAp[];
   scanning: boolean;
@@ -171,89 +168,97 @@ function ScanTab(props: {
   onAutoChange: (v: boolean) => void;
   onScan: () => void;
 }) {
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(props.aps.length / SCAN_PAGE_SIZE));
+  const cur = Math.min(page, pageCount - 1);
+  const pageRows = props.aps.slice(cur * SCAN_PAGE_SIZE, cur * SCAN_PAGE_SIZE + SCAN_PAGE_SIZE);
+
+  const columns: Column<ScannedAp>[] = [
+    {
+      title: "SSID",
+      dataIndex: "ssid",
+      render: (v: string, r: ScannedAp) => (
+        <span className="inline-flex items-center gap-1.5">
+          {v === "(隐藏)" ? <span className="text-sk-sub">{v}</span> : <span>{v}</span>}
+          {r.radio && <span className="sk-hint">{r.radio}</span>}
+        </span>
+      ),
+    },
+    {
+      title: "BSSID",
+      dataIndex: "bssid",
+      width: 175,
+      render: (v: string) => <code className="rounded bg-sk-hover px-1.5 py-0.5 font-mono text-xs">{v}</code>,
+    },
+    {
+      title: "信号",
+      dataIndex: "signal",
+      width: 90,
+      render: (v: number) => <Badge tone={colorTone(signalTag(v))}>{v}%</Badge>,
+    },
+    {
+      title: "信道",
+      dataIndex: "channel",
+      width: 70,
+      render: (v: number) => v || "—",
+    },
+    {
+      title: "频段",
+      dataIndex: "band",
+      width: 80,
+      render: (v: string) => (v === "?" ? <Badge>未知</Badge> : <Badge tone="accent">{v}</Badge>),
+    },
+    {
+      title: "认证",
+      dataIndex: "auth",
+      width: 150,
+      render: (v: string) => v || "—",
+    },
+  ];
+
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Space wrap>
-        <Button size="small" type="primary" loading={props.scanning} onClick={props.onScan}>
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="primary" size="sm" loading={props.scanning} onClick={props.onScan}>
           扫描
         </Button>
         <span className="sk-hint">每 10 秒自动刷新</span>
-        <Switch size="small" checked={props.auto} onChange={props.onAutoChange} />
-        {props.scannedAt && !props.scanErr && (
-          <Tag>{scanSummaryText(props.aps.length, props.scannedAt)}</Tag>
-        )}
-      </Space>
+        <Switch checked={props.auto} onChange={props.onAutoChange} aria-label="自动刷新" />
+        {props.scannedAt && !props.scanErr && <Badge>{scanSummaryText(props.aps.length, props.scannedAt)}</Badge>}
+      </div>
 
       {props.scanErr && (
-        <Alert type="warning" showIcon message="扫描失败" description={props.scanErr} />
+        <Alert tone="warning" title="扫描失败">
+          {props.scanErr}
+        </Alert>
       )}
 
       <Table<ScannedAp>
-        size="small"
         rowKey={(r) => r.bssid || `${r.ssid}-${r.signal}`}
-        pagination={{ pageSize: 20, showSizeChanger: false, hideOnSinglePage: true }}
-        dataSource={props.aps}
+        dataSource={pageRows}
         loading={props.scanning}
-        locale={{
-          emptyText: (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未扫描或未发现网络" />
-          ),
-        }}
-        columns={[
-          {
-            title: "SSID",
-            dataIndex: "ssid",
-            ellipsis: true,
-            render: (v: string, r: ScannedAp) => (
-              <Space size={6}>
-                {v === "(隐藏)" ? (
-                  <Typography.Text type="secondary">{v}</Typography.Text>
-                ) : (
-                  <span>{v}</span>
-                )}
-                {r.radio && <span className="sk-hint">{r.radio}</span>}
-              </Space>
-            ),
-          },
-          {
-            title: "BSSID",
-            dataIndex: "bssid",
-            width: 175,
-            render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
-          },
-          {
-            title: "信号",
-            dataIndex: "signal",
-            width: 90,
-            render: (v: number) => <Tag color={signalTag(v)}>{v}%</Tag>,
-          },
-          {
-            title: "信道",
-            dataIndex: "channel",
-            width: 70,
-            render: (v: number) => v || "—",
-          },
-          {
-            title: "频段",
-            dataIndex: "band",
-            width: 80,
-            render: (v: string) => (v === "?" ? <Tag>未知</Tag> : <Tag color="blue">{v}</Tag>),
-          },
-          {
-            title: "认证",
-            dataIndex: "auth",
-            width: 150,
-            ellipsis: true,
-            render: (v: string) => v || "—",
-          },
-        ]}
+        empty={<Empty description="尚未扫描或未发现网络" />}
+        columns={columns}
       />
+      {pageCount > 1 && (
+        <div className="flex items-center justify-end gap-2 text-xs text-sk-sub">
+          <span>
+            共 {props.aps.length} 个 · 第 {cur + 1}/{pageCount} 页
+          </span>
+          <Button size="sm" disabled={cur === 0} onClick={() => setPage(cur - 1)}>
+            上一页
+          </Button>
+          <Button size="sm" disabled={cur >= pageCount - 1} onClick={() => setPage(cur + 1)}>
+            下一页
+          </Button>
+        </div>
+      )}
 
-      <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginBottom: 0 }}>
+      <div className="sk-hint">
         提示：Win11 扫描周边 WiFi 需要系统「位置」服务开启（设置→隐私和安全性→位置）。
         扫描走 netsh，双频合一的网络按 BSSID 拆成多行（2.4G / 5G 各一条）。
-      </Typography.Paragraph>
-    </Space>
+      </div>
+    </div>
   );
 }
 
@@ -264,60 +269,59 @@ function ChannelTab({ aps }: { aps: ScannedAp[] }) {
   const advice = useMemo(() => recommendChannels(aps), [aps]);
 
   if (aps.length === 0) {
-    return (
-      <Empty
-        image={Empty.PRESENTED_IMAGE_SIMPLE}
-        description="暂无数据——先在「周边 AP」扫描一次"
-      />
-    );
+    return <Empty description="暂无数据——先在「周边 AP」扫描一次" />;
   }
 
   const max24 = Math.max(1, ...agg.c24.map((c) => c.count));
   const max5 = Math.max(1, ...agg.c5.map((c) => c.count));
 
   const bandBlock = (title: string, rows: ChannelUsage[], max: number) => (
-    <Card size="small" className="sk-card" title={title}>
-      {rows.length === 0 ? (
-        <Typography.Text type="secondary" className="sk-hint">
-          未发现该频段的网络
-        </Typography.Text>
-      ) : (
-        <Space direction="vertical" size={4} style={{ width: "100%" }}>
-          {rows.map((r) => (
-            <Space key={r.channel} size={8}>
-              <Tag style={{ minWidth: 64, textAlign: "center" }}>信道 {r.channel}</Tag>
-              <Progress
-                percent={(r.count / max) * 100}
-                showInfo={false}
-                size="small"
-                style={{ width: 320, maxWidth: "50vw", marginBottom: 0 }}
-              />
-              <Tag color={channelLoadTag(r.count)}>{r.count} 个 AP</Tag>
-            </Space>
-          ))}
-        </Space>
-      )}
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardBody>
+        {rows.length === 0 ? (
+          <div className="sk-hint">未发现该频段的网络</div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {rows.map((r) => (
+              <div key={r.channel} className="flex items-center gap-2">
+                <Badge className="min-w-16 justify-center">信道 {r.channel}</Badge>
+                <Progress
+                  percent={(r.count / max) * 100}
+                  showInfo={false}
+                  className="w-[320px] max-w-[50vw]"
+                  tone={colorTone(channelLoadTag(r.count))}
+                />
+                <Badge tone={colorTone(channelLoadTag(r.count))}>{r.count} 个 AP</Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardBody>
     </Card>
   );
 
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Alert type="info" showIcon message={channelAdviceText(advice)} />
+    <div className="flex flex-col gap-2.5">
+      <Alert tone="info" title={channelAdviceText(advice)} />
       {bandBlock("2.4GHz 信道占用（1~13，AP 数量）", agg.c24, max24)}
       {bandBlock("5GHz 信道占用（AP 数量）", agg.c5, max5)}
-      <Typography.Paragraph type="secondary" className="sk-hint" style={{ marginBottom: 0 }}>
+      <div className="sk-hint">
         条长 = 该信道 AP 数占本频段最挤信道的比例；颜色：绿 ≤2 个、橙 ≤4 个、红更多。
         推荐 2.4G 信道计入 ±4 内邻频重叠与信号强弱；5G 按 80MHz 块挑最空锚点并避开 DFS 雷达信道。
-      </Typography.Paragraph>
-    </Space>
+      </div>
+    </div>
   );
 }
 
 // ---------------- Tab 3：二维码分享 ----------------
 
 function ShareTab(props: { profiles: string[]; profilesLoading: boolean }) {
+  const toast = useToast();
   const [mode, setMode] = useState<"profile" | "manual">("profile");
-  const [selected, setSelected] = useState<string | undefined>(undefined);
+  const [selected, setSelected] = useState("");
   const [ssid, setSsid] = useState("");
   const [password, setPassword] = useState("");
   const [auth, setAuth] = useState<string>("WPA");
@@ -347,16 +351,16 @@ function ShareTab(props: { profiles: string[]; profilesLoading: boolean }) {
       setQrSvg("");
       setQrSsid("");
       setQrAuth("");
-      message.error(passwordErrorHint(String(e)));
+      toast.error(passwordErrorHint(String(e)));
     } finally {
       setBusy(false);
     }
-  }, [selected, busy]);
+  }, [selected, busy, toast]);
 
   const generateManual = useCallback(async () => {
     const invalid = validateWifiQrInput(ssid, password, auth);
     if (invalid) {
-      message.warning(invalid);
+      toast.info(invalid);
       return;
     }
     if (busy) return;
@@ -374,11 +378,11 @@ function ShareTab(props: { profiles: string[]; profilesLoading: boolean }) {
       setQrSvg("");
       setQrSsid("");
       setQrAuth("");
-      message.error(String(e));
+      toast.error(String(e));
     } finally {
       setBusy(false);
     }
-  }, [ssid, password, auth, busy]);
+  }, [ssid, password, auth, busy, toast]);
 
   // 保存 PNG：SVG 画上白底后转位图（静区必须白，扫码可靠性硬要求）
   const saveQrPng = useCallback(async () => {
@@ -403,21 +407,19 @@ function ShareTab(props: { profiles: string[]; profilesLoading: boolean }) {
       a.href = canvas.toDataURL("image/png");
       a.download = "wifi_qr.png";
       a.click();
-      message.success("已保存 wifi_qr.png");
+      toast.success("已保存 wifi_qr.png");
     } catch (e) {
-      message.error(`二维码导出失败：${String(e)}`);
+      toast.error(`二维码导出失败：${String(e)}`);
     }
-  }, [qrSvg]);
+  }, [qrSvg, toast]);
 
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Space wrap>
-        <Radio.Group
-          optionType="button"
-          buttonStyle="solid"
-          size="small"
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Segmented<"profile" | "manual">
+          size="sm"
           value={mode}
-          onChange={(e) => setMode(e.target.value)}
+          onChange={setMode}
           options={[
             { value: "profile", label: "从已存配置生成" },
             { value: "manual", label: "手动输入" },
@@ -426,16 +428,16 @@ function ShareTab(props: { profiles: string[]; profilesLoading: boolean }) {
         {mode === "profile" ? (
           <>
             <Select
-              style={{ minWidth: 240 }}
+              className="min-w-60"
               placeholder="选择已保存的 WiFi"
               value={selected}
               onChange={setSelected}
-              loading={props.profilesLoading}
+              disabled={props.profilesLoading}
               options={props.profiles.map((p) => ({ value: p, label: p }))}
             />
             <Button
-              size="small"
-              type="primary"
+              variant="primary"
+              size="sm"
               disabled={!selected}
               loading={busy}
               onClick={() => void generateFromProfile()}
@@ -446,80 +448,68 @@ function ShareTab(props: { profiles: string[]; profilesLoading: boolean }) {
         ) : (
           <>
             <Input
-              style={{ width: 180 }}
+              className="w-44"
               placeholder="SSID"
               value={ssid}
-              allowClear
               onChange={(e) => setSsid(e.target.value)}
             />
-            <Input.Password
-              style={{ width: 190 }}
+            <Input
+              className="w-48"
+              type="password"
               placeholder="密码（开放网络留空）"
               value={password}
               autoComplete="new-password"
               onChange={(e) => setPassword(e.target.value)}
             />
             <Select
-              style={{ width: 175 }}
+              className="w-44"
               value={auth}
               onChange={setAuth}
               options={QR_AUTH_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
             />
-            <Button
-              size="small"
-              type="primary"
-              loading={busy}
-              onClick={() => void generateManual()}
-            >
+            <Button variant="primary" size="sm" loading={busy} onClick={() => void generateManual()}>
               生成二维码
             </Button>
           </>
         )}
-        {props.profilesLoading && <Spin size="small" />}
-      </Space>
+        {props.profilesLoading && <span className="sk-hint">配置读取中…</span>}
+      </div>
 
       {mode === "profile" && !props.profilesLoading && props.profiles.length === 0 && (
-        <Alert
-          type="info"
-          showIcon
-          message="没有已保存的 WiFi 配置"
-          description="本机没有保存过 WLAN 配置文件。可切换到「手动输入」直接填 SSID 与密码生成分享二维码。"
-        />
+        <Alert tone="info" title="没有已保存的 WiFi 配置">
+          本机没有保存过 WLAN 配置文件。可切换到「手动输入」直接填 SSID 与密码生成分享二维码。
+        </Alert>
       )}
 
       {qrSvg ? (
-        <Card
-          size="small"
-          className="sk-card"
-          title={`WiFi 二维码：${qrSsid}`}
-          extra={
-            <Button size="small" onClick={() => void saveQrPng()}>
+        <Card>
+          <CardHeader>
+            <CardTitle>WiFi 二维码：{qrSsid}</CardTitle>
+            <Button size="sm" onClick={() => void saveQrPng()}>
               保存图片
             </Button>
-          }
-        >
-          <Space direction="vertical" size={8} align="start">
-            {/* 白底是扫码可靠性的硬要求（深色主题下静区也必须是白的） */}
-            <div style={{ background: "#fff", padding: 8, width: 296 }}>
-              <img src={svgDataUrl(qrSvg)} width={280} height={280} alt="WiFi 二维码" />
+          </CardHeader>
+          <CardBody>
+            <div className="flex flex-col items-start gap-2">
+              {/* 白底是扫码可靠性的硬要求（深色主题下静区也必须是白的） */}
+              <div className="w-[296px] bg-white p-2">
+                <img src={svgDataUrl(qrSvg)} width={280} height={280} alt="WiFi 二维码" />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Badge tone="accent">SSID：{qrSsid}</Badge>
+                {qrAuth && <Badge>认证：{qrAuth}</Badge>}
+              </div>
+              <div className="sk-hint">
+                标准 WiFi 二维码格式，手机相机扫码即可加入网络。编码串包含明文密码，本页只渲染成图、
+                不显示串本身——也别把二维码发给不该有网络权限的人。
+              </div>
             </div>
-            <Space size={6}>
-              <Tag color="blue">SSID：{qrSsid}</Tag>
-              {qrAuth && <Tag>认证：{qrAuth}</Tag>}
-            </Space>
-            <Typography.Text type="secondary" className="sk-hint">
-              标准 WiFi 二维码格式，手机相机扫码即可加入网络。编码串包含明文密码，本页只渲染成图、
-              不显示串本身——也别把二维码发给不该有网络权限的人。
-            </Typography.Text>
-          </Space>
+          </CardBody>
         </Card>
       ) : (
-        <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={busy ? "生成中…" : "选择配置或手动输入后，生成后显示在此"}
-        />
+        <Empty description={busy ? "生成中…" : "选择配置或手动输入后，生成后显示在此"} />
       )}
-    </Space>
+    </div>
   );
 }
 
@@ -536,6 +526,7 @@ function PasswordsTab(props: {
   profilesLoading: boolean;
   onRefreshProfiles: () => void;
 }) {
+  const toast = useToast();
   const [selected, setSelected] = useState("");
   const [cred, setCred] = useState<ProfileCredential | null>(null);
   const [err, setErr] = useState("");
@@ -564,135 +555,120 @@ function PasswordsTab(props: {
       const r = await invoke<SensitiveCopyResult>(SENSITIVE_COPY_COMMAND, {
         text: cred.password,
       });
-      message.success(copyResultMessage(r));
+      toast.success(copyResultMessage(r));
     } catch (e) {
-      message.error(String(e));
+      toast.error(String(e));
     }
-  }, [cred]);
+  }, [cred, toast]);
 
   const strength = strengthHint(cred?.password ?? "");
   // 行高填满 Content 视口：32+ 条 WiFi 时只滚左列表，标签栏与右栏不动
   const row = useFillRowHeight(true);
 
   return (
-    <div
-      ref={row.ref}
-      style={{
-        display: "flex",
-        gap: 12,
-        alignItems: "stretch",
-        height: row.h,
-        overflow: "hidden",
-      }}
-    >
+    <div ref={row.ref} className="flex items-stretch gap-3 overflow-hidden" style={{ height: row.h }}>
       {/* 左栏：已存 WiFi 列表（固定 ~280px，刷新嵌在卡标题）；列表在卡体内自滚 */}
-      <Card
-        size="small"
-        className="sk-card"
-        style={{ width: 280, flexShrink: 0, display: "flex", flexDirection: "column" }}
-        styles={{ body: { padding: "4px 4px 8px", flex: 1, minHeight: 0, overflowY: "auto" } }}
-        title={`已存 WiFi（${props.profiles.length}）`}
-        extra={
-          <Button size="small" loading={props.profilesLoading} onClick={props.onRefreshProfiles}>
+      <Card className="flex w-[280px] flex-none flex-col">
+        <CardHeader>
+          <CardTitle>已存 WiFi（{props.profiles.length}）</CardTitle>
+          <Button size="sm" loading={props.profilesLoading} onClick={props.onRefreshProfiles}>
             刷新
           </Button>
-        }
-      >
-        <Table<string>
-          size="small"
-          rowKey={(r) => r}
-          showHeader={false}
-          loading={props.profilesLoading}
-          dataSource={props.profiles}
-          pagination={false}
-          onRow={(r) => ({
-            onClick: () => void read(r),
-            style: { cursor: "pointer" },
-          })}
-          rowClassName={(r) => (r === selected ? "ant-table-row-selected" : "")}
-          columns={[
-            {
-              key: "ssid",
-              render: (_: unknown, name: string) => (
-                <div
-                  style={{
-                    fontWeight: 500,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {name}
-                </div>
-              ),
-            },
-          ]}
-          locale={{ emptyText: "本机没有已保存的 WiFi 配置（或无线网卡被禁用）" }}
-        />
+        </CardHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+          {props.profilesLoading ? (
+            <div className="py-4 text-center text-sm text-sk-sub">读取中…</div>
+          ) : props.profiles.length === 0 ? (
+            <div className="px-2 py-4 text-center text-[13px] text-sk-sub">
+              本机没有已保存的 WiFi 配置（或无线网卡被禁用）
+            </div>
+          ) : (
+            props.profiles.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => void read(name)}
+                className={
+                  "block w-full cursor-pointer truncate rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors " +
+                  (name === selected
+                    ? "bg-sk-accent/12 text-sk-accent"
+                    : "text-sk-text hover:bg-sk-hover")
+                }
+              >
+                {name}
+              </button>
+            ))
+          )}
+        </div>
       </Card>
 
       {/* 右栏：所选网络的密钥详情（flex:1；未选中时给引导文案） */}
-      <Card
-        size="small"
-        className="sk-card"
-        style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}
-        styles={{ body: { flex: 1, minHeight: 0, overflowY: "auto" } }}
-        title={selected ? `${selected} 的密钥` : "WiFi 密钥"}
-      >
-        {!selected ? (
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="点击左侧 WiFi 查看密钥——读取需要管理员权限，点一次读一个"
-          />
-        ) : loading ? (
-          <div style={{ textAlign: "center", padding: "28px 0" }}>
-            <Spin tip={`正在读取 ${selected} 的密钥…`} />
-          </div>
-        ) : err ? (
-          <Alert type="warning" showIcon message="读取失败" description={err} />
-        ) : cred ? (
-          <Space direction="vertical" size={8} style={{ width: "100%" }}>
-            <Descriptions size="small" column={1}>
-              <Descriptions.Item label="认证方式">{cred.auth || "—"}</Descriptions.Item>
-              <Descriptions.Item label="密钥">
-                {cred.has_password ? (
-                  <Space size={8}>
-                    <Typography.Text code>{maskPassword(cred.password, show)}</Typography.Text>
-                    <Button size="small" type="link" onClick={() => setShow((s) => !s)}>
-                      {show ? "隐藏" : "显示"}
-                    </Button>
-                  </Space>
-                ) : (
-                  <Typography.Text type="secondary">（无密钥，可能是开放网络）</Typography.Text>
+      <Card className="flex min-w-0 flex-1 flex-col">
+        <CardHeader>
+          <CardTitle>{selected ? `${selected} 的密钥` : "WiFi 密钥"}</CardTitle>
+        </CardHeader>
+        <CardBody className="min-h-0 flex-1 overflow-y-auto">
+          {!selected ? (
+            <Empty description="点击左侧 WiFi 查看密钥——读取需要管理员权限，点一次读一个" />
+          ) : loading ? (
+            <div className="py-7 text-center text-sm text-sk-sub">正在读取 {selected} 的密钥…</div>
+          ) : err ? (
+            <Alert tone="warning" title="读取失败">
+              {err}
+            </Alert>
+          ) : cred ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-col divide-y divide-sk-border/60">
+                <div className="flex items-baseline gap-3 py-1">
+                  <span className="w-20 shrink-0 text-sk-sub">认证方式</span>
+                  <span className="min-w-0 text-sk-text">{cred.auth || "—"}</span>
+                </div>
+                <div className="flex items-baseline gap-3 py-1">
+                  <span className="w-20 shrink-0 text-sk-sub">密钥</span>
+                  <span className="min-w-0 text-sk-text">
+                    {cred.has_password ? (
+                      <span className="inline-flex items-center gap-2">
+                        <code className="rounded bg-sk-hover px-1.5 py-0.5 font-mono text-xs">
+                          {maskPassword(cred.password, show)}
+                        </code>
+                        <Button variant="ghost" size="sm" onClick={() => setShow((s) => !s)}>
+                          {show ? "隐藏" : "显示"}
+                        </Button>
+                      </span>
+                    ) : (
+                      <span className="text-sk-sub">（无密钥，可能是开放网络）</span>
+                    )}
+                  </span>
+                </div>
+                {cred.has_password && (
+                  <div className="flex items-baseline gap-3 py-1">
+                    <span className="w-20 shrink-0 text-sk-sub">强度</span>
+                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                      <Badge tone={strength.score >= 3 ? "ok" : strength.score >= 2 ? "warn" : "err"}>
+                        {strength.label}
+                      </Badge>
+                      <span className="sk-hint">{strength.advice}</span>
+                    </span>
+                  </div>
                 )}
-              </Descriptions.Item>
+              </div>
               {cred.has_password && (
-                <Descriptions.Item label="强度">
-                  <Space size={6}>
-                    <Tag color={strength.score >= 3 ? "green" : strength.score >= 2 ? "orange" : "red"}>
-                      {strength.label}
-                    </Tag>
-                    <span className="sk-hint">{strength.advice}</span>
-                  </Space>
-                </Descriptions.Item>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="primary" size="sm" onClick={() => void copy()}>
+                    复制密钥
+                  </Button>
+                  <span className="sk-hint">
+                    复制会走敏感通道：不进剪贴板历史、不进 Win+V 与云剪贴板，
+                    {copyResultMessage({
+                      ttl: 0,
+                      note: "并按设置里的「敏感内容存活」到期清空",
+                    })}
+                  </span>
+                </div>
               )}
-            </Descriptions>
-            {cred.has_password && (
-              <Space>
-                <Button type="primary" size="small" onClick={() => void copy()}>
-                  复制密钥
-                </Button>
-                <Typography.Text type="secondary" className="sk-hint">
-                  复制会走敏感通道：不进剪贴板历史、不进 Win+V 与云剪贴板，
-                  {copyResultMessage({
-                    ttl: 0,
-                    note: "并按设置里的「敏感内容存活」到期清空",
-                  })}
-                </Typography.Text>
-              </Space>
-            )}
-          </Space>
-        ) : null}
+            </div>
+          ) : null}
+        </CardBody>
       </Card>
     </div>
   );
