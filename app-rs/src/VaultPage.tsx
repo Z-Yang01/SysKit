@@ -20,14 +20,11 @@ import {
   Alert,
   Button,
   Card,
-  Checkbox,
   Dropdown,
   Input,
   Modal,
-  Progress,
   Radio,
   Select,
-  Slider,
   Space,
   Table,
   Tag,
@@ -40,6 +37,10 @@ import { useToast } from "./ui/toast";
 import { confirm } from "./ui/confirm";
 import { Modal as UiModal } from "./ui/modal";
 import { Input as UiInput, Textarea as UiTextarea, Button as UiButton, PasswordInput } from "./ui";
+import { Slider as UiSlider } from "./ui/slider";
+import { Checkbox as UiCheckbox } from "./ui/checkbox";
+import { Progress as UiProgress } from "./ui/progress";
+import { Tooltip as UiTooltip } from "./ui/tooltip";
 
 import {
   PWGEN_DEFAULT_LENGTH,
@@ -130,66 +131,58 @@ function PasswordGenPanel({ onGenerated }: { onGenerated: (pw: string) => void }
   };
 
   return (
-    <div
-      style={{
-        border: "1px solid rgba(128,128,128,0.35)",
-        borderRadius: 6,
-        padding: "8px 10px",
-      }}
-    >
-      <Space direction="vertical" size={6} style={{ width: "100%" }}>
-        <Space size={12} wrap>
+    <div className="rounded-md border border-sk-border/70 px-2.5 py-2">
+      <div className="flex w-full flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-3">
           <span className="sk-hint">长度 {length}</span>
-          <Slider
+          <UiSlider
             min={PWGEN_MIN_LENGTH}
             max={PWGEN_MAX_LENGTH}
             value={length}
             onChange={setLength}
-            style={{ width: 180, marginInline: 0 }}
+            className="w-[180px]"
           />
-          <Checkbox checked={upper} onChange={(e) => setUpper(e.target.checked)}>
+          <UiCheckbox checked={upper} onChange={(v) => setUpper(v)}>
             大写
-          </Checkbox>
-          <Checkbox checked={lower} onChange={(e) => setLower(e.target.checked)}>
+          </UiCheckbox>
+          <UiCheckbox checked={lower} onChange={(v) => setLower(v)}>
             小写
-          </Checkbox>
-          <Checkbox checked={digits} onChange={(e) => setDigits(e.target.checked)}>
+          </UiCheckbox>
+          <UiCheckbox checked={digits} onChange={(v) => setDigits(v)}>
             数字
-          </Checkbox>
-          <Checkbox checked={symbols} onChange={(e) => setSymbols(e.target.checked)}>
+          </UiCheckbox>
+          <UiCheckbox checked={symbols} onChange={(v) => setSymbols(v)}>
             符号
-          </Checkbox>
-          <Tooltip title="剔除 0/O、1/l/I、竖线、引号等手抄易看错的字符">
-            <Checkbox
+          </UiCheckbox>
+          <UiTooltip title="剔除 0/O、1/l/I、竖线、引号等手抄易看错的字符">
+            <UiCheckbox
               checked={excludeAmbiguous}
-              onChange={(e) => setExcludeAmbiguous(e.target.checked)}
+              onChange={(v) => setExcludeAmbiguous(v)}
             >
               排除易混淆字符
-            </Checkbox>
-          </Tooltip>
-        </Space>
-        <Space size={8} wrap>
-          <Button size="small" type="primary" loading={busy} disabled={!usable.ok} onClick={gen}>
+            </UiCheckbox>
+          </UiTooltip>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <UiButton size="sm" variant="primary" loading={busy} disabled={!usable.ok} onClick={gen}>
             生成
-          </Button>
-          <Button size="small" disabled={!generated} onClick={copyGenerated}>
+          </UiButton>
+          <UiButton size="sm" disabled={!generated} onClick={copyGenerated}>
             复制
-          </Button>
+          </UiButton>
           {!usable.ok ? (
-            <Typography.Text type="danger">{usable.reason}</Typography.Text>
+            <span className="text-sk-err">{usable.reason}</span>
           ) : (
-            <Progress
-              percent={pwgenMeterPercent(bits)}
-              size="small"
-              style={{ width: 180, marginInline: 0 }}
-              strokeColor={
-                tier.color === "red" ? "#ff4d4f" : tier.color === "orange" ? "#faad14" : "#52c41a"
-              }
-              format={() => `强度${tier.label} · 约 ${Math.round(bits)} 位熵`}
-            />
+            <span className="inline-flex items-center gap-2 text-xs text-sk-sub" style={{ width: 260 }}>
+              <UiProgress
+                percent={pwgenMeterPercent(bits)}
+                tone={tier.color === "red" ? "err" : tier.color === "orange" ? "warn" : "ok"}
+              />
+              强度{tier.label} · 约 {Math.round(bits)} 位熵
+            </span>
           )}
-        </Space>
-      </Space>
+        </div>
+      </div>
     </div>
   );
 }
