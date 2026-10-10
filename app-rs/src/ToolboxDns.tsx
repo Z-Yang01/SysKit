@@ -1,25 +1,11 @@
 /**
  * 工具箱：DNS 查询 / 子网计算 / ping / 路由（对应 Python 侧 DnsSubnetTab + PingRouteTab）。
+ *
+ * v1.4 UI 迁移：脱离 AntD（Descriptions/Table/Tabs/Select/copyable → ui 件 +
+ * CopyText 小件）；Row/Col 空壳栅格移除。
  */
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Button,
-  Card,
-  Col,
-  Descriptions,
-  Empty,
-  Input,
-  InputNumber,
-  Row,
-  Select,
-  Space,
-  Table,
-  Tabs,
-  Tag,
-  Typography,
-  message,
-} from "antd";
 
 import {
   PREFIX_MAX,
@@ -39,8 +25,49 @@ import {
   type TraceHop,
   type TraceResult,
 } from "./dnstools";
+import { Badge, Button, Card, Empty, Input, Table, type Column } from "./ui";
+import { Tabs } from "./ui/tabs";
+import { InputNumber } from "./ui/input-number";
+import { Select } from "./ui/select";
+import { Tooltip as UiTooltip } from "./ui/tooltip";
+import { useToast } from "./ui/toast";
+
+/** AntD Typography.copyable 的替代：值 + 点击复制（短暂反馈）。 */
+function CopyText({ text, children }: { text: string; children: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <UiTooltip title={copied ? "已复制" : "复制"}>
+      <button
+        type="button"
+        className="inline-flex cursor-pointer items-center gap-1 rounded bg-transparent p-0 font-mono text-sk-text hover:text-sk-accent"
+        onClick={() => {
+          void invoke("sk_clip_copy_plain", { text }).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1200);
+          });
+        }}
+      >
+        {children}
+        <span aria-hidden className="text-xs text-sk-sub">
+          {copied ? "✓" : "⧉"}
+        </span>
+      </button>
+    </UiTooltip>
+  );
+}
+
+/** 键值行（AntD Descriptions 的替代）。 */
+function KV({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-3 py-1">
+      <span className="w-24 shrink-0 text-sk-sub">{label}</span>
+      <span className="min-w-0 text-sk-text">{children}</span>
+    </div>
+  );
+}
 
 function DnsPanel() {
+  const toast = useToast();
   const [domain, setDomain] = useState("www.baidu.com");
   const [serverLabel, setServerLabel] = useState("系统默认");
   const [presets, setPresets] = useState<{ label: string; server: string }[]>([]);
@@ -62,7 +89,7 @@ function DnsPanel() {
       // 历史条会带域名进来，参数优先于输入框当前值
       const target = (d ?? domain).trim();
       if (!target) {
-        message.warning("请输入要查询的域名");
+        toast.info("请输入要查询的域名");
         return;
       }
       // 历史标签没有 loading 态挡点击；并发查询会互相覆盖 answer，
@@ -75,101 +102,97 @@ function DnsPanel() {
         setAnswer(r);
         setHistory((prev) => [target, ...prev.filter((h) => h !== target)].slice(0, 8));
         const lvl = dnsLevel(r);
-        message[lvl === "success" ? "success" : lvl === "warning" ? "warning" : "error"](
-          r.message,
-        );
+        if (lvl === "success") toast.success(r.message);
+        else if (lvl === "warning") toast.info(r.message);
+        else toast.error(r.message);
       } catch (e) {
-        message.error(String(e));
+        toast.error(String(e));
       } finally {
         setBusy(false);
       }
     },
-    [domain, serverLabel, presets, busy],
+    [domain, serverLabel, presets, busy, toast],
   );
 
+  const ipColumns: Column<string>[] = [
+    {
+      title: "解析结果",
+      render: (_: unknown, ip: string) => (
+        // IP 常被拿去填到别处（诊断工单/其他工具），一键复制省得选中拖拽
+        <CopyText text={ip}>{ip}</CopyText>
+      ),
+    },
+    {
+      title: "类型",
+      width: 90,
+      render: (_: unknown, ip: string) => (ip.includes(":") ? "AAAA" : "A"),
+    },
+  ];
+
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Space wrap>
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
         <Input
-          size="small"
-          style={{ width: 260 }}
+          className="h-7 w-[260px] text-xs"
           placeholder="要查询的域名，如 www.baidu.com"
           value={domain}
           onChange={(e) => setDomain(e.target.value)}
-          onPressEnter={() => void query()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void query();
+          }}
         />
         <Select
-          size="small"
-          style={{ width: 200 }}
+          className="h-7 text-xs"
           value={serverLabel}
           onChange={setServerLabel}
           options={presets.map((p) => ({ label: p.label, value: p.label }))}
         />
-        <Button size="small" type="primary" loading={busy} onClick={() => void query()}>
+        <Button variant="primary" size="sm" loading={busy} onClick={() => void query()}>
           查询
         </Button>
         <span className="sk-hint">回车即可查询</span>
-      </Space>
+      </div>
 
       {history.length > 0 && (
-        <Space wrap size={4}>
+        <div className="flex flex-wrap items-center gap-1">
           <span className="sk-hint">最近:</span>
           {history.map((h) => (
-            <Tag
+            <button
               key={h}
-              style={{ cursor: "pointer" }}
+              type="button"
               onClick={() => {
                 setDomain(h);
                 void query(h);
               }}
+              className="cursor-pointer rounded-md border border-sk-border px-1.5 py-0.5 text-xs leading-none text-sk-sub transition-colors hover:border-sk-accent/40 hover:text-sk-text"
             >
               {h}
-            </Tag>
+            </button>
           ))}
-        </Space>
+        </div>
       )}
 
       {answer ? (
         <>
-          <Space wrap>
-            <Tag color={answer.ok ? "green" : "red"}>{answer.ok ? "成功" : "失败"}</Tag>
-            {answer.ok && <Tag color="blue">服务器 {answer.server || "系统默认"}</Tag>}
-            {answer.ok && <Tag>{answer.ms} ms</Tag>}
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={answer.ok ? "ok" : "err"}>{answer.ok ? "成功" : "失败"}</Badge>
+            {answer.ok && <Badge tone="accent">服务器 {answer.server || "系统默认"}</Badge>}
+            {answer.ok && <Badge>{answer.ms} ms</Badge>}
             <span className="sk-hint">{answer.message}</span>
-          </Space>
+          </div>
           {answer.ips.length > 0 && (
-            <Table
-              size="small"
-              rowKey={(r: string) => r}
-              pagination={false}
-              dataSource={answer.ips}
-              columns={[
-                {
-                  title: "解析结果",
-                  render: (_: unknown, ip: string) => (
-                    // IP 常被拿去填到别处（诊断工单/其他工具），一键复制省得选中拖拽
-                    <Typography.Text copyable={{ tooltips: ["复制", "已复制"] }}>
-                      <span style={{ fontFamily: "Consolas, monospace" }}>{ip}</span>
-                    </Typography.Text>
-                  ),
-                },
-                {
-                  title: "类型",
-                  width: 90,
-                  render: (_: unknown, ip: string) => (ip.includes(":") ? "AAAA" : "A"),
-                },
-              ]}
-            />
+            <Table dataSource={answer.ips} rowKey={(r) => r} columns={ipColumns} />
           )}
         </>
       ) : (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="输入域名后点查询" />
+        <Empty description="输入域名后点查询" />
       )}
-    </Space>
+    </div>
   );
 }
 
 function SubnetPanel() {
+  const toast = useToast();
   const [ip, setIp] = useState("192.168.1.10");
   const [prefix, setPrefix] = useState(24);
   const [result, setResult] = useState<SubnetCalcResult | null>(null);
@@ -179,66 +202,62 @@ function SubnetPanel() {
       setResult(await invoke<SubnetCalcResult>("sk_subnet_calc", { ip, prefix }));
     } catch (e) {
       setResult(null);
-      message.error(String(e));
+      toast.error(String(e));
     }
-  }, [ip, prefix]);
+  }, [ip, prefix, toast]);
 
   useEffect(() => {
     void calc();
   }, [calc]);
 
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Space wrap>
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="sk-hint">IP:</span>
         <Input
-          size="small"
-          style={{ width: 180 }}
+          className="h-7 w-[180px] text-xs"
           value={ip}
           onChange={(e) => setIp(e.target.value)}
-          onPressEnter={() => void calc()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void calc();
+          }}
         />
         <span className="sk-hint">/</span>
         <InputNumber
-          size="small"
           min={PREFIX_MIN}
           max={PREFIX_MAX}
           value={prefix}
           onChange={(v) => setPrefix(Number(v ?? 24))}
         />
-        <Button size="small" type="primary" onClick={() => void calc()}>
+        <Button variant="primary" size="sm" onClick={() => void calc()}>
           计算
         </Button>
-      </Space>
+      </div>
       {result ? (
-        <Descriptions
-          size="small"
-          bordered
-          column={2}
-          items={subnetRows(result).map(([label, value]) => {
+        <div className="grid grid-cols-1 gap-x-6 md:grid-cols-2">
+          {subnetRows(result).map(([label, value]) => {
             const isCount = label === "可用主机数" || label === "地址总数";
-            return {
-              key: label,
-              label,
-              children: isCount ? (
-                formatCount(Number(value))
-              ) : (
-                // 网段信息常被复制到别的工具/工单里，一键复制比手动选中可靠
-                <Typography.Text copyable={{ text: value, tooltips: ["复制", "已复制"] }}>
-                  {value}
-                </Typography.Text>
-              ),
-            };
+            return (
+              <KV key={label} label={label}>
+                {isCount ? (
+                  formatCount(Number(value))
+                ) : (
+                  // 网段信息常被复制到别的工具/工单里，一键复制比手动选中可靠
+                  <CopyText text={value}>{value}</CopyText>
+                )}
+              </KV>
+            );
           })}
-        />
+        </div>
       ) : (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="输入 IP 与前缀长度后计算" />
+        <Empty description="输入 IP 与前缀长度后计算" />
       )}
-    </Space>
+    </div>
   );
 }
 
 function PingPanel() {
+  const toast = useToast();
   const [host, setHost] = useState("223.5.5.5");
   const [ping, setPing] = useState<PingResult | null>(null);
   const [trace, setTrace] = useState<TraceResult | null>(null);
@@ -256,7 +275,7 @@ function PingPanel() {
 
   const doPing = useCallback(async () => {
     if (!host.trim()) {
-      message.warning("请输入主机名或 IP");
+      toast.info("请输入主机名或 IP");
       return;
     }
     // busy 是 ping/trace 共享的单值：Ping 跑着又点「路由跟踪」（或输入框回车），
@@ -266,17 +285,18 @@ function PingPanel() {
     try {
       const r = await invoke<PingResult>("sk_ping", { host, count: 4 });
       setPing(r);
-      message[r.ok ? "success" : "warning"](pingSummary(r));
+      if (r.ok) toast.success(pingSummary(r));
+      else toast.info(pingSummary(r));
     } catch (e) {
-      message.error(String(e));
+      toast.error(String(e));
     } finally {
       setBusy("");
     }
-  }, [host, busy]);
+  }, [host, busy, toast]);
 
   const doTrace = useCallback(async () => {
     if (!host.trim()) {
-      message.warning("请输入主机名或 IP");
+      toast.info("请输入主机名或 IP");
       return;
     }
     if (busy) return;
@@ -284,28 +304,53 @@ function PingPanel() {
     try {
       const r = await invoke<TraceResult>("sk_tracert", { host, maxHops: 15 });
       setTrace(r);
-      message.success(traceSummary(r));
+      toast.success(traceSummary(r));
     } catch (e) {
-      message.error(String(e));
+      toast.error(String(e));
     } finally {
       setBusy("");
     }
-  }, [host, busy]);
+  }, [host, busy, toast]);
+
+  const lossTone: "ok" | "warn" | "err" = !ping
+    ? "ok"
+    : lossToken(ping.loss_percent) === "ok"
+      ? "ok"
+      : lossToken(ping.loss_percent) === "err"
+        ? "err"
+        : "warn";
+
+  const hopColumns: Column<TraceHop>[] = [
+    { title: "跃点", dataIndex: "hop", width: 70 },
+    {
+      title: "延迟",
+      width: 220,
+      dataIndex: "latencies",
+      render: (_: unknown, h) => formatHopLatencies(h.latencies),
+    },
+    {
+      title: "主机",
+      dataIndex: "host",
+      render: (_: unknown, h) =>
+        hopTimedOut(h) ? <span className="sk-hint">{formatHopHost(h)}</span> : formatHopHost(h),
+    },
+  ];
 
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Space wrap>
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
         <Input
-          size="small"
-          style={{ width: 240 }}
+          className="h-7 w-[240px] text-xs"
           placeholder="主机名或 IP"
           value={host}
           onChange={(e) => setHost(e.target.value)}
-          onPressEnter={() => void doPing()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void doPing();
+          }}
         />
         <Button
-          size="small"
-          type="primary"
+          variant="primary"
+          size="sm"
           loading={busy === "ping"}
           disabled={busy === "trace"}
           onClick={() => void doPing()}
@@ -313,7 +358,7 @@ function PingPanel() {
           Ping
         </Button>
         <Button
-          size="small"
+          size="sm"
           loading={busy === "trace"}
           disabled={busy === "ping"}
           onClick={() => void doTrace()}
@@ -325,41 +370,18 @@ function PingPanel() {
             {busy === "trace" ? "跟踪中… 已用时" : "Ping 中… 已用时"} {elapsed} 秒
           </span>
         )}
-        {ping && !busy && (
-          <Tag color={lossToken(ping.loss_percent) === "ok" ? "green" : lossToken(ping.loss_percent) === "err" ? "red" : "orange"}>
-            {pingSummary(ping)}
-          </Tag>
-        )}
-      </Space>
+        {ping && !busy && <Badge tone={lossTone}>{pingSummary(ping)}</Badge>}
+      </div>
 
       {trace && trace.hops.length > 0 ? (
         <Table<TraceHop>
-          size="small"
-          rowKey="hop"
-          pagination={false}
+          rowKey={(r) => r.hop}
           loading={busy === "trace"}
           dataSource={trace.hops}
-          columns={[
-            { title: "跃点", dataIndex: "hop", width: 70 },
-            {
-              title: "延迟",
-              width: 220,
-              render: (_: unknown, h) => formatHopLatencies(h.latencies),
-            },
-            {
-              title: "主机",
-              render: (_: unknown, h) =>
-                hopTimedOut(h) ? (
-                  <span className="sk-hint">{formatHopHost(h)}</span>
-                ) : (
-                  formatHopHost(h)
-                ),
-            },
-          ]}
+          columns={hopColumns}
         />
       ) : (
         <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={
             busy === "trace"
               ? "跟踪中…（最多 15 跳）"
@@ -371,42 +393,33 @@ function PingPanel() {
       )}
 
       {ping?.raw && (
-        <Typography.Paragraph
-          style={{ whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 160, overflow: "auto" }}
-          type="secondary"
-        >
+        <div className="sk-hint max-h-40 overflow-auto whitespace-pre-wrap text-xs">
           {ping.raw}
-        </Typography.Paragraph>
+        </div>
       )}
 
       {/* tracert 的原始输出后端一直有返回但从未展示；逐跳表格丢掉了 TTL/中间路由细节，
           疑难排查时要对照原样输出，所以补上（样式与 ping 原始输出一致） */}
       {trace?.raw && (
-        <Typography.Paragraph
-          style={{ whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 200, overflow: "auto" }}
-          type="secondary"
-        >
+        <div className="sk-hint max-h-50 overflow-auto whitespace-pre-wrap text-xs">
           {trace.raw}
-        </Typography.Paragraph>
+        </div>
       )}
-    </Space>
+    </div>
   );
 }
 
 export function ToolboxDns() {
   return (
-    <Card size="small" className="sk-card">
-      <Row gutter={12}>
-        <Col span={24}>
-          <Tabs
-            items={[
-              { key: "dns", label: "DNS 查询", children: <DnsPanel /> },
-              { key: "subnet", label: "子网计算", children: <SubnetPanel /> },
-              { key: "ping", label: "ping / 路由", children: <PingPanel /> },
-            ]}
-          />
-        </Col>
-      </Row>
+    <Card>
+      <Tabs
+        className="px-4 pb-4 pt-1"
+        items={[
+          { key: "dns", label: "DNS 查询", children: <DnsPanel /> },
+          { key: "subnet", label: "子网计算", children: <SubnetPanel /> },
+          { key: "ping", label: "ping / 路由", children: <PingPanel /> },
+        ]}
+      />
     </Card>
   );
 }
