@@ -6,10 +6,6 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Card,
-  Tabs,
-} from "antd";
 
 import {
   canKill,
@@ -28,12 +24,14 @@ import {
   sendWol,
 } from "./ports";
 import {
-  Button as UiButton,
-  Input as UiInput,
   Badge as UiBadge,
+  Button as UiButton,
+  Card,
   Empty as UiEmpty,
+  Input as UiInput,
   Table as UiTable,
 } from "./ui";
+import { Tabs } from "./ui/tabs";
 import { Alert as UiAlert } from "./ui/alert";
 import { confirm } from "./ui/confirm";
 import { Switch } from "./ui";
@@ -286,8 +284,9 @@ function LanPanel() {
 
 export function ToolboxPorts() {
   return (
-    <Card size="small" className="sk-card">
+    <Card>
       <Tabs
+        className="px-4 pb-3 pt-1"
         items={[
           { key: "ports", label: "端口 / 进程", children: <PortPanel /> },
           { key: "lan", label: "局域网设备", children: <LanPanel /> },
