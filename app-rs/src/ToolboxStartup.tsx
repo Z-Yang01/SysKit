@@ -137,8 +137,10 @@ export function ToolboxStartup() {
         <span className="flex flex-col">
           {/* 禁用态压暗用 opacity 而不是写死灰色：写死的 #8b949e 在浅色
               主题下对比度不足（约 3:1），opacity 对深浅主题都成立 */}
-          <span style={{ opacity: r.enabled ? 1 : 0.55 }}>{v}</span>
-          <span className="sk-hint">{commandProgram(r.command) || "—"}</span>
+          <span className="truncate" style={{ opacity: r.enabled ? 1 : 0.55 }}>{v}</span>
+          <span className="sk-hint truncate" title={commandProgram(r.command) || undefined}>
+            {commandProgram(r.command) || "—"}
+          </span>
         </span>
       ),
     },
@@ -156,8 +158,12 @@ export function ToolboxStartup() {
       title: "命令",
       dataIndex: "command",
       render: (v: string) => (
-        <UiTooltip title={v}>
-          <span className="sk-hint font-mono text-xs">{v || "—"}</span>
+        // ui Table 无 AntD ellipsis 列语义：不钳宽会长命令把表格撑出横向滚动，
+        // 操作列被挤出视口（真机走查实锤）；完整内容走 Tooltip。
+        // Tooltip 包裹层是 inline-flex，在 table-fixed 单元格里 shrink-to-fit
+        // 会超出列宽（实测 271 > 235px），必须 max-w-full 钳住、内层 w-full 截断
+        <UiTooltip title={v} className="max-w-full">
+          <span className="block w-full truncate sk-hint font-mono text-xs">{v || "—"}</span>
         </UiTooltip>
       ),
     },
@@ -255,6 +261,7 @@ export function ToolboxStartup() {
             rowKey={(r) => `${r.location}|${r.name}`}
             dataSource={pageRows}
             columns={columns}
+            fixed
           />
           {pageCount > 1 && (
             <div className="flex items-center justify-end gap-2 text-xs text-sk-sub">

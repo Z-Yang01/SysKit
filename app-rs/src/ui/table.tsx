@@ -27,6 +27,7 @@ export function Table<T>({
   loading,
   onRowClick,
   rowClassName,
+  fixed,
   className,
 }: {
   columns: Column<T>[];
@@ -36,6 +37,8 @@ export function Table<T>({
   loading?: boolean;
   onRowClick?: (row: T) => void;
   rowClassName?: (row: T) => string;
+  /** table-fixed：列宽只看 columns 声明，内容不撑宽（长命令/路径列配 truncate 用） */
+  fixed?: boolean;
   className?: string;
 }) {
   if (loading) {
@@ -46,7 +49,7 @@ export function Table<T>({
   }
   return (
     <div className={cx("overflow-x-auto", className)}>
-      <table className="w-full border-collapse">
+      <table className={cx("w-full border-collapse", fixed && "table-fixed")}>
         <thead>
           <tr>
             {columns.map((c, i) => (

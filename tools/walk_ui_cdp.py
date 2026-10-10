@@ -11,13 +11,14 @@ import os
 import sys
 
 TAGS = {
-    'ov': '概览 / 网络监控',
-    'clip': '剪贴板历史',
-    'diag': '诊断 / 修复',
-    'tool': '工具箱',
-    'sys': '系统助手',
-    'vault': '密码库',
-    'set': '设置 / 日志',
+    'ov': '🏠 概览 / 网络监控',
+    'clip': '📋 剪贴板历史',
+    'diag': '🔍 诊断 / 修复',
+    'tool': '⚡ 工具箱',
+    'sys': '💼 系统助手',
+    'vault': '🔒 密码库',
+    'set': '⚙ 设置',
+    'logs': '📜 日志',
 }
 
 
@@ -89,7 +90,8 @@ class Session:
         self.call("Runtime.enable")
 
     def click_nav(self, name):
-        self.ev("(e=>{const els=[...document.querySelectorAll('li,div,span')].filter(x=>x.textContent?.trim()===" +
+        # button 一并匹配：v1.4 UI 迁移后侧栏是原生 button（AntD Menu 时代是 li）
+        self.ev("(e=>{const els=[...document.querySelectorAll('li,div,span,button')].filter(x=>x.textContent?.trim()===" +
                 json.dumps(name) + "&&x.children.length<=1);(els[els.length-1]||{click(){}}).click();})('')")
         time.sleep(1.6)
         self.drain(0.4)

@@ -113,13 +113,18 @@ export function Input({
   className,
   ...rest
 }: InputHTMLAttributes<HTMLInputElement> & { ref?: React.Ref<HTMLInputElement> }) {
+  // 基础 w-full 只在调用方没传显式宽度时叠加：同一 specificity 下样式表序
+  // 不保证，w-full 会压过调用方的 w-[Npx]（真机走查实锤：Hosts 新增映射
+  // 四个输入框全部变通栏）。
+  const hasOwnWidth = /(^|\s)!?w-./.test(className ?? "");
   return (
     <input
       className={cx(
-        "h-8 w-full rounded-[8px] border border-sk-border bg-transparent px-2.5 text-sm text-sk-text",
+        "h-8 rounded-[8px] border border-sk-border bg-transparent px-2.5 text-sm text-sk-text",
         "placeholder:text-sk-sub/70",
         "focus:outline-none focus:border-sk-accent/60 focus:ring-2 focus:ring-sk-accent/20",
         "disabled:opacity-45",
+        !hasOwnWidth && "w-full",
         className,
       )}
       {...rest}

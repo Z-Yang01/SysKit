@@ -333,7 +333,9 @@ export function App() {
         </div>
       </div>
 
-      <div className="flex h-screen min-h-0 flex-col overflow-hidden">
+      {/* flex-1：占满侧栏外剩余宽度——缺了会收缩到内容宽，宽窗口下右侧留空底
+          （换装后真机走查实锤）；min-w-0 允许内容收窄触发滚动而不是撑破 */}
+      <div className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* Header 目前无实际内容：只保留玻璃带分层，压到 8px 细线避免空带占高 */}
         <div className="h-2 shrink-0" />
 
