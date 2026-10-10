@@ -14,31 +14,14 @@
  *
  * 体验纪律：非管理员提前标注跳过；执行中防重复触发；加载失败给重试入口
  * 而不是永远停在「正在读取」。
+ *
+ * v1.4 UI 迁移：脱离 AntD（Collapse → 自定义展开行，受控 openIds 跨组共用语义
+ * 保留；Modal.confirm/message/Table/Switch/Progress → ui 件）。
  */
 import { BackupRollbackCard } from "./BackupRollbackCard";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  Alert,
-  Button,
-  Card,
-  Col,
-  Collapse,
-  Empty,
-  Input,
-  Modal,
-  Progress,
-  Row,
-  Space,
-  Spin,
-  Table,
-  Tag,
-  Tooltip,
-  Typography,
-  message,
-  Switch,
-} from "antd";
 
 import {
   actionableFixes,
@@ -79,8 +62,41 @@ import {
 } from "./repair";
 
 import { statusLabel } from "./repair";
+import { Badge, Button, Card, CardBody, CardHeader, CardTitle, Empty, Input, Progress, Switch, Table, type Column } from "./ui";
+import { Alert } from "./ui/alert";
+import { confirm } from "./ui/confirm";
+import { Tooltip as UiTooltip } from "./ui/tooltip";
+import { useToast } from "./ui/toast";
+
+/** antd 色名（statusTagColor/verdictColor/outcomeTag/riskToken 派生）→ Badge tone。 */
+function colorTone(c: string): "ok" | "warn" | "err" | "neutral" {
+  switch (c) {
+    case "green":
+      return "ok";
+    case "orange":
+      return "warn";
+    case "red":
+      return "err";
+    default:
+      return "neutral";
+  }
+}
+
+/** Typography.Link 的替代（accent 文字按钮）。 */
+function LinkButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="cursor-pointer border-0 bg-transparent p-0 text-sk-accent hover:underline"
+    >
+      {children}
+    </button>
+  );
+}
 
 export function Diagnose({ quickRequest }: { quickRequest?: number }) {
+  const toast = useToast();
   const [data, setData] = useState<RepairList | null>(null);
   const [loadError, setLoadError] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
@@ -105,7 +121,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   const [comboResult, setComboResult] = useState<{ title: string; ok: number; fail: number } | null>(
     null,
   );
-  /** 三个风险分组的 Collapse 共用的展开集合（key = 动作 id，跨组唯一）。 */
+  /** 三个风险分组的展开集合（key = 动作 id，跨组唯一；各组展开行共用此集合）。 */
   const [openIds, setOpenIds] = useState<string[]>([]);
   /** 修复记录（手动/组合/后台监控自动修复共用，最新在前，上限 60 条）。 */
   const [records, setRecords] = useState<RepairRecord[]>([]);
@@ -113,6 +129,8 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   const [fullInfo, setFullInfo] = useState(false);
   // 只看未通过（v1.4 操作优化）：通过/提示行折叠，失败与警告顶上去
   const [failedOnly, setFailedOnly] = useState(false);
+  // 动作完整输出的展开态（替代 AntD ellipsis expandable：输出框改为可展开的滚动区）
+  const [expandedOutputs, setExpandedOutputs] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     try {
@@ -157,16 +175,16 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         setReport(r);
         saveReport(r); // 会话内保存：切页回来结论还在（对齐 Python 常驻结果）
         if (!silent) {
-          const lvl = r.verdict === "normal" ? "success" : "warning";
-          message[lvl](r.verdict_text);
+          if (r.verdict === "normal") toast.success(r.verdict_text);
+          else toast.info(r.verdict_text);
         }
       } catch (e) {
-        if (!silent) message.error(`诊断失败：${String(e)}`);
+        if (!silent) toast.error(`诊断失败：${String(e)}`);
       } finally {
         setDiagBusy("");
       }
     },
-    [comboRun],
+    [comboRun, toast],
   );
 
   // palette「快速诊断」动作信号：递增即触发一次快速检测（消费一次）
@@ -216,7 +234,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       saveReport(rep);
     } catch (e) {
       setDiagBusy("");
-      message.error(`诊断失败：${String(e)}`);
+      toast.error(`诊断失败：${String(e)}`);
       return;
     }
     setDiagBusy("");
@@ -232,7 +250,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       }
     }
     if (ids.length === 0) {
-      message.success("诊断未发现可自动修复的问题——网络看起来正常，或失败项需要人工处理（见详情列）");
+      toast.success("诊断未发现可自动修复的问题——网络看起来正常，或失败项需要人工处理（见详情列）");
       return;
     }
     const acts = ids
@@ -240,22 +258,21 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       .filter((a): a is RepairAction => !!a);
 
     // 第三步：一次确认列明全部动作（知情同意一次给足，而不是逐个弹窗打断）
-    Modal.confirm({
+    confirm({
       title: `一键智能修复：将执行以下 ${acts.length} 项`,
       width: 560,
       content: (
         <div>
-          <div style={{ whiteSpace: "pre-wrap", marginBottom: 8 }}>
+          <div className="mb-2 whitespace-pre-wrap">
             {acts.map((a) => `· ${a.title}（${riskLabel(a.risk)}类）`).join("\n")}
             {!isAdmin ? "\n\n当前不是管理员身份：改配置类与强力类动作会被跳过。" : ""}
           </div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          <div className="sk-hint text-xs">
             执行完成后自动复检展示修复效果；改配置类动作先备份原值，可在「备份与回滚」还原。
-          </Typography.Text>
+          </div>
         </div>
       ),
       okText: "开始修复",
-      cancelText: "取消",
       onOk: async () => {
         let ok = 0;
         let fail = 0;
@@ -296,21 +313,26 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         setComboRun(null);
         // 第四步：自动复检（快速档闭环）
         await refreshAfterCombo();
-        message[fail === 0 ? "success" : "warning"](
-          `一键修复完成：成功 ${ok} 项${fail > 0 ? `，失败/跳过 ${fail} 项（详见修复记录）` : ""}，已自动复检`,
-        );
+        if (fail === 0)
+          toast.success(
+            `一键修复完成：成功 ${ok} 项，已自动复检`,
+          );
+        else
+          toast.info(
+            `一键修复完成：成功 ${ok} 项，失败/跳过 ${fail} 项（详见修复记录），已自动复检`,
+          );
       },
     });
-  }, [report, data, busy, comboRun, diagBusy, paramValues, isAdmin, refreshAfterCombo]);
+  }, [report, data, busy, comboRun, diagBusy, paramValues, isAdmin, refreshAfterCombo, toast]);
 
   /** 重查全部失败/警告项（只读检查，安全）：跑完修复后逐项确认效果。
-   * 逐项替换结果（与单项重查同一口径），全部完成后不自动刷新整轮——
-   * 失败项在重查后转好的会即时变绿。 */
+   *  逐项替换结果（与单项重查同一口径），全部完成后不自动刷新整轮——
+   *  失败项在重查后转好的会即时变绿。 */
   const recheckAllFailed = useCallback(async () => {
     if (!report || batchRechecking || diagBusy || comboRun) return;
     const failed = report.results.filter((r) => r.status === "fail" || r.status === "warn");
     if (failed.length === 0) {
-      message.info("没有失败/警告项需要重查");
+      toast.info("没有失败/警告项需要重查");
       return;
     }
     setBatchRechecking(true);
@@ -334,14 +356,13 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
           console.warn(`重查 ${r.id} 失败`, e);
         }
       }
-      message[nowOk > 0 ? "success" : "info"](
-        `重查完成：${failed.length} 项中 ${nowOk} 项已转为通过`,
-      );
+      if (nowOk > 0) toast.success(`重查完成：${failed.length} 项中 ${nowOk} 项已转为通过`);
+      else toast.info(`重查完成：${failed.length} 项中 0 项已转为通过`);
     } finally {
       setRecheckId("");
       setBatchRechecking(false);
     }
-  }, [report, batchRechecking, diagBusy, comboRun]);
+  }, [report, batchRechecking, diagBusy, comboRun, toast]);
 
   /** 执行一个动作（改配置/强力类先确认）。 */
   const run = useCallback(
@@ -367,9 +388,9 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
           );
           const lvl = outcomeLevel(out);
           const rebootHint = out.success && out.need_reboot ? "（需重启后生效）" : "";
-          message[lvl === "success" ? "success" : lvl === "warning" ? "warning" : "error"](
-            `${action.title}：${out.message || (out.success ? "完成" : "失败")}${rebootHint}`,
-          );
+          if (lvl === "success") toast.success(`${action.title}：${out.message || "完成"}${rebootHint}`);
+          else if (lvl === "warning") toast.info(`${action.title}：${out.message}${rebootHint}`);
+          else toast.error(`${action.title}：${out.message || "失败"}${rebootHint}`);
         } catch (e) {
           const out: RepairOutcome = {
             success: false,
@@ -385,29 +406,24 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
               text: `${action.title} — ${clipText(String(e), 90)}`,
             }),
           );
-          message.error(`${action.title}：${String(e)}`);
+          toast.error(`${action.title}：${String(e)}`);
         } finally {
           setBusy("");
         }
       };
 
       if (needsConfirm(action.risk)) {
-        Modal.confirm({
+        confirm({
           title: `${riskLabel(action.risk)}类动作：${action.title}`,
-          content: (
-            <Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>
-              {confirmText(action)}
-            </Typography.Paragraph>
-          ),
+          content: <div className="whitespace-pre-wrap">{confirmText(action)}</div>,
           okText: "执行",
-          cancelText: "取消",
           onOk: doRun,
         });
       } else {
         await doRun();
       }
     },
-    [paramValues, busy, comboRun],
+    [paramValues, busy, comboRun, toast],
   );
 
   /** 组合修复：逐步执行并把进度刷到 comboRun，完成后落一条摘要。 */
@@ -416,7 +432,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       const runnable = steps.filter((s) => !s.skipped_reason);
       // 全被跳过（如非管理员点深度修复）就不算一次"执行"，直接说明原因
       if (runnable.length === 0) {
-        message.info(`${combo.title}：没有可执行的步骤（全部被跳过）`);
+        toast.info(`${combo.title}：没有可执行的步骤（全部被跳过）`);
         return;
       }
       let ok = 0;
@@ -445,7 +461,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
             ok += 1;
           } else {
             fail += 1;
-            message.warning(`${action.title} 未成功：${out.message}`);
+            toast.info(`${action.title} 未成功：${out.message}`);
           }
         } catch (e) {
           fail += 1;
@@ -456,7 +472,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
               text: `${action.title} — ${clipText(String(e), 90)}`,
             }),
           );
-          message.error(`${action.title}：${String(e)}`);
+          toast.error(`${action.title}：${String(e)}`);
         } finally {
           setBusy("");
           setComboRun((r) => (r ? { ...r, done: r.done + 1, current: "" } : r));
@@ -466,14 +482,14 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       setComboResult({ title: combo.title, ok, fail });
       // 有失败就不能报 success：之前无条件 message.success 会掩盖部分失败
       if (fail === 0) {
-        message.success(`${combo.title} 执行完毕：${ok} 步全部成功`);
+        toast.success(`${combo.title} 执行完毕：${ok} 步全部成功`);
       } else {
-        message.warning(`${combo.title} 执行完毕：${ok} 成功 / ${fail} 失败（详见各动作面板）`);
+        toast.info(`${combo.title} 执行完毕：${ok} 成功 / ${fail} 失败（详见各动作面板）`);
       }
       // 组合改了网络配置，用快速静默复检刷新旧结论（Python 同款收尾）
       void refreshAfterCombo();
     },
-    [data, paramValues, refreshAfterCombo],
+    [data, paramValues, refreshAfterCombo, toast],
   );
 
   /** 组合修复：先取计划（含跳过项），确认后逐步执行。 */
@@ -484,50 +500,53 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       try {
         steps = await invoke<ComboStep[]>("sk_repair_plan", { combo: combo.key, isAdmin });
       } catch (e) {
-        message.error(`无法获取组合计划：${String(e)}`);
+        toast.error(`无法获取组合计划：${String(e)}`);
         return;
       }
       setPlan({ key: combo.key, steps });
       const s = summarizePlan(steps);
-      Modal.confirm({
+      confirm({
         title: `${combo.title}（共 ${steps.length} 步）`,
         width: 620,
         content: (
-          <Space direction="vertical" size={6} style={{ width: "100%" }}>
-            <Typography.Text>
+          <div className="flex flex-col gap-1.5">
+            <div>
               将执行 <b>{s.run}</b> 步
               {s.skipped > 0 ? `，跳过 ${s.skipped} 步` : ""}
               {s.needsReboot ? "；其中含需重启生效的动作" : ""}
-            </Typography.Text>
+            </div>
             {steps.map((st) => (
               <div key={st.id} className="sk-hint">
                 {st.skipped_reason ? `${st.title} —— 跳过：${st.skipped_reason}` : st.title}
               </div>
             ))}
-          </Space>
+          </div>
         ),
         okText: "开始执行",
-        cancelText: "取消",
-        // 故意不把 executeCombo 的 promise 返回给 Modal：返回了确认框会一直
+        // 故意不把 executeCombo 的 promise 返回给确认框：返回了确认框会一直
         // 转圈挡住页面，关掉它才能看到页面上的逐步进度条
         onOk: () => {
           void executeCombo(combo, steps);
         },
       });
     },
-    [comboRun, busy, isAdmin, executeCombo],
+    [comboRun, busy, isAdmin, executeCombo, toast],
   );
 
   /**
    * 从体检结果/清单跳到对应修复动作：展开折叠项并滚动定位。
    *
-   * 等 260ms 再滚是为了让折叠展开动画先走完——否则目标在滚动途中还在移动。
+   * 等 260ms 再滚是为了让折叠展开先完成——否则目标在滚动途中还在移动。
    */
   const focusAction = useCallback((id: string) => {
     setOpenIds((keys) => (keys.includes(id) ? keys : [...keys, id]));
     window.setTimeout(() => {
       document.getElementById(`repair-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 260);
+  }, []);
+
+  const toggleOpen = useCallback((id: string) => {
+    setOpenIds((keys) => (keys.includes(id) ? keys.filter((k) => k !== id) : [...keys, id]));
   }, []);
 
   /** 体检建议里真正有入口可跳的动作（fix_ids 可能指向尚未移植的动作）。 */
@@ -545,9 +564,11 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
           <span key={fid}>
             {i > 0 ? "、" : ""}
             {(data?.actions ?? []).some((a) => a.id === fid) ? (
-              <Typography.Link onClick={() => focusAction(fid)}>{fid}</Typography.Link>
+              <LinkButton onClick={() => focusAction(fid)}>{fid}</LinkButton>
             ) : (
-              <Tooltip title="该动作尚未在 Rust 版接入，暂无执行入口">{fid}</Tooltip>
+              <UiTooltip title="该动作尚未在 Rust 版接入，暂无执行入口">
+                <span>{fid}</span>
+              </UiTooltip>
             )}
           </span>
         ))}
@@ -561,526 +582,503 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
 
   const groups = useMemo(() => groupByRisk(data?.actions ?? []), [data]);
 
+  const checkColumns: Column<CheckResult>[] = [
+    {
+      title: "",
+      dataIndex: "status",
+      width: 46,
+      render: (s: CheckStatus) => (
+        <span style={{ color: `var(--sk-${statusToken(s)})`, fontWeight: 600 }}>{statusMark(s)}</span>
+      ),
+    },
+    { title: "检查项", dataIndex: "name" },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 90,
+      render: (s: CheckStatus) => <Badge tone={colorTone(statusTagColor(s))}>{statusLabel(s)}</Badge>,
+    },
+    {
+      title: "重查",
+      key: "recheck",
+      width: 60,
+      render: (_: unknown, row) => {
+        // 单项重查（sk_diag_one）：某项异常时不用整轮重跑
+        const isBusy = recheckId !== "";
+        return (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={isBusy || diagBusy !== ""}
+            loading={recheckId === row.id}
+            onClick={() => {
+              setRecheckId(row.id);
+              invoke<CheckResult>("sk_diag_one", { id: row.id })
+                .then((fresh) => {
+                  setReport((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          results: prev.results.map((x) => (x.id === fresh.id ? fresh : x)),
+                        }
+                      : prev,
+                  );
+                })
+                .catch((e) => toast.error(`重查失败：${String(e)}`))
+                .finally(() => setRecheckId(""));
+            }}
+          >
+            重查
+          </Button>
+        );
+      },
+    },
+    {
+      title: "详情",
+      dataIndex: "detail",
+      render: (v: string, row) => (
+        <span className="flex flex-col gap-0.5">
+          <span className="flex flex-wrap items-center gap-1">
+            <span className="sk-hint">{v}</span>
+            {/* 复制详情：贴给别人排查时需要自包含的一段信息 */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard
+                  .writeText(formatCheckForCopy(row, fullInfo))
+                  .then(() => toast.success(`已复制「${row.name}」详情`))
+                  .catch(() => toast.error("复制失败：剪贴板不可用"));
+              }}
+            >
+              复制
+            </Button>
+          </span>
+          {row.fix_ids.length > 0 && renderFixLinks(row.fix_ids)}
+        </span>
+      ),
+    },
+  ];
+
+  const listColumns: Column<RepairAction>[] = [
+    { title: "id", dataIndex: "id", width: 170 },
+    { title: "名称", dataIndex: "title" },
+    {
+      title: "风险",
+      dataIndex: "risk",
+      width: 110,
+      render: (r: RepairAction["risk"], row) => (
+        <Badge tone={colorTone(riskToken(r))}>{row.risk_label || riskLabel(r)}</Badge>
+      ),
+    },
+    {
+      title: "需重启",
+      dataIndex: "need_reboot",
+      width: 80,
+      render: (v: boolean) => (v ? "是" : "否"),
+    },
+    {
+      title: "非管理员",
+      width: 100,
+      render: (_: unknown, row) => (willBeSkipped(row, isAdmin) ? "跳过" : "可执行"),
+    },
+    {
+      title: "操作",
+      width: 90,
+      render: (_: unknown, row) => (
+        // 平铺清单看不到分组结构，给个直达入口省得在上三组折叠里翻找
+        <LinkButton onClick={() => focusAction(row.id)}>展开定位</LinkButton>
+      ),
+    },
+  ];
+
   return (
-    <Space direction="vertical" size={14} style={{ width: "100%" }}>
+    <div className="flex flex-col gap-3.5">
       {!isAdmin && (
-        <Alert
-          type="warning"
-          showIcon
-          message="当前不是管理员身份"
-          description="改配置类与强力类动作会被跳过（组合修复里也会标注）；安全类动作可以正常执行。需要全部功能请以管理员身份运行。"
-        />
+        <Alert tone="warning" title="当前不是管理员身份">
+          改配置类与强力类动作会被跳过（组合修复里也会标注）；安全类动作可以正常执行。需要全部功能请以管理员身份运行。
+        </Alert>
       )}
 
-      <Card
-        size="small"
-        className="sk-card"
-        title="组合修复"
-        extra={<span className="sk-hint">按 Python COMBOS 的定义逐步执行</span>}
-      >
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-          <Space wrap>
-            {(data?.combos ?? []).map((c) => (
-              <Button
-                key={c.key}
-                onClick={() => void runCombo(c)}
-                loading={comboRun?.key === c.key}
-                disabled={(comboRun !== null && comboRun.key !== c.key) || busy !== ""}
-              >
-                {c.title}
-                <span className="sk-hint" style={{ marginLeft: 6 }}>
-                  {c.actions.length} 步
+      <Card>
+        <CardHeader>
+          <CardTitle>组合修复</CardTitle>
+          <span className="sk-hint">按 Python COMBOS 的定义逐步执行</span>
+        </CardHeader>
+        <CardBody>
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {(data?.combos ?? []).map((c) => (
+                <Button
+                  key={c.key}
+                  onClick={() => void runCombo(c)}
+                  loading={comboRun?.key === c.key}
+                  disabled={(comboRun !== null && comboRun.key !== c.key) || busy !== ""}
+                >
+                  {c.title}
+                  <span className="sk-hint ml-1.5">{c.actions.length} 步</span>
+                </Button>
+              ))}
+              {!comboRun && plan && planSummary && (
+                <span className="sk-hint">
+                  最近计划：{plan.steps.length} 步（{planSummary.run} 执行 / {planSummary.skipped} 跳过）
                 </span>
-              </Button>
-            ))}
-            {!comboRun && plan && planSummary && (
-              <span className="sk-hint">
-                最近计划：{plan.steps.length} 步（{planSummary.run} 执行 / {planSummary.skipped} 跳过）
-              </span>
-            )}
-            {!comboRun && comboResult && (
-              <span className="sk-hint">
-                上次组合「{comboResult.title}」：{comboResult.ok} 成功
-                {comboResult.fail > 0 ? ` / ${comboResult.fail} 失败` : "（全部成功）"}
-              </span>
-            )}
-          </Space>
-          {comboRun && (
-            // 执行进度：之前是黑盒等待，用户不知道组合跑到第几步、还剩几步
-            <div>
-              <Progress
-                size="small"
-                status="active"
-                percent={comboRun.total === 0 ? 100 : Math.round((comboRun.done / comboRun.total) * 100)}
-              />
-              <Typography.Text type="secondary" className="sk-hint">
-                正在执行「{comboRun.title}」：第 {Math.min(comboRun.done + 1, comboRun.total)}/
-                {comboRun.total} 步{comboRun.current ? ` —— ${comboRun.current}` : ""}
-              </Typography.Text>
+              )}
+              {!comboRun && comboResult && (
+                <span className="sk-hint">
+                  上次组合「{comboResult.title}」：{comboResult.ok} 成功
+                  {comboResult.fail > 0 ? ` / ${comboResult.fail} 失败` : "（全部成功）"}
+                </span>
+              )}
             </div>
-          )}
-        </Space>
+            {comboRun && (
+              // 执行进度：之前是黑盒等待，用户不知道组合跑到第几步、还剩几步
+              <div className="flex flex-col gap-1">
+                <Progress
+                  percent={
+                    comboRun.total === 0 ? 100 : Math.round((comboRun.done / comboRun.total) * 100)
+                  }
+                />
+                <span className="sk-hint">
+                  正在执行「{comboRun.title}」：第 {Math.min(comboRun.done + 1, comboRun.total)}/
+                  {comboRun.total} 步{comboRun.current ? ` —— ${comboRun.current}` : ""}
+                </span>
+              </div>
+            )}
+          </div>
+        </CardBody>
       </Card>
 
-      <Card
-        size="small"
-        className="sk-card"
-        title="网络诊断"
-        extra={
-          <Space>
-            <span className="sk-hint" style={{ userSelect: "none" }}>
-              只看未通过
-            </span>
-            <Switch size="small" checked={failedOnly} onChange={setFailedOnly} />
-            <span className="sk-hint" style={{ userSelect: "none" }}>
-              含完整信息
-            </span>
-            <Switch size="small" checked={fullInfo} onChange={setFullInfo} />
-            <Button
-              size="small"
-              disabled={!report || diagBusy !== ""}
-              onClick={() => {
-                if (!report || diagBusy) return;
-                navigator.clipboard
-                  .writeText(formatReportForCopy(report, new Date(), fullInfo))
-                  .then(() =>
-                    message.success(fullInfo ? "诊断报告已复制（含完整信息）" : "诊断报告已复制（已脱敏）"),
-                  )
-                  .catch(() => message.error("复制失败：剪贴板不可用"));
-              }}
-            >
-              复制报告
-            </Button>
-            <Button
-              size="small"
-              disabled={!report || diagBusy !== ""}
-              onClick={() => {
-                if (!report || diagBusy) return;
-                void invoke<string>("sk_diag_export", {
-                  content: formatReportForCopy(report, new Date(), fullInfo),
-                })
-                  .then((target) => {
-                    if (target) message.success(`已导出：${target}`);
+      <Card>
+        <CardHeader>
+          <CardTitle>网络诊断</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <div className="flex flex-col gap-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="sk-hint select-none">只看未通过</span>
+              <Switch checked={failedOnly} onChange={setFailedOnly} aria-label="只看未通过" />
+              <span className="sk-hint select-none">含完整信息</span>
+              <Switch checked={fullInfo} onChange={setFullInfo} aria-label="含完整信息" />
+              <Button
+                size="sm"
+                disabled={!report || diagBusy !== ""}
+                onClick={() => {
+                  if (!report || diagBusy) return;
+                  navigator.clipboard
+                    .writeText(formatReportForCopy(report, new Date(), fullInfo))
+                    .then(() =>
+                      toast.success(fullInfo ? "诊断报告已复制（含完整信息）" : "诊断报告已复制（已脱敏）"),
+                    )
+                    .catch(() => toast.error("复制失败：剪贴板不可用"));
+                }}
+              >
+                复制报告
+              </Button>
+              <Button
+                size="sm"
+                disabled={!report || diagBusy !== ""}
+                onClick={() => {
+                  if (!report || diagBusy) return;
+                  void invoke<string>("sk_diag_export", {
+                    content: formatReportForCopy(report, new Date(), fullInfo),
                   })
-                  .catch((e) => message.error(String(e)));
-              }}
-            >
-              导出报告
-            </Button>
-            <Button
-              type="primary"
-              size="small"
-              onClick={() => void smartRepair()}
-              disabled={!!diagBusy || comboRun !== null}
-              title="自动诊断并修复可自动处理的问题，全程无需理解网络术语"
-            >
-              🔧 一键智能修复
-            </Button>
-            <Button
-              size="small"
-              onClick={() => void recheckAllFailed()}
-              loading={batchRechecking}
-              disabled={
-                !!diagBusy ||
-                comboRun !== null ||
-                recheckId !== "" ||
-                !report ||
-                !report.results.some((r) => r.status === "fail" || r.status === "warn")
-              }
-            >
-              重查失败项
-            </Button>
-            <Button
-              size="small"
-              onClick={() => void runDiag(true)}
-              loading={diagBusy === "quick"}
-              disabled={diagBusy === "full" || comboRun !== null}
-            >
-              快速检测
-            </Button>
-            <Button
-              type="primary"
-              size="small"
-              onClick={() => void runDiag(false)}
-              loading={diagBusy === "full"}
-              disabled={diagBusy === "quick" || comboRun !== null}
-            >
-              完整检测
-            </Button>
-          </Space>
-        }
-      >
-        <Space direction="vertical" size={10} style={{ width: "100%" }}>
-          {report ? (
-            <>
-              <Space wrap>
-                <Tag color={verdictColor(report.verdict)}>{report.verdict_text}</Tag>
-                {summarizeDiag(report).map((s) => (
-                  <Tag key={s.status} color={statusTagColor(s.status)}>
-                    {s.label} {s.count}
-                  </Tag>
-                ))}
-                <span className="sk-hint">
-                  {report.quick ? "快速检测（跳过慢速项）" : "完整检测"} · 共{" "}
-                  {report.results.length} 项
-                </span>
-              </Space>
+                    .then((target) => {
+                      if (target) toast.success(`已导出：${target}`);
+                    })
+                    .catch((e) => toast.error(String(e)));
+                }}
+              >
+                导出报告
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void smartRepair()}
+                disabled={!!diagBusy || comboRun !== null}
+                title="自动诊断并修复可自动处理的问题，全程无需理解网络术语"
+              >
+                🔧 一键智能修复
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void recheckAllFailed()}
+                loading={batchRechecking}
+                disabled={
+                  !!diagBusy ||
+                  comboRun !== null ||
+                  recheckId !== "" ||
+                  !report ||
+                  !report.results.some((r) => r.status === "fail" || r.status === "warn")
+                }
+              >
+                重查失败项
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void runDiag(true)}
+                loading={diagBusy === "quick"}
+                disabled={diagBusy === "full" || comboRun !== null}
+              >
+                快速检测
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void runDiag(false)}
+                loading={diagBusy === "full"}
+                disabled={diagBusy === "quick" || comboRun !== null}
+              >
+                完整检测
+              </Button>
+            </div>
 
-              {fixableIds.length > 0 && (
-                <Alert
-                  type="info"
-                  showIcon
-                  message={
+            {report ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={colorTone(verdictColor(report.verdict))}>{report.verdict_text}</Badge>
+                  {summarizeDiag(report).map((s) => (
+                    <Badge key={s.status} tone={colorTone(statusTagColor(s.status))}>
+                      {s.label} {s.count}
+                    </Badge>
+                  ))}
+                  <span className="sk-hint">
+                    {report.quick ? "快速检测（跳过慢速项）" : "完整检测"} · 共{" "}
+                    {report.results.length} 项
+                  </span>
+                </div>
+
+                {fixableIds.length > 0 && (
+                  <Alert tone="info" title="诊断建议修复">
                     <span>
-                      诊断建议修复：
                       {fixableIds.map((fid, i) => (
                         <span key={fid}>
                           {i > 0 ? "、" : ""}
-                          <Typography.Link onClick={() => focusAction(fid)}>
-                            {fid}
-                          </Typography.Link>
+                          <LinkButton onClick={() => focusAction(fid)}>{fid}</LinkButton>
                         </span>
                       ))}
                       （点击展开并定位到对应动作）
                     </span>
-                  }
-                />
-              )}
-
-              <Table<CheckResult>
-                size="small"
-                rowKey="id"
-                pagination={false}
-                dataSource={sortBySeverity(report.results).filter(
-                  (r) => !failedOnly || r.status !== "pass",
+                  </Alert>
                 )}
-                columns={[
-                  {
-                    title: "",
-                    dataIndex: "status",
-                    width: 46,
-                    render: (s: CheckStatus) => (
-                      <span style={{ color: `var(--sk-${statusToken(s)})`, fontWeight: 600 }}>
-                        {statusMark(s)}
-                      </span>
-                    ),
-                  },
-                  { title: "检查项", dataIndex: "name" },
-                  {
-                    title: "状态",
-                    dataIndex: "status",
-                    width: 90,
-                    render: (s: CheckStatus) => (
-                      <Tag color={statusTagColor(s)}>{statusLabel(s)}</Tag>
-                    ),
-                  },
-                  {
-                    title: "重查",
-                    key: "recheck",
-                    width: 60,
-                    render: (_: unknown, row) => {
-                      // 单项重查（sk_diag_one）：某项异常时不用整轮重跑
-                      const busy = recheckId !== "";
-                      return (
-                        <Button
-                          size="small"
-                          type="text"
-                          className="sk-hint"
-                          style={{ height: "auto", padding: "0 4px" }}
-                          disabled={busy || diagBusy !== ""}
-                          loading={recheckId === row.id}
-                          onClick={() => {
-                            setRecheckId(row.id);
-                            invoke<CheckResult>("sk_diag_one", { id: row.id })
-                              .then((fresh) => {
-                                setReport((prev) =>
-                                  prev
-                                    ? {
-                                        ...prev,
-                                        results: prev.results.map((x) =>
-                                          x.id === fresh.id ? fresh : x,
-                                        ),
-                                      }
-                                    : prev,
-                                );
-                              })
-                              .catch((e) => message.error(`重查失败：${String(e)}`))
-                              .finally(() => setRecheckId(""));
-                          }}
-                        >
-                          重查
-                        </Button>
-                      );
-                    },
-                  },
-                  {
-                    title: "详情",
-                    dataIndex: "detail",
-                    render: (v: string, row) => (
-                      <Space direction="vertical" size={2}>
-                        <Space size={4} wrap>
-                          <span className="sk-hint">{v}</span>
-                          {/* 复制详情：贴给别人排查时需要自包含的一段信息 */}
-                          <Button
-                            size="small"
-                            type="text"
-                            className="sk-hint"
-                            style={{ height: "auto", padding: "0 4px" }}
-                            onClick={() => {
-                              navigator.clipboard
-                                .writeText(formatCheckForCopy(row, fullInfo))
-                                .then(() => message.success(`已复制「${row.name}」详情`))
-                                .catch(() => message.error("复制失败：剪贴板不可用"));
-                            }}
-                          >
-                            复制
-                          </Button>
-                        </Space>
-                        {row.fix_ids.length > 0 && renderFixLinks(row.fix_ids)}
-                      </Space>
-                    ),
-                  },
-                ]}
-              />
-            </>
-          ) : diagBusy ? (
-            // 首次检测没有 report：用 Spin 而不是一条静态文案，让"在跑"看得见
-            <div style={{ textAlign: "center", padding: "28px 0" }}>
-              <Spin />
-              <div className="sk-hint" style={{ marginTop: 10 }}>
-                正在检测…（含 ping / HTTP / DNS 查询与网卡采集，完整检测约需数秒）
+
+                <Table<CheckResult>
+                  rowKey={(r) => r.id}
+                  dataSource={sortBySeverity(report.results).filter(
+                    (r) => !failedOnly || r.status !== "pass",
+                  )}
+                  columns={checkColumns}
+                />
+              </>
+            ) : diagBusy ? (
+              // 首次检测没有 report：给动态文案让"在跑"看得见
+              <div className="py-7 text-center">
+                <div className="sk-hint">
+                  正在检测…（含 ping / HTTP / DNS 查询与网卡采集，完整检测约需数秒）
+                </div>
               </div>
-            </div>
-          ) : (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="尚未检测。点「完整检测」运行全部 15 项网络检查（NlaSvc / 持久路由 / 静态 DNS / 代理 / 网关 / DNS 对比 / NCSI / 服务 / 路由 / IPv6 / WLAN …）；「快速检测」跳过 5 项慢速项。"
-            />
-          )}
-        </Space>
+            ) : (
+              <Empty description="尚未检测。点「完整检测」运行全部 15 项网络检查（NlaSvc / 持久路由 / 静态 DNS / 代理 / 网关 / DNS 对比 / NCSI / 服务 / 路由 / IPv6 / WLAN …）；「快速检测」跳过 5 项慢速项。" />
+            )}
+          </div>
+        </CardBody>
       </Card>
 
       {groups.map((g) => (
-        <Card
-          key={g.risk}
-          size="small"
-          className="sk-card"
-          title={
-            <Space>
-              <Tag color={riskToken(g.risk) === "ok" ? "green" : riskToken(g.risk) === "warn" ? "orange" : "red"}>
-                {riskLabel(g.risk)}
-              </Tag>
-              <span>共 {g.items.length} 项</span>
-            </Space>
-          }
-        >
-          <Collapse
-            accordion={false}
-            activeKey={openIds}
-            onChange={(k) => {
-              // 三个分组的 Collapse 共用 openIds；onChange 回传的数组可能只含
-              // 本组的 key，必须并回全集，否则收起 A 组会把 B 组展开的项一起收掉
-              const arr = (Array.isArray(k) ? k : [k]).map(String);
-              const groupKeys = new Set(g.items.map((a) => a.id));
-              setOpenIds((prev) => [
-                ...prev.filter((x) => !groupKeys.has(x) && !arr.includes(x)),
-                ...arr,
-              ]);
-            }}
-            items={g.items.map((a) => {
-              const out = outcomes[a.id];
-              const skip = skipReason(a, isAdmin);
-              return {
-                key: a.id,
-                label: (
-                  <Space>
-                    {/* 锚点：体检「建议动作」/清单「定位」滚动到这里 */}
-                    <span id={`repair-${a.id}`}>{a.title}</span>
-                    {a.need_reboot && <Tag color="red">需重启</Tag>}
-                    {skip && <Tag color="default">将被跳过</Tag>}
-                    {out && <Tag color={outcomeTag(out).color}>{outcomeTag(out).text}</Tag>}
-                  </Space>
-                ),
-                children: (
-                  <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                    <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-                      {a.description}
-                    </Typography.Paragraph>
-                    <Typography.Text type="secondary" className="sk-hint">
-                      还原方式：{a.restore_hint}
-                    </Typography.Text>
-                    {skip && <Alert type="info" showIcon message={skip} />}
-                    {a.params.length > 0 && (
-                      <Row gutter={8}>
-                        {a.params.map((p) => (
-                          <Col span={12} key={p.name}>
-                            <div className="sk-hint">
-                              {p.name}：{p.desc}
-                              {p.required ? "（必填）" : "（可选）"}
-                            </div>
-                            <Input
-                              size="small"
-                              placeholder={p.name}
-                              value={paramValues[a.id]?.[p.name] ?? ""}
-                              onChange={(e) =>
-                                setParamValues((m) => ({
-                                  ...m,
-                                  [a.id]: { ...(m[a.id] ?? {}), [p.name]: e.target.value },
-                                }))
+        <Card key={g.risk}>
+          <CardHeader>
+            <CardTitle>
+              <span className="inline-flex items-center gap-2">
+                <Badge tone={colorTone(riskToken(g.risk))}>{riskLabel(g.risk)}</Badge>
+                <span>共 {g.items.length} 项</span>
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardBody>
+            <div className="flex flex-col divide-y divide-sk-border/60">
+              {g.items.map((a) => {
+                const out = outcomes[a.id];
+                const skip = skipReason(a, isAdmin);
+                const open = openIds.includes(a.id);
+                return (
+                  <div key={a.id} className="flex flex-col">
+                    {/* 行头（AntD Collapse 面板头的替代）：整行可点开合 */}
+                    <button
+                      type="button"
+                      onClick={() => toggleOpen(a.id)}
+                      className="flex w-full cursor-pointer flex-wrap items-center gap-2 bg-transparent py-2 text-left"
+                    >
+                      <span className="w-3 text-sk-sub">{open ? "▼" : "▶"}</span>
+                      {/* 锚点：体检「建议动作」/清单「定位」滚动到这里 */}
+                      <span id={`repair-${a.id}`} className="font-medium text-sk-text">
+                        {a.title}
+                      </span>
+                      {a.need_reboot && <Badge tone="err">需重启</Badge>}
+                      {skip && <Badge>将被跳过</Badge>}
+                      {out && <Badge tone={colorTone(outcomeTag(out).color)}>{outcomeTag(out).text}</Badge>}
+                    </button>
+                    {open && (
+                      <div className="flex flex-col gap-2 pb-3">
+                        <div className="whitespace-pre-wrap text-sm text-sk-text">{a.description}</div>
+                        <div className="sk-hint">还原方式：{a.restore_hint}</div>
+                        {skip && <Alert tone="info" title={skip} />}
+                        {a.params.length > 0 && (
+                          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                            {a.params.map((p) => (
+                              <div key={p.name} className="flex flex-col gap-1">
+                                <div className="sk-hint">
+                                  {p.name}：{p.desc}
+                                  {p.required ? "（必填）" : "（可选）"}
+                                </div>
+                                <Input
+                                  placeholder={p.name}
+                                  value={paramValues[a.id]?.[p.name] ?? ""}
+                                  onChange={(e) =>
+                                    setParamValues((m) => ({
+                                      ...m,
+                                      [a.id]: { ...(m[a.id] ?? {}), [p.name]: e.target.value },
+                                    }))
+                                  }
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            loading={busy === a.id}
+                            disabled={(busy !== "" || comboRun !== null) && busy !== a.id}
+                            onClick={() => void run(a)}
+                          >
+                            执行
+                          </Button>
+                          {out?.need_reboot && (
+                            // 执行成功但需重启时给持久提醒，光靠一次性 toast 会被错过
+                            <Badge tone="err">需重启后生效</Badge>
+                          )}
+                        </div>
+                        {out?.output && (
+                          // 完整输出可展开+可复制，替代原来静默截断 160 字符
+                          <div className="flex flex-col gap-1">
+                            <div
+                              className="sk-hint whitespace-pre-wrap break-all"
+                              style={
+                                expandedOutputs[a.id]
+                                  ? undefined
+                                  : {
+                                        display: "-webkit-box",
+                                        WebkitBoxOrient: "vertical",
+                                        WebkitLineClamp: 3,
+                                        overflow: "hidden",
+                                      }
                               }
-                            />
-                          </Col>
-                        ))}
-                      </Row>
+                            >
+                              {out.output}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                  setExpandedOutputs((m) => ({ ...m, [a.id]: !m[a.id] }))
+                                }
+                              >
+                                {expandedOutputs[a.id] ? "收起" : "展开全部"}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  navigator.clipboard
+                                    .writeText(out.output)
+                                    .then(() => toast.success("已复制完整输出"))
+                                    .catch(() => toast.error("复制失败：剪贴板不可用"));
+                                }}
+                              >
+                                复制完整输出
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                        {out && !out.output && out.message && (
+                          <div className="sk-hint">{out.message}</div>
+                        )}
+                      </div>
                     )}
-                    <Space wrap>
-                      <Button
-                        type="primary"
-                        size="small"
-                        loading={busy === a.id}
-                        disabled={(busy !== "" || comboRun !== null) && busy !== a.id}
-                        onClick={() => void run(a)}
-                      >
-                        执行
-                      </Button>
-                      {out?.need_reboot && (
-                        // 执行成功但需重启时给持久提醒，光靠一次性 message 会被错过
-                        <Tag color="red">需重启后生效</Tag>
-                      )}
-                    </Space>
-                    {out?.output && (
-                      // 完整输出可展开+可复制，替代原来静默截断 160 字符
-                      <Typography.Paragraph
-                        type="secondary"
-                        className="sk-hint"
-                        style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}
-                        ellipsis={{ rows: 3, expandable: true, symbol: "展开全部" }}
-                        copyable={{ text: out.output, tooltips: ["复制完整输出", "已复制"] }}
-                      >
-                        {out.output}
-                      </Typography.Paragraph>
-                    )}
-                    {out && !out.output && out.message && (
-                      <Typography.Text type="secondary" className="sk-hint">
-                        {out.message}
-                      </Typography.Text>
-                    )}
-                  </Space>
-                ),
-              };
-            })}
-          />
+                  </div>
+                );
+              })}
+            </div>
+          </CardBody>
         </Card>
       ))}
 
       {!data && (
-        <Card size="small" className="sk-card">
-          {loadError ? (
-            // 加载失败 ≠ 加载中：给出原因和重试入口，而不是永远显示「正在读取」
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                <Space direction="vertical" size={8}>
-                  <span>修复动作库加载失败：{loadError}</span>
-                  <Button
-                    size="small"
-                    onClick={() => {
-                      setLoadError("");
-                      void load();
-                    }}
-                  >
-                    重试
-                  </Button>
-                </Space>
-              }
-            />
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取修复动作库…" />
-          )}
+        <Card>
+          <CardBody>
+            {loadError ? (
+              // 加载失败 ≠ 加载中：给出原因和重试入口，而不是永远显示「正在读取」
+              <div className="flex flex-col items-center gap-2">
+                <Empty description={`修复动作库加载失败：${loadError}`} />
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setLoadError("");
+                    void load();
+                  }}
+                >
+                  重试
+                </Button>
+              </div>
+            ) : (
+              <Empty description="正在读取修复动作库…" />
+            )}
+          </CardBody>
         </Card>
       )}
 
       {data && (
-        <Table<RepairAction>
-          size="small"
-          rowKey="id"
-          pagination={false}
-          dataSource={data.actions}
-          title={() => <span className="sk-hint">动作清单（表格视图，顺序与后端 ACTION_IDS 一致）</span>}
-          columns={[
-            { title: "id", dataIndex: "id", width: 170 },
-            { title: "名称", dataIndex: "title" },
-            {
-              title: "风险",
-              dataIndex: "risk",
-              width: 110,
-              render: (r: RepairAction["risk"], row) => (
-                <Tag color={riskToken(r) === "ok" ? "green" : riskToken(r) === "warn" ? "orange" : "red"}>
-                  {row.risk_label || riskLabel(r)}
-                </Tag>
-              ),
-            },
-            {
-              title: "需重启",
-              dataIndex: "need_reboot",
-              width: 80,
-              render: (v: boolean) => (v ? "是" : "否"),
-            },
-            {
-              title: "非管理员",
-              width: 100,
-              render: (_: unknown, row) => (willBeSkipped(row, isAdmin) ? "跳过" : "可执行"),
-            },
-            {
-              title: "操作",
-              width: 90,
-              render: (_: unknown, row) => (
-                // 平铺清单看不到分组结构，给个直达入口省得在上三组折叠里翻找
-                <Typography.Link onClick={() => focusAction(row.id)}>展开定位</Typography.Link>
-              ),
-            },
-          ]}
-        />
+        <div className="sk-card">
+          <div className="sk-hint px-4 pb-1 pt-3">动作清单（表格视图，顺序与后端 ACTION_IDS 一致）</div>
+          <div className="px-2 pb-3">
+            <Table<RepairAction> rowKey={(r) => r.id} dataSource={data.actions} columns={listColumns} />
+          </div>
+        </div>
       )}
 
       <BackupRollbackCard />
 
-      <Card
-        className="sk-card"
-        title="修复记录（本次运行）"
-        extra={
-          <span className="sk-hint">
-            手动 / 组合 / 后台监控自动修复统一入账（最新在前，最多 60 条）
-          </span>
-        }
-      >
-        {records.length === 0 ? (
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="暂无记录。执行修复动作，或等待后台监控自动修复后这里会实时出现条目。"
-          />
-        ) : (
-          // 后台自动修复原本只写日志：用户完全看不见「后台动过系统」，这里补上可见性
-          <div style={{ maxHeight: 200, overflowY: "auto" }}>
-            {records.map((r, i) => (
-              <div key={`${r.time}-${i}`} style={{ padding: "2px 0" }}>
-                <span
-                  style={{
-                    color: `var(--sk-${r.mark === "√" ? "ok" : r.mark === "!" ? "warn" : "err"})`,
-                    fontWeight: 600,
-                  }}
-                >
-                  {r.mark}
-                </span>
-                <span className="sk-hint" style={{ marginLeft: 8 }}>
-                  {r.time}
-                </span>
-                <span style={{ marginLeft: 8 }}>{r.text}</span>
-              </div>
-            ))}
-          </div>
-        )}
+      <Card>
+        <CardHeader>
+          <CardTitle>修复记录（本次运行）</CardTitle>
+          <span className="sk-hint">手动 / 组合 / 后台监控自动修复统一入账（最新在前，最多 60 条）</span>
+        </CardHeader>
+        <CardBody>
+          {records.length === 0 ? (
+            <Empty description="暂无记录。执行修复动作，或等待后台监控自动修复后这里会实时出现条目。" />
+          ) : (
+            // 后台自动修复原本只写日志：用户完全看不见「后台动过系统」，这里补上可见性
+            <div className="max-h-[200px] overflow-y-auto">
+              {records.map((r, i) => (
+                <div key={`${r.time}-${i}`} className="py-0.5">
+                  <span
+                    style={{
+                      color: `var(--sk-${r.mark === "√" ? "ok" : r.mark === "!" ? "warn" : "err"})`,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {r.mark}
+                  </span>
+                  <span className="sk-hint ml-2">{r.time}</span>
+                  <span className="ml-2">{r.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardBody>
       </Card>
-    </Space>
+    </div>
   );
 }
