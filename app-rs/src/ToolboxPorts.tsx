@@ -7,18 +7,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  Button,
   Card,
-  Empty,
-  Input,
-  Modal,
-  Space,
-  Switch,
-  Table,
   Tabs,
-  Tag,
-  Typography,
-  message,
 } from "antd";
 
 import {
@@ -29,7 +19,7 @@ import {
   killConfirmText,
   lanSummary,
   sortDevices,
-  stateTagColor,
+  stateToken,
   summarizePorts,
   type LanDevice,
   type LanResult,
@@ -40,13 +30,18 @@ import {
 import {
   Button as UiButton,
   Input as UiInput,
+  Badge as UiBadge,
   Empty as UiEmpty,
   Table as UiTable,
 } from "./ui";
 import { Alert as UiAlert } from "./ui/alert";
+import { confirm } from "./ui/confirm";
+import { Switch } from "./ui";
+import { Tooltip as UiTooltip } from "./ui/tooltip";
 import { useToast } from "./ui/toast";
 
 function PortPanel() {
+  const toast = useToast();
   const [rows, setRows] = useState<PortRow[]>([]);
   const [keyword, setKeyword] = useState("");
   const [listenOnly, setListenOnly] = useState(false);
@@ -59,7 +54,7 @@ function PortPanel() {
       const r = await invoke<{ rows: PortRow[]; total: number }>("sk_ports_list");
       setRows(r.rows);
     } catch (e) {
-      message.error(`读取端口列表失败：${String(e)}`);
+      toast.error(`读取端口列表失败：${String(e)}`);
     } finally {
       setBusy(false);
     }
@@ -83,63 +78,54 @@ function PortPanel() {
     (row: PortRow) => {
       const check = canKill(row.pid);
       if (!check.ok) {
-        message.warning(check.reason);
+        toast.info(check.reason);
         return;
       }
-      Modal.confirm({
+      confirm({
         title: "结束进程",
-        content: (
-          <Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>
-            {killConfirmText(row)}
-          </Typography.Paragraph>
-        ),
+        content: killConfirmText(row),
         okText: "结束进程",
-        okButtonProps: { danger: true },
-        cancelText: "取消",
+        danger: true,
         onOk: async () => {
           try {
-            message.success(await invoke<string>("sk_kill_process", { pid: row.pid }));
+            toast.success(await invoke<string>("sk_kill_process", { pid: row.pid }));
             await load();
           } catch (e) {
-            message.error(String(e));
+            toast.error(String(e));
           }
         },
       });
     },
-    [load],
+    [load, toast],
   );
 
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Space wrap>
-        <Button size="small" type="primary" loading={busy} onClick={() => void load()}>
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <UiButton variant="primary" loading={busy} onClick={() => void load()}>
           刷新
-        </Button>
+        </UiButton>
         <span className="sk-hint">每 5 秒自动刷新</span>
-        <Switch size="small" checked={auto} onChange={setAuto} />
+        <Switch checked={auto} onChange={setAuto} />
         <span className="sk-hint">只看监听端口</span>
-        <Switch size="small" checked={listenOnly} onChange={setListenOnly} />
-        <Input
-          size="small"
-          style={{ width: 260 }}
-          allowClear
+        <Switch checked={listenOnly} onChange={setListenOnly} />
+        <UiInput
+          className="w-[260px]"
           placeholder="筛选：端口 / PID / 进程名 / IP / 状态…"
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
         />
-        <Tag>共 {stats.total} 条</Tag>
-        <Tag color="green">监听 {stats.listening}</Tag>
-        <Tag color="blue">进程 {stats.processes}</Tag>
-        {keyword && <Tag color="orange">筛出 {shown.length} 条</Tag>}
-      </Space>
+        <UiBadge>共 {stats.total} 条</UiBadge>
+        <UiBadge tone="ok">监听 {stats.listening}</UiBadge>
+        <UiBadge tone="accent">进程 {stats.processes}</UiBadge>
+        {keyword && <UiBadge tone="warn">筛出 {shown.length} 条</UiBadge>}
+      </div>
 
-      <Table<PortRow>
-        size="small"
+      <UiTable<PortRow>
         rowKey={(r) => `${r.proto}-${r.local}-${r.remote}-${r.pid}`}
-        pagination={{ pageSize: 20, showSizeChanger: false }}
-        dataSource={shown}
         loading={busy}
-        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配连接" /> }}
+        dataSource={shown}
+        empty={<UiEmpty description="无匹配连接" />}
         columns={[
           { title: "协议", dataIndex: "proto", width: 70 },
           { title: "本地地址", dataIndex: "local", width: 210 },
@@ -149,30 +135,32 @@ function PortPanel() {
             dataIndex: "state",
             width: 120,
             render: (v: string, r) => (
-              <Tag color={stateTagColor(v, r.listening)}>{v || "监听"}</Tag>
+              <UiBadge tone={stateToken(v, r.listening) as "ok" | "accent" | "warn" | "neutral"}>
+                {v || "监听"}
+              </UiBadge>
             ),
           },
           { title: "PID", dataIndex: "pid", width: 80 },
-          { title: "进程", dataIndex: "process", ellipsis: true },
+          { title: "进程", dataIndex: "process" },
           {
             title: "操作",
             width: 100,
             render: (_: unknown, r) => {
               const c = canKill(r.pid);
               return c.ok ? (
-                <Button size="small" type="link" danger onClick={() => kill(r)}>
+                <UiButton size="sm" variant="danger" onClick={() => kill(r)}>
                   结束进程
-                </Button>
+                </UiButton>
               ) : (
-                <span className="sk-hint" title={c.reason}>
-                  受保护
-                </span>
+                <UiTooltip title={c.reason}>
+                  <span className="sk-hint">受保护</span>
+                </UiTooltip>
               );
             },
           },
         ]}
       />
-    </Space>
+    </div>
   );
 }
 
