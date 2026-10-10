@@ -7,7 +7,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  Alert,
   Button,
   Card,
   Empty,
@@ -38,6 +37,14 @@ import {
   isValidMac,
   sendWol,
 } from "./ports";
+import {
+  Button as UiButton,
+  Input as UiInput,
+  Empty as UiEmpty,
+  Table as UiTable,
+} from "./ui";
+import { Alert as UiAlert } from "./ui/alert";
+import { useToast } from "./ui/toast";
 
 function PortPanel() {
   const [rows, setRows] = useState<PortRow[]>([]);
@@ -170,12 +177,13 @@ function PortPanel() {
 }
 
 function LanPanel() {
+  const toast = useToast();
   const [result, setResult] = useState<LanResult | null>(null);
   const [scanning, setScanning] = useState(false);
   // Wake-on-LAN：手动输 MAC 唤醒 + 行级快捷唤醒（扫描结果里的设备）
   const [wakeMac, setWakeMac] = useState("");
   const [waking, setWaking] = useState(""); // 正在唤醒的 MAC（防重复点击）
-  // 扫描已用时（秒）。后端是一次 invoke 拿全量结果、没有进度事件，百分比只能是编的；
+  // 扫描已用时（秒）。后端一次 invoke 拿全量结果、没有进度事件，百分比只能是编的；
   // 真实秒数同样能回答「卡住了吗」——预期 8~15 秒，超过就该怀疑网络而不是界面
   const [elapsed, setElapsed] = useState(0);
 
@@ -191,9 +199,9 @@ function LanPanel() {
     try {
       const r = await invoke<LanResult>("sk_lan_scan", { prefix: null });
       setResult(r);
-      message.success(lanSummary(r));
+      toast.success(lanSummary(r));
     } catch (e) {
-      message.error(`扫描失败：${String(e)}`);
+      toast.error(`扫描失败：${String(e)}`);
     } finally {
       setScanning(false);
     }
@@ -202,67 +210,54 @@ function LanPanel() {
   const wake = useCallback(
     async (mac: string) => {
       if (!isValidMac(mac)) {
-        message.error("MAC 地址格式不正确（示例 AA-BB-CC-DD-EE-FF）");
+        toast.error("MAC 地址格式不正确（示例 AA-BB-CC-DD-EE-FF）");
         return;
       }
       setWaking(mac);
       try {
         // 定向广播：用扫描结果的网段前缀拼（192.168.1.255）
-        message.success(await sendWol(mac, result ? `${result.prefix}.255` : undefined));
+        toast.success(await sendWol(mac, result ? `${result.prefix}.255` : undefined));
       } catch (e) {
-        message.error(`唤醒失败：${String(e)}`);
+        toast.error(`唤醒失败：${String(e)}`);
       } finally {
         setWaking("");
       }
     },
-    [result],
+    [result, toast],
   );
 
   const devices = useMemo(() => (result ? sortDevices(result.devices) : []), [result]);
 
   return (
-    <Space direction="vertical" size={10} style={{ width: "100%" }}>
-      <Alert
-        type="info"
-        showIcon
-        message="扫描本机所在 /24 网段（并发 ping 唤醒邻居后读 ARP 表），约需 8~15 秒"
-      />
-      <Space>
-        <Button size="small" type="primary" loading={scanning} onClick={() => void scan()}>
+    <div className="flex flex-col gap-2.5">
+      <UiAlert tone="info" title="扫描本机所在 /24 网段（并发 ping 唤醒邻居后读 ARP 表），约需 8~15 秒" />
+      <div className="flex flex-wrap items-center gap-2">
+        <UiButton variant="primary" loading={scanning} onClick={() => void scan()}>
           扫描局域网
-        </Button>
-        <Input
-          size="small"
-          allowClear
-          style={{ width: 210, fontFamily: "Consolas, monospace" }}
+        </UiButton>
+        <UiInput
+          className="w-[210px] font-mono"
           placeholder="MAC 手动唤醒，如 AA-BB-CC-DD-EE-FF"
           value={wakeMac}
           onChange={(e) => setWakeMac(e.target.value)}
-          onPressEnter={() => wakeMac.trim() && void wake(wakeMac.trim())}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && wakeMac.trim()) void wake(wakeMac.trim());
+          }}
         />
-        <Button
-          size="small"
-          loading={waking === wakeMac.trim()}
-          disabled={!wakeMac.trim()}
-          onClick={() => void wake(wakeMac.trim())}
-        >
+        <UiButton loading={waking === wakeMac.trim()} disabled={!wakeMac.trim()} onClick={() => void wake(wakeMac.trim())}>
           唤醒
-        </Button>
+        </UiButton>
         <span className="sk-hint">
           {scanning ? `扫描中… 已用时 ${elapsed} 秒（并发 ping 254 个地址 + 读 ARP，约 8~15 秒）` : lanSummary(result)}
         </span>
-      </Space>
+      </div>
 
       {devices.length === 0 ? (
-        <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={result ? "未发现设备（可能网段推断有误或邻居表为空）" : "点「扫描局域网」开始"}
-        />
+        <UiEmpty description={result ? "未发现设备（可能网段推断有误或邻居表为空）" : "点「扫描局域网」开始"} />
       ) : (
-        <Table<LanDevice>
-          size="small"
-          rowKey="ip"
-          pagination={{ pageSize: 20, showSizeChanger: false }}
+        <UiTable<LanDevice>
+          rowKey={(r) => r.ip}
+          loading={scanning}
           dataSource={devices}
           columns={[
             { title: "IP 地址", dataIndex: "ip", width: 160 },
@@ -270,7 +265,7 @@ function LanPanel() {
               title: "MAC 地址",
               dataIndex: "mac",
               width: 200,
-              render: (v: string) => <span style={{ fontFamily: "Consolas, monospace" }}>{formatMac(v)}</span>,
+              render: (v: string) => <span className="font-mono">{formatMac(v)}</span>,
             },
             {
               title: "延迟",
@@ -284,19 +279,20 @@ function LanPanel() {
               key: "wol",
               width: 90,
               render: (_: unknown, r: LanDevice) => (
-                <Button
-                  size="small"
-                  loading={waking === r.mac}
-                  onClick={() => void wake(r.mac)}
-                >
+                <UiButton size="sm" loading={waking === r.mac} onClick={() => void wake(r.mac)}>
                   唤醒
-                </Button>
+                </UiButton>
               ),
             },
           ]}
+          empty={
+            <UiEmpty
+              description={result ? "未发现设备（可能网段推断有误或邻居表为空）" : "点「扫描局域网」开始"}
+            />
+          }
         />
       )}
-    </Space>
+    </div>
   );
 }
 

@@ -10,11 +10,13 @@ import { cx } from "./index";
 
 export interface Column<T> {
   title: ReactNode;
+  key?: string;
   /** 取值字段名；或自定义 render(row) */
   dataIndex?: keyof T;
   width?: number;
   align?: "left" | "right" | "center";
-  render?: (value: T[keyof T], row: T) => ReactNode;
+  // value 用 any：列类型跨字段异构（string|number|null），由调用方 render 自行收窄
+  render?: (value: any, row: T) => ReactNode;
 }
 
 export function Table<T>({
