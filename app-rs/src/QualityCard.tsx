@@ -4,12 +4,13 @@
  * 数据来自后台 sk-netquality 探测线程（10 秒一轮 ICMP + 系统 DNS 计时），
  * `sk_quality_series` 出近 60 分钟 / 近 48 小时序列。
  * 图表主题走 chartTheme(dark)——与 Overview 其他图同一套，切主题即时跟随。
+ *
+ * v1.4 UI 迁移：脱离 AntD（Segmented/Space/Typography → ui 件 / 原生 flex）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ReactECharts from "echarts-for-react";
-import { Segmented, Space, Typography } from "antd";
-import { Badge as UiBadge } from "./ui";
+import { Badge as UiBadge, Segmented } from "./ui";
 
 import {
   QUALITY_RANGES,
@@ -88,16 +89,16 @@ export function QualityCard({ dark }: { dark: boolean }) {
   return (
     <div className="sk-card">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <Space wrap>
-          <Typography.Text strong>网络质量</Typography.Text>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[15px] font-semibold text-sk-text">网络质量</span>
           {gwLoss >= 5 && <UiBadge tone="err">网关丢包 {gwLoss.toFixed(1)}%</UiBadge>}
           {gwLoss > 0 && gwLoss < 5 && <UiBadge tone="warn">网关丢包 {gwLoss.toFixed(1)}%</UiBadge>}
           {gwLoss === 0 && rows.length > 0 && <UiBadge tone="ok">无丢包</UiBadge>}
-        </Space>
-        <Segmented
-          size="small"
+        </div>
+        <Segmented<QualityRange>
+          size="sm"
           value={range}
-          onChange={(v) => setRange(v as QualityRange)}
+          onChange={setRange}
           options={QUALITY_RANGES.map((r) => ({ value: r.value, label: r.label }))}
         />
       </div>

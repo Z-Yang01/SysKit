@@ -3,19 +3,10 @@
  *
  * 回滚是危险操作（真实写注册表/netsh）：每项走确认弹窗，结果原样展示。
  * legacy（旧 %LOCALAPPDATA% 路径）会话同样可回滚（文件判定一致）。
+ *
+ * v1.4 UI 迁移：脱离 AntD（Table/Modal.confirm/message/Tag → ui 件）。
  */
 import { useCallback, useEffect, useState } from "react";
-import {
-  Alert,
-  Button,
-  Modal,
-  Row,
-  Space,
-  Table,
-  Tag,
-  Typography,
-  message,
-} from "antd";
 
 import {
   listBackups,
@@ -24,8 +15,13 @@ import {
   sessionTimeText,
   type BackupSessionInfo,
 } from "./backups";
+import { Badge, Button, Empty, Table, type Column } from "./ui";
+import { Alert } from "./ui/alert";
+import { confirm } from "./ui/confirm";
+import { useToast } from "./ui/toast";
 
 export function BackupRollbackCard() {
+  const toast = useToast();
   const [sessions, setSessions] = useState<BackupSessionInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState("");
@@ -35,11 +31,11 @@ export function BackupRollbackCard() {
     try {
       setSessions(await listBackups());
     } catch (e) {
-      message.error(String(e));
+      toast.error(String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     void load();
@@ -50,87 +46,87 @@ export function BackupRollbackCard() {
       setBusy(`${kind}:${sessionName}`);
       try {
         const msg = await restoreBackup(kind, sessionName);
-        message.success(msg || "已回滚");
+        toast.success(msg || "已回滚");
       } catch (e) {
-        message.error(String(e));
+        toast.error(String(e));
       } finally {
         setBusy("");
       }
     },
-    [],
+    [toast],
   );
 
   const confirmRestore = useCallback(
     (kind: string, sessionName: string, label: string) => {
-      Modal.confirm({
+      confirm({
         title: `回滚${label}？`,
         width: 480,
         content:
           "将把系统配置恢复为该次修复动作执行前的备份原值（真实写注册表/netsh）。确定继续？",
         okText: "回滚",
-        okButtonProps: { danger: true },
-        cancelText: "取消",
+        danger: true,
         onOk: () => restore(kind, sessionName),
       });
     },
     [restore],
   );
 
+  const columns: Column<BackupSessionInfo>[] = [
+    {
+      title: "时间",
+      dataIndex: "name",
+      width: 150,
+      render: (v: string, r) => (
+        <span className="inline-flex items-center gap-1.5">
+          {sessionTimeText(v)}
+          {r.legacy && <Badge>旧位置</Badge>}
+        </span>
+      ),
+    },
+    {
+      title: "可回滚项",
+      dataIndex: "restorable",
+      render: (v: string[], r) =>
+        v.length === 0 ? (
+          <span className="sk-hint">无可自动回滚项（{r.files.length} 个文件仅存档）</span>
+        ) : (
+          <span className="inline-flex flex-wrap gap-1">
+            {v.map((k) => (
+              <Button
+                key={k}
+                size="sm"
+                loading={busy === `${k}:${r.name}`}
+                onClick={() => confirmRestore(k, r.name, restorableLabel(k))}
+              >
+                回滚{restorableLabel(k)}
+              </Button>
+            ))}
+          </span>
+        ),
+    },
+  ];
+
   return (
     <div className="sk-card">
-      <Row justify="space-between" align="middle" style={{ marginBottom: 8 }}>
-        <Typography.Text strong>备份与回滚</Typography.Text>
-        <Button size="small" loading={loading} onClick={() => void load()}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[15px] font-semibold text-sk-text">备份与回滚</span>
+        <Button size="sm" loading={loading} onClick={() => void load()}>
           刷新
         </Button>
-      </Row>
-      <Typography.Text type="secondary" className="sk-hint" style={{ display: "block", marginBottom: 8 }}>
+      </div>
+      <div className="sk-hint mb-2">
         每次修复动作改配置前都会先备份原值。这里按会话列出，可一键还原结构化项
         （系统代理 / DNS / NCSI 注册表）。
-      </Typography.Text>
+      </div>
       {sessions.length === 0 && !loading ? (
-        <Alert type="info" showIcon message="还没有备份会话——执行任一改配置类修复动作后出现在这里" />
+        <Alert tone="info" title="还没有备份会话——执行任一改配置类修复动作后出现在这里" />
       ) : (
         <Table<BackupSessionInfo>
-          size="small"
           rowKey={(r) => `${r.legacy ? "L" : "N"}-${r.name}`}
           loading={loading}
-          pagination={false}
           dataSource={sessions.slice(0, 10)}
-          columns={[
-            {
-              title: "时间",
-              dataIndex: "name",
-              width: 150,
-              render: (v: string, r) => (
-                <Space size={6}>
-                  {sessionTimeText(v)}
-                  {r.legacy && <Tag>旧位置</Tag>}
-                </Space>
-              ),
-            },
-            {
-              title: "可回滚项",
-              dataIndex: "restorable",
-              render: (v: string[], r) =>
-                v.length === 0 ? (
-                  <span className="sk-hint">无可自动回滚项（{r.files.length} 个文件仅存档）</span>
-                ) : (
-                  <Space wrap size={4}>
-                    {v.map((k) => (
-                      <Button
-                        key={k}
-                        size="small"
-                        loading={busy === `${k}:${r.name}`}
-                        onClick={() => confirmRestore(k, r.name, restorableLabel(k))}
-                      >
-                        回滚{restorableLabel(k)}
-                      </Button>
-                    ))}
-                  </Space>
-                ),
-            },
-          ]}
+          columns={columns}
+          empty={<Empty description="还没有备份会话" />}
         />
       )}
     </div>
