@@ -5,11 +5,13 @@
  * `sk_daily_report` / `sk_events` 命令。图表用 ECharts（与 Python 侧 pyqtgraph 的
  * 曲线/柱状职责对应），主题色经 chartTheme 直取 palette(dark)（切主题当帧
  * 换色，不依赖 CSS 变量写入时序，见 src/chartTheme.ts 头注）。
+ *
+ * v1.4 UI 迁移：脱离 AntD（Tabs tabBarExtraContent → ui Tabs right 插槽；
+ * Radio.Group/Segmented/Table/Tag → ui 件）。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Card, Col, Empty, Radio, Row, Segmented, Space, Table, Tabs, Tag, Typography } from "antd";
 import ReactECharts from "echarts-for-react";
 
 import { baseChartOption, chartAccent, chartOk, chartWarn } from "./chartTheme";
@@ -41,6 +43,8 @@ import {
 } from "./dashboard";
 import { AppTrafficCard } from "./AppTrafficCard";
 import { QualityCard } from "./QualityCard";
+import { Badge, Card, Empty, Radio, Segmented, Table, type Column } from "./ui";
+import { Tabs } from "./ui/tabs";
 
 interface OverviewInit {
   tick: Tick | null;
@@ -342,224 +346,183 @@ export function Dashboard({ dark }: { dark: boolean }) {
   const currentState = tick ? "ok" : "offline";
   const st = stateLabel(currentState);
 
+  const reportColumns: Column<DayReport>[] = [
+    { title: REPORT_COLUMNS[0], dataIndex: "date", width: 100 },
+    { title: REPORT_COLUMNS[1], dataIndex: "outages", width: 80 },
+    {
+      title: REPORT_COLUMNS[2],
+      dataIndex: "outage_sec",
+      width: 120,
+      render: (v: number) => formatDuration(v),
+    },
+    {
+      title: REPORT_COLUMNS[3],
+      dataIndex: "recv",
+      render: (v: number, r) => trafficCell(r.has_traffic, v),
+    },
+    {
+      title: REPORT_COLUMNS[4],
+      dataIndex: "sent",
+      render: (v: number, r) => trafficCell(r.has_traffic, v),
+    },
+  ];
+
+  const overviewTab = (
+    <div className="flex flex-col gap-3.5">
+      {/* 速率面板（参考 NetSpeedMonitor 风格）：左侧紧凑数值列（↑下行/↓上行/⚙今日累计）
+          + 右侧连续实时曲线——一屏同览，数值与曲线同源同拍 */}
+      <Card>
+        <div className="flex items-stretch gap-4 px-3.5 py-2.5">
+          <div
+            className="flex shrink-0 flex-col justify-center gap-1.5 pr-4"
+            style={{ borderRight: "1px solid var(--sk-border)", minWidth: 150 }}
+          >
+            <div className="flex items-baseline gap-1.5">
+              <span style={{ color: chartOk(dark) }}>↑</span>
+              <span className="text-lg font-semibold">{tick ? humanBps(tick.up) : "—"}</span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span style={{ color: chartAccent(dark) }}>↓</span>
+              <span className="text-lg font-semibold">{tick ? humanBps(tick.down) : "—"}</span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-xs text-sk-accent">CPU</span>
+              <span className="font-semibold">
+                {tick ? tick.cpu.toFixed(1) : "—"}
+                <span className="sk-hint">%</span>
+              </span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-xs text-sk-accent">内存</span>
+              <span className="font-semibold">
+                {tick ? tick.mem.toFixed(1) : "—"}
+                <span className="sk-hint">%</span>
+              </span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-xs text-sk-accent">磁盘</span>
+              <span className="font-semibold">{tick ? humanBps(tick.disk_r + tick.disk_w) : "—"}</span>
+            </div>
+            <div className="sk-hint flex items-baseline gap-1.5">
+              <span>⚙</span>
+              <span>
+                今日 {humanBytes(tick?.today_recv ?? 0)} / {humanBytes(tick?.today_sent ?? 0)}
+              </span>
+            </div>
+          </div>
+          <div className="min-w-0 flex-1">
+            <ReactECharts option={rateOption} style={{ height: 150 }} lazyUpdate />
+          </div>
+        </div>
+      </Card>
+
+      <div className="sk-card">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="text-[15px] font-semibold text-sk-text">网络速率</span>
+          <Badge tone={st.token === "ok" ? "ok" : st.token === "err" ? "err" : "warn"}>{st.text}</Badge>
+        </div>
+        <ReactECharts option={rateOption} style={{ height: 200 }} lazyUpdate />
+      </div>
+
+      <div className="sk-card">
+        <div className="text-[15px] font-semibold text-sk-text">CPU / 内存</div>
+        <ReactECharts option={usageOption} style={{ height: 200 }} lazyUpdate />
+      </div>
+    </div>
+  );
+
+  const netmonTab = (
+    <div className="flex flex-col gap-3.5">
+      <div className="sk-card">
+        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Segmented<Granularity>
+              value={granularity}
+              onChange={setGranularity}
+              options={GRANULARITIES.map((g) => ({ value: g.value, label: g.label }))}
+            />
+            <div className="flex max-w-full flex-wrap items-center gap-3">
+              <Radio<string>
+                value={ssid}
+                onChange={setSsid}
+                options={[{ label: "全部网络", value: "" }, ...ssids.map((s) => ({ label: s, value: s }))]}
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-4 text-sm text-sk-sub">
+            <span>区间下行 {humanBytes(series?.recv ?? 0)}</span>
+            <span>区间上行 {humanBytes(series?.sent ?? 0)}</span>
+          </div>
+        </div>
+        <ReactECharts option={trafficOption} style={{ height: 240 }} lazyUpdate />
+      </div>
+
+      <AppTrafficCard />
+
+      <QualityCard dark={dark} />
+
+      <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
+        <div className="sk-card min-h-[260px]">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-[15px] font-semibold text-sk-text">近 7 / 30 天日报</span>
+            <Segmented<"7" | "30">
+              size="sm"
+              value={reportDays === 30 ? "30" : "7"}
+              onChange={(v) => setReportDays(Number(v))}
+              options={[
+                { label: "7 天", value: "7" },
+                { label: "30 天", value: "30" },
+              ]}
+            />
+          </div>
+          <div className="mb-2 flex items-center gap-5 text-sm text-sk-sub">
+            <span>断网 {summary.outages} 次</span>
+            <span>累计 {formatDuration(summary.outageSec)}</span>
+            <span>有记录 {summary.daysWithEvents} 天</span>
+          </div>
+          <div className="max-h-[220px] overflow-y-auto">
+            <Table<DayReport>
+              rowKey={(r) => r.date}
+              dataSource={report}
+              columns={reportColumns}
+              empty={<Empty description="暂无日报数据" />}
+            />
+          </div>
+        </div>
+        <div className="sk-card min-h-[260px]">
+          <div className="text-[15px] font-semibold text-sk-text">事件时间线</div>
+          <div className="mt-2 max-h-[260px] overflow-y-auto">
+            {events.length === 0 ? (
+              <Empty description="暂无事件（网络监控在 M3 接入后写入状态切换）" />
+            ) : (
+              events.map((ev, i) => (
+                <div key={`${ev.ts}-${i}`} className="sk-hint py-0.5">
+                  {eventLine(ev)}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <Tabs
-      defaultActiveKey="overview"
       items={[
-        {
-          key: "overview",
-          label: "概览",
-          children: (
-            <Space direction="vertical" size={14} style={{ width: "100%" }}>
-              {/* 速率面板（参考 NetSpeedMonitor 风格）：左侧紧凑数值列（↑下行/↓上行/⚙今日累计）
-                  + 右侧连续实时曲线——一屏同览，数值与曲线同源同拍 */}
-              <Card size="small" className="sk-card" styles={{ body: { padding: "10px 14px" } }}>
-                <div style={{ display: "flex", gap: 18, alignItems: "stretch" }}>
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      justifyContent: "center",
-                      gap: 6,
-                      flexShrink: 0,
-                      minWidth: 150,
-                      borderRight: `1px solid var(--sk-border)`,
-                      paddingRight: 18,
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span style={{ color: chartOk(dark) }}>↑</span>
-                      <span style={{ fontSize: 18, fontWeight: 600 }}>
-                        {tick ? humanBps(tick.up) : "—"}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span style={{ color: chartAccent(dark) }}>↓</span>
-                      <span style={{ fontSize: 18, fontWeight: 600 }}>
-                        {tick ? humanBps(tick.down) : "—"}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span style={{ color: "var(--sk-accent)", fontSize: 12 }}>CPU</span>
-                      <span style={{ fontWeight: 600 }}>
-                        {tick ? tick.cpu.toFixed(1) : "—"}
-                        <span className="sk-hint">%</span>
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span style={{ color: "var(--sk-accent)", fontSize: 12 }}>内存</span>
-                      <span style={{ fontWeight: 600 }}>
-                        {tick ? tick.mem.toFixed(1) : "—"}
-                        <span className="sk-hint">%</span>
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span style={{ color: "var(--sk-accent)", fontSize: 12 }}>磁盘</span>
-                      <span style={{ fontWeight: 600 }}>
-                        {tick ? humanBps(tick.disk_r + tick.disk_w) : "—"}
-                      </span>
-                    </div>
-                    <div className="sk-hint" style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                      <span>⚙</span>
-                      <span>
-                        今日 {humanBytes(tick?.today_recv ?? 0)} / {humanBytes(tick?.today_sent ?? 0)}
-                      </span>
-                    </div>
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <ReactECharts option={rateOption} style={{ height: 150 }} lazyUpdate />
-                  </div>
-                </div>
-              </Card>
-
-              <div className="sk-card">
-                <Row justify="space-between" align="middle" style={{ marginBottom: 6 }}>
-                  <Typography.Text strong>网络速率</Typography.Text>
-                  <Tag color={st.token === "ok" ? "green" : st.token === "err" ? "red" : "orange"}>
-                    {st.text}
-                  </Tag>
-                </Row>
-                <ReactECharts option={rateOption} style={{ height: 200 }} lazyUpdate />
-              </div>
-
-              <div className="sk-card">
-                <Typography.Text strong>CPU / 内存</Typography.Text>
-                <ReactECharts option={usageOption} style={{ height: 200 }} lazyUpdate />
-              </div>
-            </Space>
-          ),
-        },
-        {
-          key: "netmon",
-          label: "网络监控",
-          children: (
-            <Space direction="vertical" size={14} style={{ width: "100%" }}>
-              <div className="sk-card">
-                <Row justify="space-between" align="middle" style={{ marginBottom: 10 }}>
-                  <Space>
-                    <Segmented
-                      value={granularity}
-                      onChange={(v) => setGranularity(v as Granularity)}
-                      options={GRANULARITIES.map((g) => ({ value: g.value, label: g.label }))}
-                    />
-                    <Radio.Group
-                      size="small"
-                      value={ssid}
-                      onChange={(e) => setSsid(e.target.value as string)}
-                      options={[
-                        { label: "全部网络", value: "" },
-                        ...ssids.map((s) => ({ label: s, value: s })),
-                      ]}
-                      optionType="button"
-                    />
-                  </Space>
-                  <Space size={16}>
-                    <Typography.Text type="secondary">
-                      区间下行 {humanBytes(series?.recv ?? 0)}
-                    </Typography.Text>
-                    <Typography.Text type="secondary">
-                      区间上行 {humanBytes(series?.sent ?? 0)}
-                    </Typography.Text>
-                  </Space>
-                </Row>
-                <ReactECharts option={trafficOption} style={{ height: 240 }} lazyUpdate />
-              </div>
-
-              <AppTrafficCard />
-
-              <QualityCard dark={dark} />
-
-              <Row gutter={14}>
-                <Col span={12}>
-                  <div className="sk-card" style={{ minHeight: 260 }}>
-                    <Row justify="space-between" align="middle" style={{ marginBottom: 8 }}>
-                      <Typography.Text strong>近 7 / 30 天日报</Typography.Text>
-                      <Segmented
-                        size="small"
-                        value={reportDays}
-                        onChange={(v) => setReportDays(Number(v))}
-                        options={[
-                          { label: "7 天", value: 7 },
-                          { label: "30 天", value: 30 },
-                        ]}
-                      />
-                    </Row>
-                    <Space size={20} style={{ marginBottom: 8 }}>
-                      <Typography.Text type="secondary">
-                        断网 {summary.outages} 次
-                      </Typography.Text>
-                      <Typography.Text type="secondary">
-                        累计 {formatDuration(summary.outageSec)}
-                      </Typography.Text>
-                      <Typography.Text type="secondary">
-                        有记录 {summary.daysWithEvents} 天
-                      </Typography.Text>
-                    </Space>
-                    <Table<DayReport>
-                      size="small"
-                      rowKey="date"
-                      pagination={false}
-                      scroll={{ y: 200 }}
-                      dataSource={report}
-                      columns={[
-                        { title: REPORT_COLUMNS[0], dataIndex: "date", width: 100 },
-                        { title: REPORT_COLUMNS[1], dataIndex: "outages", width: 80 },
-                        {
-                          title: REPORT_COLUMNS[2],
-                          dataIndex: "outage_sec",
-                          width: 120,
-                          render: (v: number) => formatDuration(v),
-                        },
-                        {
-                          title: REPORT_COLUMNS[3],
-                          dataIndex: "recv",
-                          render: (v: number, r) => trafficCell(r.has_traffic, v),
-                        },
-                        {
-                          title: REPORT_COLUMNS[4],
-                          dataIndex: "sent",
-                          render: (v: number, r) => trafficCell(r.has_traffic, v),
-                        },
-                      ]}
-                    />
-                  </div>
-                </Col>
-                <Col span={12}>
-                  <div className="sk-card" style={{ minHeight: 260 }}>
-                    <Typography.Text strong>事件时间线</Typography.Text>
-                    <div style={{ marginTop: 8, maxHeight: 260, overflowY: "auto" }}>
-                      {events.length === 0 ? (
-                        <Empty
-                          image={Empty.PRESENTED_IMAGE_SIMPLE}
-                          description="暂无事件（网络监控在 M3 接入后写入状态切换）"
-                        />
-                      ) : (
-                        events.map((ev, i) => (
-                          <div key={`${ev.ts}-${i}`} className="sk-hint" style={{ padding: "2px 0" }}>
-                            {eventLine(ev)}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </Col>
-              </Row>
-            </Space>
-          ),
-        },
+        { key: "overview", label: "概览", children: overviewTab },
+        { key: "netmon", label: "网络监控", children: netmonTab },
       ]}
-      tabBarExtraContent={
-        <Space size={8}>
-          <Typography.Text type="secondary" className="sk-hint">
-            速率曲线窗口
-          </Typography.Text>
-          <Segmented
-            size="small"
+      right={
+        <div className="flex items-center gap-2 pr-1">
+          <span className="sk-hint">速率曲线窗口</span>
+          <Segmented<RateWindow>
+            size="sm"
             value={rateWindow}
-            onChange={(v) => setRateWindow(v as RateWindow)}
+            onChange={setRateWindow}
             options={RATE_WINDOWS.map((w) => ({ value: w.value, label: w.label }))}
           />
-        </Space>
+        </div>
       }
     />
   );
