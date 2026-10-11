@@ -114,7 +114,8 @@ function Stat({
   );
 }
 
-/** 极简 sparkline（不引图表库）：逐采样迷你柱，与全应用「不用折线图」统一。 */
+/** 极简 sparkline（不引图表库）：Catmull-Rom 转三次贝塞尔的平滑曲线，
+    与全应用「连续平滑曲线」统一。 */
 function Spark({
   values,
   color,
@@ -130,24 +131,35 @@ function Spark({
   const max = Math.max(...values, 1);
   const min = Math.min(...values, 0);
   const span = max - min || 1;
-  // viewBox 宽 100、preserveAspectRatio=none：柱宽随容器伸缩，1px 间隙留缝
-  const slot = 100 / values.length;
+  // viewBox 宽 100、preserveAspectRatio=none：曲线随容器伸缩
+  const pts = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * 100;
+    const y = height - ((v - min) / span) * (height - 4) - 2;
+    return [x, y] as const;
+  });
+  // Catmull-Rom（张力 1/6）转三次贝塞尔：过点且处处光滑，无有棱角折线段
+  let d = `M ${pts[0][0].toFixed(2)},${pts[0][1].toFixed(2)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0].toFixed(2)},${p2[1].toFixed(2)}`;
+  }
   return (
     <svg width="100%" height={height} viewBox={`0 0 100 ${height}`} preserveAspectRatio="none">
-      {/* fill 走 style：SVG 展示属性不吃 var()，style 才跟随主题变量 */}
-      {values.map((v, i) => {
-        const h = Math.max(((v - min) / span) * (height - 2), v > 0 ? 1 : 0);
-        return (
-          <rect
-            key={i}
-            x={(i * slot).toFixed(2)}
-            y={(height - h).toFixed(2)}
-            width={(slot - 0.8).toFixed(2)}
-            height={h.toFixed(2)}
-            style={{ fill: color }}
-          />
-        );
-      })}
+      {/* stroke 走 style：SVG 展示属性不吃 var()，style 才跟随主题变量 */}
+      <path
+        d={d}
+        fill="none"
+        style={{ stroke: color }}
+        strokeWidth="1.2"
+        vectorEffect="non-scaling-stroke"
+      />
     </svg>
   );
 }

@@ -96,7 +96,7 @@ export const QualityCard = memo(function QualityCard({ dark }: { dark: boolean }
       xAxis: {
         ...base.xAxis,
         data: rows.map((r) => r.key),
-        boundaryGap: true,
+        boundaryGap: false,
         axisLabel: { ...base.xAxis.axisLabel, hideOverlap: true },
       },
       yAxis: {
@@ -107,18 +107,21 @@ export const QualityCard = memo(function QualityCard({ dark }: { dark: boolean }
       series: [
         {
           name: "网关延迟",
-          type: "bar",
-          barGap: "0%",
-          // 全丢包桶值为 null：柱不落 地即"断网区间如实留空"（同折线断线语义）
+          type: "line",
+          smooth: true, // 连续平滑样条（用户指定）
+          showSymbol: false,
+          connectNulls: false, // 全丢包桶不连（断网区间如实断线）
           data: rows.map((r) => r.gw_avg_ms),
-          itemStyle: { color: chartAccent(dark) },
+          lineStyle: { color: chartAccent(dark), width: 2 },
         },
         {
           name: "公网延迟",
-          type: "bar",
-          barGap: "0%",
+          type: "line",
+          smooth: true,
+          showSymbol: false,
+          connectNulls: false,
           data: rows.map((r) => r.pub_avg_ms),
-          itemStyle: { color: chartOk(dark) },
+          lineStyle: { color: chartOk(dark), width: 1.5, type: "dashed" },
         },
       ],
     };

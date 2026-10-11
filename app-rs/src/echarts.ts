@@ -6,10 +6,11 @@
  * import "echarts"——类型不够时优先怀疑漏注册（运行时报 "Unknown chart
  * series" 即为本模块缺项）。
  *
- * 图型纪律：时间序列一律柱状（直方图风格），不引入折线图（用户明确要求）。
+ * 图型纪律：时间序列一律连续平滑样条曲线（ECharts smooth line，用户指定）；
+ * 体积总量类（每桶字节数）用柱状。
  */
 import * as echarts from "echarts/core";
-import { BarChart } from "echarts/charts";
+import { BarChart, LineChart } from "echarts/charts";
 import {
   AxisPointerComponent,
   GridComponent,
@@ -20,6 +21,7 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 
 echarts.use([
+  LineChart,
   BarChart,
   GridComponent,
   TooltipComponent,
