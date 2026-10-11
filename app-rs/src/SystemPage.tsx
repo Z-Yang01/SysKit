@@ -8,7 +8,7 @@
  * v1.4 UI 迁移：脱离 AntD（Row/Col/Statistic/Descriptions/Table/Tabs → ui 件 + grid）；
  * tokenColor 的写死 hex 改为 --sk-* CSS 变量（Spark 经 style 属性使用，跟随换肤）。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -201,6 +201,62 @@ export function SystemPage({
   );
 }
 
+/** 内存占用最高的进程卡（memo）：每 3 秒才变的数据独立成子树，
+    面板每秒的 tick 重渲染不再对 15 行表格做无谓 vdom diff。 */
+const TopProcsCard = memo(function TopProcsCard({
+  procs,
+  failed,
+}: {
+  procs: TopProcs | null;
+  failed: boolean;
+}) {
+  const columns: Column<{ name: string; pid: number; bytes: number; share: number }>[] = [
+    {
+      title: "进程",
+      dataIndex: "name",
+      render: (v: string, r) => (
+        <span className="inline-flex items-center gap-1.5">
+          <span>{v}</span>
+          <span className="sk-hint">PID {r.pid}</span>
+        </span>
+      ),
+    },
+    {
+      title: "内存",
+      dataIndex: "bytes",
+      width: 130,
+      render: (v: number) => humanBytes(v).replace("/s", ""),
+    },
+    {
+      title: "占进程合计",
+      dataIndex: "share",
+      width: 150,
+      render: (v: number) => <Badge tone={v >= 10 ? "warn" : "neutral"}>{v.toFixed(1)}%</Badge>,
+    },
+  ];
+  return (
+    <Card>
+      <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
+        <span className="text-[15px] font-semibold text-sk-text">内存占用最高的进程</span>
+        <span className="sk-hint">{procsSummary(procs)}</span>
+      </div>
+      <div className="px-4 pb-4 pt-1">
+        {procs && procs.rows.length > 0 ? (
+          <Table rowKey={(r) => r.pid} dataSource={procRows(procs)} columns={columns} />
+        ) : (
+          <Empty
+            description={failed ? "读取进程列表失败（每 3 秒自动重试）" : "正在采集进程列表…"}
+          />
+        )}
+        <div className="sk-hint mt-2">
+          数据源为 <code>tasklist /fo csv</code>（约 0.5 秒/次，后端 2 秒缓存）。
+          占比分母是**进程内存合计**而不是物理内存——tasklist 报的是工作集，合计会大于物理内存。
+        </div>
+      </div>
+    </Card>
+  );
+});
+
 function PerfPanel() {
   const [cpu, setCpu] = useState<number[]>([]);
   const [mem, setMem] = useState<number[]>([]);
@@ -296,31 +352,6 @@ function PerfPanel() {
     [diskR, diskW],
   );
 
-  const procColumns: Column<{ name: string; pid: number; bytes: number; share: number }>[] = [
-    {
-      title: "进程",
-      dataIndex: "name",
-      render: (v: string, r) => (
-        <span className="inline-flex items-center gap-1.5">
-          <span>{v}</span>
-          <span className="sk-hint">PID {r.pid}</span>
-        </span>
-      ),
-    },
-    {
-      title: "内存",
-      dataIndex: "bytes",
-      width: 130,
-      render: (v: number) => humanBytes(v).replace("/s", ""),
-    },
-    {
-      title: "占进程合计",
-      dataIndex: "share",
-      width: 150,
-      render: (v: number) => <Badge tone={v >= 10 ? "warn" : "neutral"}>{v.toFixed(1)}%</Badge>,
-    },
-  ];
-
   return (
     <div ref={panelRef} className="flex flex-col gap-3">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
@@ -386,29 +417,7 @@ function PerfPanel() {
         </div>
       </Card>
 
-      <Card>
-        <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
-          <span className="text-[15px] font-semibold text-sk-text">内存占用最高的进程</span>
-          <span className="sk-hint">{procsSummary(procs)}</span>
-        </div>
-        <div className="px-4 pb-4 pt-1">
-          {procs && procs.rows.length > 0 ? (
-            <Table
-              rowKey={(r) => r.pid}
-              dataSource={procRows(procs)}
-              columns={procColumns}
-            />
-          ) : (
-            <Empty
-              description={procsFailed ? "读取进程列表失败（每 3 秒自动重试）" : "正在采集进程列表…"}
-            />
-          )}
-          <div className="sk-hint mt-2">
-            数据源为 <code>tasklist /fo csv</code>（约 0.5 秒/次，后端 2 秒缓存）。
-            占比分母是**进程内存合计**而不是物理内存——tasklist 报的是工作集，合计会大于物理内存。
-          </div>
-        </div>
-      </Card>
+      <TopProcsCard procs={procs} failed={procsFailed} />
 
       <Card>
         <div className="px-4 pb-4 pt-3">
