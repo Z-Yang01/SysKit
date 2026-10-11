@@ -49,6 +49,7 @@ pub fn defaults() -> Vec<(&'static str, Value, Ty)> {
         ("quality_alert_enabled", Value::Bool(false), Bool),
         ("quality_alert_latency_ms", Value::from(200), Int),
         ("quality_alert_loss_pct", Value::from(20), Int),
+        ("traffic_alert_gb", Value::from(0), Int),
         ("clip_capture_images", Value::Bool(true), Bool),
         ("vault_autolock_min", Value::from(30), Int),
         ("vault_trust_min", Value::from(30), Int),
@@ -229,6 +230,12 @@ fn decoration(key: &str) -> Decoration {
             "最近 1 分钟公网丢包率超过该值触发告警",
             1,
             100,
+        ),
+        "traffic_alert_gb" => Decoration::int(
+            "流量超额提醒（GB/天）",
+            "今日收发合计达到限额 80% 与 100% 时各托盘提醒一次；0=关闭",
+            0,
+            1024,
         ),
         "vault_autolock_min" => Decoration::int(
             "密码库自动锁定（分）",
@@ -856,9 +863,9 @@ mod tests {
         let keys: Vec<&str> = defaults().into_iter().map(|(k, _, _)| k).collect();
         assert_eq!(
             keys.len(),
-            29,
+            30,
             "DEFAULTS 键数（24 Python 对齐 + clip_sensitive_detect + quality_probe_enabled
-            + quality_alert_enabled/latency_ms/loss_pct）"
+            + quality_alert_enabled/latency_ms/loss_pct + traffic_alert_gb）"
         );
         for must in [
             "clipboard_max",

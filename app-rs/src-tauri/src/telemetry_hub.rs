@@ -113,6 +113,42 @@ impl Hub {
     }
 }
 
+/// 流量超额提醒状态（采样线程跨拍保持；跨天自动复位）。
+#[derive(Default)]
+struct TrafficAlertState {
+    day: String,
+    warned80: bool,
+    warned100: bool,
+}
+
+/// 纯函数：今日收发合计对照日限额，返回 Some(0)=80% 档提醒、Some(1)=超额提醒。
+/// 每档每天只发一次；限额 ≤0 关闭；跨天复位标记。
+fn evaluate_traffic_alert(
+    st: &mut TrafficAlertState,
+    day: &str,
+    today_bytes: i64,
+    limit_bytes: i64,
+) -> Option<u8> {
+    if limit_bytes <= 0 {
+        return None;
+    }
+    if st.day != day {
+        st.day = day.to_string();
+        st.warned80 = false;
+        st.warned100 = false;
+    }
+    if today_bytes >= limit_bytes {
+        if !st.warned100 {
+            st.warned100 = true;
+            return Some(1);
+        }
+    } else if today_bytes * 10 >= limit_bytes * 8 && !st.warned80 {
+        st.warned80 = true;
+        return Some(0);
+    }
+    None
+}
+
 /// 起采样线程（Tauri setup 阶段调用一次）。
 pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
     // 按应用流量 ETW 采集：与秒级遥测同期启动；失败（非管理员/会话被占）
@@ -132,6 +168,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
             // 所以读数缓存在这里而不是每次重读；0 号 tick 立即读一次，
             // 避免启动后头 5 秒的流量全归到「以太网/未知」桶。
             let mut wifi = crate::wifi::WifiInfo::disconnected();
+            let mut traffic_alert = TrafficAlertState::default();
             while !hub.stopped() {
                 // 自愈：单拍 panic 记 ERROR 后继续（采样线程死 = 遥测/流量全静默消失）
                 crate::catch_tick("telemetry", || {
@@ -192,6 +229,29 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                     let mstate = crate::monitor::state().state;
                     crate::tray::apply_rate(&app, tick.down, tick.up, &mstate);
 
+                    // 流量超额提醒（每拍检查；状态机保证每档每天至多一次）
+                    if crate::settings::get_int("traffic_alert_gb") > 0 {
+                        let limit =
+                            crate::settings::get_int("traffic_alert_gb") * 1024 * 1024 * 1024;
+                        let day = crate::timefmt::today();
+                        if let Some(level) = evaluate_traffic_alert(
+                            &mut traffic_alert,
+                            &day,
+                            sent + recv,
+                            limit,
+                        ) {
+                            let used = crate::telemetry::human_bytes((sent + recv) as f64);
+                            let lim = crate::telemetry::human_bytes(limit as f64);
+                            let msg = if level == 1 {
+                                format!("今日流量已超额：{used} / 限额 {lim}")
+                            } else {
+                                format!("今日流量已达 {used} / 限额 {lim}（80%）")
+                            };
+                            crate::tray::notify(&app, "流量提醒", &msg);
+                            hub.record_event("traffic_warn", &msg);
+                        }
+                    }
+
                     since_save += 1;
                     if since_save >= SAVE_EVERY_TICKS {
                         hub.flush();
@@ -221,6 +281,10 @@ mod tests {
 
     #[test]
     fn hub_starts_empty_and_records_events() {
+        // 必须隔离：Hub::new 读真实数据目录的 traffic.json——部署实例跑一天后
+        // 今日流量非零，本测试会随环境漂移（真机实锤）
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
         let hub = Hub::new();
         assert!(hub.latest_tick().is_none(), "未采样前应为空");
         assert_eq!(hub.today_traffic(), (0, 0));
@@ -230,6 +294,35 @@ mod tests {
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].state, "no_net");
         assert_eq!(evs[0].detail, "测试事件");
+    }
+
+    #[test]
+    fn traffic_alert_fires_once_per_level_and_resets_by_day() {
+        let mut st = TrafficAlertState::default();
+        let limit = 10 * 1024 * 1024 * 1024; // 10 GB
+        // 50%：不提醒
+        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 5 * 1024 * 1024 * 1024, limit), None);
+        // 85%：80% 档提醒一次
+        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 8500 * 1024 * 1024, limit), Some(0));
+        // 同档不重复
+        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 9000 * 1024 * 1024, limit), None);
+        // 超额：100% 档提醒一次
+        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 11 * 1024 * 1024 * 1024, limit), Some(1));
+        // 已提醒过不再发
+        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 12 * 1024 * 1024 * 1024, limit), None);
+        // 跨天复位
+        assert_eq!(evaluate_traffic_alert(&mut st, "d2", 11 * 1024 * 1024 * 1024, limit), Some(1));
+    }
+
+    #[test]
+    fn traffic_alert_disabled_or_jump_straight_to_100() {
+        // 限额 0 = 关闭
+        let mut st = TrafficAlertState::default();
+        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 999 * 1024 * 1024 * 1024, 0), None);
+        // 一口气冲到超额（没经过 80% 档）：只发 100% 一条
+        let mut st2 = TrafficAlertState::default();
+        assert_eq!(evaluate_traffic_alert(&mut st2, "d1", 20 * 1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024), Some(1));
+        assert_eq!(evaluate_traffic_alert(&mut st2, "d1", 21 * 1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024), None);
     }
 
     #[test]

@@ -293,6 +293,8 @@ export function stateLabel(state: string): { text: string; token: string } {
       return { text: "网络质量告警", token: "warn" };
     case "quality_ok":
       return { text: "网络质量恢复", token: "ok" };
+    case "traffic_warn":
+      return { text: "流量提醒", token: "warn" };
     default:
       return { text: state || "未知", token: "sub" };
   }

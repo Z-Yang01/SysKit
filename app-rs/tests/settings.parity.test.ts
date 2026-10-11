@@ -36,6 +36,7 @@ const FROZEN_DEFAULTS: Record<string, { literal: string; kind: Kind }> = {
   quality_alert_enabled: { literal: "false", kind: "bool" },
   quality_alert_latency_ms: { literal: "200", kind: "int" },
   quality_alert_loss_pct: { literal: "20", kind: "int" },
+  traffic_alert_gb: { literal: "0", kind: "int" },
   clip_capture_images: { literal: "true", kind: "bool" },
   vault_autolock_min: { literal: "30", kind: "int" },
   vault_trust_min: { literal: "30", kind: "int" },
@@ -102,7 +103,7 @@ const RS = parseRsDefaults();
 
 describe("settings defaults 冻结契约（settings.rs vs 快照）", () => {
   it("解析到全部键（解析器本身有效）", () => {
-    expect(RS.size).toBe(29);
+    expect(RS.size).toBe(30);
   });
 
   it("键集完全一致：无多、无少（死键不得复活）", () => {
