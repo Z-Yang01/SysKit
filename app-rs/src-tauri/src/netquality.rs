@@ -319,10 +319,12 @@ pub struct AlertState {
 }
 
 /// 触发器判定（纯函数，便于单测）：
+///
 /// - 窗口指标超阈值（丢包率 或 平均延迟）→ 冷却外发「告警」；
 /// - 已告警且指标全部回到阈值内 → 冷却外发「恢复」；
 /// - 窗口无样本（探测刚启动/探针全关）→ 保持现状不动作。
-/// 返回 Some(true)=发告警，Some(false)=发恢复，None=不动作。
+///
+/// 返回 `Some(true)`=发告警，`Some(false)`=发恢复，`None`=不动作。
 pub fn evaluate_alert(
     state: &mut AlertState,
     now: std::time::Instant,
@@ -330,13 +332,12 @@ pub fn evaluate_alert(
     latency_threshold_ms: f64,
     loss_threshold_pct: f64,
 ) -> Option<bool> {
-    let Some((avg_ms, loss_pct)) = window else {
-        return None;
-    };
+    let (avg_ms, loss_pct) = window?;
     let degraded = loss_pct >= loss_threshold_pct || avg_ms >= latency_threshold_ms;
+    // 手写 map_or 而非 is_none_or：后者 1.82 才稳定，本仓 MSRV 1.77
     let cooled = state
         .last_notify
-        .is_none_or(|t| now.duration_since(t).as_secs() >= ALERT_COOLDOWN_SECS);
+        .map_or(true, |t| now.duration_since(t).as_secs() >= ALERT_COOLDOWN_SECS);
     if degraded && !state.alerting && cooled {
         state.alerting = true;
         state.last_notify = Some(now);
