@@ -28,7 +28,7 @@ import { SettingsView, LogsView } from "./SettingsView";
 import type { SettingsAll } from "./settingsPage";
 import { applyHotkeyEcho, type HotkeyHints } from "./settingsPage";
 import { applyTheme, palette, type Palette } from "./theme";
-import { Badge, Empty } from "./ui";
+import { Badge, Card, CardBody, Empty } from "./ui";
 import { Tabs } from "./ui/tabs";
 import { useToast } from "./ui/toast";
 
@@ -43,14 +43,16 @@ function Pending({
   detail: string;
 }) {
   return (
-    <div className="sk-card">
-      <div className="flex flex-col gap-2.5 p-4">
-        <div className="text-[15px] font-semibold text-sk-text">{title}</div>
-        <Badge tone="accent">{milestone}</Badge>
-        <div className="text-sk-sub">{detail}</div>
-        <Empty description="尚未接入" />
-      </div>
-    </div>
+    <Card>
+      <CardBody>
+        <div className="flex flex-col gap-2.5">
+          <div className="text-[15px] font-semibold text-sk-text">{title}</div>
+          <Badge tone="accent">{milestone}</Badge>
+          <div className="text-sk-sub">{detail}</div>
+          <Empty description="尚未接入" />
+        </div>
+      </CardBody>
+    </Card>
   );
 }
 

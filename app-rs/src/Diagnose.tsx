@@ -1040,12 +1040,16 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       )}
 
       {data && (
-        <div className="sk-card">
-          <div className="sk-hint px-4 pb-1 pt-3">动作清单（表格视图，顺序与后端 ACTION_IDS 一致）</div>
-          <div className="px-2 pb-3">
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              <span className="sk-hint font-normal">动作清单（表格视图，顺序与后端 ACTION_IDS 一致）</span>
+            </CardTitle>
+          </CardHeader>
+          <CardBody>
             <Table<RepairAction> rowKey={(r) => r.id} dataSource={data.actions} columns={listColumns} />
-          </div>
-        </div>
+          </CardBody>
+        </Card>
       )}
 
       <BackupRollbackCard />

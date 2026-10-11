@@ -849,7 +849,7 @@ export function VaultPage() {
       style={{ minHeight: "100%" }} // 两栏行 flex:1 的前提：根至少撑满 Content 视口高
     >
       {/* 顶部工具条：左侧状态徽章，右侧全部主密码操作（一排式，对齐 Python 版） */}
-      <div className="sk-card flex flex-wrap items-center gap-2 px-3 py-2">
+      <Card className="flex flex-wrap items-center gap-2 px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
           {phase === "unlocked" ? (
             // 状态徽章与自动锁定合并为倒计时标签（分钟粒度）：trusted_until
@@ -943,7 +943,7 @@ export function VaultPage() {
             </UiButton>
           )}
         </div>
-      </div>
+      </Card>
 
       {phase === "unprovisioned" && (
         <Card>

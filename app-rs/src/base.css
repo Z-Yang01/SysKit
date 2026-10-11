@@ -51,21 +51,7 @@ body {
   border-right-color: var(--sk-glass_highlight);
 }
 
-/* ---------------- 卡片：伪玻璃（无 blur 的玻璃质感） ----------------
-   半透明底 + 高光描边（上亮下暗的 1px 渐变）+ 内侧高光 + 柔和投影，
-   叠在 body 色斑上产生「磨砂玻璃」观感，而 GPU 只付渐变的钱。 */
-.sk-card {
-  background: color-mix(in srgb, var(--sk-card) 78%, transparent) !important;
-  border: 1px solid var(--sk-glass_border) !important;
-  border-radius: 14px;
-  box-shadow:
-    inset 0 1px 0 var(--sk-glass_highlight),
-    0 4px 16px var(--sk-shadow_color);
-  /* 裸 div 卡片的内边距（ui Card 自带头/体内边距，不用本类） */
-  padding: 14px 16px;
-}
-
-/* 静态玻璃面板（可显式加类）：含轻 blur，仅用于内容不逐帧变化的表面 */
+/* ---------------- 静态玻璃面板（可显式加类）：含轻 blur，仅用于内容不逐帧变化的表面 ---------------- */
 .sk-glass-strong {
   background: color-mix(in srgb, var(--sk-card) 62%, transparent) !important;
   backdrop-filter: blur(8px) saturate(1.15);
@@ -147,8 +133,5 @@ body {
     background: var(--sk-card) !important;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-  }
-  .sk-card {
-    background: var(--sk-card) !important;
   }
 }

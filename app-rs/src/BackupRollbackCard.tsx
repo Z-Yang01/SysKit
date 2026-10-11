@@ -15,7 +15,7 @@ import {
   sessionTimeText,
   type BackupSessionInfo,
 } from "./backups";
-import { Badge, Button, Empty, Table, type Column } from "./ui";
+import { Badge, Button, Card, CardBody, CardHeader, CardTitle, Empty, Table, type Column } from "./ui";
 import { Alert } from "./ui/alert";
 import { confirm } from "./ui/confirm";
 import { useToast } from "./ui/toast";
@@ -107,28 +107,30 @@ export function BackupRollbackCard() {
   ];
 
   return (
-    <div className="sk-card">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-[15px] font-semibold text-sk-text">备份与回滚</span>
+    <Card>
+      <CardHeader>
+        <CardTitle>备份与回滚</CardTitle>
         <Button size="sm" loading={loading} onClick={() => void load()}>
           刷新
         </Button>
-      </div>
-      <div className="sk-hint mb-2">
-        每次修复动作改配置前都会先备份原值。这里按会话列出，可一键还原结构化项
-        （系统代理 / DNS / NCSI 注册表）。
-      </div>
-      {sessions.length === 0 && !loading ? (
-        <Alert tone="info" title="还没有备份会话——执行任一改配置类修复动作后出现在这里" />
-      ) : (
-        <Table<BackupSessionInfo>
-          rowKey={(r) => `${r.legacy ? "L" : "N"}-${r.name}`}
-          loading={loading}
-          dataSource={sessions.slice(0, 10)}
-          columns={columns}
-          empty={<Empty description="还没有备份会话" />}
-        />
-      )}
-    </div>
+      </CardHeader>
+      <CardBody>
+        <div className="sk-hint mb-2">
+          每次修复动作改配置前都会先备份原值。这里按会话列出，可一键还原结构化项
+          （系统代理 / DNS / NCSI 注册表）。
+        </div>
+        {sessions.length === 0 && !loading ? (
+          <Alert tone="info" title="还没有备份会话——执行任一改配置类修复动作后出现在这里" />
+        ) : (
+          <Table<BackupSessionInfo>
+            rowKey={(r) => `${r.legacy ? "L" : "N"}-${r.name}`}
+            loading={loading}
+            dataSource={sessions.slice(0, 10)}
+            columns={columns}
+            empty={<Empty description="还没有备份会话" />}
+          />
+        )}
+      </CardBody>
+    </Card>
   );
 }

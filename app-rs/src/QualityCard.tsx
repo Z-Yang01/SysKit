@@ -6,11 +6,12 @@
  * 图表主题走 chartTheme(dark)——与 Overview 其他图同一套，切主题即时跟随。
  *
  * v1.4 UI 迁移：脱离 AntD（Segmented/Space/Typography → ui 件 / 原生 flex）。
+ * memo：Dashboard 每秒 tick 重渲染，本卡只有 dark 一个 props，裁掉子树 diff。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { EChart as ReactECharts } from "./EChart";
-import { Badge as UiBadge, Segmented } from "./ui";
+import { Badge as UiBadge, Card, CardBody, CardHeader, CardTitle, Segmented } from "./ui";
 
 import {
   QUALITY_RANGES,
@@ -22,7 +23,7 @@ import {
 } from "./netquality";
 import { baseChartOption, chartAccent, chartOk } from "./chartTheme";
 
-export function QualityCard({ dark }: { dark: boolean }) {
+export const QualityCard = memo(function QualityCard({ dark }: { dark: boolean }) {
   const [range, setRange] = useState<QualityRange>("minute");
   const [data, setData] = useState<QualitySeries | null>(null);
 
@@ -84,36 +85,37 @@ export function QualityCard({ dark }: { dark: boolean }) {
   }, [rows, dark]);
 
   return (
-    <div className="sk-card">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+    <Card>
+      <CardHeader>
+        <CardTitle>网络质量</CardTitle>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[15px] font-semibold text-sk-text">网络质量</span>
           {gwLoss >= 5 && <UiBadge tone="err">网关丢包 {gwLoss.toFixed(1)}%</UiBadge>}
           {gwLoss > 0 && gwLoss < 5 && <UiBadge tone="warn">网关丢包 {gwLoss.toFixed(1)}%</UiBadge>}
           {gwLoss === 0 && rows.length > 0 && <UiBadge tone="ok">无丢包</UiBadge>}
+          <Segmented<QualityRange>
+            size="sm"
+            value={range}
+            onChange={setRange}
+            options={QUALITY_RANGES.map((r) => ({ value: r.value, label: r.label }))}
+          />
         </div>
-        <Segmented<QualityRange>
-          size="sm"
-          value={range}
-          onChange={setRange}
-          options={QUALITY_RANGES.map((r) => ({ value: r.value, label: r.label }))}
-        />
-      </div>
+      </CardHeader>
+      <CardBody>
+        <ReactECharts option={option} style={{ height: 180 }} lazyUpdate />
 
-      <ReactECharts option={option} style={{ height: 180 }} lazyUpdate />
-
-      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-sk-sub">
-        <span>
-          平均延迟：网关 {gwLat !== null ? `${gwLat.toFixed(1)} ms` : "—"} · 公网{" "}
-          {pubLat !== null ? `${pubLat.toFixed(1)} ms` : "—"}
-        </span>
-        <span>·</span>
-        <span>
-          丢包：网关 {gwLoss.toFixed(1)}% · 公网 {pubLoss.toFixed(1)}%
-        </span>
-        <span>·</span>
-        <span>DNS {dnsMs !== null ? `${dnsMs.toFixed(0)} ms` : "—"}</span>
-      </div>
-    </div>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-sk-sub">
+          <span>
+            平均延迟：网关 {gwLat !== null ? `${gwLat.toFixed(1)} ms` : "—"} · 公网{" "}
+            {pubLat !== null ? `${pubLat.toFixed(1)} ms` : "—"}
+          </span>
+          <span>·</span>
+          <span>
+            丢包：网关 {gwLoss.toFixed(1)}% · 公网 {pubLoss.toFixed(1)}%
+          </span>
+          <span>·</span>
+          <span>DNS {dnsMs !== null ? `${dnsMs.toFixed(0)} ms` : "—"}</span>
+        </div>
+      </CardBody>
+    </Card>
   );
-}
+});

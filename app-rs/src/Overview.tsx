@@ -43,7 +43,7 @@ import {
 } from "./dashboard";
 import { AppTrafficCard } from "./AppTrafficCard";
 import { QualityCard } from "./QualityCard";
-import { Badge, Card, Empty, Radio, Segmented, Table, type Column } from "./ui";
+import { Badge, Card, CardBody, CardHeader, CardTitle, Empty, Radio, Segmented, Table, type Column } from "./ui";
 import { Tabs } from "./ui/tabs";
 
 interface OverviewInit {
@@ -413,55 +413,63 @@ export function Dashboard({ dark }: { dark: boolean }) {
         </div>
       </Card>
 
-      <div className="sk-card">
-        <div className="mb-1.5 flex items-center justify-between gap-2">
-          <span className="text-[15px] font-semibold text-sk-text">网络速率</span>
+      <Card>
+        <CardHeader>
+          <CardTitle>网络速率</CardTitle>
           <Badge tone={st.token === "ok" ? "ok" : st.token === "err" ? "err" : "warn"}>{st.text}</Badge>
-        </div>
-        <ReactECharts option={rateOption} style={{ height: 200 }} lazyUpdate />
-      </div>
+        </CardHeader>
+        <CardBody>
+          <ReactECharts option={rateOption} style={{ height: 200 }} lazyUpdate />
+        </CardBody>
+      </Card>
 
-      <div className="sk-card">
-        <div className="text-[15px] font-semibold text-sk-text">CPU / 内存</div>
-        <ReactECharts option={usageOption} style={{ height: 200 }} lazyUpdate />
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>CPU / 内存</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <ReactECharts option={usageOption} style={{ height: 200 }} lazyUpdate />
+        </CardBody>
+      </Card>
     </div>
   );
 
   const netmonTab = (
     <div className="flex flex-col gap-3.5">
-      <div className="sk-card">
-        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Segmented<Granularity>
-              value={granularity}
-              onChange={setGranularity}
-              options={GRANULARITIES.map((g) => ({ value: g.value, label: g.label }))}
-            />
-            <div className="flex max-w-full flex-wrap items-center gap-3">
-              <Radio<string>
-                value={ssid}
-                onChange={setSsid}
-                options={[{ label: "全部网络", value: "" }, ...ssids.map((s) => ({ label: s, value: s }))]}
+      <Card>
+        <CardBody>
+          <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Segmented<Granularity>
+                value={granularity}
+                onChange={setGranularity}
+                options={GRANULARITIES.map((g) => ({ value: g.value, label: g.label }))}
               />
+              <div className="flex max-w-full flex-wrap items-center gap-3">
+                <Radio<string>
+                  value={ssid}
+                  onChange={setSsid}
+                  options={[{ label: "全部网络", value: "" }, ...ssids.map((s) => ({ label: s, value: s }))]}
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-sm text-sk-sub">
+              <span>区间下行 {humanBytes(series?.recv ?? 0)}</span>
+              <span>区间上行 {humanBytes(series?.sent ?? 0)}</span>
             </div>
           </div>
-          <div className="flex items-center gap-4 text-sm text-sk-sub">
-            <span>区间下行 {humanBytes(series?.recv ?? 0)}</span>
-            <span>区间上行 {humanBytes(series?.sent ?? 0)}</span>
-          </div>
-        </div>
-        <ReactECharts option={trafficOption} style={{ height: 240 }} lazyUpdate />
-      </div>
+          <ReactECharts option={trafficOption} style={{ height: 240 }} lazyUpdate />
+        </CardBody>
+      </Card>
 
       <AppTrafficCard />
 
       <QualityCard dark={dark} />
 
       <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
-        <div className="sk-card min-h-[260px]">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-[15px] font-semibold text-sk-text">近 7 / 30 天日报</span>
+        <Card className="min-h-[260px]">
+          <CardHeader>
+            <CardTitle>近 7 / 30 天日报</CardTitle>
             <Segmented<"7" | "30">
               size="sm"
               value={reportDays === 30 ? "30" : "7"}
@@ -471,35 +479,41 @@ export function Dashboard({ dark }: { dark: boolean }) {
                 { label: "30 天", value: "30" },
               ]}
             />
-          </div>
-          <div className="mb-2 flex items-center gap-5 text-sm text-sk-sub">
-            <span>断网 {summary.outages} 次</span>
-            <span>累计 {formatDuration(summary.outageSec)}</span>
-            <span>有记录 {summary.daysWithEvents} 天</span>
-          </div>
-          <div className="max-h-[220px] overflow-y-auto">
-            <Table<DayReport>
-              rowKey={(r) => r.date}
-              dataSource={report}
-              columns={reportColumns}
-              empty={<Empty description="暂无日报数据" />}
-            />
-          </div>
-        </div>
-        <div className="sk-card min-h-[260px]">
-          <div className="text-[15px] font-semibold text-sk-text">事件时间线</div>
-          <div className="mt-2 max-h-[260px] overflow-y-auto">
-            {events.length === 0 ? (
-              <Empty description="暂无事件（网络监控在 M3 接入后写入状态切换）" />
-            ) : (
-              events.map((ev, i) => (
-                <div key={`${ev.ts}-${i}`} className="sk-hint py-0.5">
-                  {eventLine(ev)}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+          </CardHeader>
+          <CardBody>
+            <div className="mb-2 flex items-center gap-5 text-sm text-sk-sub">
+              <span>断网 {summary.outages} 次</span>
+              <span>累计 {formatDuration(summary.outageSec)}</span>
+              <span>有记录 {summary.daysWithEvents} 天</span>
+            </div>
+            <div className="max-h-[220px] overflow-y-auto">
+              <Table<DayReport>
+                rowKey={(r) => r.date}
+                dataSource={report}
+                columns={reportColumns}
+                empty={<Empty description="暂无日报数据" />}
+              />
+            </div>
+          </CardBody>
+        </Card>
+        <Card className="min-h-[260px]">
+          <CardHeader>
+            <CardTitle>事件时间线</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <div className="max-h-[260px] overflow-y-auto">
+              {events.length === 0 ? (
+                <Empty description="暂无事件（网络监控在 M3 接入后写入状态切换）" />
+              ) : (
+                events.map((ev, i) => (
+                  <div key={`${ev.ts}-${i}`} className="sk-hint py-0.5">
+                    {eventLine(ev)}
+                  </div>
+                ))
+              )}
+            </div>
+          </CardBody>
+        </Card>
       </div>
     </div>
   );

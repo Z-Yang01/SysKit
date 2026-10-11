@@ -4,9 +4,10 @@
  * 数据 ETW 采集（需管理员）：available=false 时给诚实的降级说明——
  * 一张空表会让人误以为「真的没流量」。
  *
- * v1.4 UI 迁移：脱离 AntD（Table/Progress/Segmented/Row/Col → ui 件 + flex）。
+ * v1.4 UI 迁移：脱离 AntD（Table/Progress/Segmented → ui 件 + flex）。
+ * memo：Dashboard 每秒 tick 重渲染，本卡无实时 props，裁掉子树 diff。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import {
@@ -18,12 +19,12 @@ import {
   type AppUsageRow,
 } from "./apptraffic";
 import { humanBytes } from "./dashboard";
-import { Empty, Input, Progress, Segmented, Table, type Column } from "./ui";
+import { Card, CardBody, CardHeader, CardTitle, Empty, Input, Progress, Segmented, Table, type Column } from "./ui";
 import { Alert } from "./ui/alert";
 
 const COLUMNS = ["应用", "下载", "上传", "合计", "占比"] as const;
 
-export function AppTrafficCard() {
+export const AppTrafficCard = memo(function AppTrafficCard() {
   const [range, setRange] = useState<AppTrafficRange>("day");
   const [q, setQ] = useState("");
   const [data, setData] = useState<AppTrafficSummary | null>(null);
@@ -110,13 +111,13 @@ export function AppTrafficCard() {
   ];
 
   return (
-    <div className="sk-card">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-[15px] font-semibold text-sk-text">应用流量</span>
-          <span className="sk-hint">按进程实时统计（ETW），复制/下载全计入；仅本机留存</span>
-        </div>
-        <div className="flex items-center gap-2">
+    <Card>
+      <CardHeader>
+        <CardTitle>应用流量</CardTitle>
+        <span className="sk-hint">按进程实时统计（ETW），复制/下载全计入；仅本机留存</span>
+      </CardHeader>
+      <CardBody>
+        <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
           <Input
             className="h-7 w-[150px] text-xs"
             placeholder="搜应用名…"
@@ -130,27 +131,27 @@ export function AppTrafficCard() {
             options={APP_RANGES.map((r) => ({ value: r.value, label: r.label }))}
           />
         </div>
-      </div>
 
-      {data && !data.available ? (
-        <Alert tone="info" title="应用流量暂不可用">
-          {data.reason || "需要管理员身份运行"}
-        </Alert>
-      ) : (
-        <>
-          <Table<AppUsageRow>
-            rowKey={(r) => r.app}
-            loading={loading}
-            dataSource={rows}
-            empty={<Empty description="暂无数据——刚开启时需要等流量经过；或换个时间范围" />}
-            columns={columns}
-          />
-          <div className="sk-hint mt-1">
-            本范围合计：下行 {humanBytes(data?.recv ?? 0)} · 上行{" "}
-            {humanBytes(data?.sent ?? 0)}（Top 15 之外的应用不计入此合计）
-          </div>
-        </>
-      )}
-    </div>
+        {data && !data.available ? (
+          <Alert tone="info" title="应用流量暂不可用">
+            {data.reason || "需要管理员身份运行"}
+          </Alert>
+        ) : (
+          <>
+            <Table<AppUsageRow>
+              rowKey={(r) => r.app}
+              loading={loading}
+              dataSource={rows}
+              empty={<Empty description="暂无数据——刚开启时需要等流量经过；或换个时间范围" />}
+              columns={columns}
+            />
+            <div className="sk-hint mt-1">
+              本范围合计：下行 {humanBytes(data?.recv ?? 0)} · 上行{" "}
+              {humanBytes(data?.sent ?? 0)}（Top 15 之外的应用不计入此合计）
+            </div>
+          </>
+        )}
+      </CardBody>
+    </Card>
   );
-}
+});
