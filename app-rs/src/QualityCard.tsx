@@ -55,7 +55,7 @@ export function QualityCard({ dark }: { dark: boolean }) {
       xAxis: {
         ...base.xAxis,
         data: rows.map((r) => r.key),
-        boundaryGap: false,
+        boundaryGap: true,
         axisLabel: { ...base.xAxis.axisLabel, hideOverlap: true },
       },
       yAxis: {
@@ -66,21 +66,18 @@ export function QualityCard({ dark }: { dark: boolean }) {
       series: [
         {
           name: "网关延迟",
-          type: "line",
-          smooth: true,
-          showSymbol: false,
-          connectNulls: false, // 全丢包桶不连（断网区间如实断线）
+          type: "bar",
+          barGap: "0%",
+          // 全丢包桶值为 null：柱不落 地即"断网区间如实留空"（同折线断线语义）
           data: rows.map((r) => r.gw_avg_ms),
-          lineStyle: { color: chartAccent(dark), width: 2 },
+          itemStyle: { color: chartAccent(dark) },
         },
         {
           name: "公网延迟",
-          type: "line",
-          smooth: true,
-          showSymbol: false,
-          connectNulls: false,
+          type: "bar",
+          barGap: "0%",
           data: rows.map((r) => r.pub_avg_ms),
-          lineStyle: { color: chartOk(dark), width: 1.5, type: "dashed" },
+          itemStyle: { color: chartOk(dark) },
         },
       ],
     };

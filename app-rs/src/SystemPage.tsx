@@ -114,7 +114,7 @@ function Stat({
   );
 }
 
-/** 极简 sparkline（不引图表库：本页只需要一条折线）。 */
+/** 极简 sparkline（不引图表库）：逐采样迷你柱，与全应用「不用折线图」统一。 */
 function Spark({
   values,
   color,
@@ -130,23 +130,24 @@ function Spark({
   const max = Math.max(...values, 1);
   const min = Math.min(...values, 0);
   const span = max - min || 1;
-  const pts = values
-    .map((v, i) => {
-      const x = (i / (values.length - 1)) * 100;
-      const y = height - ((v - min) / span) * (height - 4) - 2;
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(" ");
+  // viewBox 宽 100、preserveAspectRatio=none：柱宽随容器伸缩，1px 间隙留缝
+  const slot = 100 / values.length;
   return (
     <svg width="100%" height={height} viewBox={`0 0 100 ${height}`} preserveAspectRatio="none">
-      {/* stroke 走 style：SVG 展示属性不吃 var()，style 才跟随主题变量 */}
-      <polyline
-        points={pts}
-        fill="none"
-        style={{ stroke: color }}
-        strokeWidth="1.2"
-        vectorEffect="non-scaling-stroke"
-      />
+      {/* fill 走 style：SVG 展示属性不吃 var()，style 才跟随主题变量 */}
+      {values.map((v, i) => {
+        const h = Math.max(((v - min) / span) * (height - 2), v > 0 ? 1 : 0);
+        return (
+          <rect
+            key={i}
+            x={(i * slot).toFixed(2)}
+            y={(height - h).toFixed(2)}
+            width={(slot - 0.8).toFixed(2)}
+            height={h.toFixed(2)}
+            style={{ fill: color }}
+          />
+        );
+      })}
     </svg>
   );
 }

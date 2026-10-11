@@ -215,7 +215,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
         ...base.xAxis,
         // 1m=相对秒（-59s…0s）；1h/1d=桶标签（HH:MM / HH时）
         data: labels,
-        boundaryGap: false, // 曲线贴边，首尾即窗口两端
+        boundaryGap: true, // 柱状：类目带留边，柱不贴轴
         axisLabel: { ...base.xAxis.axisLabel, hideOverlap: true },
       },
       yAxis: {
@@ -247,12 +247,11 @@ export function Dashboard({ dark }: { dark: boolean }) {
       series: [
         {
           name: "下行",
-          type: "line",
-          smooth: true,
-          showSymbol: false, // 端点不落点，读值一律走 axis 触发的 tooltip
+          type: "bar",
+          stack: "t",
+          barCategoryGap: "0%", // 直方图风格：逐采样无缝柱（NetSpeedMonitor 风格）
           data: down,
-          lineStyle: { color: chartAccent(dark), width: 2 },
-          areaStyle: { color: chartAccent(dark), opacity: 0.12 }, // 只给下行轻填充
+          itemStyle: { color: chartAccent(dark) },
           markPoint: {
             symbol: "circle",
             symbolSize: 7,
@@ -269,13 +268,13 @@ export function Dashboard({ dark }: { dark: boolean }) {
           },
         },
         {
+          // 上行叠在同柱上段：柱高=总吞吐，配色段区分收发方向
           name: "上行",
-          type: "line",
-          smooth: true,
-          showSymbol: false,
+          type: "bar",
+          stack: "t",
+          barCategoryGap: "0%",
           data: up,
-          // 虚线 + 不填充：与实线轻填充的下行双通道区分，避免被下行面积盖住
-          lineStyle: { color: chartOk(dark), width: 1.5, type: "dashed" },
+          itemStyle: { color: chartOk(dark) },
         },
       ],
     };
@@ -288,7 +287,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
       xAxis: {
         ...base.xAxis,
         data: axisTimeLabels(history), // 与速率图同一套相对时刻
-        boundaryGap: false,
+        boundaryGap: true,
         axisLabel: { ...base.xAxis.axisLabel, hideOverlap: true },
       },
       yAxis: { ...base.yAxis, max: 100, min: 0 },
@@ -296,19 +295,17 @@ export function Dashboard({ dark }: { dark: boolean }) {
       series: [
         {
           name: "CPU",
-          type: "line",
-          smooth: true,
-          showSymbol: false,
+          type: "bar",
+          barGap: "0%",
           data: history.map((t) => Number(t.cpu.toFixed(1))),
-          lineStyle: { color: chartWarn(dark), width: 1.5 },
+          itemStyle: { color: chartWarn(dark) },
         },
         {
           name: "内存",
-          type: "line",
-          smooth: true,
-          showSymbol: false,
+          type: "bar",
+          barGap: "0%",
           data: history.map((t) => Number(t.mem.toFixed(1))),
-          lineStyle: { color: chartAccent(dark), width: 1.5 },
+          itemStyle: { color: chartAccent(dark) },
         },
       ],
     };
