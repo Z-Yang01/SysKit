@@ -185,7 +185,7 @@ function DnsSpeedPanel() {
         <Button variant="primary" size="sm" loading={busy} onClick={() => void run()}>
           开始测速
         </Button>
-        {busy && <span className="sk-hint">测速中… 已用时 {elapsed} 秒</span>}
+        {busy && <span className="sk-hint">已用时 {elapsed} 秒</span>}
         {result && (
           <>
             <Badge tone="ok">可用 {stats.usable}</Badge>
@@ -193,11 +193,6 @@ function DnsSpeedPanel() {
           </>
         )}
       </div>
-
-      <Alert
-        tone="info"
-        title="每台服务器串行探测（避免自我并发干扰），服务器之间并发；单次超时按失败计入、不重发——测速要的是真实一次往返的表现。"
-      />
 
       {result ? (
         <>
@@ -373,9 +368,7 @@ function DownloadSpeedPanel() {
                 开始下载测速
               </Button>
             )}
-            <span className="sk-hint">
-              {status?.urls.length ?? 3} 个源 × 8 秒，下载即断不落盘（约消耗几十 MB 流量）
-            </span>
+            <span className="sk-hint">{status?.urls.length ?? 3} 源 × 8 秒 · 约几十 MB 流量</span>
             <Badge tone={tokenTone(peakToken(result?.best_peak_bps ?? 0))}>峰值 {best}</Badge>
             {err && <span className="text-sk-err">{err}</span>}
           </div>

@@ -535,9 +535,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
                   return (
                     <Empty
                       description={
-                        events.length === 0
-                          ? "暂无事件——网络状态切换、质量告警、流量提醒都会写入这里"
-                          : "该类型暂无事件"
+                        events.length === 0 ? "暂无事件" : "该类型暂无事件"
                       }
                     />
                   );

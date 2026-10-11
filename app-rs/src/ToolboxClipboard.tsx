@@ -798,9 +798,7 @@ export function ClipboardHistoryPanel() {
           )}
         </Modal>
 
-        <div className="sk-hint">
-          点击行即可复制回剪贴板（写回不会记进历史）；操作按钮在行悬停时浮现。置顶条目不会被自动淘汰，且相同文本再次复制时不会新增条目。
-        </div>
+        {rows.length > 0 && <div className="sk-hint">点击行复制；悬停行浮现操作。</div>}
       </div>
     </>
   );

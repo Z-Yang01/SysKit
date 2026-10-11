@@ -254,10 +254,7 @@ function ScanTab(props: {
         </div>
       )}
 
-      <div className="sk-hint">
-        提示：Win11 扫描周边 WiFi 需要系统「位置」服务开启（设置→隐私和安全性→位置）。
-        扫描走 netsh，双频合一的网络按 BSSID 拆成多行（2.4G / 5G 各一条）。
-      </div>
+      <div className="sk-hint">扫不到网络？Win11 需开启「位置」服务；双频网络按 BSSID 拆行。</div>
     </div>
   );
 }
@@ -308,10 +305,7 @@ function ChannelTab({ aps }: { aps: ScannedAp[] }) {
       <Alert tone="info" title={channelAdviceText(advice)} />
       {bandBlock("2.4GHz 信道占用（1~13，AP 数量）", agg.c24, max24)}
       {bandBlock("5GHz 信道占用（AP 数量）", agg.c5, max5)}
-      <div className="sk-hint">
-        条长 = 该信道 AP 数占本频段最挤信道的比例；颜色：绿 ≤2 个、橙 ≤4 个、红更多。
-        推荐 2.4G 信道计入 ±4 内邻频重叠与信号强弱；5G 按 80MHz 块挑最空锚点并避开 DFS 雷达信道。
-      </div>
+      <div className="sk-hint">条长 = 占最挤信道比例 · 绿 ≤2 · 橙 ≤4 · 红 更多</div>
     </div>
   );
 }
@@ -499,10 +493,7 @@ function ShareTab(props: { profiles: string[]; profilesLoading: boolean }) {
                 <Badge tone="accent">SSID：{qrSsid}</Badge>
                 {qrAuth && <Badge>认证：{qrAuth}</Badge>}
               </div>
-              <div className="sk-hint">
-                标准 WiFi 二维码格式，手机相机扫码即可加入网络。编码串包含明文密码，本页只渲染成图、
-                不显示串本身——也别把二维码发给不该有网络权限的人。
-              </div>
+              <div className="sk-hint">编码串含明文密码：只渲染成图，别发给不该给的人。</div>
             </div>
           </CardBody>
         </Card>

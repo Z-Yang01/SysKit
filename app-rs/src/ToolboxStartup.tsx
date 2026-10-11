@@ -279,11 +279,7 @@ export function ToolboxStartup() {
         </>
       )}
 
-      <div className="sk-hint">
-        禁用不会删除程序，只是让它下次登录时不自启；禁用记录存在
-        <code>HKCU\Software\NetTool\DisabledRun</code>（与 Python 版共用），随时可恢复。
-        启动文件夹项禁用后文件名会加 <code>.disabled</code> 后缀。
-      </div>
+      <div className="sk-hint">禁用只是不自启，可随时恢复；写回前自动备份。</div>
     </div>
   );
 }

@@ -216,7 +216,7 @@ function LanPanel() {
 
   return (
     <div className="flex flex-col gap-2.5">
-      <UiAlert tone="info" title="扫描本机所在 /24 网段（并发 ping 唤醒邻居后读 ARP 表），约需 8~15 秒" />
+      <UiAlert tone="info" title="扫描 /24 网段，约需 8~15 秒" />
       <div className="flex flex-wrap items-center gap-2">
         <UiButton variant="primary" loading={scanning} onClick={() => void scan()}>
           扫描局域网

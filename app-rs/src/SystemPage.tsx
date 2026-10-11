@@ -21,7 +21,6 @@ import { WifiPage } from "./WifiPasswordPanel";
 import type { DrillRequest } from "./disk";
 
 import {
-  SERIES_LEN,
   formatRate,
   humanBytes,
   isStale,
@@ -30,7 +29,6 @@ import {
   pushSample,
   signalToken,
   usageToken,
-  wifiSummary,
   type PerfTick,
   type TopProcs,
   type WifiInfo,
@@ -248,10 +246,7 @@ const TopProcsCard = memo(function TopProcsCard({
             description={failed ? "读取进程列表失败（每 3 秒自动重试）" : "正在采集进程列表…"}
           />
         )}
-        <div className="sk-hint mt-2">
-          数据源为 <code>tasklist /fo csv</code>（约 0.5 秒/次，后端 2 秒缓存）。
-          占比分母是**进程内存合计**而不是物理内存——tasklist 报的是工作集，合计会大于物理内存。
-        </div>
+
       </div>
     </Card>
   );
@@ -388,7 +383,6 @@ function PerfPanel() {
       <Card>
         <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
           <span className="text-[15px] font-semibold text-sk-text">WiFi 状态</span>
-          <span className="sk-hint">每 5 秒刷新 · 数据来自 wlanapi.dll</span>
         </div>
         <div className="px-4 pb-4 pt-1">
           {wifi?.connected ? (
@@ -419,15 +413,6 @@ function PerfPanel() {
 
       <TopProcsCard procs={procs} failed={procsFailed} />
 
-      <Card>
-        <div className="px-4 pb-4 pt-3">
-          <div className="sk-hint">
-            曲线保留最近 {SERIES_LEN} 个采样点（1 秒/点，约 3 分钟）。页面隐藏期间采样会暂停，
-            切回时若断流超过 10 分钟自动清空旧序列——避免把两段不连续的数据画成一条连续曲线。
-            {last && <> 当前：<Badge>{wifiSummary(wifi)}</Badge></>}
-          </div>
-        </div>
-      </Card>
     </div>
   );
 }

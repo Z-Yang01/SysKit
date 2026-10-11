@@ -207,10 +207,6 @@ export function DiskPanel() {
         <Table<DriveRow> rowKey={(r) => r.letter} dataSource={rows} columns={columns} />
       )}
 
-      <div className="sk-hint">
-        「可用」按**整卷空闲**计算（不是当前用户配额内的可用量）——前者才是"这个盘还剩多少"。
-        可移动盘不参与空间告警。
-      </div>
     </div>
   );
 }

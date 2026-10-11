@@ -115,10 +115,7 @@ export function BackupRollbackCard() {
         </Button>
       </CardHeader>
       <CardBody>
-        <div className="sk-hint mb-2">
-          每次修复动作改配置前都会先备份原值。这里按会话列出，可一键还原结构化项
-          （系统代理 / DNS / NCSI 注册表）。
-        </div>
+        <div className="sk-hint mb-2">修复前的原值备份，可一键还原。</div>
         {sessions.length === 0 && !loading ? (
           <Alert tone="info" title="还没有备份会话——执行任一改配置类修复动作后出现在这里" />
         ) : (

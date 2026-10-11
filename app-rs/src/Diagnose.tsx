@@ -703,7 +703,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       <Card>
         <CardHeader>
           <CardTitle>组合修复</CardTitle>
-          <span className="sk-hint">按 Python COMBOS 的定义逐步执行</span>
+
         </CardHeader>
         <CardBody>
           <div className="flex flex-col gap-2">
@@ -1043,7 +1043,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         <Card>
           <CardHeader>
             <CardTitle>
-              <span className="sk-hint font-normal">动作清单（表格视图，顺序与后端 ACTION_IDS 一致）</span>
+              <span className="sk-hint font-normal">动作清单</span>
             </CardTitle>
           </CardHeader>
           <CardBody>

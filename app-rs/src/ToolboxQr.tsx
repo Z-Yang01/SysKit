@@ -184,7 +184,7 @@ export function ToolboxQr({ initialText, decodeClipItem, onDone }: Props) {
             e.target.value = ""; // 同一张图可重选
           }}
         />
-        <span className="sk-hint">支持截图 / 图片文件里的二维码；识别在本机完成，不联网</span>
+        <span className="sk-hint">本机识别，不联网</span>
       </div>
 
       {busy && <div className="py-4 text-center text-sm text-sk-sub">正在识别…</div>}
