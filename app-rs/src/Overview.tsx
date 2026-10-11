@@ -115,9 +115,16 @@ export function Dashboard({ dark }: { dark: boolean }) {
     void init();
   }, [init]);
 
+  // 本页两个 tab（ui Tabs keepMounted）：概览 pane 不可见时 tick 处理全部跳过
+  // ——每秒 3 张图 setOption + 一轮 setState 是纯浪费；切回后序列出现时间空洞
+  // （时间轴如实断开，与系统助手「隐藏期间采样暂停」同语义）
+  const [ovTab, setOvTab] = useState("overview");
+
   // ---------------- 每秒 tick ----------------
   useEffect(() => {
+    if (ovTab !== "overview") return;
     const un = listen<Tick>("sk://tick", (ev) => {
+      if (document.hidden) return; // 窗口不可见时不积累样本
       const t = ev.payload;
       t.ts = Date.now();
       setTick(t);
@@ -126,7 +133,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
     return () => {
       void un.then((f) => f());
     };
-  }, []);
+  }, [ovTab]);
 
   // ---------------- 多粒度序列 ----------------
   const loadSeries = useCallback(async () => {
@@ -520,6 +527,8 @@ export function Dashboard({ dark }: { dark: boolean }) {
 
   return (
     <Tabs
+      activeKey={ovTab}
+      onChange={setOvTab}
       items={[
         { key: "overview", label: "概览", children: overviewTab },
         { key: "netmon", label: "网络监控", children: netmonTab },

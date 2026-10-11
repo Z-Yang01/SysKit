@@ -200,14 +200,19 @@ function PerfPanel() {
   const [procsFailed, setProcsFailed] = useState(false);
   const [last, setLast] = useState<PerfTick | null>(null);
   const lastTickAt = useRef<number | null>(null);
+  // keepMounted 面板的可见性守卫：切到系统助手其他 tab 时本面板 display:none
+  // （ui Tabs 用 hidden 属性切换），offsetParent 为 null——每 3 秒的 tasklist
+  // （约 0.5 秒 CPU）和每 5 秒的 WiFi 查询都是白烧，必须停
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelHidden = () => panelRef.current?.offsetParent === null;
 
   // 订阅遥测（每拍 1 秒）
   useEffect(() => {
     let un: (() => void) | undefined;
     void listen<PerfTick>("sk://tick", (e) => {
-      // 窗口最小化/隐藏时跳过本拍（4 组 setState + 重渲染是纯浪费）；
+      // 窗口最小化/面板不可见时跳过本拍（4 组 setState + 重渲染是纯浪费）；
       // isStale 守卫会在切回时清旧序列，两条守卫互补
-      if (document.hidden) {
+      if (document.hidden || panelHidden()) {
         lastTickAt.current = null;
         return;
       }
@@ -248,7 +253,7 @@ function PerfPanel() {
         });
     load();
     const t = window.setInterval(() => {
-      if (!document.hidden) load();
+      if (!document.hidden && !panelHidden()) load();
     }, 5000);
     return () => window.clearInterval(t);
   }, []);
@@ -267,7 +272,7 @@ function PerfPanel() {
     load();
     // 后端有 2 秒缓存，这里 3 秒轮询即可（tasklist 一次约 0.5 秒）
     const t = window.setInterval(() => {
-      if (!document.hidden) load();
+      if (!document.hidden && !panelHidden()) load();
     }, 3000);
     return () => window.clearInterval(t);
   }, []);
@@ -305,7 +310,7 @@ function PerfPanel() {
   ];
 
   return (
-    <div className="flex flex-col gap-3">
+    <div ref={panelRef} className="flex flex-col gap-3">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
         <Card>
           <Stat title="CPU" value={`${latestCpu.toFixed(1)}%`} color={tokenColor(usageToken(latestCpu))}>
