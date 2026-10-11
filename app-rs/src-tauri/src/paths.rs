@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub const APP_NAME: &str = "SysKit";
 pub const DISPLAY_NAME: &str = "SysKit 系统工具箱";
-pub const VERSION: &str = "1.2.0";
+pub const VERSION: &str = "1.4.0";
 
 /// 便携模式标记：exe 旁存在 `data` 目录时返回它（对应 config._portable_data_dir）。
 fn portable_data_dir() -> Option<PathBuf> {
@@ -106,6 +106,11 @@ pub fn netstats_apps_file() -> PathBuf {
 /// 网络质量桶（自有格式，非跨语言契约）。
 pub fn netstats_quality_file() -> PathBuf {
     appdata_dir().join("netstats_quality.json")
+}
+
+/// DNS 测速历史（自有格式，非跨语言契约）。
+pub fn dns_speed_history_file() -> PathBuf {
+    appdata_dir().join("dns_speed_history.json")
 }
 
 pub fn log_dir() -> PathBuf {

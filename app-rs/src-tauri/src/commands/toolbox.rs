@@ -311,6 +311,26 @@ pub async fn sk_dns_speed(domain: String, times: Option<u32>) -> Result<serde_js
         let times = times.unwrap_or(3).clamp(1, 5);
         let results = crate::dnsspeed::run_all(&domain, times);
         let (usable, failed) = crate::dnsspeed::summarize(&results);
+
+        // 测速历史：紧凑记录可用台的延迟（全失败台不入列），落盘最近 20 轮
+        {
+            let path = crate::paths::dns_speed_history_file();
+            let mut hist = crate::dnshistory::load(&path);
+            crate::dnshistory::push(
+                &mut hist,
+                crate::dnshistory::DnsSpeedRound {
+                    at: crate::timefmt::now_fmt(crate::timefmt::FMT_MINUTE_COMPACT),
+                    latencies: results
+                        .iter()
+                        .filter_map(|p| p.avg_ms.map(|ms| (p.name.clone(), ms)))
+                        .collect(),
+                },
+            );
+            if !crate::dnshistory::save(&path, &hist) {
+                log::warn!("DNS 测速历史落盘失败（不影响本次结果）");
+            }
+        }
+
         Ok(serde_json::json!({
             "domain": domain,
             "times": times,
@@ -322,6 +342,13 @@ pub async fn sk_dns_speed(domain: String, times: Option<u32>) -> Result<serde_js
     })
     .await
     .map_err(|e| format!("测速线程失败: {e}"))?
+}
+
+/// DNS 测速历史（最近 N 轮，测速页趋势对比用）。
+#[tauri::command]
+pub fn sk_dns_speed_history() -> serde_json::Value {
+    let h = crate::dnshistory::load(&crate::paths::dns_speed_history_file());
+    serde_json::to_value(&h.rounds).unwrap_or_else(|_| serde_json::json!([]))
 }
 
 /// 下载测速能力状态（WinInet 接入后恒可用）。

@@ -18,6 +18,9 @@ pub const FMT_HOUR: &str = "%Y-%m-%dT%H";
 /// `%Y-%m-%d %H:%M:%S` —— events.json 的 ts。
 pub const FMT_TS: &str = "%Y-%m-%d %H:%M:%S";
 
+/// 紧凑分粒度（DNS 测速历史标签等场景）。
+pub const FMT_MINUTE_COMPACT: &str = "%m-%d %H:%M";
+
 pub fn now_local() -> DateTime<Local> {
     Local::now()
 }

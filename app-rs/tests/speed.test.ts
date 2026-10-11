@@ -23,6 +23,9 @@ import {
   urlHost,
   type DnsProbe,
   type DnsSpeedResult,
+  dnsHistorySeries,
+  dnsTrend,
+  type DnsSpeedRound,
 } from "../src/speed";
 
 const probe = (over: Partial<DnsProbe> = {}): DnsProbe => ({
@@ -184,5 +187,43 @@ describe("下载测速", () => {
     expect(peakToken(512 * 1024)).toBe("err");
     expect(peakToken(2 * 1024 * 1024)).toBe("warn");
     expect(peakToken(20 * 1024 * 1024)).toBe("ok");
+  });
+});
+
+
+// ---------------- DNS 测速历史 ----------------
+
+describe("dnsHistorySeries / dnsTrend", () => {
+  const rounds: DnsSpeedRound[] = [
+    { at: "t1", latencies: [["阿里", 20], ["腾讯", 30]] },
+    { at: "t2", latencies: [["腾讯", 32]] },
+    { at: "t3", latencies: [["阿里", 12], ["腾讯", 28]] },
+    { at: "t4", latencies: [["阿里", 14], ["腾讯", 26]] },
+    { at: "t5", latencies: [["阿里", 10], ["腾讯", 24]] },
+  ];
+
+  it("series 只含记录过该服务器的轮", () => {
+    const ali = dnsHistorySeries(rounds, "阿里");
+    expect(ali).toEqual([
+      { at: "t1", ms: 20 },
+      { at: "t3", ms: 12 },
+      { at: "t4", ms: 14 },
+      { at: "t5", ms: 10 },
+    ]);
+    expect(dnsHistorySeries(rounds, "无")).toEqual([]);
+  });
+
+  it("趋势：样本 <4 为 null；后半段明显变快给出负百分比", () => {
+    expect(dnsTrend([{ at: "t", ms: 1 }])).toBeNull();
+    const ali = dnsTrend(dnsHistorySeries(rounds, "阿里"));
+    expect(ali?.label).toBe("变快");
+    expect(ali!.pct).toBeLessThan(0);
+    // 腾讯 30→(28+26)/2 也变快
+    expect(dnsTrend(dnsHistorySeries(rounds, "腾讯"))?.label).toBe("变快");
+  });
+
+  it("±15% 内为持平", () => {
+    const flat = Array.from({ length: 6 }, (_, i) => ({ at: `t${i}`, ms: 100 + (i % 2) }));
+    expect(dnsTrend(flat)?.label).toBe("持平");
   });
 });

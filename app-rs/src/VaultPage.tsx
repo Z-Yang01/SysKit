@@ -201,7 +201,9 @@ export function VaultPage() {
     open: boolean;
     loading: boolean;
     groups: { masked: string; accounts: { site: string; label: string }[] }[];
-  }>({ open: false, loading: false, groups: [] });
+    weak: { masked: string; reason: string; site: string; label: string }[];
+    weakCount: number;
+  }>({ open: false, loading: false, groups: [], weak: [], weakCount: 0 });
   // ---------------- 状态化模态（v1.4 UI 迁移：确认弹窗 → ui/Modal） ----------------
   // 表单模态全部受控：输入值进 React state，不再用「闭包 form + DOM 取值」
   const [siteForm, setSiteForm] = useState<{
@@ -672,12 +674,21 @@ export function VaultPage() {
   const runReuseCheck = useCallback(async () => {
     setReused((r) => ({ ...r, open: true, loading: true }));
     try {
-      const d = await invoke<{ count: number; groups: { masked: string; accounts: { site: string; label: string }[] }[] }>(
-        "sk_vault_reused_passwords",
-      );
-      setReused({ open: true, loading: false, groups: d.groups });
+      const d = await invoke<{
+        count: number;
+        groups: { masked: string; accounts: { site: string; label: string }[] }[];
+        weak: { masked: string; reason: string; site: string; label: string }[];
+        weak_count: number;
+      }>("sk_vault_reused_passwords");
+      setReused({
+        open: true,
+        loading: false,
+        groups: d.groups,
+        weak: d.weak ?? [],
+        weakCount: d.weak_count ?? 0,
+      });
     } catch (e) {
-      setReused({ open: false, loading: false, groups: [] });
+      setReused({ open: false, loading: false, groups: [], weak: [], weakCount: 0 });
       toast.error(String(e));
     }
   }, [toast]);
@@ -926,7 +937,7 @@ export function VaultPage() {
                   </UiButton>
                 }
                 items={[
-                  { key: "reuse-check", label: "🩺 安全体检（重复密码）" },
+                  { key: "reuse-check", label: "🩺 安全体检（重复/弱密码）" },
                   { key: "sep", type: "divider", label: "" },
                   { key: "remove-master", danger: true, label: "移除主密码" },
                 ]}
@@ -1381,35 +1392,53 @@ export function VaultPage() {
       {/* 安全体检结果：重复密码组（掩码展示，明文不出后端） */}
       <UiModal
         open={reused.open}
-        title="安全体检 · 重复密码"
+        title="安全体检"
         onClose={() => setReused((r) => ({ ...r, open: false }))}
-        width={520}
+        width={560}
         footer={
           <UiButton onClick={() => setReused((r) => ({ ...r, open: false }))}>关闭</UiButton>
         }
       >
         {reused.loading ? (
           <div className="text-sk-sub">正在解密比对全部账号…</div>
-        ) : reused.groups.length === 0 ? (
-          <div>✅ 没有发现重复使用的密码</div>
         ) : (
-          <div className="flex flex-col gap-2.5">
-            <div className="text-sk-warn">
-              发现 {reused.groups.length} 组重复密码——一处泄露会波及全部账号：
-            </div>
-            {reused.groups.map((g) => (
-              <div key={g.masked}>
-                <code className="rounded bg-sk-hover px-1.5 py-0.5 font-mono text-xs">{g.masked}</code>
-                <ul className="mb-0 mt-1 list-disc pl-5">
-                  {g.accounts.map((a, i) => (
-                    <li key={i} className="sk-hint">
-                      {a.site}
-                      {a.label ? ` · ${a.label}` : ""}
-                    </li>
-                  ))}
-                </ul>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2.5">
+              <div className={reused.groups.length ? "text-sk-warn" : "text-sk-ok"}>
+                {reused.groups.length
+                  ? `重复密码 ${reused.groups.length} 组——一处泄露波及全部账号`
+                  : "✅ 无重复密码"}
               </div>
-            ))}
+              {reused.groups.map((g) => (
+                <div key={g.masked}>
+                  <code className="rounded bg-sk-hover px-1.5 py-0.5 font-mono text-xs">{g.masked}</code>
+                  <ul className="mb-0 mt-1 list-disc pl-5">
+                    {g.accounts.map((a, i) => (
+                      <li key={i} className="sk-hint">
+                        {a.site}
+                        {a.label ? ` · ${a.label}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-col gap-2.5 border-t border-sk-border/60 pt-3">
+              <div className={reused.weakCount ? "text-sk-warn" : "text-sk-ok"}>
+                {reused.weakCount
+                  ? `弱密码 ${reused.weakCount} 个——建议改长、混用字符种类`
+                  : "✅ 无弱密码"}
+              </div>
+              {reused.weak.map((w, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <code className="rounded bg-sk-hover px-1.5 py-0.5 font-mono text-xs">{w.masked}</code>
+                  <span className="sk-hint">
+                    {w.site}
+                    {w.label ? ` · ${w.label}` : ""} · {w.reason}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </UiModal>

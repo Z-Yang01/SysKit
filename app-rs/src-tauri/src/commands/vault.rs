@@ -283,6 +283,7 @@ pub fn sk_vault_reused_passwords(
         .map_err(|e| format!("读取账号失败: {e}"))?;
     let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
+    let mut weak: Vec<serde_json::Value> = Vec::new();
     let mut decrypted = 0usize;
     for (_id, site, label, enc) in rows {
         let Some(enc) = enc.filter(|e| !e.is_empty()) else {
@@ -298,11 +299,21 @@ pub fn sk_vault_reused_passwords(
             continue;
         }
         decrypted += 1;
+        // 弱密码：单次遍历同轮判定（同条密码可同时出现在重复组与弱密码组）
+        if let Some(reason) = weak_reason(&pw) {
+            weak.push(serde_json::json!({
+                "masked": mask_password(&pw),
+                "reason": reason,
+                "site": site,
+                "label": label,
+            }));
+        }
         groups.entry(pw).or_default().push(serde_json::json!({
             "site": site,
             "label": label,
         }));
     }
+    weak.sort_by_key(|w| w["site"].as_str().unwrap_or("").to_string());
     let reused: Vec<serde_json::Value> = groups
         .into_iter()
         .filter(|(_, accs)| accs.len() > 1)
@@ -313,7 +324,33 @@ pub fn sk_vault_reused_passwords(
         "重复密码检测：解密 {decrypted} 条，耗时 {:?}",
         started.elapsed()
     );
-    Ok(serde_json::json!({ "groups": reused, "count": reused.len() }))
+    let weak_count = weak.len();
+    Ok(serde_json::json!({
+        "groups": reused,
+        "count": reused.len(),
+        "weak": weak.into_iter().take(100).collect::<Vec<_>>(),
+        "weak_count": weak_count,
+    }))
+}
+
+/// 弱密码判定（与前端 vault.ts passwordStrength 同口径；明文不出后端，
+/// 只回掩码 + 原因）。规则刻意保守：长度优先，复杂度其次。
+pub(crate) fn weak_reason(pw: &str) -> Option<&'static str> {
+    if pw.chars().count() < 8 {
+        return Some("少于 8 位");
+    }
+    let has_upper = pw.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = pw.chars().any(|c| c.is_ascii_lowercase());
+    let has_digit = pw.chars().any(|c| c.is_ascii_digit());
+    let has_symbol = pw.chars().any(|c| !c.is_ascii_alphanumeric());
+    let kinds = [has_upper, has_lower, has_digit, has_symbol]
+        .iter()
+        .filter(|x| **x)
+        .count();
+    if pw.chars().count() < 12 && kinds < 2 {
+        return Some("字符种类单一");
+    }
+    None
 }
 
 /// 密码掩码：前2 + **** + 后2；长度 <6 一律 `****`（防掩码等于原文）。
@@ -552,4 +589,26 @@ pub fn sk_vault_generate_password(
         symbols,
         exclude_ambiguous,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weak_reason_matches_frontend_rules() {
+        // 长度优先
+        assert_eq!(weak_reason("Ab1!"), Some("少于 8 位"));
+        assert_eq!(weak_reason("1234567"), Some("少于 8 位"));
+        // 8~11 位且字符种类单一 → 弱
+        assert_eq!(weak_reason("abcdefghij"), Some("字符种类单一"));
+        assert_eq!(weak_reason("1234567890"), Some("字符种类单一"));
+        // 8+ 位两种类以上 → 过
+        assert_eq!(weak_reason("abcdefg1"), None);
+        assert_eq!(weak_reason("Abcdefg1"), None);
+        // 12+ 位单一种类也过（长度补偿复杂度）
+        assert_eq!(weak_reason("aaaaaaaaaaaa"), None);
+        // 符号计入种类
+        assert_eq!(weak_reason("abcdefg!"), None);
+    }
 }

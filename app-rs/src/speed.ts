@@ -25,6 +25,35 @@ export interface DnsSpeedResult {
   recommendation: string;
 }
 
+/** 后端 `sk_dns_speed_history`：一轮 = { at, latencies: [[名称, ms], ...] }。 */
+export interface DnsSpeedRound {
+  at: string;
+  latencies: [string, number][];
+}
+
+/** 某台服务器的历史延迟序列（旧→新，只含记录过它的轮）。 */
+export function dnsHistorySeries(rounds: DnsSpeedRound[], server: string): { at: string; ms: number }[] {
+  return rounds
+    .filter((r) => r.latencies?.some(([n]) => n === server))
+    .map((r) => ({
+      at: r.at,
+      ms: r.latencies.find(([n]) => n === server)![1],
+    }));
+}
+
+/** 趋势一句话（最近 vs 前半段均值）：改善/持平/劣化，样本不足给 null。 */
+export function dnsTrend(series: { at: string; ms: number }[]): { pct: number; label: string } | null {
+  if (series.length < 4) return null;
+  const half = Math.floor(series.length / 2);
+  const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const oldAvg = avg(series.slice(0, half).map((x) => x.ms));
+  const newAvg = avg(series.slice(half).map((x) => x.ms));
+  if (oldAvg <= 0) return null;
+  const pct = ((newAvg - oldAvg) / oldAvg) * 100;
+  const label = pct <= -15 ? "变快" : pct >= 15 ? "变慢" : "持平";
+  return { pct, label };
+}
+
 /** 后端 `sk_speedtest_status`。 */
 export interface SpeedtestStatus {
   available: boolean;

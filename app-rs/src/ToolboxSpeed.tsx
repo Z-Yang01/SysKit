@@ -10,8 +10,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import {
+  dnsHistorySeries,
+  dnsTrend,
   downloadSpeedAvailable,
   downloadSpeedNotice,
+  type DnsSpeedRound,
   formatBps,
   formatBytes,
   formatLatency,
@@ -75,6 +78,7 @@ function DnsSpeedPanel() {
     try {
       const r = await invoke<DnsSpeedResult>("sk_dns_speed", { domain, times });
       setResult(r);
+      void loadHistory(); // 本轮已落盘，拉回趋势
       const s = speedStats(r);
       if (s.usable > 0) toast.success(`${s.usable} 台可用 / ${s.failed} 台无响应`);
       else toast.info(`${s.usable} 台可用 / ${s.failed} 台无响应`);
@@ -88,6 +92,18 @@ function DnsSpeedPanel() {
   const rec = recommendedProbe(result);
   const stats = speedStats(result);
   const [applying, setApplying] = useState(false);
+  // 测速历史：加载一次 + 每次测完刷新（同一 invoke 后端已落盘）
+  const [history, setHistory] = useState<DnsSpeedRound[]>([]);
+  const loadHistory = useCallback(async () => {
+    try {
+      setHistory(await invoke<DnsSpeedRound[]>("sk_dns_speed_history"));
+    } catch {
+      setHistory([]);
+    }
+  }, []);
+  useEffect(() => {
+    void loadHistory();
+  }, [loadHistory]);
 
   // 一键应用推荐 DNS：直接驱动诊断页的 dns_preset 修复动作（配置类动作，
   // 后端改前自动备份；非管理员时后端会拒绝并在 toast 里说明）
@@ -222,6 +238,36 @@ function DnsSpeedPanel() {
             dataSource={result.results}
             columns={columns}
           />
+          {history.length >= 2 && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-sk-border/60 pt-2 text-xs text-sk-sub">
+              <span>历史（近 {history.length} 次）：</span>
+              {result.results
+                .filter((p) => p.ok_count > 0)
+                .map((p) => {
+                  const series = dnsHistorySeries(history, p.name);
+                  const trend = dnsTrend(series);
+                  const latest = series.at(-1)?.ms;
+                  return (
+                    <span key={p.name}>
+                      {p.name} {latest !== undefined ? `${latest.toFixed(0)}ms` : "—"}
+                      {trend && (
+                        <span
+                          className={
+                            trend.label === "变快"
+                              ? "ml-1 text-sk-ok"
+                              : trend.label === "变慢"
+                                ? "ml-1 text-sk-warn"
+                                : "ml-1"
+                          }
+                        >
+                          {trend.label}
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
+            </div>
+          )}
         </>
       ) : (
         <Empty

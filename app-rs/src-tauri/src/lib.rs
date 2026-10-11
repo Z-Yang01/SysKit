@@ -33,6 +33,7 @@ mod dib;
 mod disk;
 mod diskusage;
 mod dnsclient;
+mod dnshistory;
 mod dnsspeed;
 mod hostsed;
 mod hotkey;
@@ -409,6 +410,7 @@ pub fn run() {
             commands::sk_ping,
             commands::sk_tracert,
             commands::sk_dns_speed,
+            commands::sk_dns_speed_history,
             commands::sk_speedtest_status,
             commands::sk_download_test,
             commands::sk_appnet_list,
