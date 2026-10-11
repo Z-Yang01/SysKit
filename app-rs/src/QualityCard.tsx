@@ -7,11 +7,15 @@
  *
  * v1.4 UI 迁移：脱离 AntD（Segmented/Space/Typography → ui 件 / 原生 flex）。
  * memo：Dashboard 每秒 tick 重渲染，本卡只有 dark 一个 props，裁掉子树 diff。
+ * 告警设置行：开关 + 延迟/丢包阈值，写后端设置（探测线程每轮评估）。
  */
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { EChart as ReactECharts } from "./EChart";
-import { Badge as UiBadge, Card, CardBody, CardHeader, CardTitle, Segmented } from "./ui";
+import { Badge as UiBadge, Card, CardBody, CardHeader, CardTitle, Segmented, Switch } from "./ui";
+import { InputNumber } from "./ui/input-number";
+import type { SettingsAll } from "./settingsPage";
 
 import {
   QUALITY_RANGES,
@@ -26,6 +30,11 @@ import { baseChartOption, chartAccent, chartOk } from "./chartTheme";
 export const QualityCard = memo(function QualityCard({ dark }: { dark: boolean }) {
   const [range, setRange] = useState<QualityRange>("minute");
   const [data, setData] = useState<QualitySeries | null>(null);
+  // 告警设置行：与设置页同一份键（quality_alert_*），改动即时持久化，
+  // 后端探测线程每轮评估；设置页改动经 sk://settings-changed 回同步
+  const [alertOn, setAlertOn] = useState(false);
+  const [latThr, setLatThr] = useState(200);
+  const [lossThr, setLossThr] = useState(20);
 
   const load = useCallback(async (r: QualityRange) => {
     try {
@@ -41,6 +50,37 @@ export const QualityCard = memo(function QualityCard({ dark }: { dark: boolean }
     const t = window.setInterval(() => void load(range), range === "minute" ? 60_000 : 300_000);
     return () => window.clearInterval(t);
   }, [load, range]);
+
+  // 告警设置：初值读后端，之后与本卡的写入 + 设置页的改动双向同步
+  useEffect(() => {
+    void invoke<SettingsAll>("sk_settings_all")
+      .then((all) => {
+        const cur = (k: string, d: number) => {
+          const v = all.items?.find((i) => i.key === k)?.current;
+          return typeof v === "number" ? v : d;
+        };
+        setAlertOn(
+          all.items?.find((i) => i.key === "quality_alert_enabled")?.current === true,
+        );
+        setLatThr(cur("quality_alert_latency_ms", 200));
+        setLossThr(cur("quality_alert_loss_pct", 20));
+      })
+      .catch(() => {});
+    const un = listen<{ key: string; value: unknown }>("sk://settings-changed", (ev) => {
+      if (ev.payload.key === "quality_alert_enabled") setAlertOn(ev.payload.value === true);
+      if (ev.payload.key === "quality_alert_latency_ms")
+        setLatThr(Number(ev.payload.value) || 200);
+      if (ev.payload.key === "quality_alert_loss_pct")
+        setLossThr(Number(ev.payload.value) || 20);
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+
+  const setSetting = (key: string, value: unknown) => {
+    void invoke("sk_settings_set", { key, value }).catch(() => {});
+  };
 
   const rows = data?.rows ?? [];
   const gwLoss = avgLossPct(rows, "gw");
@@ -114,6 +154,47 @@ export const QualityCard = memo(function QualityCard({ dark }: { dark: boolean }
           </span>
           <span>·</span>
           <span>DNS {dnsMs !== null ? `${dnsMs.toFixed(0)} ms` : "—"}</span>
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-sk-border/60 pt-2 text-xs text-sk-sub">
+          <Switch
+            checked={alertOn}
+            onChange={(v) => {
+              setAlertOn(v);
+              setSetting("quality_alert_enabled", v);
+            }}
+            aria-label="网络质量告警"
+          />
+          <span>公网质量告警</span>
+          <span className="inline-flex items-center gap-1">
+            延迟阈值
+            <InputNumber
+              min={50}
+              max={5000}
+              value={latThr}
+              onChange={(v: number | null) => {
+                const n = Number(v ?? 200);
+                setLatThr(n);
+                setSetting("quality_alert_latency_ms", n);
+              }}
+            />
+            ms
+          </span>
+          <span className="inline-flex items-center gap-1">
+            丢包阈值
+            <InputNumber
+              min={1}
+              max={100}
+              value={lossThr}
+              onChange={(v: number | null) => {
+                const n = Number(v ?? 20);
+                setLossThr(n);
+                setSetting("quality_alert_loss_pct", n);
+              }}
+            />
+            %
+          </span>
+          <span className="sk-hint">命中/恢复托盘通知（10 分钟冷却）</span>
         </div>
       </CardBody>
     </Card>

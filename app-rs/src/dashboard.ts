@@ -289,6 +289,10 @@ export function stateLabel(state: string): { text: string; token: string } {
       return { text: "外网不可达", token: "err" };
     case "offline":
       return { text: "无网络连接", token: "sub" };
+    case "quality_bad":
+      return { text: "网络质量告警", token: "warn" };
+    case "quality_ok":
+      return { text: "网络质量恢复", token: "ok" };
     default:
       return { text: state || "未知", token: "sub" };
   }

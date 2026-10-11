@@ -46,6 +46,9 @@ pub fn defaults() -> Vec<(&'static str, Value, Ty)> {
         ("clip_sensitive_ttl", Value::from(25), Int),
         ("clip_sensitive_detect", Value::Bool(true), Bool),
         ("quality_probe_enabled", Value::Bool(true), Bool),
+        ("quality_alert_enabled", Value::Bool(false), Bool),
+        ("quality_alert_latency_ms", Value::from(200), Int),
+        ("quality_alert_loss_pct", Value::from(20), Int),
         ("clip_capture_images", Value::Bool(true), Bool),
         ("vault_autolock_min", Value::from(30), Int),
         ("vault_trust_min", Value::from(30), Int),
@@ -210,6 +213,22 @@ fn decoration(key: &str) -> Decoration {
         "quality_probe_enabled" => Decoration::new(
             "网络质量探测",
             "周期探测网关/公网延迟与丢包，驱动「网络质量」趋势卡",
+        ),
+        "quality_alert_enabled" => Decoration::new(
+            "网络质量告警",
+            "公网延迟/丢包持续超过阈值时托盘通知并记入事件时间线；恢复时也通知（10 分钟冷却防轰炸）",
+        ),
+        "quality_alert_latency_ms" => Decoration::int(
+            "告警延迟阈值（ms）",
+            "最近 1 分钟公网平均延迟超过该值触发告警",
+            50,
+            5000,
+        ),
+        "quality_alert_loss_pct" => Decoration::int(
+            "告警丢包阈值（%）",
+            "最近 1 分钟公网丢包率超过该值触发告警",
+            1,
+            100,
         ),
         "vault_autolock_min" => Decoration::int(
             "密码库自动锁定（分）",
@@ -837,8 +856,9 @@ mod tests {
         let keys: Vec<&str> = defaults().into_iter().map(|(k, _, _)| k).collect();
         assert_eq!(
             keys.len(),
-            26,
-            "DEFAULTS 键数（24 Python 对齐 + clip_sensitive_detect + quality_probe_enabled）"
+            29,
+            "DEFAULTS 键数（24 Python 对齐 + clip_sensitive_detect + quality_probe_enabled
+            + quality_alert_enabled/latency_ms/loss_pct）"
         );
         for must in [
             "clipboard_max",

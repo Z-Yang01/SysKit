@@ -202,6 +202,31 @@ impl QualityStore {
         }
     }
 
+    /// 告警触发器的评估窗口：最近 n 个分钟桶聚合的（公网平均延迟 ms, 丢包率 %）。
+    /// 桶键为字典序可排的时间串，直接取末 n 个；无任何样本返回 None
+    /// （探测刚启动/全关时不评估，避免误报）。
+    pub fn recent_pub_window(&self, n: usize) -> Option<(f64, f64)> {
+        let keys: Vec<&String> = self.minutes.keys().rev().take(n).collect();
+        let mut total = 0u32;
+        let mut lost = 0u32;
+        let mut sum_ms = f64::default();
+        for k in keys {
+            let b = &self.minutes[k];
+            total += b.pub_total;
+            lost += b.pub_lost;
+            sum_ms += b.pub_sum_ms;
+        }
+        if total == 0 {
+            return None;
+        }
+        let avg = if total > lost {
+            Some(sum_ms / (total - lost) as f64)
+        } else {
+            None
+        };
+        Some((avg.unwrap_or(0.0), lost as f64 / total as f64 * 100.0))
+    }
+
     /// 趋势卡序列：granularity = minute(60)/hour(48)/day(30)。
     /// 行 key 用与 netstats 相同的标签（HH:MM / HH时 / MM-DD）；
     /// 空缺失的桶不补行——前端按时间轴连续补零（与速率卡同约定）。
@@ -278,17 +303,90 @@ pub const PUBLIC_ANCHOR: &str = "223.5.5.5";
 /// DNS 解析计时目标（A 记录、经系统解析器）。
 const DNS_PROBE_HOST: &str = "www.baidu.com";
 
+/// 告警评估窗口（分钟桶数）：6 桶 ≈ 1 分钟，6 个样本足够判定趋势又不至于
+/// 被单次抖动触发。
+const ALERT_WINDOW_MINUTES: usize = 6;
+/// 通知冷却（秒）：告警/恢复两类通知共用——劣化抖动期不轰炸托盘。
+const ALERT_COOLDOWN_SECS: u64 = 600;
+
+/// 告警触发器状态（探测线程内持有，跨轮保持）。
+#[derive(Default)]
+pub struct AlertState {
+    /// 当前是否处于「已告警未恢复」
+    alerting: bool,
+    /// 最近一次通知（告警或恢复）时刻，冷却用
+    last_notify: Option<std::time::Instant>,
+}
+
+/// 触发器判定（纯函数，便于单测）：
+/// - 窗口指标超阈值（丢包率 或 平均延迟）→ 冷却外发「告警」；
+/// - 已告警且指标全部回到阈值内 → 冷却外发「恢复」；
+/// - 窗口无样本（探测刚启动/探针全关）→ 保持现状不动作。
+/// 返回 Some(true)=发告警，Some(false)=发恢复，None=不动作。
+pub fn evaluate_alert(
+    state: &mut AlertState,
+    now: std::time::Instant,
+    window: Option<(f64, f64)>,
+    latency_threshold_ms: f64,
+    loss_threshold_pct: f64,
+) -> Option<bool> {
+    let Some((avg_ms, loss_pct)) = window else {
+        return None;
+    };
+    let degraded = loss_pct >= loss_threshold_pct || avg_ms >= latency_threshold_ms;
+    let cooled = state
+        .last_notify
+        .is_none_or(|t| now.duration_since(t).as_secs() >= ALERT_COOLDOWN_SECS);
+    if degraded && !state.alerting && cooled {
+        state.alerting = true;
+        state.last_notify = Some(now);
+        return Some(true);
+    }
+    if !degraded && state.alerting && cooled {
+        state.alerting = false;
+        state.last_notify = Some(now);
+        return Some(false);
+    }
+    None
+}
+
+/// 通知/事件文案（告警与恢复共用一套措辞口径）。
+fn alert_text(window: (f64, f64), latency_threshold_ms: f64, loss_threshold_pct: f64, fire: bool) -> String {
+    let (avg_ms, loss_pct) = window;
+    if fire {
+        format!(
+            "公网质量劣化：丢包 {loss:.0}% / 平均 {avg:.0} ms（阈值 {lt:.0}% / {lat:.0} ms）",
+            loss = loss_pct,
+            avg = avg_ms,
+            lt = loss_threshold_pct,
+            lat = latency_threshold_ms,
+        )
+    } else {
+        format!(
+            "公网质量恢复：丢包 {loss:.0}% / 平均 {avg:.0} ms",
+            loss = loss_pct,
+            avg = avg_ms,
+        )
+    }
+}
+
 /// 运行态：聚合器共享（探测线程写，命令层读）。
 pub type SharedQualityStore = Arc<Mutex<QualityStore>>;
 
 /// 启动探测线程（telemetry spawn 时调用）。
 /// 开关 `quality_probe_enabled` 每轮读取——关闭时只休眠不探测、不丢已有历史。
-pub fn spawn_probe(store: SharedQualityStore) {
+/// app/hub 供告警触发器发托盘气泡与事件时间线。
+pub fn spawn_probe<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    hub: std::sync::Arc<crate::telemetry_hub::Hub>,
+    store: SharedQualityStore,
+) {
     std::thread::Builder::new()
         .name("sk-netquality".into())
         .spawn(move || {
             let mut gw_cache: Option<String> = None;
             let mut round: u32 = 0;
+            let mut alert = AlertState::default();
             loop {
                 // 探测开关：关闭时跳过本轮（历史保留，重新打开即恢复）
                 if !crate::settings::get_bool("quality_probe_enabled") {
@@ -334,6 +432,28 @@ pub fn spawn_probe(store: SharedQualityStore) {
                         dns_ms,
                     };
                     store.add(&sample, timefmt::now_local());
+
+                    // 告警触发器：每轮评估最近 1 分钟窗口；命中/恢复发托盘气泡
+                    // 并记事件时间线（事件状态 quality_bad/quality_ok）
+                    if crate::settings::get_bool("quality_alert_enabled") {
+                        let lat_thr = crate::settings::get_int("quality_alert_latency_ms") as f64;
+                        let loss_thr = crate::settings::get_int("quality_alert_loss_pct") as f64;
+                        let window = store.recent_pub_window(ALERT_WINDOW_MINUTES);
+                        if let Some(fire) =
+                            evaluate_alert(&mut alert, std::time::Instant::now(), window, lat_thr, loss_thr)
+                        {
+                            if let Some(w) = window {
+                                let msg = alert_text(w, lat_thr, loss_thr, fire);
+                                if fire {
+                                    crate::tray::notify(&app, "网络质量告警", &msg);
+                                    hub.record_event("quality_bad", &msg);
+                                } else {
+                                    crate::tray::notify(&app, "网络质量恢复", &msg);
+                                    hub.record_event("quality_ok", &msg);
+                                }
+                            }
+                        }
+                    }
                 }
                 round = round.wrapping_add(1);
                 std::thread::sleep(Duration::from_secs(PROBE_INTERVAL_SECS));
@@ -473,5 +593,83 @@ mod tests {
         fn recv_ok_gw(&self) -> u32 {
             self.gw_total - self.gw_lost
         }
+    }
+
+    // ---------------- 告警触发器 ----------------
+
+    fn alert_state() -> AlertState {
+        AlertState::default()
+    }
+
+    #[test]
+    fn recent_pub_window_aggregates_last_buckets() {
+        let mut a = store();
+        let now = timefmt::now_local();
+        a.add(&sample(None, None, None), now); // 旧桶（全丢包）
+        // 挪到下一分钟：构造第二个桶
+        let later = now + chrono::Duration::minutes(1);
+        a.add(&sample(Some(5.0), Some(50.0), None), later);
+        a.add(&sample(None, Some(70.0), None), later);
+        a.add(&sample(None, None, None), later);
+        // 最近 1 桶：3 样本 1 丢包 → loss 33.3%，avg (50+70)/2=60
+        let (avg, loss) = a.recent_pub_window(1).unwrap();
+        assert!((loss - 100.0 / 3.0).abs() < 1e-9);
+        assert!((avg - 60.0).abs() < 1e-9);
+        // 最近 2 桶：4 样本 2 丢（旧桶全丢包）→ loss 50%，成功样本 (50+70)/2=60
+        let (avg2, loss2) = a.recent_pub_window(2).unwrap();
+        assert!((loss2 - 50.0).abs() < 1e-9);
+        assert!((avg2 - 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn recent_pub_window_none_when_empty() {
+        assert!(store().recent_pub_window(6).is_none());
+    }
+
+    #[test]
+    fn alert_fires_once_then_recovers() {
+        let mut st = alert_state();
+        let t0 = std::time::Instant::now();
+        // 冷启动即劣化：发告警
+        assert_eq!(evaluate_alert(&mut st, t0, Some((300.0, 5.0)), 200.0, 20.0), Some(true));
+        // 持续劣化：不重复轰炸
+        assert_eq!(
+            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(60), Some((300.0, 50.0)), 200.0, 20.0),
+            None
+        );
+        // 冷却期内恢复：不通知
+        assert_eq!(
+            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(120), Some((30.0, 1.0)), 200.0, 20.0),
+            None
+        );
+        // 冷却过后仍正常：发恢复
+        assert_eq!(
+            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS), Some((30.0, 1.0)), 200.0, 20.0),
+            Some(false)
+        );
+        // 恢复后正常：无动作
+        assert_eq!(
+            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS + 60), Some((30.0, 1.0)), 200.0, 20.0),
+            None
+        );
+    }
+
+    #[test]
+    fn alert_retrigger_respects_cooldown_and_thresholds() {
+        let mut st = alert_state();
+        let t0 = std::time::Instant::now();
+        assert_eq!(evaluate_alert(&mut st, t0, Some((0.0, 100.0)), 200.0, 20.0), Some(true));
+        // 冷却内再次劣化（曾恢复态没变化）：无动作
+        assert_eq!(
+            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(30), Some((0.0, 100.0)), 200.0, 20.0),
+            None
+        );
+        // 丢包达阈值也触发（延迟为 0 全丢包时 avg=0 不误报延迟项）
+        let mut st2 = alert_state();
+        assert_eq!(evaluate_alert(&mut st2, t0, Some((0.0, 100.0)), 200.0, 50.0), Some(true));
+        // 无样本窗口：不动作（含已告警态——探测静默不该发恢复）
+        let mut st3 = alert_state();
+        st3.alerting = true;
+        assert_eq!(evaluate_alert(&mut st3, t0, None, 200.0, 20.0), None);
     }
 }

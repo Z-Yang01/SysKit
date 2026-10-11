@@ -118,8 +118,9 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
     // 按应用流量 ETW 采集：与秒级遥测同期启动；失败（非管理员/会话被占）
     // 只降状态不阻塞遥测主链路
     crate::apptraffic::spawn_etw(hub.app_traffic.clone());
-    // 网络质量探测：10 秒一轮 网关/公网 ICMP + 系统 DNS 计时
-    crate::netquality::spawn_probe(hub.quality.clone());
+    // 网络质量探测：10 秒一轮 网关/公网 ICMP + 系统 DNS 计时；
+    // app/hub 供告警触发器发托盘通知与事件
+    crate::netquality::spawn_probe(app.clone(), hub.clone(), hub.quality.clone());
     std::thread::Builder::new()
         .name("sk-telemetry".into())
         .spawn(move || {
