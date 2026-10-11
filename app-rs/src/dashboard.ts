@@ -324,6 +324,28 @@ export function summarizeReport(rows: DayReport[]): {
 }
 
 /** 事件行文案（时间 + 状态 + 说明；说明为空则不补「—」后面的空白）。 */
+/** 事件类型分组（时间线过滤用）。 */
+export type EventCategory = "net" | "quality" | "traffic" | "other";
+
+/** 状态 → 分组：断网类 / 质量告警类 / 流量提醒类 / 其他。 */
+export function eventCategory(state: string): EventCategory {
+  switch (state) {
+    case "quality_bad":
+    case "quality_ok":
+      return "quality";
+    case "traffic_warn":
+      return "traffic";
+    case "ok":
+    case "no_net":
+    case "no_internet":
+    case "offline":
+    case "ncsi_false":
+      return "net";
+    default:
+      return "other";
+  }
+}
+
 export function eventLine(ev: EventItem): string {
   const s = stateLabel(ev.state);
   const detail = ev.detail?.trim();

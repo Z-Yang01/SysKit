@@ -11,6 +11,7 @@ import {
   REPORT_COLUMNS,
   axisTimeLabels,
   clockTime,
+  eventCategory,
   eventLine,
   formatAxisBps,
   formatAxisTime,
@@ -58,6 +59,20 @@ function day(over: Partial<DayReport> = {}): DayReport {
     ...over,
   };
 }
+
+describe("eventCategory 事件分组", () => {
+  it("断网类归 net，质量/流量各自归组，未知归 other", () => {
+    expect(eventCategory("ok")).toBe("net");
+    expect(eventCategory("no_net")).toBe("net");
+    expect(eventCategory("no_internet")).toBe("net");
+    expect(eventCategory("offline")).toBe("net");
+    expect(eventCategory("ncsi_false")).toBe("net");
+    expect(eventCategory("quality_bad")).toBe("quality");
+    expect(eventCategory("quality_ok")).toBe("quality");
+    expect(eventCategory("traffic_warn")).toBe("traffic");
+    expect(eventCategory("future_state")).toBe("other");
+  });
+});
 
 describe("humanBytes", () => {
   it("与 Rust telemetry::human_bytes 的口径一致", () => {

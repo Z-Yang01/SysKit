@@ -17,6 +17,7 @@ import { EChart as ReactECharts } from "./EChart";
 import { baseChartOption, chartAccent, chartOk, chartWarn } from "./chartTheme";
 import {
   GRANULARITIES,
+  eventCategory,
   RATE_WINDOWS,
   REPORT_COLUMNS,
   axisTimeLabels,
@@ -119,6 +120,8 @@ export function Dashboard({ dark }: { dark: boolean }) {
   // ——每秒 3 张图 setOption + 一轮 setState 是纯浪费；切回后序列出现时间空洞
   // （时间轴如实断开，与系统助手「隐藏期间采样暂停」同语义）
   const [ovTab, setOvTab] = useState("overview");
+  // 事件时间线类型过滤（sk_events 拉最近 100 条，前端按组筛）
+  const [eventFilter, setEventFilter] = useState<"all" | "net" | "quality" | "traffic">("all");
 
   // ---------------- 每秒 tick ----------------
   useEffect(() => {
@@ -156,7 +159,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
   useEffect(() => {
     const t = window.setInterval(() => {
       if (document.hidden) return; // 隐藏时读盘轮询无意义
-      void invoke<EventItem[]>("sk_events", { limit: 30 }).then(setEvents).catch(() => {});
+      void invoke<EventItem[]>("sk_events", { limit: 100 }).then(setEvents).catch(() => {});
       void invoke<string[]>("sk_known_ssids").then(setSsids).catch(() => {});
     }, 60_000);
     return () => window.clearInterval(t);
@@ -509,18 +512,42 @@ export function Dashboard({ dark }: { dark: boolean }) {
         <Card className="min-h-[260px]">
           <CardHeader>
             <CardTitle>事件时间线</CardTitle>
+            <Segmented<"all" | "net" | "quality" | "traffic">
+              size="sm"
+              value={eventFilter}
+              onChange={setEventFilter}
+              options={[
+                { label: "全部", value: "all" },
+                { label: "断网", value: "net" },
+                { label: "质量", value: "quality" },
+                { label: "流量", value: "traffic" },
+              ]}
+            />
           </CardHeader>
           <CardBody>
             <div className="max-h-[260px] overflow-y-auto">
-              {events.length === 0 ? (
-                <Empty description="暂无事件（网络监控在 M3 接入后写入状态切换）" />
-              ) : (
-                events.map((ev, i) => (
+              {(() => {
+                const shown =
+                  eventFilter === "all"
+                    ? events
+                    : events.filter((ev) => eventCategory(ev.state) === eventFilter);
+                if (shown.length === 0) {
+                  return (
+                    <Empty
+                      description={
+                        events.length === 0
+                          ? "暂无事件——网络状态切换、质量告警、流量提醒都会写入这里"
+                          : "该类型暂无事件"
+                      }
+                    />
+                  );
+                }
+                return shown.map((ev, i) => (
                   <div key={`${ev.ts}-${i}`} className="sk-hint py-0.5">
                     {eventLine(ev)}
                   </div>
-                ))
-              )}
+                ));
+              })()}
             </div>
           </CardBody>
         </Card>

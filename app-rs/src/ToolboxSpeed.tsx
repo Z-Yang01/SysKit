@@ -19,6 +19,7 @@ import {
   latencyToken,
   peakToken,
   rateToken,
+  applyablePreset,
   recommendedProbe,
   speedStats,
   urlHost,
@@ -32,6 +33,7 @@ import { Badge, Button, Card, Empty, Input, Table, type Column } from "./ui";
 import { InputNumber } from "./ui/input-number";
 import { Tooltip as UiTooltip } from "./ui/tooltip";
 import { Alert } from "./ui/alert";
+import { confirm } from "./ui/confirm";
 import { useToast } from "./ui/toast";
 
 /** token（ok/warn/err/其他）→ Badge tone（latencyToken/rateToken/peakToken 共用）。 */
@@ -85,6 +87,39 @@ function DnsSpeedPanel() {
 
   const rec = recommendedProbe(result);
   const stats = speedStats(result);
+  const [applying, setApplying] = useState(false);
+
+  // 一键应用推荐 DNS：直接驱动诊断页的 dns_preset 修复动作（配置类动作，
+  // 后端改前自动备份；非管理员时后端会拒绝并在 toast 里说明）
+  const applyDns = useCallback(() => {
+    if (!rec || !applyablePreset(rec.name)) return;
+    confirm({
+      title: `应用 DNS 预设：${rec.name}`,
+      content: `将把系统 DNS 切换为测速推荐：${rec.name}（${rec.server}）。
+改前自动备份原值，可随时运行 dns_auto 恢复自动获取。
+需要管理员权限；非管理员会执行失败。`,
+      width: 520,
+      okText: "应用",
+      onOk: async () => {
+        setApplying(true);
+        try {
+          // params 提为变量：契约审计按顶层键比对 Rust 形参，内嵌字面量会被误读
+          const params = { preset: rec.name };
+          const out = await invoke<{
+            success: boolean;
+            message: string;
+            need_reboot: boolean;
+          }>("sk_repair_run", { id: "dns_preset", params });
+          if (out.success) toast.success(out.message);
+          else toast.error(out.message);
+        } catch (e) {
+          toast.error(String(e));
+        } finally {
+          setApplying(false);
+        }
+      },
+    });
+  }, [rec, toast]);
 
   const columns: Column<DnsProbe>[] = [
     {
@@ -168,7 +203,23 @@ function DnsSpeedPanel() {
         <>
           {rec && (
             <Alert tone="success" title={result.recommendation}>
-              可到「诊断 / 修复」页用 dns_preset 动作把系统 DNS 换成它。
+              <div className="flex flex-wrap items-center gap-2">
+                <span>
+                  {applyablePreset(rec.name)
+                    ? "测速推荐可直接应用为系统 DNS（改前自动备份，dns_auto 可恢复）。"
+                    : "可到「诊断 / 修复」页手动改 DNS（该服务器暂无一键预设，仅阿里/腾讯/114 支持）。"}
+                </span>
+                {applyablePreset(rec.name) && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    loading={applying}
+                    onClick={() => applyDns()}
+                  >
+                    应用此 DNS
+                  </Button>
+                )}
+              </div>
             </Alert>
           )}
           <Table<DnsProbe>
