@@ -35,6 +35,7 @@ r"""真机冒烟：Rust+Tauri 重写版（rust-rewrite 分支）——8 靶 + 2 
 import ctypes
 import os
 import shutil
+import subprocess
 import sys
 import time
 from ctypes import wintypes
@@ -607,10 +608,15 @@ def _read_uia_all_text(hwnd):
         return None
 
 
-def launch_notepad():
-    """启动记事本并聚焦；返回 hwnd（标题含 记事本/Notepad 的新可见窗口）。"""
+def launch_notepad(path=None):
+    """启动记事本并聚焦；path 给定时以「notepad <文件>」方式启动——窗口标题
+    含文件名，UIA 读取不受其他记事本窗口污染（dace1de 的意图，当时漏改了
+    本定义导致 TypeError）。返回 hwnd（标题含 记事本/Notepad 的新可见窗口）。"""
     before = set(find_windows(title_sub=""))
-    os.startfile("notepad.exe")
+    if path is not None:
+        subprocess.Popen(["notepad.exe", str(path)])
+    else:
+        os.startfile("notepad.exe")
 
     def _new_notepad():
         hits = [x for x in find_windows()
