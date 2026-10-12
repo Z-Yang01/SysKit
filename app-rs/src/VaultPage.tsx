@@ -1396,7 +1396,42 @@ export function VaultPage() {
         onClose={() => setReused((r) => ({ ...r, open: false }))}
         width={560}
         footer={
-          <UiButton onClick={() => setReused((r) => ({ ...r, open: false }))}>关闭</UiButton>
+          <>
+            <UiButton
+              onClick={() => {
+                // 文本报告（掩码口径——与弹窗展示同信息量，无明文泄漏面）
+                const lines: string[] = ["SysKit 密码库安全体检"];
+                lines.push(
+                  reused.groups.length
+                    ? `重复密码 ${reused.groups.length} 组（一处泄露波及全部账号）：`
+                    : "重复密码：无",
+                );
+                reused.groups.forEach((g) => {
+                  lines.push(`  ${g.masked}：`);
+                  g.accounts.forEach((a) =>
+                    lines.push(`    - ${a.site}${a.label ? ` · ${a.label}` : ""}`),
+                  );
+                });
+                lines.push(
+                  reused.weakCount
+                    ? `弱密码 ${reused.weakCount} 个（建议改长、混用字符种类）：`
+                    : "弱密码：无",
+                );
+                reused.weak.forEach((w) =>
+                  lines.push(
+                    `  ${w.masked}（${w.reason}）：${w.site}${w.label ? ` · ${w.label}` : ""}`,
+                  ),
+                );
+                navigator.clipboard
+                  .writeText(lines.join("\n"))
+                  .then(() => toast.success("体检报告已复制（掩码口径，无明文）"))
+                  .catch(() => toast.error("复制失败：剪贴板不可用"));
+              }}
+            >
+              复制报告
+            </UiButton>
+            <UiButton onClick={() => setReused((r) => ({ ...r, open: false }))}>关闭</UiButton>
+          </>
         }
       >
         {reused.loading ? (
