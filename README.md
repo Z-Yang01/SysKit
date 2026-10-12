@@ -69,7 +69,7 @@ npx tauri dev      # 开发运行
 npx tauri build    # 产出 NSIS 安装包
 ```
 
-- 后端 Rust 单测 770+ 例，前端 vitest 570+ 例；真机冒烟驱动见 `tools/test_smoke_real_rs.py`
+- 后端 Rust 单测 850+ 例，前端 vitest 610+ 例；真机冒烟驱动见 `tools/test_smoke_real_rs.py`
   （人工在场 + `--run-real`，详见脚本头注释）
 - 夜间无人值守会话的作业规范见 `UNATTENDED.md`
 
