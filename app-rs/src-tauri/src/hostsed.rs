@@ -13,7 +13,7 @@
 //! 序列化对未修改条目保留原始文本；主机映射行重建为规范行（原文件的制表符/
 //! 对齐缩进不保留——语义不变，避免为保真引入逐字段 diff 复杂度）。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -333,6 +333,7 @@ pub fn write_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn temp_file(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("syskit_hosts_{tag}"));

@@ -33,6 +33,8 @@ pub fn push(h: &mut DnsSpeedHistory, round: DnsSpeedRound) {
 }
 
 /// 某台服务器的历史延迟序列（旧→新，只含有该台记录的轮）。
+/// （趋势聚合在前端 dnsHistorySeries 做；本函数仅测试消费，随测试编译）
+#[cfg(test)]
 pub fn series_for(h: &DnsSpeedHistory, server: &str) -> Vec<(String, f64)> {
     h.rounds
         .iter()
@@ -46,12 +48,12 @@ pub fn series_for(h: &DnsSpeedHistory, server: &str) -> Vec<(String, f64)> {
 }
 
 /// 读取/落盘（复用 stores::load_json 的损坏回落默认语义）。
-pub fn load(path: &std::path::PathBuf) -> DnsSpeedHistory {
+pub fn load(path: &std::path::Path) -> DnsSpeedHistory {
     let raw = crate::stores::load_json(path, serde_json::json!({ "rounds": [] }));
     serde_json::from_value(raw).unwrap_or_default()
 }
 
-pub fn save(path: &std::path::PathBuf, h: &DnsSpeedHistory) -> bool {
+pub fn save(path: &std::path::Path, h: &DnsSpeedHistory) -> bool {
     let v = serde_json::to_value(h).unwrap_or(serde_json::json!({ "rounds": [] }));
     crate::stores::save_json(path, &v)
 }
