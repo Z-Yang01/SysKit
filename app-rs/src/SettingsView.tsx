@@ -516,11 +516,12 @@ function LogPanel() {
                   <div
                     key={`${i}-${l.slice(0, 24)}`}
                     className={
+                      // 语义 token：深浅主题各自调过对比度（写死 hex 在浅色下过浅）
                       logLevel(l) === "err"
-                        ? "text-[#f85149]"
+                        ? "text-sk-err"
                         : logLevel(l) === "warn"
-                          ? "text-[#d29922]"
-                          : undefined
+                          ? "text-sk-warn"
+                          : "text-sk-sub"
                     }
                   >
                     {l || " "}
@@ -530,9 +531,7 @@ function LogPanel() {
             ) : (
               <Empty description="正在读取日志尾部…" />
             )}
-            <div className="sk-hint mb-0 mt-2">
-              只读取文件尾部（按行数上限）——日志可能很大，整读会卡住界面。
-            </div>
+            <div className="sk-hint mb-0 mt-2">按行数上限只读尾部。</div>
           </CardBody>
         </Card>
       )}
@@ -554,13 +553,11 @@ export function SettingsView() {
   );
 }
 
-/** 日志页（独立侧栏入口，v1.4 从「设置 / 日志」拆出）。 */
+/** 日志页（独立侧栏入口，v1.4 从「设置 / 日志」拆出）。
+ *  LogPanel 自带一张内容卡，外层不再套卡——嵌套双卡是深色走查实锤的
+ * 视觉噪音（双层玻璃描边 + 双层内边距）。 */
 export function LogsView() {
-  return (
-    <Card>
-      <LogPanel />
-    </Card>
-  );
+  return <LogPanel />;
 }
 
 /** 后台监控 / 自动修复的只读视图与"立即检查"。 */
