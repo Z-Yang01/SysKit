@@ -19,7 +19,7 @@
  * 保留；Modal.confirm/message/Table/Switch/Progress → ui 件）。
  */
 import { BackupRollbackCard } from "./BackupRollbackCard";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -95,6 +95,18 @@ function LinkButton({ children, onClick }: { children: React.ReactNode; onClick:
     </button>
   );
 }
+
+/** 检查结果表（memo）：行/列引用稳定时跳过 diff——修复执行中的 records
+ *  追加、busy/comboRun 翻转等页内 state 变化不再拖 15 行表重渲（B13）。 */
+const CheckTable = memo(function CheckTable({
+  rows,
+  columns,
+}: {
+  rows: CheckResult[];
+  columns: Column<CheckResult>[];
+}) {
+  return <Table<CheckResult> rowKey={(r) => r.id} dataSource={rows} columns={columns} />;
+});
 
 export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   const toast = useToast();
@@ -583,7 +595,18 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
 
   const groups = useMemo(() => groupByRisk(data?.actions ?? []), [data]);
 
-  const checkColumns: Column<CheckResult>[] = [
+  // 结果表可见行（排序+只看未通过）：引用稳定供 CheckTable memo 判跳
+  const visibleRows = useMemo(
+    () =>
+      report
+        ? sortBySeverity(report.results).filter((r) => !failedOnly || r.status !== "pass")
+        : [],
+    [report, failedOnly],
+  );
+
+  // 列定义 useMemo：依赖即列内容真实相关的 state（recheckId=行内 loading、
+  // diagBusy/comboRun=禁用态、fullInfo=复制口径、renderFixLinks/toast）
+  const checkColumns: Column<CheckResult>[] = useMemo(() => [
     {
       title: "",
       dataIndex: "status",
@@ -659,7 +682,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         </span>
       ),
     },
-  ];
+  ], [recheckId, diagBusy, comboRun, fullInfo, renderFixLinks, toast]);
 
   const listColumns: Column<RepairAction>[] = [
     { title: "id", dataIndex: "id", width: 170 },
@@ -866,13 +889,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
                   </Alert>
                 )}
 
-                <Table<CheckResult>
-                  rowKey={(r) => r.id}
-                  dataSource={sortBySeverity(report.results).filter(
-                    (r) => !failedOnly || r.status !== "pass",
-                  )}
-                  columns={checkColumns}
-                />
+                <CheckTable rows={visibleRows} columns={checkColumns} />
               </>
             ) : diagBusy ? (
               // 首次检测没有 report：给动态文案让"在跑"看得见
