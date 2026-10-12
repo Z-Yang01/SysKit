@@ -23,7 +23,7 @@ export function Tooltip({
         role="tooltip"
         className={cx(
           "pointer-events-none absolute left-1/2 top-full z-[1500] mt-1.5 w-max max-w-[320px]",
-          "-translate-x-1/2 whitespace-normal rounded-md border border-sk-glass bg-sk-card px-2 py-1",
+          "-translate-x-1/2 whitespace-normal rounded-md border border-sk-border bg-sk-card px-2 py-1",
           "text-xs leading-relaxed text-sk-text opacity-0 shadow-[0_4px_16px_var(--sk-shadow_color)]",
           "transition-opacity duration-150 group-hover/tt:opacity-100",
         )}

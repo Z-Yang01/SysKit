@@ -23,7 +23,7 @@ type ButtonSize = "sm" | "md";
 
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    "bg-sk-accent text-white hover:bg-sk-accent-hover shadow-[0_2px_10px_rgba(59,130,246,0.35)] border border-transparent",
+    "bg-sk-accent text-white hover:bg-sk-accent-hover border border-transparent",
   default:
     "bg-transparent border border-sk-border text-sk-text hover:bg-sk-hover hover:border-sk-accent/40",
   danger:
@@ -80,9 +80,9 @@ export function Card({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cx(
-        "rounded-[14px] border border-sk-glass",
-        "bg-sk-card/78 backdrop-blur-[2px]",
-        "shadow-[inset_0_1px_0_var(--sk-glass_highlight),0_4px_16px_var(--sk-shadow_color)]",
+        "rounded-[14px] border border-sk-border",
+        "bg-sk-card",
+        "shadow-[0_1px_4px_var(--sk-shadow_color)]",
         className,
       )}
       {...rest}
@@ -235,7 +235,7 @@ export function Segmented<T extends string>({
   return (
     <div
       className={cx(
-        "inline-flex items-center rounded-[8px] border border-sk-glass bg-sk-card/60 p-0.5",
+        "inline-flex items-center rounded-[8px] border border-sk-border bg-sk-card/60 p-0.5",
         size === "sm" ? "text-xs" : "text-sm",
       )}
     >
@@ -247,7 +247,7 @@ export function Segmented<T extends string>({
             "rounded-[6px] px-2.5 transition-colors duration-150",
             size === "sm" ? "h-6" : "h-7",
             o.value === value
-              ? "bg-sk-card text-sk-accent font-medium shadow-[0_1px_4px_var(--sk-shadow_color)]"
+              ? "bg-sk-card text-sk-accent font-medium"
               : "text-sk-sub hover:text-sk-text",
           )}
         >

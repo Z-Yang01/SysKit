@@ -49,7 +49,7 @@ export function Modal({
       }}
     >
       <div
-        className="max-h-[76vh] overflow-auto rounded-[14px] border border-sk-glass bg-sk-card shadow-[0_12px_40px_var(--sk-shadow_color)]"
+        className="max-h-[76vh] overflow-auto rounded-[14px] border border-sk-border bg-sk-card shadow-[0_8px_24px_var(--sk-shadow_color)]"
         style={{ width }}
         role="dialog"
         aria-modal

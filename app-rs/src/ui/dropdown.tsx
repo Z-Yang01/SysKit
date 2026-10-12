@@ -52,7 +52,7 @@ export function Dropdown({
         <div
           className={cx(
             "absolute z-[1600] mt-1 min-w-[160px] overflow-hidden rounded-[10px]",
-            "border border-sk-glass bg-sk-card/95 shadow-[0_8px_28px_var(--sk-shadow_color)] backdrop-blur-[6px]",
+            "border border-sk-border bg-sk-card shadow-[0_4px_16px_var(--sk-shadow_color)]",
             align === "right" ? "right-0" : "left-0",
           )}
         >

@@ -323,7 +323,7 @@ function SettingsPanel() {
       {/* 工具条吸顶：滚动容器是 Layout.Content（overflow:auto），sticky 相对它生效；
           背景用不透明 token 色——内容从底下滚过时数字/按钮必须仍可读 */}
       <div
-        className="sticky top-0 z-10 mb-2.5 flex flex-wrap items-center gap-2 rounded-[8px] border border-sk-glass bg-sk-card px-3 py-2"
+        className="sticky top-0 z-10 mb-2.5 flex flex-wrap items-center gap-2 rounded-[8px] border border-sk-border bg-sk-card px-3 py-2"
       >
         <span className="sk-hint whitespace-nowrap">共 {all?.count ?? 0} 项</span>
         {/* 已改动计数即过滤器：点亮后右侧只剩与默认值不同的项 */}

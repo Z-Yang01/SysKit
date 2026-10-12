@@ -12,71 +12,33 @@ body {
     color 0.18s ease;
 }
 
-/* ---------------- 玻璃氛围底（shadcn × 玻璃拟态） ----------------
-   多层柔和色斑固定在 body：主色（蓝）+ 语义绿 + 紫，营造空间深度；
-   半透明玻璃层叠在上面时色斑透出，是整套玻璃语言的「光源」。 */
+/* ---------------- 纯色底（v1.4 视觉降噪） ----------------
+   原三层径向渐变色斑是纯装饰：在低配 GPU 上是持续合成负担，视觉上是
+   与内容争夺注意力的噪音。简约原则：背景退为纯色，让数据自己说话。 */
 body {
   margin: 0;
   color: var(--sk-text);
-  background:
-    radial-gradient(1200px 800px at 10% -10%, color-mix(in srgb, var(--sk-accent) 18%, transparent), transparent 62%),
-    radial-gradient(1000px 700px at 108% 16%, color-mix(in srgb, var(--sk-ok) 10%, transparent), transparent 58%),
-    radial-gradient(900px 760px at 46% 118%, color-mix(in srgb, #7c57e0 12%, transparent), transparent 60%),
-    var(--sk-bg);
-  background-attachment: fixed;
+  background: var(--sk-bg);
 }
 
-[data-theme="dark"] body {
-  background:
-    radial-gradient(1200px 800px at 10% -10%, color-mix(in srgb, var(--sk-accent) 15%, transparent), transparent 62%),
-    radial-gradient(1000px 700px at 108% 16%, color-mix(in srgb, var(--sk-ok) 8%, transparent), transparent 58%),
-    radial-gradient(900px 760px at 46% 118%, color-mix(in srgb, #7c57e0 14%, transparent), transparent 60%),
-    var(--sk-bg);
-  background-attachment: fixed;
-}
-
-/* ---------------- 固定大表面玻璃（GPU 红线：只允许不逐帧变化的表面） ----------------
-   （逐帧内容更新的卡片禁用 blur，见 git 历史 d6354c5）
-   侧栏是固定框架：blur(16px) + 提亮，是整窗玻璃语言的锚点
-   （v1.4 自建侧栏沿用旧 AntD Sider 的配方）。 */
+/* ---------------- 侧栏（v1.4 视觉降噪：纯色 + 常规边框） ---------------- */
 .sk-sider {
-  background: color-mix(in srgb, var(--sk-card) 68%, transparent);
-  backdrop-filter: blur(16px) saturate(1.2);
-  -webkit-backdrop-filter: blur(16px) saturate(1.2);
-  border-right: 1px solid var(--sk-glass_border);
-}
-
-/* 玻璃高光描边：浅色用白高光模拟「玻璃折边」，深色用微弱白线提层次 */
-[data-theme="light"] .sk-sider {
-  border-right-color: var(--sk-glass_highlight);
+  background: var(--sk-card);
+  border-right: 1px solid var(--sk-border);
 }
 
 /* ---------------- 静态玻璃面板（可显式加类）：含轻 blur，仅用于内容不逐帧变化的表面 ---------------- */
-.sk-glass-strong {
-  background: color-mix(in srgb, var(--sk-card) 62%, transparent) !important;
-  backdrop-filter: blur(8px) saturate(1.15);
-  -webkit-backdrop-filter: blur(8px) saturate(1.15);
-}
-
 /* ---------------- 文本辅助类 ---------------- */
 .sk-hint {
   color: var(--sk-sub);
   font-size: 12px;
 }
 
-/* 页面切换淡入（Content 是 flex 列滚动容器，页面根撑满剩余高度） */
+/* 页面根（Content 是 flex 列滚动容器，页面根撑满剩余高度）。
+   原切页淡入动画已删：0.12s 的透明度跳变在频繁切页时是闪动感，
+   硬切反而更稳。 */
 .sk-page {
-  animation: sk-page-in 0.12s ease-out;
   flex: 1 0 auto;
-}
-
-@keyframes sk-page-in {
-  from {
-    opacity: 0.35;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 /* ---------------- 滚动条 / 选区 / 焦点 ---------------- */
@@ -102,36 +64,9 @@ body {
   background: color-mix(in srgb, var(--sk-accent) 26%, transparent);
 }
 
-/* 键盘焦点环：可访问性 + 玻璃高光语言一致 */
+/* 键盘焦点环（可访问性） */
 :focus-visible {
   outline: 2px solid color-mix(in srgb, var(--sk-accent) 55%, transparent);
   outline-offset: 1px;
   border-radius: 6px;
-}
-
-/* ---------------- 降级：动效敏感 / 低配 GPU / 省电模式（轮次115 审计补） ----------------
-   按媒体查询逐级退化：
-   - prefers-reduced-motion：停页面淡入；0.18s 颜色过渡保留——主题切换
-     需要的正是渐变。
-   - prefers-reduced-transparency（Chromium/WebView2 118+）：玻璃整体退化
-     实底——全部 backdrop-filter 停用、body 色斑停用。blur 合成是玻璃化唯一
-     的重 GPU 项，低配机/省电模式直接省掉；实底取同一 token，对比度不变。
-     不支持的引擎忽略整块，默认玻璃外观不受影响。 */
-@media (prefers-reduced-motion: reduce) {
-  .sk-page {
-    animation: none;
-  }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  body,
-  [data-theme="dark"] body {
-    background: var(--sk-bg);
-  }
-  .sk-sider,
-  .sk-glass-strong {
-    background: var(--sk-card) !important;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
 }

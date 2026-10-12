@@ -314,9 +314,8 @@ export function App() {
             );
           })}
         </nav>
-        {/* 热键速查卡：玻璃化（强玻璃类，静态内容允许 blur） */}
+        {/* 热键速查卡（v1.4 视觉降噪：玻璃类退役，纯色 + 常规边框） */}
         <div
-          className="sk-glass-strong"
           style={{
             position: "absolute",
             bottom: 12,
@@ -324,7 +323,7 @@ export function App() {
             right: 12,
             padding: "8px 10px",
             borderRadius: 10,
-            border: `1px solid ${pal.glass_border}`,
+            border: "1px solid var(--sk-border)",
             fontSize: 11,
             lineHeight: 1.7,
             color: pal.brand_sub,

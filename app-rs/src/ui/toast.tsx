@@ -88,7 +88,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               key={i.id}
               className={cx(
                 "pointer-events-auto flex items-center gap-2 rounded-[10px] border px-3 py-1.5 text-sm",
-                "bg-sk-card/92 shadow-[0_6px_24px_var(--sk-shadow_color)] backdrop-blur-[6px]",
+                "bg-sk-card shadow-[0_4px_16px_var(--sk-shadow_color)]",
                 KIND_STYLE[i.kind],
               )}
             >
