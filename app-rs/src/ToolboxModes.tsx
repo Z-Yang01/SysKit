@@ -36,7 +36,7 @@ function levelTone(l: ReturnType<typeof outcomeLevel>): "success" | "warning" | 
   return l === "success" ? "success" : l === "warning" ? "warning" : "danger";
 }
 
-export function ModesPanel() {
+export function ToolboxModes() {
   const toast = useToast();
   const [info, setInfo] = useState<ModesInfo | null>(null);
   const [openApps, setOpenApps] = useState(true);

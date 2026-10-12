@@ -4,7 +4,7 @@
  */
 import ReactEChartsCore from "echarts-for-react/esm/core";
 import type { EChartsReactProps } from "echarts-for-react";
-import { echarts } from "./echarts";
+import { echarts } from "./echartsSetup";
 
 export function EChart(props: Omit<EChartsReactProps, "echarts">) {
   return <ReactEChartsCore echarts={echarts} {...props} />;

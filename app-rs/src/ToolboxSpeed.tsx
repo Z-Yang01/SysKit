@@ -31,7 +31,7 @@ import {
   type DownloadTestResult,
   type DownloadUrlResult,
   type SpeedtestStatus,
-} from "./speed";
+} from "./dnsSpeed";
 import { Badge, Button, Card, Empty, Input, Table, type Column } from "./ui";
 import { InputNumber } from "./ui/input-number";
 import { Tooltip as UiTooltip } from "./ui/tooltip";

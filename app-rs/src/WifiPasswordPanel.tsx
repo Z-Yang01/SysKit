@@ -52,7 +52,7 @@ function colorTone(c: string): "ok" | "warn" | "err" {
 }
 
 /** WiFi 工具页容器：扫描结果与配置文件列表在父级持有，四个 tab 共享。 */
-export function WifiPage() {
+export function WifiPasswordPanel() {
   const toast = useToast();
   const [aps, setAps] = useState<ScannedAp[]>([]);
   const [scanning, setScanning] = useState(false);

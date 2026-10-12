@@ -20,7 +20,7 @@ import {
   keyIntent,
   rowLabel,
   type ClipRow,
-} from "./pastePanel";
+} from "./pasteState";
 import { Empty, Input, cx } from "./ui";
 
 /** 命令面板条目：与剪贴板条目同形，外加动作名以便后续接 provider。 */

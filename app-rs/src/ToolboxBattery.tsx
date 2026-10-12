@@ -47,7 +47,7 @@ function KV({ label, children }: { label: string; children: React.ReactNode }) {
   );
 }
 
-export function BatteryPanel() {
+export function ToolboxBattery() {
   const toast = useToast();
   const [power, setPower] = useState<PowerStatus | null>(null);
   const [powerFailed, setPowerFailed] = useState(false);

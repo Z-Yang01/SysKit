@@ -14,7 +14,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { Dashboard } from "./Overview";
-import { ClipboardHistoryPanel } from "./ToolboxClipboard";
+import { ToolboxClipboard } from "./ToolboxClipboard";
 import { Diagnose } from "./Diagnose";
 import { ToolboxHosts } from "./ToolboxHosts";
 import { ToolboxPorts } from "./ToolboxPorts";
@@ -249,7 +249,7 @@ export function App() {
   const [quickDiagRequest, setQuickDiagRequest] = useState(0);
   const pages: Record<string, React.ReactNode> = {
     overview: <Dashboard dark={dark} />,
-    clipboard: <ClipboardHistoryPanel />,
+    clipboard: <ToolboxClipboard />,
     diagnose: <Diagnose quickRequest={quickDiagRequest} />,
     toolbox: (
       <Tabs

@@ -14,9 +14,9 @@ import { listen } from "@tauri-apps/api/event";
 
 import { ToolboxStartup } from "./ToolboxStartup";
 import { CleanupPanel, DiskOverviewPanel, DiskPanel, DirDrillPanel } from "./ToolboxDisk";
-import { BatteryPanel } from "./ToolboxBattery";
-import { ModesPanel } from "./ToolboxModes";
-import { WifiPage } from "./WifiPasswordPanel";
+import { ToolboxBattery } from "./ToolboxBattery";
+import { ToolboxModes } from "./ToolboxModes";
+import { WifiPasswordPanel } from "./WifiPasswordPanel";
 
 import type { DrillRequest } from "./disk";
 
@@ -191,9 +191,9 @@ export function SystemPage({
             ),
           },
           { key: "clean", label: "垃圾清理", children: <CleanupPanel /> },
-          { key: "battery", label: "电池健康", children: <BatteryPanel /> },
-          { key: "modes", label: "场景模式", children: <ModesPanel /> },
-          { key: "wifipwd", label: "WiFi 密码", children: <WifiPage /> },
+          { key: "battery", label: "电池健康", children: <ToolboxBattery /> },
+          { key: "modes", label: "场景模式", children: <ToolboxModes /> },
+          { key: "wifipwd", label: "WiFi 密码", children: <WifiPasswordPanel /> },
         ]}
       />
     </Card>

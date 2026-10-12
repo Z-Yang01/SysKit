@@ -22,7 +22,7 @@ import {
   keyIntent,
   rowLabel,
   type ClipRow,
-} from "./pastePanel";
+} from "./pasteState";
 import { Button, Empty, Input, cx } from "./ui";
 import { Modal } from "./ui/modal";
 

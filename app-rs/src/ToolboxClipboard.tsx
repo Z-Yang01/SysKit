@@ -154,7 +154,7 @@ function toMenuItems(r: ClipRow): MenuItem[] {
   );
 }
 
-export function ClipboardHistoryPanel() {
+export function ToolboxClipboard() {
   const toast = useToast();
   const [rows, setRows] = useState<ClipRow[]>([]);
   const [summary, setSummary] = useState<ClipSummary | null>(null);
