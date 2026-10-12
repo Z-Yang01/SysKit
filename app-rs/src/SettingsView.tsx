@@ -281,6 +281,28 @@ function SettingsPanel() {
   const [resetOpen, setResetOpen] = useState(false);
   const reset = useCallback(() => setResetOpen(true), []);
 
+  /** 导出全部设置为 JSON（原生保存对话框；取消安静返回）。 */
+  const exportSettings = useCallback(async () => {
+    try {
+      const target = await invoke<string>("sk_settings_export");
+      if (target) toast.success(`已导出到 ${target}`);
+    } catch (e) {
+      toast.error(`导出失败：${String(e)}`);
+    }
+  }, [toast]);
+
+  /** 导入设置 JSON：只应用已知键，完成后重读全量刷新界面。 */
+  const importSettings = useCallback(async () => {
+    try {
+      const [applied, skipped] = await invoke<[number, number]>("sk_settings_import");
+      if (applied === 0 && skipped === 0) return; // 用户取消
+      toast.success(`已导入 ${applied} 项${skipped > 0 ? `，忽略未知键 ${skipped} 个` : ""}`);
+      await load();
+    } catch (e) {
+      toast.error(`导入失败：${String(e)}`);
+    }
+  }, [toast, load]);
+
   const doReset = useCallback(async () => {
     setResetOpen(false);
     try {
@@ -346,6 +368,12 @@ function SettingsPanel() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        <Button size="sm" onClick={() => void exportSettings()}>
+          导出
+        </Button>
+        <Button size="sm" onClick={() => void importSettings()}>
+          导入
+        </Button>
         <Button size="sm" onClick={() => void load()}>
           重新读取
         </Button>

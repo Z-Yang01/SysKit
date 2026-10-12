@@ -479,6 +479,8 @@ pub fn run() {
             commands::sk_clip_copy_plain,
             commands::sk_settings_all,
             commands::sk_settings_set,
+            commands::sk_settings_export,
+            commands::sk_settings_import,
             commands::sk_settings_reset,
             commands::sk_log_list,
             commands::sk_log_tail,

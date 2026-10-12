@@ -379,10 +379,14 @@ export function Dashboard({ dark }: { dark: boolean }) {
 
   const overviewTab = (
     <div className="flex flex-col gap-3.5">
-      {/* 速率面板（参考 NetSpeedMonitor 风格）：左侧紧凑数值列（↑下行/↓上行/⚙今日累计）
-          + 右侧连续实时曲线——一屏同览，数值与曲线同源同拍 */}
+      {/* 速率面板（v1.4 布局优化：并入状态徽章，独立「网络速率」卡撤下——
+          同一数据渲染两张图是每秒双份 canvas 重绘，纯浪费） */}
       <Card>
-        <div className="flex items-stretch gap-4 px-3.5 py-2.5">
+        <CardHeader>
+          <CardTitle>实时速率</CardTitle>
+          <Badge tone={st.token === "ok" ? "ok" : st.token === "err" ? "err" : "warn"}>{st.text}</Badge>
+        </CardHeader>
+        <div className="flex items-stretch gap-4 px-3.5 pb-3 pt-1">
           <div
             className="flex shrink-0 flex-col justify-center gap-1.5 pr-4"
             style={{ borderRight: "1px solid var(--sk-border)", minWidth: 150 }}
@@ -424,16 +428,6 @@ export function Dashboard({ dark }: { dark: boolean }) {
             <ReactECharts option={rateOption} style={{ height: 150 }} lazyUpdate />
           </div>
         </div>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>网络速率</CardTitle>
-          <Badge tone={st.token === "ok" ? "ok" : st.token === "err" ? "err" : "warn"}>{st.text}</Badge>
-        </CardHeader>
-        <CardBody>
-          <ReactECharts option={rateOption} style={{ height: 200 }} lazyUpdate />
-        </CardBody>
       </Card>
 
       <Card>
