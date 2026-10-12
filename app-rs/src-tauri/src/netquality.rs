@@ -803,4 +803,95 @@ mod tests {
             Some(false)
         );
     }
+
+    // ---------------- 窗口 × 评估 端到端组合（B08） ----------------
+
+    /// 组合语义锁定：store 聚合出的窗口值喂给 evaluate_alert，
+    /// 完整走「网关丢包触发 → 持续劣化静默 → 冷却后恢复」三幕。
+    #[test]
+    fn store_windows_drive_evaluate_alert_end_to_end() {
+        let mut a = store();
+        let t0 = std::time::Instant::now();
+        let mut alert = AlertState::default();
+        // 6 桶窗口内公网全部良好、网关 6/10 丢包（≥20% 阈值）
+        let base = timefmt::now_local();
+        for m in 0..6 {
+            let at = base + chrono::Duration::minutes(m as i64);
+            for _ in 0..6 {
+                a.add(&sample(None, Some(20.0), None), at); // 网关丢包/公网 20ms
+            }
+        }
+        let gw = a.recent_gw_window(ALERT_WINDOW_MINUTES).unwrap();
+        let pubw = a.recent_pub_window(ALERT_WINDOW_MINUTES).unwrap();
+        // 窗口值先锁定：网关全丢包 100%，公网 0% / 20ms
+        assert_eq!(gw.1, 100.0);
+        assert_eq!(pubw.1, 0.0);
+        assert!((pubw.0 - 20.0).abs() < 1e-9);
+
+        // 幕一：网关丢包触发告警（文案分级依据是窗口值而非评估器内部态）
+        assert_eq!(
+            evaluate_alert(&mut alert, t0, Some(gw), Some(pubw), 200.0, 20.0),
+            Some(true)
+        );
+        // 幕二：窗口持续劣化 → 冷却内不重复轰炸
+        assert_eq!(
+            evaluate_alert(
+                &mut alert,
+                t0 + std::time::Duration::from_secs(60),
+                Some(gw),
+                Some(pubw),
+                200.0,
+                20.0
+            ),
+            None
+        );
+        // 幕三：劣化持续但已过冷却 + 已告警态 → 仍静默（恢复才通知）；
+        // 随后窗口转好（新桶良好样本稀释）+ 冷却后 → 恢复通知
+        let good = (1.0, 0.0);
+        assert_eq!(
+            evaluate_alert(
+                &mut alert,
+                t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS),
+                Some(gw),
+                Some(pubw),
+                200.0,
+                20.0
+            ),
+            None,
+            "已告警态下持续劣化不重复通知"
+        );
+        let recovered_gw = good;
+        let recovered_pub = (25.0, 0.0);
+        assert_eq!(
+            evaluate_alert(
+                &mut alert,
+                t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS + 60),
+                Some(recovered_gw),
+                Some(recovered_pub),
+                200.0,
+                20.0
+            ),
+            Some(false),
+            "窗口回到阈值内且过冷却 → 恢复通知"
+        );
+    }
+
+    /// 窗口无样本时评估器保持现状（探测静默不发恢复）——组合的负路径。
+    #[test]
+    fn empty_windows_keep_alert_state_untouched() {
+        let a = store(); // 不 add 任何样本
+        let alert = AlertState {
+            alerting: true, // 模拟已告警
+            last_notify: None,
+        };
+        let mut alert = alert;
+        let t0 = std::time::Instant::now();
+        assert!(a.recent_gw_window(ALERT_WINDOW_MINUTES).is_none());
+        assert!(a.recent_pub_window(ALERT_WINDOW_MINUTES).is_none());
+        assert_eq!(
+            evaluate_alert(&mut alert, t0, None, None, 200.0, 20.0),
+            None
+        );
+        assert!(alert.alerting, "无样本不得凭空清除告警态");
+    }
 }
