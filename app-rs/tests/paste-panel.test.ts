@@ -284,3 +284,30 @@ describe("降级提示判定", () => {
     expect(isFallbackNotice("已粘贴到原窗口")).toBe(false);
   });
 });
+
+describe("reducer: notice / seq（B09 补缺分支）", () => {
+  it("notice 设置提示文案且不动列表与游标", () => {
+    let s = loaded();
+    s = reducer(s, { type: "move", delta: 1 });
+    const before = { all: s.all, visible: s.visible, cursor: s.cursor };
+    s = reducer(s, { type: "notice", value: "读取失败：后端未就绪" });
+    expect(s.notice).toBe("读取失败：后端未就绪");
+    expect(s.all).toBe(before.all);
+    expect(s.visible).toBe(before.visible);
+    expect(s.cursor).toBe(before.cursor);
+  });
+
+  it("空串 notice 清除提示（同字段复用，不残留旧文案）", () => {
+    let s: PanelState = reducer(initialState, { type: "notice", value: "x" });
+    expect(s.notice).toBe("x");
+    s = reducer(s, { type: "notice", value: "" });
+    expect(s.notice).toBe("");
+  });
+
+  it("seq 只更新序号（粘贴去重判定的时钟）", () => {
+    let s = loaded();
+    s = reducer(s, { type: "seq", value: 42 });
+    expect(s.seq).toBe(42);
+    expect(s.visible).toHaveLength(s.all.length);
+  });
+});
