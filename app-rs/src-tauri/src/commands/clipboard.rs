@@ -108,7 +108,7 @@ pub fn sk_paste_seq() -> u64 {
 /// 执行一次「写回 + 焦点守卫注键」（面板路径，延后 120ms）。
 #[tauri::command]
 pub async fn sk_paste<R: Runtime>(app: AppHandle<R>, req: PasteRequest) -> PasteResult {
-    input_panel::perform_paste(app, req, crate::input::PASTE_DELAY_MS).await
+    input_panel::perform_paste(app, req, crate::paste_guard::PASTE_DELAY_MS).await
 }
 
 /// 快速直贴最新一条（托盘菜单/面板按钮共用）。

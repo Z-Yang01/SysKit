@@ -74,7 +74,7 @@ pub fn save_sealed_json(path: &Path, data: &Value) -> bool {
             return false;
         }
     };
-    match crate::stores::atomic_write(path, text.as_bytes()) {
+    match crate::jsonio::atomic_write(path, text.as_bytes()) {
         Ok(()) => true,
         Err(e) => {
             log::warn!("密封写盘失败: {} ({e})", paths::display(path));

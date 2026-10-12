@@ -1,7 +1,7 @@
 //! DNS 测速历史：落盘最近 N 轮的每台服务器平均延迟（自有格式），
 //! 供测速页画趋势对比（同一台 DNS 今天 vs 上周是否劣化）。
 //!
-//! 纯函数核心（push/runs）+ stores::load/save 的既有 JSON 读写模式。
+//! 纯函数核心（push/runs）+ jsonio::load/save 的既有 JSON 读写模式。
 
 use serde::{Deserialize, Serialize};
 
@@ -47,15 +47,15 @@ pub fn series_for(h: &DnsSpeedHistory, server: &str) -> Vec<(String, f64)> {
         .collect()
 }
 
-/// 读取/落盘（复用 stores::load_json 的损坏回落默认语义）。
+/// 读取/落盘（复用 jsonio::load_json 的损坏回落默认语义）。
 pub fn load(path: &std::path::Path) -> DnsSpeedHistory {
-    let raw = crate::stores::load_json(path, serde_json::json!({ "rounds": [] }));
+    let raw = crate::jsonio::load_json(path, serde_json::json!({ "rounds": [] }));
     serde_json::from_value(raw).unwrap_or_default()
 }
 
 pub fn save(path: &std::path::Path, h: &DnsSpeedHistory) -> bool {
     let v = serde_json::to_value(h).unwrap_or(serde_json::json!({ "rounds": [] }));
-    crate::stores::save_json(path, &v)
+    crate::jsonio::save_json(path, &v)
 }
 
 #[cfg(test)]

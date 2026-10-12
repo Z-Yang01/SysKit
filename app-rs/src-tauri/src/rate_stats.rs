@@ -19,8 +19,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::jsonio;
 use crate::paths;
-use crate::stores;
 use crate::timefmt;
 
 /// 未知/非 WiFi 网络的统一归属名（与 Python `RateStatsStore.UNKNOWN` 一致）。
@@ -84,7 +84,7 @@ impl RateStatsStore {
     }
 
     pub fn with_path(path: PathBuf) -> Self {
-        let raw = stores::load_json(&path, serde_json::json!({}));
+        let raw = jsonio::load_json(&path, serde_json::json!({}));
         let snap = parse_snapshot(&raw);
         Self {
             path,
@@ -178,7 +178,7 @@ impl RateStatsStore {
             "hours": self.hours,
             "days": self.days,
         });
-        if stores::save_json(&self.path, &payload) {
+        if jsonio::save_json(&self.path, &payload) {
             self.dirty = false;
             true
         } else {
@@ -406,7 +406,7 @@ mod tests {
                 )
             })
             .collect();
-        stores::save_json(
+        jsonio::save_json(
             &path,
             &serde_json::json!({
                 "minutes": minutes,

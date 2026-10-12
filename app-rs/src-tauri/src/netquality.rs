@@ -105,7 +105,7 @@ pub struct ProbeSample {
 
 impl QualityStore {
     pub fn with_path(path: PathBuf) -> Self {
-        let raw = crate::stores::load_json(&path, serde_json::json!({}));
+        let raw = crate::jsonio::load_json(&path, serde_json::json!({}));
         #[derive(Deserialize)]
         struct File {
             #[serde(default)]
@@ -276,7 +276,7 @@ impl QualityStore {
             "hours": self.hours,
             "days": self.days,
         });
-        if crate::stores::save_json(&self.path, &payload) {
+        if crate::jsonio::save_json(&self.path, &payload) {
             self.dirty = false;
             true
         } else {

@@ -540,7 +540,7 @@ pub fn remove_keys(keys: &[&str]) -> std::io::Result<()> {
         return Ok(());
     }
     *cache().lock_ok() = Some(merged.clone());
-    crate::stores::save_json_pretty(&paths::settings_file(), &Value::Object(merged))
+    crate::jsonio::save_json_pretty(&paths::settings_file(), &Value::Object(merged))
 }
 
 /// 指定路径写入（测试用；同时更新缓存，与 Python 先更新缓存同语义）。
@@ -551,7 +551,7 @@ pub fn save_to(path: &Path, patch: &Map<String, Value>) -> std::io::Result<()> {
     }
     let merged = typed(&merged);
     *cache().lock_ok() = Some(merged.clone());
-    crate::stores::save_json_pretty(path, &Value::Object(merged))
+    crate::jsonio::save_json_pretty(path, &Value::Object(merged))
 }
 
 #[cfg(test)]

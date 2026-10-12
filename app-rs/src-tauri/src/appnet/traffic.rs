@@ -56,7 +56,7 @@ pub struct AppTrafficAgg {
 
 impl AppTrafficAgg {
     pub fn with_path(path: std::path::PathBuf) -> Self {
-        let raw = crate::stores::load_json(&path, serde_json::json!({}));
+        let raw = crate::jsonio::load_json(&path, serde_json::json!({}));
         let (minutes, hours, days) = parse_buckets(&raw);
         Self {
             minutes,
@@ -201,7 +201,7 @@ impl AppTrafficAgg {
             "hours": self.hours,
             "days": self.days,
         });
-        if crate::stores::save_json(&self.path, &payload) {
+        if crate::jsonio::save_json(&self.path, &payload) {
             self.dirty = false;
             true
         } else {

@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuild
 
 use crate::clipboard_history as hist;
 use crate::clipboard_write;
-use crate::input;
+use crate::paste_guard;
 use crate::w32;
 
 pub const PANEL_LABEL: &str = "paste";
@@ -200,7 +200,7 @@ pub async fn perform_paste<R: Runtime>(
     tokio_sleep(delay_ms).await;
 
     let seq_valid = current_seq() == req.seq;
-    let outcome = input::guarded_paste(target_hwnd(), &item.kind, seq_valid);
+    let outcome = paste_guard::guarded_paste(target_hwnd(), &item.kind, seq_valid);
     if !outcome.message.is_empty() {
         let _ = app.emit("sk://paste-result", &outcome);
     }
@@ -238,8 +238,8 @@ pub async fn quick_paste_latest<R: Runtime>(app: AppHandle<R>) -> PasteResult {
             written: false,
         };
     }
-    tokio_sleep(input::QUICK_DELAY_MS).await;
-    let outcome = input::guarded_paste(target, &item.kind, current_seq() == seq);
+    tokio_sleep(paste_guard::QUICK_DELAY_MS).await;
+    let outcome = paste_guard::guarded_paste(target, &item.kind, current_seq() == seq);
     if !outcome.message.is_empty() {
         let _ = app.emit("sk://paste-result", &outcome);
     }

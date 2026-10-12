@@ -13,8 +13,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::jsonio;
 use crate::paths;
-use crate::stores;
 use crate::timefmt;
 
 /// traffic.json 里单日记录。
@@ -47,7 +47,7 @@ impl TrafficStore {
     }
 
     pub fn with_path(path: PathBuf) -> Self {
-        let raw = stores::load_json(&path, serde_json::json!({}));
+        let raw = jsonio::load_json(&path, serde_json::json!({}));
         let data = parse_days(&raw);
         Self {
             path,
@@ -102,7 +102,7 @@ impl TrafficStore {
         if !self.dirty {
             return false;
         }
-        if stores::save_json(&self.path, &serde_json::json!(self.data)) {
+        if jsonio::save_json(&self.path, &serde_json::json!(self.data)) {
             self.dirty = false;
             true
         } else {
@@ -146,7 +146,7 @@ impl EventStore {
     }
 
     pub fn with_path(path: PathBuf, limit: usize) -> Self {
-        let raw = stores::load_json(&path, serde_json::json!([]));
+        let raw = jsonio::load_json(&path, serde_json::json!([]));
         let data = parse_events(&raw);
         Self { path, limit, data }
     }
@@ -163,7 +163,7 @@ impl EventStore {
             },
         );
         self.data.truncate(self.limit);
-        stores::save_json(&self.path, &serde_json::json!(self.data));
+        jsonio::save_json(&self.path, &serde_json::json!(self.data));
     }
 
     pub fn items(&self) -> Vec<EventItem> {
@@ -295,7 +295,7 @@ mod tests {
                 serde_json::json!({"sent": 1, "recv": 1}),
             );
         }
-        stores::save_json(&path, &serde_json::Value::Object(map));
+        jsonio::save_json(&path, &serde_json::Value::Object(map));
         let mut t = TrafficStore::with_path(path.clone());
         assert_eq!(t.days().len(), 80, "先原样载入（Python 只在 add 时裁剪）");
         t.add(1, 1); // 触发裁剪
