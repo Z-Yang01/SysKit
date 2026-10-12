@@ -346,6 +346,29 @@ export function eventCategory(state: string): EventCategory {
   }
 }
 
+/** 事件时间范围档（秒）：null = 全部。 */
+export type EventTimeRange = 3600 | 86400 | 604800 | null;
+
+/** ev.ts 是 "YYYY-MM-DD HH:MM:SS" 本地时间文本；解析失败的事件保守保留。 */
+function eventTsSec(ts: string): number | null {
+  const t = new Date(ts.replace(" ", "T")).getTime();
+  return Number.isFinite(t) ? t / 1000 : null;
+}
+
+/** 时间范围过滤（纯函数）：rangeSec=null 全保留；解析失败的行不丢（诚实展示）。 */
+export function filterEventsByTime(
+  events: EventItem[],
+  rangeSec: number | null,
+  nowSec: number,
+): EventItem[] {
+  if (rangeSec === null) return events;
+  const floor = nowSec - rangeSec;
+  return events.filter((ev) => {
+    const t = eventTsSec(ev.ts);
+    return t === null || t >= floor;
+  });
+}
+
 export function eventLine(ev: EventItem): string {
   const s = stateLabel(ev.state);
   const detail = ev.detail?.trim();

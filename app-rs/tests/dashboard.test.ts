@@ -12,6 +12,8 @@ import {
   axisTimeLabels,
   clockTime,
   eventCategory,
+  filterEventsByTime,
+  type EventItem,
   eventLine,
   formatAxisBps,
   formatAxisTime,
@@ -363,5 +365,31 @@ describe("速率曲线窗口（1m / 1h / 1d）", () => {
     const rows: SeriesRow[] = [{ key: "14:32", sent: 10, recv: 0 }];
     const v = rateViewFromBuckets(rows, 60, 60, now);
     expect(Number.isFinite(v.up[59])).toBe(true);
+  });
+});
+
+describe("filterEventsByTime 时间范围过滤", () => {
+  const now = Date.parse("2026-10-12T20:00:00") / 1000;
+  const mk = (ts: string): EventItem => ({ ts, state: "ok", detail: "" });
+  const events = [
+    mk("2026-10-12 19:30:00"), // 30 分钟前
+    mk("2026-10-12 10:00:00"), // 10 小时前
+    mk("2026-10-10 20:00:00"), // 2 天前
+    mk("2026-10-01 20:00:00"), // 11 天前
+  ];
+
+  it("各档位按 ts 过滤（1h/24h/7天）", () => {
+    expect(filterEventsByTime(events, 3600, now)).toHaveLength(1);
+    expect(filterEventsByTime(events, 86400, now)).toHaveLength(2);
+    expect(filterEventsByTime(events, 604800, now)).toHaveLength(3);
+  });
+
+  it("null = 全部保留", () => {
+    expect(filterEventsByTime(events, null, now)).toHaveLength(4);
+  });
+
+  it("解析失败的 ts 保守保留（诚实展示不丢行）", () => {
+    const bad: EventItem = { ts: "not-a-date", state: "ok", detail: "" };
+    expect(filterEventsByTime([bad], 60, now)).toEqual([bad]);
   });
 });

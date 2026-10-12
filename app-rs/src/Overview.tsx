@@ -18,6 +18,7 @@ import { baseChartOption, chartAccent, chartOk, chartWarn } from "./chartTheme";
 import {
   GRANULARITIES,
   eventCategory,
+  filterEventsByTime,
   RATE_WINDOWS,
   REPORT_COLUMNS,
   axisTimeLabels,
@@ -122,6 +123,8 @@ export function Dashboard({ dark }: { dark: boolean }) {
   const [ovTab, setOvTab] = useState("overview");
   // 事件时间线类型过滤（sk_events 拉最近 100 条，前端按组筛）
   const [eventFilter, setEventFilter] = useState<"all" | "net" | "quality" | "traffic">("all");
+  // 时间范围档（与类型筛独立叠加；档位→秒数映射见 EVENT_RANGE_SECS）
+  const [eventTime, setEventTime] = useState<"1h" | "24h" | "7d" | "all">("all");
 
   // ---------------- 每秒 tick ----------------
   useEffect(() => {
@@ -506,25 +509,45 @@ export function Dashboard({ dark }: { dark: boolean }) {
         <Card className="min-h-[260px]">
           <CardHeader>
             <CardTitle>事件时间线</CardTitle>
-            <Segmented<"all" | "net" | "quality" | "traffic">
-              size="sm"
-              value={eventFilter}
-              onChange={setEventFilter}
-              options={[
-                { label: "全部", value: "all" },
-                { label: "断网", value: "net" },
-                { label: "质量", value: "quality" },
-                { label: "流量", value: "traffic" },
-              ]}
-            />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Segmented<"all" | "net" | "quality" | "traffic">
+                size="sm"
+                value={eventFilter}
+                onChange={setEventFilter}
+                options={[
+                  { label: "全部", value: "all" },
+                  { label: "断网", value: "net" },
+                  { label: "质量", value: "quality" },
+                  { label: "流量", value: "traffic" },
+                ]}
+              />
+              <Segmented<"1h" | "24h" | "7d" | "all">
+                size="sm"
+                value={eventTime}
+                onChange={setEventTime}
+                options={[
+                  { label: "近1h", value: "1h" },
+                  { label: "24h", value: "24h" },
+                  { label: "7天", value: "7d" },
+                  { label: "全部", value: "all" },
+                ]}
+              />
+            </div>
           </CardHeader>
           <CardBody>
             <div className="max-h-[260px] overflow-y-auto">
               {(() => {
+                const RANGE_SECS: Record<typeof eventTime, number | null> = {
+                  "1h": 3600,
+                  "24h": 86400,
+                  "7d": 604800,
+                  all: null,
+                };
+                const inTime = filterEventsByTime(events, RANGE_SECS[eventTime], Date.now() / 1000);
                 const shown =
                   eventFilter === "all"
-                    ? events
-                    : events.filter((ev) => eventCategory(ev.state) === eventFilter);
+                    ? inTime
+                    : inTime.filter((ev) => eventCategory(ev.state) === eventFilter);
                 if (shown.length === 0) {
                   return (
                     <Empty
