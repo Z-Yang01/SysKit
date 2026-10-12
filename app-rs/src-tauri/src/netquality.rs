@@ -447,7 +447,7 @@ pub fn spawn_probe<R: tauri::Runtime>(
                 let dns_start = std::time::Instant::now();
                 // resolve_system 超时返回空 Vec：空 = 解析失败，不计入 DNS 均值
                 let dns_resolved =
-                    !crate::dnsclient::resolve_system(DNS_PROBE_HOST, 1.5).is_empty();
+                    !crate::net::client::resolve_system(DNS_PROBE_HOST, 1.5).is_empty();
                 let dns_ms = dns_resolved.then(|| dns_start.elapsed().as_secs_f64() * 1000.0);
 
                 if let Ok(mut store) = store.lock() {

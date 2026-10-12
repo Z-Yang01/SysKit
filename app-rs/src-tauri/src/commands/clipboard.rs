@@ -191,7 +191,7 @@ pub async fn sk_clip_action_run(id: String, arg: String) -> Result<String, Strin
             Ok(out.tail(0, 400))
         }
         "domain_dns" => {
-            let ips = crate::dnsclient::resolve_system(&arg, 4.0);
+            let ips = crate::net::client::resolve_system(&arg, 4.0);
             if ips.is_empty() {
                 Err(format!("{arg} 解析失败或无记录"))
             } else {

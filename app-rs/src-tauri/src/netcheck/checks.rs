@@ -150,12 +150,12 @@ pub fn chk_dns_compare(snap: &Snapshot) -> CheckResult {
         r.detail = "无系统 DNS 可测".to_string();
         return r;
     };
-    let sys_ips = dnsclient::query_safe(DNS_COMPARE_HOST, &sys_dns);
+    let sys_ips = client::query_safe(DNS_COMPARE_HOST, &sys_dns);
     let mut pub_ips = Vec::new();
     let mut pub_detail = Vec::new();
     for server in PUBLIC_DNS_TEST {
         let start = std::time::Instant::now();
-        let ips = dnsclient::query_safe(DNS_COMPARE_HOST, server);
+        let ips = client::query_safe(DNS_COMPARE_HOST, server);
         let ms = start.elapsed().as_millis();
         pub_detail.push(format!(
             "{server}:{}",
@@ -209,8 +209,8 @@ pub fn chk_dns_compare(snap: &Snapshot) -> CheckResult {
 /// NCSI 域名解析污染检测（id=dns_pollution）。
 pub fn chk_dns_pollution() -> CheckResult {
     let mut r = CheckResult::new("dns_pollution", "NCSI 域名解析对比（污染检测）", INFO);
-    let sys_ips = dnsclient::resolve_system(NCSI_DNS_HOST, 4.0);
-    let pub_ips = dnsclient::query_safe(NCSI_DNS_HOST, PUBLIC_DNS_TEST[0]);
+    let sys_ips = client::resolve_system(NCSI_DNS_HOST, 4.0);
+    let pub_ips = client::query_safe(NCSI_DNS_HOST, PUBLIC_DNS_TEST[0]);
     let detail = format!(
         "系统: {}; 公共({}): {}",
         if sys_ips.is_empty() {

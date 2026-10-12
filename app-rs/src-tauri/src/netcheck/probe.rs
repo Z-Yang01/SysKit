@@ -213,7 +213,7 @@ pub fn probe_ncsi() -> (bool, String) {
         ),
         Err(e) => (false, e),
     };
-    let ips = dnsclient::resolve_system(NCSI_DNS_HOST, 4.0);
+    let ips = client::resolve_system(NCSI_DNS_HOST, 4.0);
     let dns_ok = ips.iter().any(|i| i == NCSI_DNS_EXPECT);
     let detail = format!(
         "Web探测: {web_detail}; DNS({NCSI_DNS_HOST}): {}",

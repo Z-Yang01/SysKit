@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
-use crate::dnsclient;
+use crate::net::client;
 
 /// 被测 DNS 服务器（与 Python `_DNS_SPEED_SERVERS` 逐项一致）。
 pub const DNS_SPEED_SERVERS: [(&str, &str); 6] = [
@@ -83,7 +83,7 @@ pub fn probe_server(server: &str, name: &str, domain: &str, times: u32) -> DnsPr
     let mut latencies: Vec<f64> = Vec::new();
     for _ in 0..times {
         let start = Instant::now();
-        let ok = dnsclient::query_with(domain, server, 1.5, dnsclient::QTYPE_A, 1).is_ok();
+        let ok = client::query_with(domain, server, 1.5, client::QTYPE_A, 1).is_ok();
         if ok {
             latencies.push(start.elapsed().as_secs_f64() * 1000.0);
         }

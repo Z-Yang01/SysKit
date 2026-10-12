@@ -202,7 +202,7 @@ pub async fn sk_dns_query(
         let server = server.unwrap_or_default();
         let start = std::time::Instant::now();
         if server.trim().is_empty() {
-            let ips = crate::dnsclient::resolve_system(&domain, 4.0);
+            let ips = crate::net::client::resolve_system(&domain, 4.0);
             let ms = start.elapsed().as_millis();
             if ips.is_empty() {
                 return Ok(serde_json::json!({
@@ -217,12 +217,12 @@ pub async fn sk_dns_query(
             }))
         } else {
             let s = server.trim().to_string();
-            match crate::dnsclient::query_with(
+            match crate::net::client::query_with(
                 &domain,
                 &s,
-                crate::dnsclient::DEFAULT_TIMEOUT_SECS,
-                crate::dnsclient::QTYPE_A,
-                crate::dnsclient::DEFAULT_ATTEMPTS,
+                crate::net::client::DEFAULT_TIMEOUT_SECS,
+                crate::net::client::QTYPE_A,
+                crate::net::client::DEFAULT_ATTEMPTS,
             ) {
                 Ok(ips) => {
                     let ms = start.elapsed().as_millis();
@@ -309,16 +309,16 @@ pub async fn sk_dns_speed(domain: String, times: Option<u32>) -> Result<serde_js
             return Err("测试域名不能为空".to_string());
         }
         let times = times.unwrap_or(3).clamp(1, 5);
-        let results = crate::dnsspeed::run_all(&domain, times);
-        let (usable, failed) = crate::dnsspeed::summarize(&results);
+        let results = crate::net::speed::run_all(&domain, times);
+        let (usable, failed) = crate::net::speed::summarize(&results);
 
         // 测速历史：紧凑记录可用台的延迟（全失败台不入列），落盘最近 20 轮
         {
             let path = crate::paths::dns_speed_history_file();
-            let mut hist = crate::dnshistory::load(&path);
-            crate::dnshistory::push(
+            let mut hist = crate::net::history::load(&path);
+            crate::net::history::push(
                 &mut hist,
-                crate::dnshistory::DnsSpeedRound {
+                crate::net::history::DnsSpeedRound {
                     at: crate::timefmt::now_fmt(crate::timefmt::FMT_MINUTE_COMPACT),
                     latencies: results
                         .iter()
@@ -326,7 +326,7 @@ pub async fn sk_dns_speed(domain: String, times: Option<u32>) -> Result<serde_js
                         .collect(),
                 },
             );
-            if !crate::dnshistory::save(&path, &hist) {
+            if !crate::net::history::save(&path, &hist) {
                 log::warn!("DNS 测速历史落盘失败（不影响本次结果）");
             }
         }
@@ -337,7 +337,7 @@ pub async fn sk_dns_speed(domain: String, times: Option<u32>) -> Result<serde_js
             "results": results,
             "usable": usable,
             "failed": failed,
-            "recommendation": crate::dnsspeed::recommendation_text(&results),
+            "recommendation": crate::net::speed::recommendation_text(&results),
         }))
     })
     .await
@@ -347,7 +347,7 @@ pub async fn sk_dns_speed(domain: String, times: Option<u32>) -> Result<serde_js
 /// DNS 测速历史（最近 N 轮，测速页趋势对比用）。
 #[tauri::command]
 pub fn sk_dns_speed_history() -> serde_json::Value {
-    let h = crate::dnshistory::load(&crate::paths::dns_speed_history_file());
+    let h = crate::net::history::load(&crate::paths::dns_speed_history_file());
     serde_json::to_value(&h.rounds).unwrap_or_else(|_| serde_json::json!([]))
 }
 
@@ -356,7 +356,7 @@ pub fn sk_dns_speed_history() -> serde_json::Value {
 pub fn sk_speedtest_status() -> serde_json::Value {
     serde_json::json!({
         "available": true,
-        "urls": crate::netdl::TEST_URLS,
+        "urls": crate::net::dl::TEST_URLS,
     })
 }
 
@@ -374,13 +374,13 @@ pub fn sk_palette_query(q: String) -> Vec<serde_json::Value> {
 /// 否则首个源会立刻中断。
 #[tauri::command]
 pub fn sk_download_cancel() {
-    crate::netdl::cancel();
+    crate::net::dl::cancel();
 }
 
 /// 清除测速中止标志（前端「开始测速」时调用，确保新一轮不受上轮取消影响）。
 #[tauri::command]
 pub fn sk_download_reset() {
-    crate::netdl::reset_cancel();
+    crate::net::dl::reset_cancel();
 }
 
 /// 单源下载测速（前端逐源调用实现真进度：每源完成即点亮一行）。
@@ -388,20 +388,20 @@ pub fn sk_download_reset() {
 pub async fn sk_download_test_one(
     url: String,
     seconds: u64,
-) -> Result<crate::netdl::UrlResult, String> {
+) -> Result<crate::net::dl::UrlResult, String> {
     let secs = seconds.clamp(2, 30);
-    let r = tauri::async_runtime::spawn_blocking(move || crate::netdl::probe_one(&url, secs))
+    let r = tauri::async_runtime::spawn_blocking(move || crate::net::dl::probe_one(&url, secs))
         .await
         .map_err(|e| format!("测速线程失败: {e}"))?;
     Ok(r)
 }
 
 /// 下载测速：逐 URL 独立开窗 `seconds` 秒（WinInet 系统栈，零新依赖）。
-/// 阻塞池执行；`netdl::cancel()` 支持中止（已计量 URL 照常返回）。
+/// 阻塞池执行；`dl::cancel()` 支持中止（已计量 URL 照常返回）。
 #[tauri::command]
 pub async fn sk_download_test(seconds: u64) -> Result<serde_json::Value, String> {
     let secs = seconds.clamp(2, 30);
-    let results = tauri::async_runtime::spawn_blocking(move || crate::netdl::run_probe_all(secs))
+    let results = tauri::async_runtime::spawn_blocking(move || crate::net::dl::run_probe_all(secs))
         .await
         .map_err(|e| format!("测速线程失败: {e}"))?;
     let ok = results.iter().filter(|r| r.ok).count();

@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::dnsclient;
 use crate::icmp;
+use crate::net::client;
 use crate::snapshot::{RouteEntry, Snapshot};
 use crate::w32::{self, RegValue};
 
