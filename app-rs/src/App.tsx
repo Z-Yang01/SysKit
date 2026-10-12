@@ -183,6 +183,23 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Ctrl+1..8 快速切换侧栏页面（桌面工具的经典操作）。输入框聚焦时放行
+  // ——数字键在编辑语境是输入，不是导航；仅主窗口键盘事件，面板窗口不受影响。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.altKey || e.shiftKey) return;
+      const n = Number(e.key);
+      if (!Number.isInteger(n) || n < 1 || n > ORDER_KEYS.length) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
+      e.preventDefault();
+      setPage(ORDER_KEYS[n - 1]);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // 设置页保存 → 后端广播 sk://settings-changed → 这里同步运行时状态。
   // 深色开关此前只写文件不改这个 state，勾选后界面永不变暗（CDP 实锤回归）。
   useEffect(() => {
@@ -331,6 +348,7 @@ export function App() {
         >
           <div>快速粘贴：{hotkeys.quick}</div>
           <div>命令面板：{hotkeys.palette}</div>
+          <div>切页：Ctrl+1~8</div>
           <div style={{ marginTop: 4, opacity: 0.7 }}>可在「设置」改键</div>
         </div>
       </div>

@@ -584,7 +584,20 @@ export function ToolboxClipboard() {
         </div>
 
         {rows.length === 0 ? (
-          <Empty description={keyword || kind ? "没有匹配的条目" : "剪贴板历史为空"} />
+          keyword || kind ? (
+            <Empty description="没有匹配的条目" />
+          ) : (
+            // 空态行动化：历史为空且监听未开时，直接给开启按钮——否则用户
+            // 要自己去顶部工具条找 ⏸/▶ 开关（UX 走查发现的断头路）
+            <div className="flex flex-col items-center gap-3 py-8">
+              <Empty description="剪贴板历史为空" />
+              {!enabled && (
+                <Button variant="primary" size="sm" onClick={watchToggleModal}>
+                  ▶ 开启剪贴板监听
+                </Button>
+              )}
+            </div>
+          )
         ) : (
           <>
             <div className="flex flex-col">
