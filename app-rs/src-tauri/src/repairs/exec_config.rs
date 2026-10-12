@@ -605,4 +605,3 @@ pub fn pick_adapter() -> Option<String> {
 pub(super) fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
 }
-

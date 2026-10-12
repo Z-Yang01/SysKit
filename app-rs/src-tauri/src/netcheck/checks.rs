@@ -820,4 +820,3 @@ pub fn chk_proxy() -> CheckResult {
     }
     r
 }
-

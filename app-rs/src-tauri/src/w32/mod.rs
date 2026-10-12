@@ -62,7 +62,6 @@ fn null_hwnd() -> Option<HWND> {
     Some(HWND(std::ptr::null_mut()))
 }
 
-
 mod clipboard;
 mod crypto;
 mod input;

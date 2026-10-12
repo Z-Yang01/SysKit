@@ -163,4 +163,3 @@ pub const DEFERRED_ACTION_IDS: [&str; 0] = [];
 pub fn is_deferred(id: &str) -> bool {
     DEFERRED_ACTION_IDS.contains(&id)
 }
-

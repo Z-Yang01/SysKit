@@ -345,4 +345,3 @@ fn extract_sc_field(text: &str, field: &str) -> Option<String> {
     }
     None
 }
-

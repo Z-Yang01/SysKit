@@ -81,7 +81,6 @@ impl CheckResult {
     }
 }
 
-
 mod checks;
 mod probe;
 

@@ -554,8 +554,7 @@ pub async fn sk_top_procs(limit: Option<usize>) -> Result<serde_json::Value, Str
             "total_bytes": total,
             "limit": n,
         });
-        *TOP_PROCS_CACHE.lock_ok() =
-            Some((std::time::Instant::now(), value.clone()));
+        *TOP_PROCS_CACHE.lock_ok() = Some((std::time::Instant::now(), value.clone()));
         Ok(value)
     })
     .await

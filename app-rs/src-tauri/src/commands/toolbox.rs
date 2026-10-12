@@ -725,4 +725,3 @@ pub async fn sk_lan_scan(prefix: Option<String>) -> Result<serde_json::Value, St
     .await
     .map_err(|e| format!("扫描线程失败: {e}"))?
 }
-

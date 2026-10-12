@@ -578,4 +578,3 @@ fn mac_random_apply(p: &BTreeMap<String, String>, enable: bool, verb: &str) -> R
         output: dir,
     }
 }
-
