@@ -20,7 +20,7 @@ import {
   rowLabel,
   type ClipRow,
   type PanelState,
-} from "../src/pastePanel";
+} from "../src/pasteState";
 
 function row(idx: number, text: string, kind = "text", pinned = false): ClipRow {
   return { idx, ts: 1000 - idx, text, kind, pinned, data: "", preview: text.slice(0, 80) };

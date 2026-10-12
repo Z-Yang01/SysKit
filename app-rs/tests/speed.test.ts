@@ -26,7 +26,7 @@ import {
   dnsHistorySeries,
   dnsTrend,
   type DnsSpeedRound,
-} from "../src/speed";
+} from "../src/dnsSpeed";
 
 const probe = (over: Partial<DnsProbe> = {}): DnsProbe => ({
   server: "223.5.5.5",
