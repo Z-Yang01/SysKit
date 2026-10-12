@@ -33,33 +33,9 @@ pub fn sk_palette_actions(query: Option<String>) -> serde_json::Value {
     })
 }
 
-/// 内置动作（页面跳转）。页内 Tab 由前端按当前页面结构补充。
+/// 内置动作：v1.4 简约化后与 crate::palette::builtin_actions 单源对齐
+/// （侧栏 6 页 + 13 个页内 tab 深链）。此前这里维护过一份独立的 10 项
+/// 旧表（含已撤并的 clipboard/logs 独立页），是双源漂移的事故源。
 fn builtin_actions() -> Vec<crate::palette::PaletteAction> {
-    const PAGES: [(&str, &str, &str); 10] = [
-        ("nav:overview", "打开 概览", "overview"),
-        ("nav:clipboard", "打开 剪贴板", "clipboard"),
-        ("nav:diagnose", "打开 诊断与修复", "diagnose"),
-        ("nav:toolbox", "打开 工具箱", "toolbox"),
-        ("nav:system", "打开 系统助手", "system"),
-        ("nav:vault", "打开 密码库", "vault"),
-        ("nav:settings", "打开 设置 / 日志", "settings"),
-        ("nav:hosts", "打开 Hosts 编辑", "toolbox"),
-        ("nav:ports", "打开 端口 / 局域网", "toolbox"),
-        ("nav:dns", "打开 DNS / 子网 / ping", "toolbox"),
-    ];
-    PAGES
-        .iter()
-        .map(|(id, label, page)| crate::palette::PaletteAction {
-            id: (*id).to_string(),
-            label: (*label).to_string(),
-            hint: "页面跳转".to_string(),
-            keywords: vec![
-                "goto".to_string(),
-                "页面".to_string(),
-                "打开".to_string(),
-                (*page).to_string(),
-            ],
-            source: "内置".to_string(),
-        })
-        .collect()
+    crate::palette::builtin_actions()
 }

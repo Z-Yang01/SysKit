@@ -24,7 +24,7 @@ import { ToolboxAppNet } from "./ToolboxAppNet";
 import { ToolboxQr } from "./ToolboxQr";
 import { SystemPage } from "./SystemPage";
 import { VaultPage } from "./VaultPage";
-import { SettingsView, LogsView } from "./SettingsView";
+import { SettingsView } from "./SettingsView";
 import type { SettingsAll } from "./settingsPage";
 import { applyHotkeyEcho, type HotkeyHints } from "./settingsPage";
 import { applyTheme, palette, type Palette } from "./theme";
@@ -56,27 +56,40 @@ function Pending({
   );
 }
 
-/** 页名 ↔ Python stack 索引（last_page 往返契约，顺序勿动）。 */
-const ORDER_KEYS = [
-  "overview",
-  "clipboard",
-  "diagnose",
-  "toolbox",
-  "system",
-  "vault",
-  "settings",
-  "logs",
-];
+/** 页名 ↔ last_page 索引（v1.4 简约化后 6 页；旧 8 索引迁移见 migrateLegacyPage）。
+ *  顺序勿动：索引持久化契约。 */
+const ORDER_KEYS = ["overview", "diagnose", "toolbox", "system", "vault", "settings"];
+
+/** 旧 8 页索引（v1.4 前）→ 新 6 页 + 可选子 tab。clipboard 并入工具页，
+ *  日志并入设置页——功能不删，只收进子 tab。 */
+function migrateLegacyPage(idx: number): { page: string; tab?: { kind: "tool" | "setting"; key: string } } {
+  switch (idx) {
+    case 1:
+      return { page: "toolbox", tab: { kind: "tool", key: "clipboard" } };
+    case 7:
+      return { page: "settings", tab: { kind: "setting", key: "logs" } };
+    case 2:
+      return { page: "diagnose" };
+    case 3:
+      return { page: "toolbox" };
+    case 4:
+      return { page: "system" };
+    case 5:
+      return { page: "vault" };
+    case 6:
+      return { page: "settings" };
+    default:
+      return { page: "overview" }; // 0 与越界回落概览
+  }
+}
 
 const NAV_ITEMS = [
   { key: "overview", label: "🏠 概览 / 网络监控" },
-  { key: "clipboard", label: "📋 剪贴板历史" },
   { key: "diagnose", label: "🔍 诊断 / 修复" },
-  { key: "toolbox", label: "⚡ 工具箱" },
-  { key: "system", label: "💼 系统助手" },
+  { key: "toolbox", label: "🧰 工具" },
+  { key: "system", label: "💼 系统" },
   { key: "vault", label: "🔒 密码库" },
   { key: "settings", label: "⚙ 设置" },
-  { key: "logs", label: "📜 日志" },
 ];
 
 export function App() {
@@ -104,8 +117,16 @@ export function App() {
         const dark = all.items?.find((i) => i.key === "dark_mode")?.current;
         if (dark === true) setDark(true);
         const idx = Number(all.items?.find((i) => i.key === "last_page")?.current ?? 0);
-        if (Number.isInteger(idx) && idx >= 0 && idx < ORDER_KEYS.length) {
-          setPageState(ORDER_KEYS[idx]);
+        if (Number.isInteger(idx) && idx >= 0) {
+          // 旧 8 页索引迁移；新索引直接对位
+          if (idx < ORDER_KEYS.length) {
+            setPageState(ORDER_KEYS[idx]);
+          } else {
+            const m = migrateLegacyPage(idx);
+            setPageState(m.page);
+            if (m.tab?.kind === "tool") setToolboxTab(m.tab.key);
+            if (m.tab?.kind === "setting") setSettingsTab(m.tab.key);
+          }
         }
       })
       .catch(() => {});
@@ -234,6 +255,7 @@ export function App() {
         if (ORDER_KEYS.includes(p)) setPage(p);
         if (p === "toolbox" && tab) setToolboxTab(tab);
         if (p === "system" && tab) setSystemTab(tab);
+        if (p === "settings" && tab) setSettingsTab(tab);
         if (quick) setQuickDiagRequest((n) => n + 1);
       },
     );
@@ -264,15 +286,24 @@ export function App() {
   }, [systemTab]);
   // palette quick:diag 的递增信号：Diagnose 挂载/更新时消费一次
   const [quickDiagRequest, setQuickDiagRequest] = useState(0);
+  // 设置页子 tab 记忆（logs/monitor 深链用，与工具页同手法）
+  const [settingsTab, setSettingsTab] = useState<string>(() => {
+    const v = localStorage.getItem("sk.settingsTab");
+    return v || "settings";
+  });
+  useEffect(() => {
+    localStorage.setItem("sk.settingsTab", settingsTab);
+  }, [settingsTab]);
+
   const pages: Record<string, React.ReactNode> = {
     overview: <Dashboard dark={dark} />,
-    clipboard: <ToolboxClipboard />,
     diagnose: <Diagnose quickRequest={quickDiagRequest} />,
     toolbox: (
       <Tabs
         activeKey={toolboxTab}
         onChange={setToolboxTab}
         items={[
+          { key: "clipboard", label: "剪贴板", children: <ToolboxClipboard /> },
           { key: "hosts", label: "Hosts 编辑", children: <ToolboxHosts /> },
           { key: "ports", label: "端口 / 局域网", children: <ToolboxPorts /> },
           { key: "dns", label: "DNS / 子网 / ping", children: <ToolboxDns /> },
@@ -284,8 +315,7 @@ export function App() {
     ),
     system: <SystemPage initialTab={systemTab} onTabChange={setSystemTab} />,
     vault: <VaultPage />,
-    settings: <SettingsView />,
-    logs: <LogsView />,
+    settings: <SettingsView initialTab={settingsTab} onTabChange={setSettingsTab} />,
   };
 
   return (
@@ -348,7 +378,7 @@ export function App() {
         >
           <div>快速粘贴：{hotkeys.quick}</div>
           <div>命令面板：{hotkeys.palette}</div>
-          <div>切页：Ctrl+1~8</div>
+          <div>切页：Ctrl+1~6</div>
           <div style={{ marginTop: 4, opacity: 0.7 }}>可在「设置」改键</div>
         </div>
       </div>

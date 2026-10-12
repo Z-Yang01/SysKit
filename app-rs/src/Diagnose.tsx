@@ -65,6 +65,7 @@ import { statusLabel } from "./repair";
 import { Badge, Button, Card, CardBody, CardHeader, CardTitle, Empty, Input, Progress, Switch, Table, type Column } from "./ui";
 import { Alert } from "./ui/alert";
 import { confirm } from "./ui/confirm";
+import { Dropdown } from "./ui/dropdown";
 import { Tooltip as UiTooltip } from "./ui/tooltip";
 import { useToast } from "./ui/toast";
 
@@ -756,41 +757,8 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         <CardBody>
           <div className="flex flex-col gap-2.5">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="sk-hint select-none">只看未通过</span>
-              <Switch checked={failedOnly} onChange={setFailedOnly} aria-label="只看未通过" />
-              <span className="sk-hint select-none">含完整信息</span>
-              <Switch checked={fullInfo} onChange={setFullInfo} aria-label="含完整信息" />
-              <Button
-                size="sm"
-                disabled={!report || diagBusy !== ""}
-                onClick={() => {
-                  if (!report || diagBusy) return;
-                  navigator.clipboard
-                    .writeText(formatReportForCopy(report, new Date(), fullInfo))
-                    .then(() =>
-                      toast.success(fullInfo ? "诊断报告已复制（含完整信息）" : "诊断报告已复制（已脱敏）"),
-                    )
-                    .catch(() => toast.error("复制失败：剪贴板不可用"));
-                }}
-              >
-                复制报告
-              </Button>
-              <Button
-                size="sm"
-                disabled={!report || diagBusy !== ""}
-                onClick={() => {
-                  if (!report || diagBusy) return;
-                  void invoke<string>("sk_diag_export", {
-                    content: formatReportForCopy(report, new Date(), fullInfo),
-                  })
-                    .then((target) => {
-                      if (target) toast.success(`已导出：${target}`);
-                    })
-                    .catch((e) => toast.error(String(e)));
-                }}
-              >
-                导出报告
-              </Button>
+              {/* v1.4 简约化：主操作 3 钮 + 「更多」下拉（低频的复制/导出/重查收进去）；
+                  两个结果视图开关收成行尾文字开关，不占按钮区 */}
               <Button
                 variant="primary"
                 size="sm"
@@ -802,20 +770,6 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
               </Button>
               <Button
                 size="sm"
-                onClick={() => void recheckAllFailed()}
-                loading={batchRechecking}
-                disabled={
-                  !!diagBusy ||
-                  comboRun !== null ||
-                  recheckId !== "" ||
-                  !report ||
-                  !report.results.some((r) => r.status === "fail" || r.status === "warn")
-                }
-              >
-                重查失败项
-              </Button>
-              <Button
-                size="sm"
                 onClick={() => void runDiag(true)}
                 loading={diagBusy === "quick"}
                 disabled={diagBusy === "full" || comboRun !== null}
@@ -823,7 +777,6 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
                 快速检测
               </Button>
               <Button
-                variant="primary"
                 size="sm"
                 onClick={() => void runDiag(false)}
                 loading={diagBusy === "full"}
@@ -831,6 +784,57 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
               >
                 完整检测
               </Button>
+              <Dropdown
+                trigger={
+                  <Button size="sm" aria-label="更多报告操作">
+                    更多…
+                  </Button>
+                }
+                items={[
+                  {
+                    key: "recheck",
+                    label: batchRechecking ? "正在重查失败项…" : "重查失败项",
+                    disabled:
+                      !!diagBusy ||
+                      comboRun !== null ||
+                      recheckId !== "" ||
+                      !report ||
+                      !report.results.some((r) => r.status === "fail" || r.status === "warn"),
+                  },
+                  { key: "sep1", type: "divider", label: "" },
+                  { key: "copy", label: "复制报告", disabled: !report || diagBusy !== "" },
+                  { key: "export", label: "导出报告…", disabled: !report || diagBusy !== "" },
+                ]}
+                onItemClick={(key) => {
+                  if (key === "recheck") void recheckAllFailed();
+                  else if (key === "copy" && report && !diagBusy) {
+                    navigator.clipboard
+                      .writeText(formatReportForCopy(report, new Date(), fullInfo))
+                      .then(() =>
+                        toast.success(fullInfo ? "诊断报告已复制（含完整信息）" : "诊断报告已复制（已脱敏）"),
+                      )
+                      .catch(() => toast.error("复制失败：剪贴板不可用"));
+                  } else if (key === "export" && report && !diagBusy) {
+                    void invoke<string>("sk_diag_export", {
+                      content: formatReportForCopy(report, new Date(), fullInfo),
+                    })
+                      .then((target) => {
+                        if (target) toast.success(`已导出：${target}`);
+                      })
+                      .catch((e) => toast.error(String(e)));
+                  }
+                }}
+              />
+              <span className="ml-auto flex items-center gap-3">
+                <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-sk-sub">
+                  只看未通过
+                  <Switch checked={failedOnly} onChange={setFailedOnly} aria-label="只看未通过" />
+                </label>
+                <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-sk-sub">
+                  完整信息
+                  <Switch checked={fullInfo} onChange={setFullInfo} aria-label="含完整信息" />
+                </label>
+              </span>
             </div>
 
             {report ? (

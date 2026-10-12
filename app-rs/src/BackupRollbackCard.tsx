@@ -117,7 +117,9 @@ export function BackupRollbackCard() {
       <CardBody>
         <div className="sk-hint mb-2">修复前的原值备份，可一键还原。</div>
         {sessions.length === 0 && !loading ? (
-          <Alert tone="info" title="还没有备份会话——执行任一改配置类修复动作后出现在这里" />
+          <Alert tone="info" title="还没有备份">
+          执行改配置类修复（如切换 DNS、关代理）前会自动备份原值，之后出现在这里。
+        </Alert>
         ) : (
           <Table<BackupSessionInfo>
             rowKey={(r) => `${r.legacy ? "L" : "N"}-${r.name}`}

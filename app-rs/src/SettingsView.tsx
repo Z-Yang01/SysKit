@@ -54,6 +54,7 @@ import { Switch } from "./ui";
 import { Tabs } from "./ui/tabs";
 import { Tooltip } from "./ui/tooltip";
 import { useToast } from "./ui/toast";
+import { Dropdown } from "./ui/dropdown";
 import { Modal } from "./ui/modal";
 
 /** 热键回退事件里的键名 → 界面名称（与 settings.rs Decoration label 对齐）。 */
@@ -193,6 +194,67 @@ function SettingRow({
   );
 }
 
+/** 自动修复组只露 1 个总开关；5 个内部调参（轮询间隔/等级/阈值/冷却×2）
+ * 默认折叠进「高级参数」，展开才见——普通用户几乎不动它们（简约化专项）。 */
+const ADVANCED_KEYS = new Set([
+  "poll_interval_sec",
+  "auto_repair_max_level",
+  "fail_threshold",
+  "cooldown_sec",
+  "level3_cooldown_sec",
+]);
+
+function SettingGroupCard({
+  group,
+  items,
+  onSave,
+}: {
+  group: string;
+  items: SettingItem[];
+  onSave: (key: string, value: unknown, desc: string) => Promise<void>;
+}) {
+  const hasAdvanced = group === "自动修复" && items.some((i) => ADVANCED_KEYS.has(i.key));
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const basic = hasAdvanced ? items.filter((i) => !ADVANCED_KEYS.has(i.key)) : items;
+  const advanced = hasAdvanced ? items.filter((i) => ADVANCED_KEYS.has(i.key)) : [];
+  return (
+    <Card className="mb-2.5">
+      <CardHeader>
+        <CardTitle>{group}</CardTitle>
+      </CardHeader>
+      <CardBody>
+        <table className="w-full border-collapse">
+          <tbody>
+            {basic.map((it) => (
+              <SettingRow key={it.key} item={it} onSave={onSave} />
+            ))}
+          </tbody>
+        </table>
+        {hasAdvanced && (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="mt-1 cursor-pointer border-0 bg-transparent px-2 text-sm text-sk-sub hover:text-sk-text"
+            >
+              {showAdvanced ? "▾" : "▸"} 高级参数（{advanced.length}）
+            </button>
+            {showAdvanced && (
+              <table className="w-full border-collapse">
+                <tbody>
+                  {advanced.map((it) => (
+                    <SettingRow key={it.key} item={it} onSave={onSave} />
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 function SettingsPanel() {
   const toast = useToast();
   const [all, setAll] = useState<SettingsAll | null>(null);
@@ -250,7 +312,11 @@ function SettingsPanel() {
     [load, toast],
   );
 
-  const items = all?.items ?? [];
+  // 内部迁移标志不进界面（DEFAULTS/后端契约不动，纯展示层过滤）
+  const items = useMemo(
+    () => (all?.items ?? []).filter((i) => i.key !== "migrated_v2"),
+    [all],
+  );
 
   // 工具条过滤三件套：搜索词 / 只看已改动 / 左侧选中分类
   const [query, setQuery] = useState("");
@@ -368,18 +434,27 @@ function SettingsPanel() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <Button size="sm" onClick={() => void exportSettings()}>
-          导出
-        </Button>
-        <Button size="sm" onClick={() => void importSettings()}>
-          导入
-        </Button>
-        <Button size="sm" onClick={() => void load()}>
-          重新读取
-        </Button>
-        <Button size="sm" variant="danger" onClick={reset}>
-          恢复默认
-        </Button>
+        {/* v1.4 简约化：低频维护操作收进「维护」下拉（导出/导入/重读/恢复默认） */}
+        <Dropdown
+          trigger={
+            <Button size="sm" aria-label="设置维护操作">
+              维护…
+            </Button>
+          }
+          items={[
+            { key: "export", label: "导出到文件…" },
+            { key: "import", label: "从文件导入…" },
+            { key: "sep", type: "divider", label: "" },
+            { key: "reload", label: "重新读取" },
+            { key: "reset", label: "恢复默认…", danger: true },
+          ]}
+          onItemClick={(key) => {
+            if (key === "export") void exportSettings();
+            else if (key === "import") void importSettings();
+            else if (key === "reload") void load();
+            else if (key === "reset") reset();
+          }}
+        />
       </div>
 
       {/* 双栏：左侧分类导航（稳定顺序 + 语义化角标：总数 / 红色「已改 N」），右侧只渲染选中分类 */}
@@ -421,20 +496,7 @@ function SettingsPanel() {
             <Empty description={emptyText} />
           ) : (
             grouped.map((g) => (
-              <Card key={g.group} className="mb-2.5">
-                <CardHeader>
-                  <CardTitle>{g.group}</CardTitle>
-                </CardHeader>
-                <CardBody>
-                  <table className="w-full border-collapse">
-                    <tbody>
-                      {g.items.map((it) => (
-                        <SettingRow key={it.key} item={it} onSave={save} />
-                      ))}
-                    </tbody>
-                  </table>
-                </CardBody>
-              </Card>
+              <SettingGroupCard key={g.group} group={g.group} items={g.items} onSave={save} />
             ))
           )}
         </div>
@@ -567,25 +629,31 @@ function LogPanel() {
   );
 }
 
-/** 设置页（设置 + 后台监控两个页签；日志 v1.4 起独立侧栏入口）。 */
-export function SettingsView() {
+/** 设置页（设置 / 后台监控 / 日志三个页签）。
+ *  v1.4 简约化：日志从独立侧栏入口收进本页（侧栏 8→6 的一环）；
+ *  LogPanel 自带内容卡，外层不再套卡。受控 tab 供 palette 深链与
+ *  last_page 迁移（旧 logs 索引 → settings+logs）。 */
+export function SettingsView({
+  initialTab,
+  onTabChange,
+}: {
+  initialTab?: string;
+  onTabChange?: (key: string) => void;
+}) {
   return (
     <Card>
       <Tabs
+        {...(initialTab !== undefined
+          ? { activeKey: initialTab, onChange: (k: string) => onTabChange?.(k) }
+          : {})}
         items={[
           { key: "settings", label: "设置", children: <SettingsPanel /> },
           { key: "monitor", label: "后台监控", children: <MonitorPanel /> },
+          { key: "logs", label: "日志", children: <LogPanel /> },
         ]}
       />
     </Card>
   );
-}
-
-/** 日志页（独立侧栏入口，v1.4 从「设置 / 日志」拆出）。
- *  LogPanel 自带一张内容卡，外层不再套卡——嵌套双卡是深色走查实锤的
- * 视觉噪音（双层玻璃描边 + 双层内边距）。 */
-export function LogsView() {
-  return <LogPanel />;
 }
 
 /** 后台监控 / 自动修复的只读视图与"立即检查"。 */

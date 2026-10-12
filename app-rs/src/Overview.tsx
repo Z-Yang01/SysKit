@@ -498,7 +498,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
                 rowKey={(r) => r.date}
                 dataSource={report}
                 columns={reportColumns}
-                empty={<Empty description="暂无日报数据" />}
+                empty={<Empty description="暂无日报——挂机一天后这里会有断网与流量统计" />}
               />
             </div>
           </CardBody>
@@ -529,7 +529,9 @@ export function Dashboard({ dark }: { dark: boolean }) {
                   return (
                     <Empty
                       description={
-                        events.length === 0 ? "暂无事件" : "该类型暂无事件"
+                        events.length === 0
+                          ? "暂无事件——断网/恢复、质量告警、流量提醒都会写入这里"
+                          : "该类型暂无事件"
                       }
                     />
                   );

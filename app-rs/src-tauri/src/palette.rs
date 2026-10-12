@@ -574,14 +574,14 @@ pub fn parse_custom_commands(raw: &str) -> Vec<CustomCommand> {
 ///
 /// 自定义命令照旧走 custom:*。
 pub fn builtin_actions() -> Vec<PaletteAction> {
-    let nav_pages: [(&str, &str); 7] = [
+    // v1.4 简约化：侧栏 6 页（clipboard 并入工具页、日志并入设置页的子 tab）
+    let nav_pages: [(&str, &str); 6] = [
         ("overview", "🏠 概览 / 网络监控"),
-        ("clipboard", "📋 剪贴板历史"),
         ("diagnose", "🔍 诊断 / 修复"),
-        ("toolbox", "⚡ 工具箱"),
-        ("system", "💼 系统助手"),
+        ("toolbox", "🧰 工具"),
+        ("system", "💼 系统"),
         ("vault", "🔒 密码库"),
-        ("settings", "⚙ 设置 / 日志"),
+        ("settings", "⚙ 设置"),
     ];
     let mut out: Vec<PaletteAction> = nav_pages
         .iter()
@@ -594,19 +594,20 @@ pub fn builtin_actions() -> Vec<PaletteAction> {
         })
         .collect();
     // 页内 tab（对齐 Python 的页内 Tab 动作；前端映射到子 tab key）
-    let tabs: [(&str, &str, &str, &str); 12] = [
-        ("toolbox", "hosts", "⚡ 工具箱", "Hosts 编辑"),
-        ("toolbox", "ports", "⚡ 工具箱", "端口 / 局域网"),
-        ("toolbox", "dns", "⚡ 工具箱", "DNS / 子网 / ping"),
-        ("toolbox", "speed", "⚡ 工具箱", "测速"),
-        ("toolbox", "appnet", "⚡ 工具箱", "应用联网"),
-        ("toolbox", "qrcode", "⚡ 工具箱", "二维码识别"),
-        ("system", "perf", "💼 系统助手", "性能监控"),
-        ("system", "startup", "💼 系统助手", "启动项管理"),
-        ("system", "disk", "💼 系统助手", "磁盘空间"),
-        ("system", "clean", "💼 系统助手", "垃圾清理"),
-        ("system", "battery", "💼 系统助手", "电池健康"),
-        ("system", "modes", "💼 系统助手", "场景模式"),
+    let tabs: [(&str, &str, &str, &str); 13] = [
+        ("toolbox", "clipboard", "🧰 工具", "剪贴板历史"),
+        ("toolbox", "hosts", "🧰 工具", "Hosts 编辑"),
+        ("toolbox", "ports", "🧰 工具", "端口 / 局域网"),
+        ("toolbox", "dns", "🧰 工具", "DNS / 子网 / ping"),
+        ("toolbox", "speed", "🧰 工具", "测速"),
+        ("toolbox", "appnet", "🧰 工具", "应用联网"),
+        ("toolbox", "qrcode", "🧰 工具", "二维码识别"),
+        ("system", "perf", "💼 系统", "性能监控"),
+        ("system", "startup", "💼 系统", "启动项管理"),
+        ("system", "disk", "💼 系统", "磁盘空间"),
+        ("system", "clean", "💼 系统", "垃圾清理"),
+        ("system", "battery", "💼 系统", "电池健康"),
+        ("system", "modes", "💼 系统", "场景模式"),
     ];
     for (page, tab, page_label, tab_label) in tabs {
         out.push(PaletteAction {
