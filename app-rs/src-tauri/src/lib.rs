@@ -1,15 +1,26 @@
 //! SysKit Rust 后端：Tauri Builder + 模块聚合。
 //!
-//! 里程碑：M0 脚手架/门禁（已完成）；**M1 托盘 + 三热键 + 快捷粘贴闭环**（本版）。
-//! 模块地图：
-//! - 数据层：`paths`（目录拓扑）、`settings`（DEFAULTS + 类型收敛）、`stores`
-//!   （原子 JSON）、`secure_store`（DPAPI 容器，与 Python 逐字节对齐）、
-//!   `clipboard_history`（条目 schema + 置顶/淘汰/搜索）；
-//! - Win32 层：`w32`（唯一 FFI 出口）、`hotkey`（解析 + 消息泵）、`input`
-//!   （焦点守卫 + SendInput）、`clipboard_write`（text/html/image/file 写回）；
-//! - 外壳层：`tray`、`input_panel`（无边框呼出面板）、`commands`（invoke 接口）。
+//! 模块地图（v1.4 域目录化后，与下方 mod 分组注释一一对应）：
+//! - 命令层：`commands`（invoke 接口，按域拆 clipboard/diag/network/palette/
+//!   settings_cmds/system/toolbox/vault）；
+//! - 外壳层：`tray`（托盘）、`input_panel`（无边框呼出面板）、`paste_guard`
+//!   （粘贴守卫链）、`palette`（命令面板逻辑）、`hotkey`（解析+消息泵）；
+//! - 网络域：`net`（DNS 客户端/测速/历史/下载测速）、`netcheck`（15 项检查）、
+//!   `netquality`（质量探测+告警）、`netstats`（日报聚合）、`icmp`、`wol`；
+//! - 应用网络域：`appnet`（防火墙管控 + ETW 流量）；
+//! - 剪贴板域：`clipboard_history/watch/write`、`cliprules`（规则引擎）、
+//!   `sensitive/sensrules`（敏感防护）、`dib/dhash`（位图/感知哈希）、`qrdecode`；
+//! - 密码库域：`vault`（crypto 加密层 / store SQLite / pwgen 生成器）；
+//! - 修复域：`repairs`（类型+注册表+三批执行器+backup/restore 备份回滚）；
+//! - 系统域：`disk`（空间概览+占用分析）、`cleanup`、`startup`、`modes`、`battery`、`hostsed`；
+//! - 遥测域：`telemetry`（core 采样纯逻辑 / hub 运行时线程）、`rate_stats`
+//!   （多粒度流量桶）、`rate_store`（每日流量+事件落盘）；
+//! - 基础设施：`paths`（目录拓扑）、`settings`、`jsonio`（原子 JSON）、
+//!   `secure_store`（DPAPI 容器）、`logging`、`timefmt`、`snapshot`（系统快照）、
+//!   `subnet`、`portscan`、`monitor`（后台监控）、`wifi`、`test_support`、
+//!   `w32`（唯一 FFI 出口，input/clipboard/crypto/process/sysui 子模块）。
 //!
-//! 教训清单见 app-rs/README.md（M1 起点必读）。
+//! 教训清单见 app-rs/README.md。
 
 // 绞杀者迁移期的跨里程碑契约：这些函数/常量已按 Python 版逐条实现并带单测，
 // 但它们的**调用方**属于剩余工作——M6 密码库数据层、Step4 的 UNWIRED 五项
@@ -17,52 +28,71 @@
 // 覆盖范围是明确的、不掩盖错误——未使用变量/导入等仍按错误处理。
 // 上述两批落地后本豁免必须收窄（README「已知缺口」有跟踪项）。
 
-mod appnet;
-mod battery;
-mod cleanup;
-mod clipboard_history;
-mod clipboard_watch;
-mod clipboard_write;
-mod cliprules;
+// ============ 命令层（invoke 接口，按域拆分） ============
 mod commands;
-mod dhash;
-mod dib;
-mod disk;
-mod hostsed;
+
+// ============ 外壳层：托盘 / 面板 / 粘贴守卫 / 命令面板 / 热键 ============
 mod hotkey;
-mod icmp;
 mod input_panel;
-mod jsonio;
-mod logging;
-mod modes;
-mod monitor;
+mod palette;
+mod paste_guard;
+mod tray;
+
+// ============ 网络域 ============
+mod icmp;
 mod net;
 mod netcheck;
 mod netquality;
 mod netstats;
-mod palette;
-mod paste_guard;
-mod paths;
-mod portscan;
+mod wol;
+
+// ============ 应用网络域（防火墙管控 + ETW 流量） ============
+mod appnet;
+
+// ============ 剪贴板域 ============
+mod clipboard_history;
+mod clipboard_watch;
+mod clipboard_write;
+mod cliprules;
+mod dhash;
+mod dib;
 mod qrdecode;
-mod rate_stats;
-mod rate_store;
-mod repairs;
-mod secure_store;
 mod sensitive;
 mod sensrules;
+
+// ============ 密码库域（加密 / 存储 / 生成器） ============
+mod vault;
+
+// ============ 修复域（执行器 + 备份回滚） ============
+mod repairs;
+
+// ============ 系统域 ============
+mod battery;
+mod cleanup;
+mod disk;
+mod hostsed;
+mod modes;
+mod startup;
+
+// ============ 遥测域（采样纯逻辑 + 运行时线程 + 流量/事件桶） ============
+mod rate_stats;
+mod rate_store;
+mod telemetry;
+
+// ============ 基础设施（无业务语义的通用件） ============
+mod jsonio;
+mod logging;
+mod monitor;
+mod paths;
+mod portscan;
+mod secure_store;
 mod settings;
 mod snapshot;
-mod startup;
 mod subnet;
-mod telemetry;
 mod test_support;
 mod timefmt;
-mod tray;
-mod vault;
 mod w32;
 mod wifi;
-mod wol;
 
 use tauri::{Emitter, Manager};
 
