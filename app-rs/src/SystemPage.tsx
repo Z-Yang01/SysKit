@@ -33,6 +33,7 @@ import {
   type TopProcs,
   type WifiInfo,
 } from "./system";
+import { humanBytes as humanBytesPlain } from "./dashboard";
 import { Badge, Card, Empty, Table, type Column } from "./ui";
 import { Tabs } from "./ui/tabs";
 
@@ -223,7 +224,7 @@ const TopProcsCard = memo(function TopProcsCard({
       title: "内存",
       dataIndex: "bytes",
       width: 130,
-      render: (v: number) => humanBytes(v).replace("/s", ""),
+      render: (v: number) => humanBytesPlain(v),
     },
     {
       title: "占进程合计",
@@ -384,7 +385,7 @@ function PerfPanel() {
         <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
           <span className="text-[15px] font-semibold text-sk-text">WiFi 状态</span>
         </div>
-        <div className="px-4 pb-4 pt-1">
+        <div className={wifi?.connected ? "px-4 pb-4 pt-1" : "px-4 pb-2 pt-1"}>
           {wifi?.connected ? (
             <div className="grid grid-cols-1 gap-x-6 md:grid-cols-3">
               <KV label="网络">{wifi.ssid || <span className="sk-hint">隐藏网络</span>}</KV>
@@ -398,15 +399,13 @@ function PerfPanel() {
               <KV label="发送链路">{formatRate(wifi.tx_kbps)}</KV>
             </div>
           ) : (
-            <Empty
-              description={
-                wifi
-                  ? "未连接 WiFi（或本机无无线网卡）"
-                  : wifiFailed
-                    ? "读取 WiFi 状态失败（每 5 秒自动重试）"
-                    : "正在读取 WiFi 状态…"
-              }
-            />
+            <div className="sk-hint py-1 text-center text-[13px]">
+              {wifi
+                ? "未连接 WiFi（或本机无无线网卡）"
+                : wifiFailed
+                  ? "读取 WiFi 状态失败（每 5 秒自动重试）"
+                  : "正在读取 WiFi 状态…"}
+            </div>
           )}
         </div>
       </Card>

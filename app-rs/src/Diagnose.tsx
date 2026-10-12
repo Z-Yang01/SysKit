@@ -878,7 +878,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
                 </div>
               </div>
             ) : (
-              <Empty description="尚未检测。点「完整检测」运行全部 15 项网络检查（NlaSvc / 持久路由 / 静态 DNS / 代理 / 网关 / DNS 对比 / NCSI / 服务 / 路由 / IPv6 / WLAN …）；「快速检测」跳过 5 项慢速项。" />
+              <Empty description="尚未检测。「完整检测」跑全部 15 项；「快速检测」跳过慢速项。" />
             )}
           </div>
         </CardBody>

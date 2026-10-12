@@ -6,6 +6,8 @@
  * 逐轮补，界面用 Pending 明示而不是给空壳。
  */
 
+import { humanBytes as humanBytesPlain } from "./dashboard";
+
 /** 后端 `sk://tick` 事件与 `sk_wifi_info` 的 WiFi 字段。 */
 export interface WifiInfo {
   connected: boolean;
@@ -121,7 +123,8 @@ export function procRows(data: TopProcs | null): (ProcRow & { share: number })[]
 /** 进程采集摘要文案。 */
 export function procsSummary(data: TopProcs | null): string {
   if (!data) return "尚未采集";
-  return `共 ${data.count} 个进程 · 合计 ${humanBytes(data.total_bytes)} · 显示前 ${data.rows.length}`;
+  // 合计是内存量：用纯字节口径（dashboard 的 humanBytes），不带速率 /s
+  return `共 ${data.count} 个进程 · 合计 ${humanBytesPlain(data.total_bytes)} · 显示前 ${data.rows.length}`;
 }
 
 /** 磁盘读写速率（字节/秒 → 人类可读）。 */
