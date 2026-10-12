@@ -1,8 +1,8 @@
 //! Tauri 前端可调命令（`invoke` 接口）。所有命令都是薄封装，业务逻辑在各模块里。
 
-use crate::MutexExt;
 use crate::clipboard_history::ClipItem;
 use crate::settings;
+use crate::MutexExt;
 
 // ---------------- 按域拆分的子模块（v1.3 架构优化，渐进迁移） ----------------
 // re-export 保持 lib.rs 的 commands::sk_xxx 引用不变；尚未拆出的域
@@ -14,9 +14,9 @@ pub use toolbox::*;
 mod diag;
 pub use diag::*;
 mod clipboard;
-mod vault;
 mod settings_cmds;
 mod system;
+mod vault;
 pub use clipboard::*;
 mod palette;
 pub use palette::*;
@@ -169,7 +169,7 @@ mod tests {
                 .unwrap_or(0.0)
         };
         let unlocked_session = |tag: &str, idle_secs: f64| {
-            let mut c = crate::vault_crypto::VaultCrypto::with_path(
+            let mut c = crate::vault::crypto::VaultCrypto::with_path(
                 crate::paths::appdata_dir().join(format!("{tag}.key")),
             );
             c.setup(Some("pw")).unwrap();
@@ -292,8 +292,6 @@ mod tests {
         assert!(modes_run_plan("", (false, false)).is_empty());
     }
 
-    
-    
     #[test]
     fn source_has_no_raw_nul_bytes() {
         // sk_diag_export 的对话框过滤器曾把 \0 写成**裸 NUL 字节**：运行时

@@ -350,9 +350,9 @@ pub fn evaluate_alert(
     let gw_bad = g_loss >= loss_threshold_pct;
     let degraded = pub_bad || gw_bad;
     // 手写 map_or 而非 is_none_or：后者 1.82 才稳定，本仓 MSRV 1.77
-    let cooled = state
-        .last_notify
-        .map_or(true, |t| now.duration_since(t).as_secs() >= ALERT_COOLDOWN_SECS);
+    let cooled = state.last_notify.map_or(true, |t| {
+        now.duration_since(t).as_secs() >= ALERT_COOLDOWN_SECS
+    });
     if degraded && !state.alerting && cooled {
         state.alerting = true;
         state.last_notify = Some(now);
@@ -391,9 +391,7 @@ fn alert_text(
         }
         format!("网络质量劣化：{}", parts.join("；"))
     } else {
-        format!(
-            "网络质量恢复：网关丢包 {g_loss:.0}% · 公网丢包 {p_loss:.0}% / 平均 {p_avg:.0} ms"
-        )
+        format!("网络质量恢复：网关丢包 {g_loss:.0}% · 公网丢包 {p_loss:.0}% / 平均 {p_avg:.0} ms")
     }
 }
 
@@ -639,7 +637,7 @@ mod tests {
         let mut a = store();
         let now = timefmt::now_local();
         a.add(&sample(None, None, None), now); // 旧桶（全丢包）
-        // 挪到下一分钟：构造第二个桶
+                                               // 挪到下一分钟：构造第二个桶
         let later = now + chrono::Duration::minutes(1);
         a.add(&sample(Some(5.0), Some(50.0), None), later);
         a.add(&sample(None, Some(70.0), None), later);
@@ -664,25 +662,63 @@ mod tests {
         let mut st = alert_state();
         let t0 = std::time::Instant::now();
         // 冷启动即劣化：发告警
-        assert_eq!(evaluate_alert(&mut st, t0, Some((0.0, 0.0)), Some((300.0, 5.0)), 200.0, 20.0), Some(true));
+        assert_eq!(
+            evaluate_alert(
+                &mut st,
+                t0,
+                Some((0.0, 0.0)),
+                Some((300.0, 5.0)),
+                200.0,
+                20.0
+            ),
+            Some(true)
+        );
         // 持续劣化：不重复轰炸
         assert_eq!(
-            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(60), Some((0.0, 0.0)), Some((300.0, 50.0)), 200.0, 20.0),
+            evaluate_alert(
+                &mut st,
+                t0 + std::time::Duration::from_secs(60),
+                Some((0.0, 0.0)),
+                Some((300.0, 50.0)),
+                200.0,
+                20.0
+            ),
             None
         );
         // 冷却期内恢复：不通知
         assert_eq!(
-            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(120), Some((0.0, 0.0)), Some((30.0, 1.0)), 200.0, 20.0),
+            evaluate_alert(
+                &mut st,
+                t0 + std::time::Duration::from_secs(120),
+                Some((0.0, 0.0)),
+                Some((30.0, 1.0)),
+                200.0,
+                20.0
+            ),
             None
         );
         // 冷却过后仍正常：发恢复
         assert_eq!(
-            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS), Some((0.0, 0.0)), Some((30.0, 1.0)), 200.0, 20.0),
+            evaluate_alert(
+                &mut st,
+                t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS),
+                Some((0.0, 0.0)),
+                Some((30.0, 1.0)),
+                200.0,
+                20.0
+            ),
             Some(false)
         );
         // 恢复后正常：无动作
         assert_eq!(
-            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS + 60), Some((0.0, 0.0)), Some((30.0, 1.0)), 200.0, 20.0),
+            evaluate_alert(
+                &mut st,
+                t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS + 60),
+                Some((0.0, 0.0)),
+                Some((30.0, 1.0)),
+                200.0,
+                20.0
+            ),
             None
         );
     }
@@ -691,15 +727,42 @@ mod tests {
     fn alert_retrigger_respects_cooldown_and_thresholds() {
         let mut st = alert_state();
         let t0 = std::time::Instant::now();
-        assert_eq!(evaluate_alert(&mut st, t0, Some((0.0, 0.0)), Some((0.0, 100.0)), 200.0, 20.0), Some(true));
+        assert_eq!(
+            evaluate_alert(
+                &mut st,
+                t0,
+                Some((0.0, 0.0)),
+                Some((0.0, 100.0)),
+                200.0,
+                20.0
+            ),
+            Some(true)
+        );
         // 冷却内再次劣化（曾恢复态没变化）：无动作
         assert_eq!(
-            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(30), Some((0.0, 0.0)), Some((0.0, 100.0)), 200.0, 20.0),
+            evaluate_alert(
+                &mut st,
+                t0 + std::time::Duration::from_secs(30),
+                Some((0.0, 0.0)),
+                Some((0.0, 100.0)),
+                200.0,
+                20.0
+            ),
             None
         );
         // 丢包达阈值也触发（延迟为 0 全丢包时 avg=0 不误报延迟项）
         let mut st2 = alert_state();
-        assert_eq!(evaluate_alert(&mut st2, t0, Some((0.0, 0.0)), Some((0.0, 100.0)), 200.0, 50.0), Some(true));
+        assert_eq!(
+            evaluate_alert(
+                &mut st2,
+                t0,
+                Some((0.0, 0.0)),
+                Some((0.0, 100.0)),
+                200.0,
+                50.0
+            ),
+            Some(true)
+        );
         // 无样本窗口：不动作（含已告警态——探测静默不该发恢复）
         let mut st3 = alert_state();
         st3.alerting = true;
@@ -712,7 +775,14 @@ mod tests {
         let t0 = std::time::Instant::now();
         // 网关全丢包（公网正常也会跟着不可达，但触发不依赖公网窗口超阈）
         assert_eq!(
-            evaluate_alert(&mut st, t0, Some((0.0, 100.0)), Some((0.0, 0.0)), 200.0, 20.0),
+            evaluate_alert(
+                &mut st,
+                t0,
+                Some((0.0, 100.0)),
+                Some((0.0, 0.0)),
+                200.0,
+                20.0
+            ),
             Some(true)
         );
         // 文案点名「路由器/WiFi 链路」而不是公网
@@ -722,7 +792,14 @@ mod tests {
         assert!(!msg.contains("公网丢包"), "{msg}");
         // 两段都恢复正常 → 恢复文案
         assert_eq!(
-            evaluate_alert(&mut st, t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS), Some((1.0, 0.0)), Some((30.0, 0.0)), 200.0, 20.0),
+            evaluate_alert(
+                &mut st,
+                t0 + std::time::Duration::from_secs(ALERT_COOLDOWN_SECS),
+                Some((1.0, 0.0)),
+                Some((30.0, 0.0)),
+                200.0,
+                20.0
+            ),
             Some(false)
         );
     }

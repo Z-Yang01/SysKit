@@ -50,7 +50,6 @@ mod netstats;
 mod palette;
 mod paths;
 mod portscan;
-mod pwgen;
 mod qrdecode;
 mod rate_stats;
 mod rate_store;
@@ -68,8 +67,7 @@ mod telemetry_hub;
 mod test_support;
 mod timefmt;
 mod tray;
-mod vault_crypto;
-mod vault_store;
+mod vault;
 mod w32;
 mod wifi;
 mod wol;
@@ -181,7 +179,8 @@ pub(crate) trait MutexExt<T> {
 
 impl<T> MutexExt<T> for std::sync::Mutex<T> {
     fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

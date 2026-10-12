@@ -369,7 +369,7 @@ describe("生成面板接线（源码守卫）", () => {
  */
 describe("pwgen 字符集双端 parity（源码守卫）", () => {
   const rs = readFileSync(
-    resolve(__dirname, "../src-tauri/src/pwgen.rs"),
+    resolve(__dirname, "../src-tauri/src/vault/pwgen.rs"),
     "utf-8",
   ).replace(/\r\n/g, "\n");
 

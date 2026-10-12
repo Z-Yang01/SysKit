@@ -325,8 +325,7 @@ pub fn write_entries(
 
     let text = serialize(entries);
     // newline="\n" 等价物：serialize 出的就是裸 \n；原子替换复用 stores 原子写
-    crate::stores::atomic_write(p, text.as_bytes())
-        .map_err(|e| format!("写回 hosts 失败: {e}"))?;
+    crate::stores::atomic_write(p, text.as_bytes()).map_err(|e| format!("写回 hosts 失败: {e}"))?;
     Ok(dest)
 }
 

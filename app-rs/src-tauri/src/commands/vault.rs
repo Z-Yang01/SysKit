@@ -1,24 +1,24 @@
 //! M6 密码库命令：会话管理（解锁/重锁/信任窗）+ 数据层薄封装 + 密码生成。
-use crate::MutexExt;
 use super::copy_sensitive_text;
+use crate::MutexExt;
 
 // ---------------- M6 密码库（会话式：解锁后数据命令共享同一实例） ----------------
 
 /// 会话持有解锁后的 VaultCrypto；None = 未解锁。
 /// 旧实现每个命令各 new 一个实例——unlock 与数据命令不在同一实例上，
 /// 数据密钥根本传不过去（M6 接线时修正为托管会话）。
-pub struct VaultSession(pub std::sync::Mutex<Option<crate::vault_crypto::VaultCrypto>>);
+pub struct VaultSession(pub std::sync::Mutex<Option<crate::vault::crypto::VaultCrypto>>);
 
 /// 主密码免重复输入窗口的到期时刻（sk_vault_verify_password 成功时续期）。
 pub struct VaultTrust(pub std::sync::Mutex<Option<std::time::Instant>>);
 
 pub(crate) fn session_lock(
     session: &VaultSession,
-) -> Result<std::sync::MutexGuard<'_, Option<crate::vault_crypto::VaultCrypto>>, String> {
+) -> Result<std::sync::MutexGuard<'_, Option<crate::vault::crypto::VaultCrypto>>, String> {
     // 库表确保存在：所有 vault 命令都从这里进——曾经只有 sk_vault_sites 调了
     // init_db，"设好主密码→直接添加站点"会撞 no such table: sites（真机实证
     // 2026-10-04）。init_db 幂等且带进程级短路，放在公共入口零遗漏。
-    crate::vault_store::init_db().map_err(|e| format!("密码库初始化失败: {e}"))?;
+    crate::vault::store::init_db().map_err(|e| format!("密码库初始化失败: {e}"))?;
     // 自动重锁：vault_autolock_min>0 且**闲置**超过窗口 → 就地收锁。
     // 「闲置」= 距上次密码库操作（unlocked_at 会被每次放行的操作 touch 刷新），
     // 与 Python 侧 _ensure_unlocked → _restart_autolock 同口径——按"解锁那一刻"
@@ -61,14 +61,16 @@ pub(crate) fn vault_autolock_due(idle_secs: f64, min: i64) -> bool {
 /// MutexGuard::map 尚未稳定（mapped_lock_guards），不走它。
 fn session_get(
     session: &VaultSession,
-) -> Result<std::sync::MutexGuard<'_, Option<crate::vault_crypto::VaultCrypto>>, String> {
+) -> Result<std::sync::MutexGuard<'_, Option<crate::vault::crypto::VaultCrypto>>, String> {
     session_lock(session)
 }
 
 /// DPAPI 免密模式专用：状态命令里把自动解锁的实例复制进会话
 /// （本实例继续读 meta；数据密钥是随机 32B，重解锁无副作用）。
-fn reopen_unlocked(source: &crate::vault_crypto::VaultCrypto) -> crate::vault_crypto::VaultCrypto {
-    let mut n = crate::vault_crypto::VaultCrypto::with_path(source.path().to_path_buf());
+fn reopen_unlocked(
+    source: &crate::vault::crypto::VaultCrypto,
+) -> crate::vault::crypto::VaultCrypto {
+    let mut n = crate::vault::crypto::VaultCrypto::with_path(source.path().to_path_buf());
     let _ = n.unlock(None);
     n
 }
@@ -79,7 +81,7 @@ pub fn sk_vault_status(
     session: tauri::State<'_, VaultSession>,
     trust: tauri::State<'_, VaultTrust>,
 ) -> serde_json::Value {
-    let mut c = crate::vault_crypto::VaultCrypto::new();
+    let mut c = crate::vault::crypto::VaultCrypto::new();
     let path = c.path().to_string_lossy().to_string();
     let provisioned = c.is_provisioned();
     let meta = c.read_meta();
@@ -123,7 +125,7 @@ pub async fn sk_vault_setup(
     // 600k 次 PBKDF2 在主线程会明显卡顿，所以走阻塞线程池；
     // State 借用不能进 'static 闭包——本地实例跑完再进会话
     let (c, mode) = tauri::async_runtime::spawn_blocking(move || {
-        let mut c = crate::vault_crypto::VaultCrypto::new();
+        let mut c = crate::vault::crypto::VaultCrypto::new();
         if c.is_provisioned() {
             return Err(("密码库已初始化".to_string(), "dpapi"));
         }
@@ -154,7 +156,7 @@ pub async fn sk_vault_unlock(
     password: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let unlocked = tauri::async_runtime::spawn_blocking(move || {
-        let mut c = crate::vault_crypto::VaultCrypto::new();
+        let mut c = crate::vault::crypto::VaultCrypto::new();
         match c.unlock(password.as_deref()) {
             Ok(true) => Ok(c),
             Ok(false) => Err("解锁失败".to_string()),
@@ -218,7 +220,7 @@ pub async fn sk_vault_verify_password(
     password: String,
 ) -> Result<bool, String> {
     let ok = tauri::async_runtime::spawn_blocking(move || {
-        let c = crate::vault_crypto::VaultCrypto::new();
+        let c = crate::vault::crypto::VaultCrypto::new();
         c.verify_password(&password)
     })
     .await
@@ -265,8 +267,8 @@ pub fn sk_vault_sites(
     q: String,
 ) -> Result<serde_json::Value, String> {
     let _session = session_lock(&session)?;
-    crate::vault_store::init_db().map_err(|e| e.to_string())?;
-    let sites = crate::vault_store::search_sites(&q).map_err(|e| e.to_string())?;
+    crate::vault::store::init_db().map_err(|e| e.to_string())?;
+    let sites = crate::vault::store::search_sites(&q).map_err(|e| e.to_string())?;
     serde_json::to_value(sites).map_err(|e| e.to_string())
 }
 
@@ -280,7 +282,7 @@ pub fn sk_vault_reused_passwords(
     let guard = session_lock(&session)?;
     let c = guard.as_ref().ok_or("密码库未解锁")?;
     let started = std::time::Instant::now();
-    let rows = crate::vault_store::all_accounts_with_passwords()
+    let rows = crate::vault::store::all_accounts_with_passwords()
         .map_err(|e| format!("读取账号失败: {e}"))?;
     let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
@@ -372,7 +374,7 @@ pub fn sk_vault_site_accounts(
     q: String,
 ) -> Result<serde_json::Value, String> {
     let _session = session_lock(&session)?;
-    let accs = crate::vault_store::list_accounts(site_id, &q).map_err(|e| e.to_string())?;
+    let accs = crate::vault::store::list_accounts(site_id, &q).map_err(|e| e.to_string())?;
     serde_json::to_value(accs).map_err(|e| e.to_string())
 }
 
@@ -386,7 +388,7 @@ pub fn sk_vault_add_site(
     tags: String,
 ) -> Result<i64, String> {
     let _session = session_lock(&session)?;
-    crate::vault_store::add_site(&name, &domain, &url, &aliases, &tags).map_err(|e| e.to_string())
+    crate::vault::store::add_site(&name, &domain, &url, &aliases, &tags).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -400,9 +402,9 @@ pub fn sk_vault_update_site(
     tags: Option<String>,
 ) -> Result<(), String> {
     let _session = session_lock(&session)?;
-    crate::vault_store::update_site(
+    crate::vault::store::update_site(
         site_id,
-        &crate::vault_store::SitePatch {
+        &crate::vault::store::SitePatch {
             name,
             domain,
             url,
@@ -419,7 +421,7 @@ pub fn sk_vault_delete_site(
     site_id: i64,
 ) -> Result<(), String> {
     let _session = session_lock(&session)?;
-    crate::vault_store::delete_site(site_id).map_err(|e| e.to_string())
+    crate::vault::store::delete_site(site_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -434,7 +436,7 @@ pub fn sk_vault_add_account(
 ) -> Result<i64, String> {
     let mut guard = session_get(&session)?;
     let crypto = guard.as_mut().expect("已确认 Some");
-    crate::vault_store::add_account(
+    crate::vault::store::add_account(
         site_id,
         &password,
         crypto,
@@ -457,10 +459,10 @@ pub fn sk_vault_update_account(
 ) -> Result<(), String> {
     let mut guard = session_get(&session)?;
     let crypto = guard.as_mut().expect("已确认 Some");
-    crate::vault_store::update_account(
+    crate::vault::store::update_account(
         account_id,
         crypto,
-        &crate::vault_store::AccountPatch {
+        &crate::vault::store::AccountPatch {
             label,
             username,
             password,
@@ -476,7 +478,7 @@ pub fn sk_vault_delete_account(
     account_id: i64,
 ) -> Result<(), String> {
     let _session = session_lock(&session)?;
-    crate::vault_store::delete_account(account_id).map_err(|e| e.to_string())
+    crate::vault::store::delete_account(account_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -485,7 +487,7 @@ pub fn sk_vault_toggle_favorite(
     account_id: i64,
 ) -> Result<bool, String> {
     let _session = session_lock(&session)?;
-    crate::vault_store::toggle_favorite(account_id).map_err(|e| e.to_string())
+    crate::vault::store::toggle_favorite(account_id).map_err(|e| e.to_string())
 }
 
 /// 解密单字段。`sensitive_ttl` 给定时同步登记敏感窗口（复制密码/TOTP 用，
@@ -499,7 +501,7 @@ pub fn sk_vault_get_secret(
 ) -> Result<String, String> {
     let mut guard = session_get(&session)?;
     let crypto = guard.as_mut().expect("已确认 Some");
-    crate::vault_store::get_secret(account_id, crypto, &field, touch.unwrap_or(true))
+    crate::vault::store::get_secret(account_id, crypto, &field, touch.unwrap_or(true))
 }
 
 /// 解密并复制（明文不过前端 JS；三重敏感防护与复制命令同一实现）。
@@ -511,7 +513,7 @@ pub fn sk_vault_copy_secret(
 ) -> Result<serde_json::Value, String> {
     let mut guard = session_get(&session)?;
     let crypto = guard.as_mut().expect("已确认 Some");
-    let text = crate::vault_store::get_secret(account_id, crypto, &field, true)?;
+    let text = crate::vault::store::get_secret(account_id, crypto, &field, true)?;
     copy_sensitive_text(&text)
 }
 
@@ -537,7 +539,7 @@ pub fn sk_vault_secrets_bulk(
 ) -> Result<serde_json::Value, String> {
     let mut guard = session_get(&session)?;
     let crypto = guard.as_mut().expect("已确认 Some");
-    let map = crate::vault_store::get_secrets_bulk(&account_ids, crypto, &field)?;
+    let map = crate::vault::store::get_secrets_bulk(&account_ids, crypto, &field)?;
     serde_json::to_value(map).map_err(|e| e.to_string())
 }
 
@@ -547,7 +549,7 @@ pub fn sk_vault_global_search(
     q: String,
 ) -> Result<serde_json::Value, String> {
     let _session = session_lock(&session)?;
-    let rows = crate::vault_store::global_search(&q).map_err(|e| e.to_string())?;
+    let rows = crate::vault::store::global_search(&q).map_err(|e| e.to_string())?;
     serde_json::to_value(rows).map_err(|e| e.to_string())
 }
 
@@ -559,8 +561,8 @@ pub fn sk_vault_totp_code(
 ) -> Result<String, String> {
     let mut guard = session_get(&session)?;
     let crypto = guard.as_mut().expect("已确认 Some");
-    let secret = crate::vault_store::get_secret(account_id, crypto, "totp", false)?;
-    Ok(crate::vault_store::totp_code(&secret, None, 6, 30))
+    let secret = crate::vault::store::get_secret(account_id, crypto, "totp", false)?;
+    Ok(crate::vault::store::totp_code(&secret, None, 6, 30))
 }
 
 /// 生成随机密码（表单「生成」按钮）。参数与语义见 pwgen 模块头注释：
@@ -582,7 +584,7 @@ pub fn sk_vault_generate_password(
     symbols: bool,
     exclude_ambiguous: bool,
 ) -> Result<String, String> {
-    crate::pwgen::generate(crate::pwgen::GenOptions {
+    crate::vault::pwgen::generate(crate::vault::pwgen::GenOptions {
         length,
         upper,
         lower,

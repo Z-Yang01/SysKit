@@ -207,11 +207,9 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                             .lock()
                             .expect("流量锁中毒")
                             .add(tick.up as i64, tick.down as i64);
-                        hub.rates.lock_ok().add(
-                            tick.up as i64,
-                            tick.down as i64,
-                            Some(&wifi.ssid),
-                        );
+                        hub.rates
+                            .lock_ok()
+                            .add(tick.up as i64, tick.down as i64, Some(&wifi.ssid));
                     }
 
                     // 今日累计要在入账之后取，前端看到的数才自洽
@@ -235,12 +233,9 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                         let limit =
                             crate::settings::get_int("traffic_alert_gb") * 1024 * 1024 * 1024;
                         let day = crate::timefmt::today();
-                        if let Some(level) = evaluate_traffic_alert(
-                            &mut traffic_alert,
-                            &day,
-                            sent + recv,
-                            limit,
-                        ) {
+                        if let Some(level) =
+                            evaluate_traffic_alert(&mut traffic_alert, &day, sent + recv, limit)
+                        {
                             let used = crate::telemetry::human_bytes((sent + recv) as f64);
                             let lim = crate::telemetry::human_bytes(limit as f64);
                             let msg = if level == 1 {
@@ -301,29 +296,66 @@ mod tests {
     fn traffic_alert_fires_once_per_level_and_resets_by_day() {
         let mut st = TrafficAlertState::default();
         let limit = 10 * 1024 * 1024 * 1024; // 10 GB
-        // 50%：不提醒
-        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 5 * 1024 * 1024 * 1024, limit), None);
+                                             // 50%：不提醒
+        assert_eq!(
+            evaluate_traffic_alert(&mut st, "d1", 5 * 1024 * 1024 * 1024, limit),
+            None
+        );
         // 85%：80% 档提醒一次
-        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 8500 * 1024 * 1024, limit), Some(0));
+        assert_eq!(
+            evaluate_traffic_alert(&mut st, "d1", 8500 * 1024 * 1024, limit),
+            Some(0)
+        );
         // 同档不重复
-        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 9000 * 1024 * 1024, limit), None);
+        assert_eq!(
+            evaluate_traffic_alert(&mut st, "d1", 9000 * 1024 * 1024, limit),
+            None
+        );
         // 超额：100% 档提醒一次
-        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 11 * 1024 * 1024 * 1024, limit), Some(1));
+        assert_eq!(
+            evaluate_traffic_alert(&mut st, "d1", 11 * 1024 * 1024 * 1024, limit),
+            Some(1)
+        );
         // 已提醒过不再发
-        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 12 * 1024 * 1024 * 1024, limit), None);
+        assert_eq!(
+            evaluate_traffic_alert(&mut st, "d1", 12 * 1024 * 1024 * 1024, limit),
+            None
+        );
         // 跨天复位
-        assert_eq!(evaluate_traffic_alert(&mut st, "d2", 11 * 1024 * 1024 * 1024, limit), Some(1));
+        assert_eq!(
+            evaluate_traffic_alert(&mut st, "d2", 11 * 1024 * 1024 * 1024, limit),
+            Some(1)
+        );
     }
 
     #[test]
     fn traffic_alert_disabled_or_jump_straight_to_100() {
         // 限额 0 = 关闭
         let mut st = TrafficAlertState::default();
-        assert_eq!(evaluate_traffic_alert(&mut st, "d1", 999 * 1024 * 1024 * 1024, 0), None);
+        assert_eq!(
+            evaluate_traffic_alert(&mut st, "d1", 999 * 1024 * 1024 * 1024, 0),
+            None
+        );
         // 一口气冲到超额（没经过 80% 档）：只发 100% 一条
         let mut st2 = TrafficAlertState::default();
-        assert_eq!(evaluate_traffic_alert(&mut st2, "d1", 20 * 1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024), Some(1));
-        assert_eq!(evaluate_traffic_alert(&mut st2, "d1", 21 * 1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024), None);
+        assert_eq!(
+            evaluate_traffic_alert(
+                &mut st2,
+                "d1",
+                20 * 1024 * 1024 * 1024,
+                10 * 1024 * 1024 * 1024
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            evaluate_traffic_alert(
+                &mut st2,
+                "d1",
+                21 * 1024 * 1024 * 1024,
+                10 * 1024 * 1024 * 1024
+            ),
+            None
+        );
     }
 
     #[test]
