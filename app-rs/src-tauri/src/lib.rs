@@ -18,7 +18,6 @@
 // 上述两批落地后本豁免必须收窄（README「已知缺口」有跟踪项）。
 
 mod appnet;
-mod apptraffic;
 mod backup;
 mod backup_restore;
 mod battery;
@@ -60,7 +59,6 @@ mod startup;
 mod stores;
 mod subnet;
 mod telemetry;
-mod telemetry_hub;
 mod test_support;
 mod timefmt;
 mod tray;
@@ -338,8 +336,8 @@ pub fn run() {
             startup_maintenance();
             start_hotkeys(&handle);
             // M2：遥测采样线程（1 秒一拍，60 拍落盘一次）
-            let hub = telemetry_hub::Hub::new();
-            telemetry_hub::spawn(handle.clone(), hub.clone());
+            let hub = crate::telemetry::hub::Hub::new();
+            crate::telemetry::hub::spawn(handle.clone(), hub.clone());
             app.manage(hub);
             // 剪贴板监听：把"用户复制了什么"变成历史条目。
             // 没有它，快捷粘贴面板会在空历史里"正常"工作——命令全对、列表恒空。

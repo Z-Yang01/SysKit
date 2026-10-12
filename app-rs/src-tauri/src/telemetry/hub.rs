@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::netstats::{self, DayReport, Series};
 use crate::rate_stats::{RateStatsStore, StatsSnapshot};
 use crate::rate_store::{EventItem, EventStore, TrafficStore};
-use crate::telemetry::{Sampler, Tick};
+use crate::telemetry::core::{Sampler, Tick};
 
 /// 采样间隔（秒）：与 Python `self._stop_evt.wait(1)` 一致。
 pub const SAMPLE_INTERVAL_SECS: u64 = 1;
@@ -34,7 +34,7 @@ pub struct Hub {
     traffic: Mutex<TrafficStore>,
     rates: Mutex<RateStatsStore>,
     events: Mutex<EventStore>,
-    pub app_traffic: std::sync::Arc<crate::apptraffic::AppTrafficState>,
+    pub app_traffic: std::sync::Arc<crate::appnet::traffic::AppTrafficState>,
     /// 网络质量桶：探测线程写，命令层读。
     pub quality: std::sync::Arc<std::sync::Mutex<crate::netquality::QualityStore>>,
     stop: AtomicBool,
@@ -47,8 +47,8 @@ impl Hub {
             traffic: Mutex::new(TrafficStore::new()),
             rates: Mutex::new(RateStatsStore::new()),
             events: Mutex::new(EventStore::new(500)),
-            app_traffic: std::sync::Arc::new(crate::apptraffic::AppTrafficState::new(
-                crate::apptraffic::AppTrafficAgg::with_path(crate::paths::netstats_apps_file()),
+            app_traffic: std::sync::Arc::new(crate::appnet::traffic::AppTrafficState::new(
+                crate::appnet::traffic::AppTrafficAgg::with_path(crate::paths::netstats_apps_file()),
             )),
             quality: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::netquality::QualityStore::with_path(crate::paths::netstats_quality_file()),
@@ -154,7 +154,7 @@ fn evaluate_traffic_alert(
 pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
     // 按应用流量 ETW 采集：与秒级遥测同期启动；失败（非管理员/会话被占）
     // 只降状态不阻塞遥测主链路
-    crate::apptraffic::spawn_etw(hub.app_traffic.clone());
+    crate::appnet::traffic::spawn_etw(hub.app_traffic.clone());
     // 网络质量探测：10 秒一轮 网关/公网 ICMP + 系统 DNS 计时；
     // app/hub 供告警触发器发托盘通知与事件
     crate::netquality::spawn_probe(app.clone(), hub.clone(), hub.quality.clone());
@@ -236,8 +236,8 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                         if let Some(level) =
                             evaluate_traffic_alert(&mut traffic_alert, &day, sent + recv, limit)
                         {
-                            let used = crate::telemetry::human_bytes((sent + recv) as f64);
-                            let lim = crate::telemetry::human_bytes(limit as f64);
+                            let used = crate::telemetry::core::human_bytes((sent + recv) as f64);
+                            let lim = crate::telemetry::core::human_bytes(limit as f64);
                             let msg = if level == 1 {
                                 format!("今日流量已超额：{used} / 限额 {lim}")
                             } else {

@@ -403,7 +403,7 @@ pub type SharedQualityStore = Arc<Mutex<QualityStore>>;
 /// app/hub 供告警触发器发托盘气泡与事件时间线。
 pub fn spawn_probe<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    hub: std::sync::Arc<crate::telemetry_hub::Hub>,
+    hub: std::sync::Arc<crate::telemetry::hub::Hub>,
     store: SharedQualityStore,
 ) {
     std::thread::Builder::new()

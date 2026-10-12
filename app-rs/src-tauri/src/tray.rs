@@ -192,7 +192,7 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
             // 1) 流量/多粒度桶——遥测 60s 才落一次盘，且其循环收尾 flush 在
             //    进程退出（线程被杀）时不会执行，不在这里补就直接丢最近一分钟；
             // 2) 剪贴板历史——防抖窗口内的条目。
-            if let Some(hub) = app.try_state::<std::sync::Arc<crate::telemetry_hub::Hub>>() {
+            if let Some(hub) = app.try_state::<std::sync::Arc<crate::telemetry::hub::Hub>>() {
                 hub.flush();
             }
             crate::clipboard_history::with(|h| h.flush_if_dirty());
@@ -274,8 +274,8 @@ pub fn tooltip_text(base: &str, rate: Option<&str>, last: &str) -> String {
 pub fn rate_line(down_bps: u64, up_bps: u64) -> String {
     format!(
         "↓ {}/s   ↑ {}/s",
-        crate::telemetry::human_bytes(down_bps as f64),
-        crate::telemetry::human_bytes(up_bps as f64)
+        crate::telemetry::core::human_bytes(down_bps as f64),
+        crate::telemetry::core::human_bytes(up_bps as f64)
     )
 }
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::telemetry_hub::Hub;
+use crate::telemetry::hub::Hub;
 
 // ---------------- 后台监控 / 自动修复 ----------------
 
