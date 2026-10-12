@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::disk::human_size;
+use crate::disk::overview::human_size;
 
 /// 清理目标（v1.3 从 4 类扩到 8 类；前 4 个 key 与 Python 一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -232,7 +232,7 @@ pub fn collect_files(root: &Path, target: CleanTarget) -> Vec<PathBuf> {
         for entry in rd.flatten() {
             let path = entry.path();
             // 不跟随重解析点：junction 指回祖先会无限递归，且同一份数据会被删两次
-            if crate::disk::is_reparse_point(&path) {
+            if crate::disk::overview::is_reparse_point(&path) {
                 continue;
             }
             let Ok(meta) = entry.metadata() else { continue };

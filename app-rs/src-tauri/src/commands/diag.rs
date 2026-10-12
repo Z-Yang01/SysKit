@@ -171,15 +171,15 @@ pub async fn sk_diag_one(id: String) -> Result<crate::netcheck::CheckResult, Str
 
 /// 备份会话索引：修复页「备份与回滚」卡（新会话在前，legacy 存量随后）。
 #[tauri::command]
-pub fn sk_backup_list() -> Vec<crate::backup_restore::BackupSessionInfo> {
-    crate::backup_restore::list_sessions()
+pub fn sk_backup_list() -> Vec<crate::repairs::restore::BackupSessionInfo> {
+    crate::repairs::restore::list_sessions()
 }
 
 /// 回滚一项结构化备份（kind = proxy | dns | ncsi；session 为目录名）。
 /// 危险操作：前端确认弹窗后调用；错误原样透传给用户。
 #[tauri::command]
 pub fn sk_backup_restore(kind: String, session: String) -> Result<String, String> {
-    crate::backup_restore::restore(&kind, &session)
+    crate::repairs::restore::restore(&kind, &session)
 }
 
 /// 诊断报告导出为 Markdown 文件（save_file_dialog 原语，与图片另存为同路）。

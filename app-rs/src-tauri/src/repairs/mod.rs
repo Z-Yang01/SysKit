@@ -146,9 +146,11 @@ const P_PROFILE: ParamSpec = ParamSpec {
     required: false,
 };
 
+pub mod backup;
 mod exec_admin;
 mod exec_config;
 mod exec_safe;
+pub mod restore;
 
 // 扁平重导出：调用方继续用 crate::repairs::X，与拆分前完全一致
 pub use exec_admin::*;

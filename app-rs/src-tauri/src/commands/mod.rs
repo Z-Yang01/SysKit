@@ -501,7 +501,7 @@ mod tests {
             let via_entry = tauri::async_runtime::block_on(sk_disk_scan_tree(raw.to_string()))
                 .expect_err("tree 入口必须拒绝可疑路径");
             let via_fn =
-                crate::diskusage::validate_scan_dir(raw).expect_err("守卫纯函数必须拒绝同一输入");
+                crate::disk::usage::validate_scan_dir(raw).expect_err("守卫纯函数必须拒绝同一输入");
             assert!(
                 via_entry.contains(reason),
                 "输入 {raw:?} 的入口错误必须命中「{reason}」: {via_entry}"

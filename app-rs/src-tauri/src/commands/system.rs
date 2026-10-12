@@ -282,10 +282,10 @@ pub async fn sk_battery_health() -> Result<serde_json::Value, String> {
 /// 取消走 sk_disk_scan_cancel（同一时刻只跑一个扫描）。
 #[tauri::command]
 pub async fn sk_disk_scan_tree(root: String) -> Result<serde_json::Value, String> {
-    let root = crate::diskusage::validate_scan_dir(&root)?;
-    crate::diskusage::SCAN_STOP.reset();
+    let root = crate::disk::usage::validate_scan_dir(&root)?;
+    crate::disk::usage::SCAN_STOP.reset();
     tauri::async_runtime::spawn_blocking(move || {
-        let r = crate::diskusage::scan_tree(&root, &crate::diskusage::SCAN_STOP);
+        let r = crate::disk::usage::scan_tree(&root, &crate::disk::usage::SCAN_STOP);
         serde_json::to_value(r).map_err(|e| e.to_string())
     })
     .await
@@ -295,7 +295,7 @@ pub async fn sk_disk_scan_tree(root: String) -> Result<serde_json::Value, String
 /// 取消进行中的目录扫描（已入回收站的删除不受影响）。
 #[tauri::command]
 pub fn sk_disk_scan_cancel() {
-    crate::diskusage::SCAN_STOP.cancel();
+    crate::disk::usage::SCAN_STOP.cancel();
 }
 
 /// 目录逐级展开：扫描一个目录的直接子项（递归大小/类型分布/Top200 摘要，
@@ -305,10 +305,10 @@ pub fn sk_disk_scan_cancel() {
 /// 同一枚 SCAN_STOP，同一时刻只跑一个扫描）。
 #[tauri::command]
 pub async fn sk_disk_scan_children(dir: String) -> Result<serde_json::Value, String> {
-    let dir = crate::diskusage::validate_scan_dir(&dir)?;
-    crate::diskusage::SCAN_STOP.reset();
+    let dir = crate::disk::usage::validate_scan_dir(&dir)?;
+    crate::disk::usage::SCAN_STOP.reset();
     tauri::async_runtime::spawn_blocking(move || {
-        let r = crate::diskusage::scan_children(&dir, &crate::diskusage::SCAN_STOP);
+        let r = crate::disk::usage::scan_children(&dir, &crate::disk::usage::SCAN_STOP);
         serde_json::to_value(r).map_err(|e| e.to_string())
     })
     .await
@@ -319,7 +319,7 @@ pub async fn sk_disk_scan_children(dir: String) -> Result<serde_json::Value, Str
 #[tauri::command]
 pub async fn sk_disk_recycle_delete(paths: Vec<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (ok, errors) = crate::diskusage::delete_to_recycle_bin(&paths);
+        let (ok, errors) = crate::disk::usage::delete_to_recycle_bin(&paths);
         serde_json::json!({ "ok_count": ok, "errors": errors })
     })
     .await
@@ -330,7 +330,7 @@ pub async fn sk_disk_recycle_delete(paths: Vec<String>) -> Result<serde_json::Va
 #[tauri::command]
 pub async fn sk_disk_list() -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let drives = crate::disk::sort_by_pressure(crate::disk::list_drives());
+        let drives = crate::disk::overview::sort_by_pressure(crate::disk::overview::list_drives());
         let rows: Vec<serde_json::Value> = drives
             .iter()
             .map(|d| {
@@ -344,7 +344,7 @@ pub async fn sk_disk_list() -> Result<serde_json::Value, String> {
                     "free_to_caller": d.free_to_caller,
                     "used_percent": d.used_percent(),
                     "removable": d.removable,
-                    "token": crate::disk::usage_token(d.used_percent()),
+                    "token": crate::disk::overview::usage_token(d.used_percent()),
                 })
             })
             .collect();
@@ -385,7 +385,7 @@ pub async fn sk_clean_scan() -> Result<serde_json::Value, String> {
                     "key": t.key(),
                     "title": title,
                     "bytes": bytes,
-                    "human": crate::disk::human_size(bytes),
+                    "human": crate::disk::overview::human_size(bytes),
                     "roots": t.roots().iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
                 })
             })
@@ -393,7 +393,7 @@ pub async fn sk_clean_scan() -> Result<serde_json::Value, String> {
         Ok(serde_json::json!({
             "rows": rows,
             "total_bytes": total,
-            "total_human": crate::disk::human_size(total),
+            "total_human": crate::disk::overview::human_size(total),
         }))
     })
     .await

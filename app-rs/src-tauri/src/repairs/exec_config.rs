@@ -37,7 +37,7 @@ pub fn run_proxy_off(_p: &BTreeMap<String, String>) -> RepairOutcome {
     if vals.is_empty() {
         return RepairOutcome::fail(format!("无法读取系统代理注册表: {key}"));
     }
-    let session = match crate::backup::BackupSession::new() {
+    let session = match crate::repairs::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return RepairOutcome::fail(format!("备份目录不可用，已保留原配置未修改: {e}")),
     };
@@ -142,7 +142,7 @@ pub fn run_dns_auto(p: &BTreeMap<String, String>) -> RepairOutcome {
             None => return RepairOutcome::fail("未找到配置了静态 DNS 的网卡"),
         },
     };
-    let session = match crate::backup::BackupSession::new() {
+    let session = match crate::repairs::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return RepairOutcome::fail(format!("备份目录不可用，已保留原配置未修改: {e}")),
     };
@@ -233,7 +233,7 @@ pub fn run_dns_preset(p: &BTreeMap<String, String>) -> RepairOutcome {
             None => return RepairOutcome::fail("未指定网卡且无法自动选择"),
         },
     };
-    let session = match crate::backup::BackupSession::new() {
+    let session = match crate::repairs::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return RepairOutcome::fail(format!("备份目录不可用，已保留原配置未修改: {e}")),
     };
@@ -452,7 +452,7 @@ pub fn run_del_persistent_route(p: &BTreeMap<String, String>) -> RepairOutcome {
     let dest_ip = dest.split('/').next().unwrap_or(&dest).to_string();
     let mask = prefix_to_mask(&dest);
 
-    let session = match crate::backup::BackupSession::new() {
+    let session = match crate::repairs::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
     };
@@ -526,7 +526,10 @@ pub fn run_del_persistent_route(p: &BTreeMap<String, String>) -> RepairOutcome {
 /// 新格式记录 `{adapter, mode, entries:[{family, mode, servers}]}`，回滚侧
 /// `backup_restore::restore("dns")` 直接 netsh 写回。服务器按是否含冒号
 /// 分流 v4/v6（快照的 dns 列表是混合的）；mode 取 `dns_is_static`。
-fn backup_dns(session: &crate::backup::BackupSession, adapter: &str) -> Result<String, String> {
+fn backup_dns(
+    session: &crate::repairs::backup::BackupSession,
+    adapter: &str,
+) -> Result<String, String> {
     let snap = crate::snapshot::take();
     let dns: Vec<String> = snap
         .adapters
@@ -549,7 +552,7 @@ fn backup_dns(session: &crate::backup::BackupSession, adapter: &str) -> Result<S
         entries.push(serde_json::json!({"family": "ipv4", "mode": "dhcp", "servers": []}));
     }
     let payload = serde_json::json!({"adapter": adapter, "mode": mode, "entries": entries});
-    let safe = crate::backup::sanitize_name(adapter);
+    let safe = crate::repairs::backup::sanitize_name(adapter);
     let fname = format!("dns_backup_{safe}.json");
     session.save_note(
         &fname,

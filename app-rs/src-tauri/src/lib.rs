@@ -18,8 +18,6 @@
 // 上述两批落地后本豁免必须收窄（README「已知缺口」有跟踪项）。
 
 mod appnet;
-mod backup;
-mod backup_restore;
 mod battery;
 mod cleanup;
 mod clipboard_history;
@@ -30,7 +28,6 @@ mod commands;
 mod dhash;
 mod dib;
 mod disk;
-mod diskusage;
 mod hostsed;
 mod hotkey;
 mod icmp;

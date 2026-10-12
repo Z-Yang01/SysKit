@@ -163,7 +163,7 @@ pub fn run_ncsi_restore(_p: &BTreeMap<String, String>) -> RepairOutcome {
     if let Some(o) = require_admin("ncsi_restore") {
         return o;
     }
-    let session = match crate::backup::BackupSession::new() {
+    let session = match crate::repairs::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
     };
@@ -209,7 +209,7 @@ pub fn run_ncsi_disable(_p: &BTreeMap<String, String>) -> RepairOutcome {
     if let Some(o) = require_admin("ncsi_disable") {
         return o;
     }
-    let session = match crate::backup::BackupSession::new() {
+    let session = match crate::repairs::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
     };
@@ -248,7 +248,7 @@ pub fn run_power_off(_p: &BTreeMap<String, String>) -> RepairOutcome {
     }
     const NIC_CLASS_KEY: &str =
         r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}";
-    let session = match crate::backup::BackupSession::new() {
+    let session = match crate::repairs::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return RepairOutcome::fail(format!("备份目录不可用，未做修改: {e}")),
     };
@@ -482,7 +482,7 @@ pub fn set_mac_random(profile: &str, enable: bool) -> (usize, String, String) {
     if files.is_empty() {
         return (0, format!("未找到名为 {profile} 的配置文件"), String::new());
     }
-    let session = match crate::backup::BackupSession::new() {
+    let session = match crate::repairs::backup::BackupSession::new() {
         Ok(s) => s,
         Err(e) => return (0, format!("备份目录不可用，未做修改: {e}"), String::new()),
     };
