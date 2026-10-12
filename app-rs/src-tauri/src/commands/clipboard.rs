@@ -1,11 +1,11 @@
 //! 剪贴板历史域：读取/管理动作/规则动作/敏感通道/监听状态 + 快捷粘贴面板窗口。
 
-use crate::MutexExt;
 use super::ClipRow;
 use crate::clipboard_history::{self as hist, ClipItem};
 use crate::input_panel::{self, PasteRequest, PasteResult};
 use crate::settings;
 use crate::tray;
+use crate::MutexExt;
 use tauri::Manager;
 use tauri::{AppHandle, Runtime};
 
