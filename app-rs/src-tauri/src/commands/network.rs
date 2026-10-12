@@ -1,4 +1,5 @@
 //! M2 遥测 / 多粒度流量 / 日报 / 事件（按域拆出自 commands/mod.rs）。
+use crate::MutexExt;
 use crate::rate_store::EventItem;
 use crate::telemetry::Tick;
 use crate::telemetry_hub::Hub;
@@ -26,7 +27,7 @@ pub fn sk_apptraffic_summary(
 ) -> serde_json::Value {
     let (available, reason) = hub.app_traffic.status();
     let rows = if available {
-        let agg = hub.app_traffic.agg.lock().expect("应用流量锁中毒");
+        let agg = hub.app_traffic.agg.lock_ok();
         let all = agg.summary(
             &range,
             q.as_deref().unwrap_or(""),

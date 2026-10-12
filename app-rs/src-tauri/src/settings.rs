@@ -4,6 +4,7 @@
 //! （手改/被其他工具写坏，如 poll_interval_sec="很快"）会原样穿透到消费方。
 //! 只校验 DEFAULTS 已知键：last_page / modes_prev_volume 等动态键原样保留。
 
+use crate::MutexExt;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -426,7 +427,7 @@ fn cache() -> &'static Mutex<Option<Map<String, Value>>> {
 /// 清空进程缓存（仅测试用：切换数据目录/手工改盘后重新读取）。
 #[cfg(test)]
 pub fn reset_cache() {
-    *cache().lock().expect("settings 缓存锁中毒") = None;
+    *cache().lock_ok() = None;
 }
 
 /// 读盘（可指定路径，测试用）；损坏时回退默认值并留痕。
@@ -456,7 +457,7 @@ pub fn load_from(path: &Path) -> Map<String, Value> {
 
 /// 读取设置（进程内缓存，与 Python 的 _cache 同语义）。
 pub fn load() -> Map<String, Value> {
-    let mut guard = cache().lock().expect("settings 缓存锁中毒");
+    let mut guard = cache().lock_ok();
     if let Some(c) = guard.as_ref() {
         return c.clone();
     }
@@ -538,7 +539,7 @@ pub fn remove_keys(keys: &[&str]) -> std::io::Result<()> {
     if !removed_any {
         return Ok(());
     }
-    *cache().lock().expect("settings 缓存锁中毒") = Some(merged.clone());
+    *cache().lock_ok() = Some(merged.clone());
     crate::stores::save_json_pretty(&paths::settings_file(), &Value::Object(merged))
 }
 
@@ -549,7 +550,7 @@ pub fn save_to(path: &Path, patch: &Map<String, Value>) -> std::io::Result<()> {
         merged.insert(k.clone(), v.clone());
     }
     let merged = typed(&merged);
-    *cache().lock().expect("settings 缓存锁中毒") = Some(merged.clone());
+    *cache().lock_ok() = Some(merged.clone());
     crate::stores::save_json_pretty(path, &Value::Object(merged))
 }
 

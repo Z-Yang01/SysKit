@@ -32,6 +32,7 @@
 //! 失败、恢复、建议另发托盘气泡（`tray::notify`）。只有日志的自动修复对用户
 //! 等于不存在——「网络自己好了/坏了」必须能对上「后台做过什么」。
 
+use crate::MutexExt;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -273,9 +274,9 @@ fn should_alert(prev: &str, new: &str) -> bool {
 }
 
 fn set_status(state: NetState, detail: &str) {
-    let prev = LAST_STATE.lock().expect("状态锁中毒").clone();
-    *LAST_STATE.lock().expect("状态锁中毒") = state.as_str().to_string();
-    *LAST_DETAIL.lock().expect("状态锁中毒") = detail.to_string();
+    let prev = LAST_STATE.lock_ok().clone();
+    *LAST_STATE.lock_ok() = state.as_str().to_string();
+    *LAST_DETAIL.lock_ok() = detail.to_string();
     // 托盘状态灯接管：只在状态真正切换时换图标/基础悬浮提示（tick 每轮都会
     // 调 set_status，不能每轮都重绘图标）；实时速率提示由遥测每秒叠加（其
     // 基础段同样读这里的状态，两条路径不打架）。此前没人调 apply_state，
@@ -312,11 +313,11 @@ fn set_status(state: NetState, detail: &str) {
 pub fn state() -> MonitorState {
     MonitorState {
         running: RUNNING.load(Ordering::SeqCst),
-        state: LAST_STATE.lock().expect("状态锁中毒").clone(),
-        detail: LAST_DETAIL.lock().expect("状态锁中毒").clone(),
+        state: LAST_STATE.lock_ok().clone(),
+        detail: LAST_DETAIL.lock_ok().clone(),
         last_check_ts: LAST_CHECK.load(Ordering::SeqCst),
         repair_count: REPAIR_COUNT.load(Ordering::SeqCst),
-        last_ladder: LAST_LADDER.lock().expect("状态锁中毒").clone(),
+        last_ladder: LAST_LADDER.lock_ok().clone(),
         fail_streak: FAIL_STREAK.load(Ordering::SeqCst) as u32,
     }
 }
@@ -436,7 +437,7 @@ fn tick(
         publish(&ev);
     }
     log::info!("自动修复触发, 级别 L{level}, 梯度 {:?}", ladder);
-    *LAST_LADDER.lock().expect("梯度锁中毒") = ladder.join(",");
+    *LAST_LADDER.lock_ok() = ladder.join(",");
 
     for id in &ladder {
         if STOP.load(Ordering::SeqCst) {

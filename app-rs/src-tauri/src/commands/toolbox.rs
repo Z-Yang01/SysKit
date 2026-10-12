@@ -633,3 +633,96 @@ pub async fn sk_appnet_pick_exe() -> Result<String, String> {
     .await
     .map_err(|e| format!("选择线程失败: {e}"))?
 }
+
+// ---------------- M4 工具箱：局域网设备 ----------------
+
+/// 扫描本机所在 /24 网段：并发 ping 唤醒邻居 → 读 ARP 表列出存活设备。
+#[tauri::command]
+pub async fn sk_lan_scan(prefix: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let prefix = match prefix.filter(|p| !p.trim().is_empty()) {
+            Some(p) => crate::portscan::normalize_prefix(p.trim()),
+            None => {
+                // 用快照自洽的物理网卡（单一 PowerShell 数据源，IP 归并天然一致）。
+                // 此前跨源 join（GetIfTable2 别名 ↔ 快照按名相等）在本机对不上，
+                // 有 IPv4 也报"未找到"——真机功能扫实锤 2026-10-04。
+                let snap = crate::snapshot::take();
+                let ip = snap
+                    .physical_up_adapters()
+                    .first()
+                    .and_then(|a| a.ipv4.first().cloned())
+                    .ok_or_else(|| {
+                        // 带上采集自身错误：快照失败（PowerShell 异常/解析失败）
+                        // 与"真的没有物理网卡"是两回事，混在一起没法排障
+                        format!(
+                            "未找到可用的本机 IPv4 地址，无法推断网段（快照：{}）",
+                            if snap.error.is_empty() {
+                                "无错误，快照正常"
+                            } else {
+                                &snap.error
+                            }
+                        )
+                    })?;
+                crate::portscan::subnet24_of(&ip)
+                    .ok_or_else(|| format!("无法从 {ip} 推断 /24 网段"))?
+            }
+        };
+        let hosts = crate::portscan::hosts_in_subnet24(&prefix);
+        // 并发 ping：256 个线程太重，用 32 路分批（每批 ~1 秒，总 ~8 秒）
+        const BATCH: usize = 32;
+        for chunk in hosts.chunks(BATCH) {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|h| {
+                    let h = h.clone();
+                    std::thread::spawn(move || {
+                        let _ = crate::w32::run_capture(
+                            &args(&["ping", "-n", "1", "-w", "500", &h]),
+                            3,
+                        );
+                    })
+                })
+                .collect();
+            for h in handles {
+                let _ = h.join();
+            }
+        }
+        let arp = crate::w32::run_capture(&args(&["arp", "-a"]), 20)
+            .map_err(|e| format!("arp 无法执行: {e}"))?;
+        let mut devices: Vec<serde_json::Value> = crate::portscan::parse_arp(&arp.stdout)
+            .into_iter()
+            .filter(crate::portscan::is_useful_neighbor)
+            .filter(|e| e.ip.starts_with(&format!("{prefix}.")))
+            .map(|e| {
+                // 再 ping 一次拿延迟（ARP 表已暖，这次很快）
+                let latency =
+                    crate::w32::run_capture(&args(&["ping", "-n", "1", "-w", "800", &e.ip]), 3)
+                        .ok()
+                        .filter(|o| o.ok)
+                        .and_then(|o| crate::portscan::parse_ping_ms(&o.combined()));
+                serde_json::json!({
+                    "ip": e.ip,
+                    "mac": e.mac,
+                    "kind": e.kind,
+                    "latency_ms": latency,
+                })
+            })
+            .collect();
+        devices.sort_by_key(|d| {
+            d["ip"]
+                .as_str()
+                .and_then(|s| s.rsplit('.').next())
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0)
+        });
+        Ok(serde_json::json!({
+            "prefix": prefix,
+            "scanned": hosts.len(),
+            "devices": devices,
+            "count": devices.len(),
+        }))
+    })
+    .await
+    .map_err(|e| format!("扫描线程失败: {e}"))?
+}
+

@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use rusqlite::Connection;
 
 use crate::timefmt;
+#[cfg(test)]
+use crate::MutexExt;
 use crate::vault_crypto::VaultCrypto;
 
 /// 与 Python `vault.SCHEMA` 逐字一致——schema 分叉 = 同库互开直接破裂。
@@ -53,17 +55,17 @@ static DB_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(No
 
 #[cfg(test)]
 fn set_db_override(dir: std::path::PathBuf) {
-    *DB_OVERRIDE.lock().expect("db override 锁中毒") = Some(dir);
+    *DB_OVERRIDE.lock_ok() = Some(dir);
 }
 
 #[cfg(test)]
 fn clear_db_override() {
-    *DB_OVERRIDE.lock().expect("db override 锁中毒") = None;
+    *DB_OVERRIDE.lock_ok() = None;
 }
 
 fn db_path() -> PathBuf {
     #[cfg(test)]
-    if let Some(dir) = DB_OVERRIDE.lock().expect("db override 锁中毒").as_ref() {
+    if let Some(dir) = DB_OVERRIDE.lock_ok().as_ref() {
         return dir.join("vault.db");
     }
     crate::paths::appdata_dir().join("vault.db")

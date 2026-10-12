@@ -1,5 +1,6 @@
 //! 剪贴板历史域：读取/管理动作/规则动作/敏感通道/监听状态 + 快捷粘贴面板窗口。
 
+use crate::MutexExt;
 use super::ClipRow;
 use crate::clipboard_history::{self as hist, ClipItem};
 use crate::input_panel::{self, PasteRequest, PasteResult};
@@ -584,7 +585,7 @@ fn thumb_cache_state() -> &'static std::sync::Mutex<ThumbCache> {
 }
 
 fn thumb_cache_get(key: &str) -> Option<String> {
-    let st = &mut *thumb_cache_state().lock().expect("thumb 缓存锁中毒");
+    let st = &mut *thumb_cache_state().lock_ok();
     if let Some(v) = st.1.get(key).cloned() {
         // 刷新访问顺序
         if let Some(pos) = st.0.iter().position(|k| k == key) {
@@ -598,7 +599,7 @@ fn thumb_cache_get(key: &str) -> Option<String> {
 }
 
 fn thumb_cache_put(key: String, value: String) {
-    let st = &mut *thumb_cache_state().lock().expect("thumb 缓存锁中毒");
+    let st = &mut *thumb_cache_state().lock_ok();
     if st.1.contains_key(&key) {
         if let Some(pos) = st.0.iter().position(|k| k == &key) {
             st.0.remove(pos);

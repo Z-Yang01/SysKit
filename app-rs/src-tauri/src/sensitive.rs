@@ -18,6 +18,7 @@
 //! 用户复制密码后往往马上复制别的东西；无条件清空会把用户刚要用的新内容也抹掉
 //! ——那是数据丢失，比"密码多留一会儿"严重得多。
 
+use crate::MutexExt;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -70,7 +71,7 @@ static PENDING: Mutex<Option<PendingClear>> = Mutex::new(None);
 
 /// 标记一段敏感文本：写入待清空槽位（`ttl=None` 表示只标记、不清空）。
 pub fn arm(text: &str, ttl: Option<u64>) {
-    let mut g = PENDING.lock().expect("敏感槽位锁中毒");
+    let mut g = PENDING.lock_ok();
     *g = ttl.map(|s| PendingClear {
         text: text.to_string(),
         deadline: Instant::now() + Duration::from_secs(s),
@@ -88,7 +89,7 @@ pub fn pending_text() -> Option<String> {
 
 /// 取消待清空（例如用户又复制了新的敏感内容而旧槽位已无意义）。
 pub fn disarm() {
-    *PENDING.lock().expect("敏感槽位锁中毒") = None;
+    *PENDING.lock_ok() = None;
 }
 
 /// 检查并执行到期清空。返回清空是否真的发生。
@@ -99,7 +100,7 @@ pub fn disarm() {
 /// 一次新复制。
 pub fn tick_clear() -> bool {
     let snapshot = {
-        let g = PENDING.lock().expect("敏感槽位锁中毒");
+        let g = PENDING.lock_ok();
         g.clone()
     };
     let Some(pending) = snapshot else {
@@ -258,7 +259,7 @@ mod tests {
             return; // 剪贴板被占用：跳过（不谎报通过）
         }
         {
-            let mut g = PENDING.lock().expect("敏感槽位锁中毒");
+            let mut g = PENDING.lock_ok();
             *g = Some(PendingClear {
                 text: probe.to_string(),
                 deadline: Instant::now() - Duration::from_secs(1),
@@ -296,7 +297,7 @@ mod tests {
             return;
         }
         {
-            let mut g = PENDING.lock().expect("敏感槽位锁中毒");
+            let mut g = PENDING.lock_ok();
             *g = Some(PendingClear {
                 text: "早已被覆盖的旧敏感串".to_string(),
                 deadline: Instant::now() - Duration::from_secs(1),

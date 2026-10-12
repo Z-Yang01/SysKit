@@ -1,4 +1,5 @@
 //! M6 密码库命令：会话管理（解锁/重锁/信任窗）+ 数据层薄封装 + 密码生成。
+use crate::MutexExt;
 use super::copy_sensitive_text;
 
 // ---------------- M6 密码库（会话式：解锁后数据命令共享同一实例） ----------------
@@ -24,7 +25,7 @@ pub(crate) fn session_lock(
     // 起算的话，连续操作的用户也会被中途踢出，TOTP 轮询显示会反复被
     // 「密码库未解锁」打断（轮次36 跨模块审计实锤）。
     {
-        let mut guard = session.0.lock().expect("vault 会话锁中毒");
+        let mut guard = session.0.lock_ok();
         let min = crate::settings::get_int("vault_autolock_min");
         if let (Some(c), true) = (guard.as_mut(), min > 0) {
             if let Some(since) = c.unlocked_since_secs() {
@@ -43,7 +44,7 @@ pub(crate) fn session_lock(
             c.touch_unlocked();
         }
     }
-    let guard = session.0.lock().expect("vault 会话锁中毒");
+    let guard = session.0.lock_ok();
     if guard.is_none() {
         return Err("密码库未解锁".into());
     }
@@ -87,10 +88,10 @@ pub fn sk_vault_status(
     if provisioned && meta.mode == "dpapi" && c.unlock(None) == Ok(true) {
         // 自动解锁后的实例进会话：数据命令立即可用
         let auto = reopen_unlocked(&c);
-        *session.0.lock().expect("vault 会话锁中毒") = Some(auto);
+        *session.0.lock_ok() = Some(auto);
     }
-    let session_unlocked = session.0.lock().expect("vault 会话锁中毒").is_some();
-    let trusted_until = trust.0.lock().expect("vault trust 锁中毒").map(|t| {
+    let session_unlocked = session.0.lock_ok().is_some();
+    let trusted_until = trust.0.lock_ok().map(|t| {
         t.checked_duration_since(std::time::Instant::now())
             .map(|d| d.as_secs())
             .unwrap_or(0)
@@ -134,7 +135,7 @@ pub async fn sk_vault_setup(
     .await
     .map_err(|e| format!("初始化线程失败: {e}"))?
     .map_err(|(e, _)| e)?;
-    *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+    *session.0.lock_ok() = Some(c);
     Ok(serde_json::json!({
         "ok": true,
         "mode": mode,
@@ -163,14 +164,14 @@ pub async fn sk_vault_unlock(
     .await
     .map_err(|e| format!("解锁线程失败: {e}"))?;
     let c = unlocked?;
-    *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+    *session.0.lock_ok() = Some(c);
     Ok(serde_json::json!({ "ok": true, "message": "已解锁" }))
 }
 
 /// 锁定（清空内存中的密钥）。
 #[tauri::command]
 pub fn sk_vault_lock(session: tauri::State<VaultSession>) -> serde_json::Value {
-    if let Some(mut c) = session.0.lock().expect("vault 会话锁中毒").take() {
+    if let Some(mut c) = session.0.lock_ok().take() {
         c.lock();
     }
     serde_json::json!({ "ok": true, "message": "已锁定" })
@@ -200,11 +201,11 @@ pub async fn sk_vault_set_password(
     // 无论成败都放回会话（实例仍持有解锁态）
     match result {
         Ok(c) => {
-            *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+            *session.0.lock_ok() = Some(c);
             Ok("已设置主密码（数据密钥未变，已有密文仍可解开）".to_string())
         }
         Err((c, e)) => {
-            *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+            *session.0.lock_ok() = Some(c);
             Err(e)
         }
     }
@@ -224,7 +225,7 @@ pub async fn sk_vault_verify_password(
     .map_err(|e| format!("校验线程失败: {e}"))?;
     if ok {
         let mins = crate::settings::get_int("vault_trust_min").max(0) as u64;
-        let mut t = trust.0.lock().expect("vault trust 锁中毒");
+        let mut t = trust.0.lock_ok();
         *t = if mins > 0 {
             Some(std::time::Instant::now() + std::time::Duration::from_secs(mins * 60))
         } else {
@@ -252,7 +253,7 @@ pub async fn sk_vault_remove_password(
     })
     .await
     .map_err(|e| format!("移除线程失败: {e}"))?;
-    *session.0.lock().expect("vault 会话锁中毒") = Some(c);
+    *session.0.lock_ok() = Some(c);
     result
 }
 

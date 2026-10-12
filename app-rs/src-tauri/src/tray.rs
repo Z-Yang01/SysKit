@@ -7,6 +7,7 @@
 //! 托盘只留一键可达的快捷操作。
 //! 状态灯与实时速率 tooltip 属 M2 遥测，接口（set_state / update_rate）先留好。
 
+use crate::MutexExt;
 use std::sync::Mutex;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -301,7 +302,7 @@ static LAST_RATE_TOOLTIP: Mutex<String> = Mutex::new(String::new());
 
 /// 速率 tooltip 去重：与上一份相同返回 None（无需重挂），不同则记账并返回。
 fn dedupe_rate_tooltip(candidate: String) -> Option<String> {
-    let mut last = LAST_RATE_TOOLTIP.lock().expect("托盘 tooltip 锁中毒");
+    let mut last = LAST_RATE_TOOLTIP.lock_ok();
     if *last == candidate {
         return None;
     }
@@ -312,7 +313,7 @@ fn dedupe_rate_tooltip(candidate: String) -> Option<String> {
 /// 清空速率 tooltip 缓存（apply_state 直接改写 tooltip 后调用，
 /// 让下一拍速率行能带着新基础文案重新生效）。
 fn reset_rate_tooltip_cache() {
-    *LAST_RATE_TOOLTIP.lock().expect("托盘 tooltip 锁中毒") = String::new();
+    *LAST_RATE_TOOLTIP.lock_ok() = String::new();
 }
 
 /// 按状态更新托盘图标与悬浮提示（由网络监控/M3 调用）。

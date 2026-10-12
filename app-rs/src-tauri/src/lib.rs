@@ -166,6 +166,25 @@ pub struct HotkeyHosts(pub std::sync::Mutex<Vec<hotkey::HotkeyHost>>);
 ///
 /// 只用于"状态/观测"类循环；剪贴板历史等持久化数据的**变异**不在此列——
 /// 中毒后继续写可能落盘脏数据，那里宁可 fail-fast。
+/// 恢复式 Mutex 加锁：锁中毒不再整进程退出。
+///
+/// release 是 `panic = "abort"`，后台线程持锁 panic 会毒化锁——原
+/// `.expect("锁中毒")` 的语义是"下一个碰锁的调用点直接炸掉整个进程"，
+/// 把一次局部故障放大成全局崩溃。`into_inner` 拿回数据继续跑是更好的
+/// 选择：观测类数据自洽性由写入方的不变量保证；持久化变异类（剪贴板
+/// 历史落盘等）调用点自己保证不在 catch_tick 恢复路径上写脏数据。
+///
+/// 61 处 `.lock_ok()` 已全部迁移到 `.lock_ok()`。
+pub(crate) trait MutexExt<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> MutexExt<T> for std::sync::Mutex<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 pub(crate) fn catch_tick<F: FnOnce()>(name: &str, f: F) {
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     if let Err(payload) = r {
@@ -194,7 +213,7 @@ pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) 
         // 全系统互斥，旧宿主还持着同组合时新注册必失败——会把自己的键误报成
         // "被占"。真机日志实证过：palette+quick 成对"全链注册失败"，重启才恢复。
         let state = app.state::<HotkeyHosts>();
-        let mut hosts = state.0.lock().expect("热键宿主锁中毒");
+        let mut hosts = state.0.lock_ok();
         for h in hosts.drain(..) {
             let mut h = h;
             h.stop(); // 阻塞到泵线程收尾、热键已反注册
@@ -222,7 +241,7 @@ pub fn apply_hotkeys(app: &tauri::AppHandle, previous: &dyn Fn(&str) -> String) 
     });
     {
         let state = app.state::<HotkeyHosts>();
-        let mut hosts = state.0.lock().expect("热键宿主锁中毒");
+        let mut hosts = state.0.lock_ok();
         hosts.push(host);
     }
     for r in &results {

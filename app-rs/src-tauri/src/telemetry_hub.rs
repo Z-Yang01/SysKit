@@ -7,6 +7,7 @@
 //! 落盘策略与 Python 一致：每 60 拍把流量/多粒度桶 flush 一次（脏标记 + 原子写），
 //! 高频复制场景不在热路径上做序列化与写盘。
 
+use crate::MutexExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -57,25 +58,25 @@ impl Hub {
     }
 
     pub fn latest_tick(&self) -> Option<Tick> {
-        self.latest.lock().expect("遥测锁中毒").clone()
+        self.latest.lock_ok().clone()
     }
 
     pub fn stats_snapshot(&self) -> StatsSnapshot {
-        self.rates.lock().expect("流量桶锁中毒").snapshot()
+        self.rates.lock_ok().snapshot()
     }
 
     pub fn events(&self, limit: usize) -> Vec<EventItem> {
-        self.events.lock().expect("事件锁中毒").recent(limit)
+        self.events.lock_ok().recent(limit)
     }
 
     /// 记录一次状态切换（M3 的网络监控接入；现在也供命令手动写入）。
     pub fn record_event(&self, state: &str, detail: &str) {
-        self.events.lock().expect("事件锁中毒").add(state, detail);
+        self.events.lock_ok().add(state, detail);
     }
 
     pub fn daily_report(&self, days: i64) -> Vec<DayReport> {
-        let events = self.events.lock().expect("事件锁中毒").items();
-        let traffic = self.traffic.lock().expect("流量锁中毒").days();
+        let events = self.events.lock_ok().items();
+        let traffic = self.traffic.lock_ok().days();
         netstats::daily_report(&events, days, &traffic)
     }
 
@@ -84,17 +85,17 @@ impl Hub {
     }
 
     pub fn today_traffic(&self) -> (i64, i64) {
-        self.traffic.lock().expect("流量锁中毒").today()
+        self.traffic.lock_ok().today()
     }
 
     pub fn set_ssid(&self, ssid: &str) {
-        self.rates.lock().expect("流量桶锁中毒").set_ssid(ssid);
+        self.rates.lock_ok().set_ssid(ssid);
     }
 
     /// 立即落盘（退出路径/命令调用）。
     pub fn flush(&self) {
-        self.traffic.lock().expect("流量锁中毒").save_if_dirty();
-        self.rates.lock().expect("流量桶锁中毒").save_if_dirty();
+        self.traffic.lock_ok().save_if_dirty();
+        self.rates.lock_ok().save_if_dirty();
         if let Ok(mut agg) = self.app_traffic.agg.lock() {
             agg.save_if_dirty();
         }
@@ -206,7 +207,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                             .lock()
                             .expect("流量锁中毒")
                             .add(tick.up as i64, tick.down as i64);
-                        hub.rates.lock().expect("流量桶锁中毒").add(
+                        hub.rates.lock_ok().add(
                             tick.up as i64,
                             tick.down as i64,
                             Some(&wifi.ssid),
@@ -222,7 +223,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, hub: Arc<Hub>) {
                     // 信号/tick 一起带给前端（概览页信号曲线用）
                     tick.wifi_signal = wifi.signal;
                     tick.wifi_ssid = wifi.ssid.clone();
-                    *hub.latest.lock().expect("遥测锁中毒") = Some(tick.clone());
+                    *hub.latest.lock_ok() = Some(tick.clone());
                     let _ = app.emit("sk://tick", &tick);
                     // 托盘悬浮显示实时速率（内部去重 + 尊重 tray_rate_enabled 设置）；
                     // 基础段读监控实时状态（曾硬编码 "offline"——状态灯接线后两路提示一致）
@@ -370,11 +371,11 @@ mod tests {
         let dir = crate::test_support::isolate();
         let hub = Hub::new();
         {
-            let mut t = hub.traffic.lock().expect("流量锁中毒");
+            let mut t = hub.traffic.lock_ok();
             t.add(111, 222);
         }
         {
-            let mut r = hub.rates.lock().expect("流量桶锁中毒");
+            let mut r = hub.rates.lock_ok();
             r.set_ssid("HomeWiFi");
             r.add(11, 22, None);
         }

@@ -9,6 +9,7 @@
 //! 与 Python 逐条对齐的取舍：落盘走后台防抖（mark_dirty + flush_if_dirty），
 //! 崩溃最多丢一个刷盘周期的条目，换高频复制不在 UI 线程做 DPAPI 密封。
 
+use crate::MutexExt;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -151,7 +152,7 @@ pub fn suppress_next(text: &str, ttl: f64) {
 }
 
 fn is_sensitive(text: &str) -> bool {
-    sensitive().lock().expect("sensitive 锁中毒").contains(text)
+    sensitive().lock_ok().contains(text)
 }
 
 fn is_suppressed(text: &str) -> bool {
@@ -186,7 +187,7 @@ fn history_cell() -> &'static Mutex<History> {
 
 /// 在历史实例上执行闭包（唯一访问入口）。
 pub fn with<R>(f: impl FnOnce(&mut History) -> R) -> R {
-    let mut g = history_cell().lock().expect("历史锁中毒");
+    let mut g = history_cell().lock_ok();
     f(&mut g)
 }
 

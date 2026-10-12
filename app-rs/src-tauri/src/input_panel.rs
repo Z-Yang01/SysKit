@@ -7,6 +7,7 @@
 //!    延后一拍（异步 sleep），绝不阻塞 UI 线程；
 //! 3. 连击/重呼出会 bump `seq`，在途的粘贴链发现 token 不匹配即自行作废。
 
+use crate::MutexExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -32,11 +33,11 @@ fn target_cell() -> &'static Mutex<isize> {
 }
 
 fn target_hwnd() -> isize {
-    *target_cell().lock().expect("目标句柄锁中毒")
+    *target_cell().lock_ok()
 }
 
 fn set_target_hwnd(v: isize) {
-    *target_cell().lock().expect("目标句柄锁中毒") = v;
+    *target_cell().lock_ok() = v;
 }
 
 /// 作废所有在途粘贴链（面板呼出/重呼出时调用）。

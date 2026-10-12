@@ -17,6 +17,7 @@
 //! id 10=Send(IPv4) / 11=Recv(IPv4) / 18=Send(IPv6) / 19=Recv(IPv6)，
 //! 字节数取 `size` 属性；其它 id（连接/断开/重传）不入账。
 
+use crate::MutexExt;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -317,12 +318,12 @@ impl AppTrafficState {
 
     pub fn set_unavailable(&self, reason: &str) {
         self.available.store(false, Ordering::Relaxed);
-        *self.reason.lock().expect("apptraffic reason 锁中毒") = reason.to_string();
+        *self.reason.lock_ok() = reason.to_string();
     }
 
     pub fn set_available(&self) {
         self.available.store(true, Ordering::Relaxed);
-        *self.reason.lock().expect("apptraffic reason 锁中毒") = String::new();
+        *self.reason.lock_ok() = String::new();
     }
 
     pub fn status(&self) -> (bool, String) {
@@ -364,7 +365,7 @@ pub fn spawn_etw(state: std::sync::Arc<AppTrafficState>) {
                 }
                 let pid = record.process_id();
                 let exe = {
-                    let mut p = procs_cb.lock().expect("proc 快照锁中毒");
+                    let mut p = procs_cb.lock_ok();
                     p.name_of(pid)
                 };
                 if let Ok(mut agg) = agg_ref.lock() {
