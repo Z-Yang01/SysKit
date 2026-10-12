@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 
 /** Content 视口高与行顶 → 行高（下限 220，兜底极矮窗口）。 */
-export function fillRowHeight(contentViewH: number, rowTop: number, bottomPad = 14): number {
+function fillRowHeight(contentViewH: number, rowTop: number, bottomPad = 14): number {
   return Math.max(220, Math.floor(contentViewH - rowTop - bottomPad));
 }
 

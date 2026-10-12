@@ -52,7 +52,8 @@ export class ErrorBoundary extends Component<Props, State> {
         <p style={{ color: "var(--sk-err, #d94040)", maxWidth: 640, wordBreak: "break-all" }}>
           {error.name}: {error.message}
         </p>
-        <p style={{ color: "var(--sk-hint, #888)" }}>
+        {/* --sk-sub：token 表没有 --sk-hint（曾误写致恒走 #888 死灰回退，不随主题变色） */}
+        <p style={{ color: "var(--sk-sub)" }}>
           错误已写入日志（logs/syskit.log）。点「重新加载」即可恢复——所有数据都保存在
           后端，不会因此丢失。
         </p>

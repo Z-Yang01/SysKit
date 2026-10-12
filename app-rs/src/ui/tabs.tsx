@@ -4,7 +4,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { cx } from "./index";
 
-export interface TabItem {
+interface TabItem {
   key: string;
   label: string;
   children?: ReactNode;

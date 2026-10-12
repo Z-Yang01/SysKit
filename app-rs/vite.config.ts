@@ -12,6 +12,8 @@ export default defineConfig({
   build: {
     target: "es2022",
     outDir: "dist",
+    // 跳过 gzip 体积预算计算（echarts chunk ~540KB，本地加载无 CDN 场景）
+    reportCompressedSize: false,
     rollupOptions: {
       output: {
         // echarts 占产物约 2/3 且跨版本基本不变：拆独立 chunk，发版时命中缓存；

@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button, Input } from "./index";
 
-export interface ConfirmOptions {
+interface ConfirmOptions {
   title: string;
   content?: React.ReactNode;
   okText?: string;

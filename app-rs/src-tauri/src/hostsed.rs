@@ -324,20 +324,10 @@ pub fn write_entries(
     };
 
     let text = serialize(entries);
-    let tmp = tmp_path(p);
-    std::fs::write(&tmp, text.as_bytes()).map_err(|e| format!("临时文件写入失败: {e}"))?;
-    // newline="\n" 等价物：上面写入的就是裸 \n，配合原子替换
-    if let Err(e) = std::fs::rename(&tmp, p) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("替换 hosts 失败: {e}"));
-    }
+    // newline="\n" 等价物：serialize 出的就是裸 \n；原子替换复用 stores 原子写
+    crate::stores::atomic_write(p, text.as_bytes())
+        .map_err(|e| format!("写回 hosts 失败: {e}"))?;
     Ok(dest)
-}
-
-fn tmp_path(p: &Path) -> PathBuf {
-    let mut s = p.as_os_str().to_os_string();
-    s.push(".syskit.tmp");
-    PathBuf::from(s)
 }
 
 #[cfg(test)]
@@ -576,7 +566,11 @@ mod tests {
         let after = read_entries(Some(&p));
         assert_eq!(after.len(), 2);
         assert_eq!(after[1].host, "new.local");
-        assert!(!tmp_path(&p).exists(), "临时文件应已被替换掉");
+        // 原子写已收敛到 stores：残留检查对齐其 <path>.tmp 约定
+        assert!(
+            !std::path::PathBuf::from(format!("{}.tmp", p.display())).exists(),
+            "临时文件应已被替换掉"
+        );
     }
 
     #[test]

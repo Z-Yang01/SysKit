@@ -26,7 +26,7 @@ export const TOKEN_NAMES = [
   "glass_border", "glass_highlight", "shadow_color", "accent_soft2",
 ] as const;
 
-export type TokenName = (typeof TOKEN_NAMES)[number];
+type TokenName = (typeof TOKEN_NAMES)[number];
 export type Palette = Record<TokenName, string>;
 
 export const LIGHT: Palette = {

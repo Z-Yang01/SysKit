@@ -347,7 +347,7 @@ export function topFileRows(files: { size: number; path: string }[]): {
 }
 
 /** 后端大文件上限（diskusage.rs TOP_FILES_LIMIT，前端无法读取只能对齐）。 */
-export const TOP_FILES_BACKEND_LIMIT = 200;
+const TOP_FILES_BACKEND_LIMIT = 200;
 
 /** Top200 截断提示（null=未截断）：列表长度顶到后端上限时如实说明。 */
 export function topFilesNote(files: { size: number; path: string }[]): string | null {

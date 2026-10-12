@@ -388,8 +388,6 @@ pub fn run() {
             commands::sk_repair_run,
             commands::sk_backup_list,
             commands::sk_backup_restore,
-            commands::sk_backup_list,
-            commands::sk_backup_restore,
             commands::sk_log_event,
             commands::sk_diag_run,
             commands::sk_diag_one,

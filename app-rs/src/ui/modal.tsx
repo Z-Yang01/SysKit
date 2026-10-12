@@ -4,7 +4,6 @@
  */
 import { useEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Button } from "./index";
 
 export function Modal({
   open,
@@ -64,9 +63,4 @@ export function Modal({
     </div>,
     document.body,
   );
-}
-
-/** 常用 footer：单个关闭按钮。 */
-export function CloseFooter({ onClose, text = "关闭" }: { onClose: () => void; text?: string }) {
-  return <Button onClick={onClose}>{text}</Button>;
 }

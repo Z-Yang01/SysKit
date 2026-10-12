@@ -5,21 +5,10 @@ __pycache__/
 # ===== 日志 / 临时输出 =====
 *.log
 *.tmp
-sk_out.txt
-exe_test.txt
-wlan_state.txt
-fix_results.json
-wifi_fix_results.json
-wifi_restore_results.json
-static_test_results.json
 
 # ===== 截图 / 调试产物 =====
 *.png
 !docs/**/*.png
-ui_tab*.png
-dark_tab*.png
-gui_*.png
-port_tab.png
 
 # ===== IDE / 编辑器 =====
 .idea/
@@ -31,6 +20,8 @@ Thumbs.db
 
 # ===== 会话/工具本地数据 =====
 .zcode/
+.pytest_cache/
+node_modules/
 
 # 便携模式数据目录（源码根误建时避免误入库）
 data/

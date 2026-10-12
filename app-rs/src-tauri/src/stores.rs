@@ -51,6 +51,14 @@ pub fn load_json(path: &Path, default: serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// 序列化写入 JSON（pretty 格式，供 settings.json 等人读文件；其余语义同 save_json，
+/// 但以 io::Result 传播错误——调用方需要把失败归因给用户时用这个）。
+pub fn save_json_pretty(path: &Path, data: &serde_json::Value) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    atomic_write(path, text.as_bytes())
+}
+
 /// 序列化写入 JSON（紧凑格式，对齐 Python `json.dump` 默认分隔符）。
 pub fn save_json(path: &Path, data: &serde_json::Value) -> bool {
     match serde_json::to_string(data) {

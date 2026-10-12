@@ -341,7 +341,7 @@ pub fn evaluate_alert(
     latency_threshold_ms: f64,
     loss_threshold_pct: f64,
 ) -> Option<bool> {
-    let (Some((g_avg, g_loss)), Some((p_avg, p_loss))) = (gw, pubw) else {
+    let (Some((_g_avg, g_loss)), Some((p_avg, p_loss))) = (gw, pubw) else {
         return None;
     };
     // 网关段只看丢包（局域网延迟正常极小，延迟阈值对它无意义）；

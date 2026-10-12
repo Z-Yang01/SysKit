@@ -29,7 +29,7 @@ export type PanelLabel = "paste" | "palette";
  * 面板是「呼出→扫一眼→粘贴」的快路径，翻 200 行还没找到就该去历史页搜索了；
  * 用户把上限调得很大时也保住渲染与滚动的轻量。
  */
-export const PANEL_MAX_ROWS = 200;
+const PANEL_MAX_ROWS = 200;
 
 export interface PanelState {
   /** 本次呼出的快照（顺序 = 可见顺序，置顶在前）。 */

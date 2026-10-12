@@ -17,7 +17,7 @@ Python 版已于 2026-10 退役删除，完整快照在 git tag `python-final`�
 | M6 | 密码库 | ✅ 加密层 + 数据层（SQLite，双向跨语言互开）+ 条目 CRUD/TOTP 全接 |
 | M7 | 收尾（设置/日志/命令面板/打包） | ✅ **全部交付**（设置页 + 日志 + 命令面板 + NSIS 安装包） |
 
-门禁全绿（**719 例 Rust + 469 例前端**，2026-10-04 实测；真实剪贴板单测在桌面有剪贴板活动时可能环境性失败，属已知）。M1/M2 的**真机清单尚未执行**——
+门禁全绿（历史快照 719 Rust + 469 前端 @2026-10-04；**当前 852 Rust + 612 前端**。真实剪贴板单测在桌面有剪贴板活动时可能环境性失败，属已知）。M1/M2 的**真机清单尚未执行**——
 按 `UNATTENDED.md` §3，托盘里可能跑着用户实例、且测试红线禁止真实 Win32 注入，
 因此 GO/NO-GO 判定必须由人工在真机完成。清单见下文「M1 真机复核清单」与
 「M2 真机复核清单」。
@@ -73,7 +73,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.2.0_x64-setup.exe` | 2.15 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.4.0_x64-setup.exe` | 2.15 MB |
 
 **release 二进制冒烟测试通过**：启动后进程存活、内存约 30 MB、正常初始化数据目录。
 （冒烟测试**不污染用户数据**——实测 `%APPDATA%\SysKit` 下无任何文件被本次测试改动；
@@ -395,7 +395,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.2.0_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.4.0_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -453,7 +453,7 @@ app-rs/
 │  ├─ src/netcheck.rs        # 15 项网络诊断 + verdict 综合判定
 │  ├─ src/snapshot.rs        # 网卡/路由/服务/WLAN 快照（PowerShell JSON + 原生解析）
 │  ├─ src/repairs.rs         # 修复动作库（19 项分级 + 组合 + 管理员门禁）
-│  ├─ src/commands.rs        # invoke 接口
+│  ├─ src/commands/          # invoke 接口（mod + clipboard/diag/network/palette/toolbox/vault 六域）
 │  └─ capabilities/default.json  # 窗口能力（前端 show/hide/listen 必需）
 └─ check.ps1       # 门禁一条命令
 ```
@@ -478,7 +478,7 @@ app-rs/
 ## M2 真机复核清单（数据正确性）
 
 M2 的自动化测试已锁住**格式与聚合口径**（与 Python 逐值比对），但「真机上数字
-对不对」只能人工看。启动后（同样先退出 Python 版）：
+对不对」只能人工看。启动后（先退出正在运行的 SysKit 实例）：
 
 | # | 靶 | 通过标准 |
 |---|-----|---------|
@@ -486,7 +486,7 @@ M2 的自动化测试已锁住**格式与聚合口径**（与 Python 逐值比�
 | 2 | 虚拟网卡不计入 | 用 Clash/VPN/Hyper-V 时，速率不应把隧道或虚拟交换机的转发量重复计入 |
 | 3 | CPU/内存 | 与任务管理器数值同量级（允许 1-2 秒采样相位差） |
 | 4 | 托盘速率 | tooltip 每秒刷新速率；**空闲时不闪**（去重生效） |
-| 5 | 多粒度切换 | 近 60 分钟/48 小时/30 天/12 月四个 Tab 都有柱子；切粒度不报错 |
+| 5 | 多粒度切换 | 近 60 分钟/48 小时/30 天/12 月四个 Tab 都有柱子；切粒度不报错（2026-10-11 起速率时序图已改为连续平滑曲线） |
 | 6 | 跨版本数据 | 先跑 Python 版产生流量 → 退出 → 跑 Rust 版：**柱状图能看到 Python 版写下的桶**（这是共用文件的硬证明） |
 | 7 | 日报 | 事件时间线在无事件时显示空态文案；有事件时按「时间 · 状态 · 说明」列出 |
 | 8 | 落盘 | 运行 ≥60 秒后退出，`%APPDATA%\SysKit\netstats_buckets.json` 的 mtime 已更新且 JSON 合法 |
@@ -596,7 +596,7 @@ ping、DNS 解析、色块）。两处真机细节照搬 Python：
 > ——这正是提醒我们摘掉过期标签的机制。
 
 ### M1 真机复核清单（GO/NO-GO 判定，必须人工执行）
-前置：**先退出托盘里正在运行的 Python 版 SysKit**（两版共用 `%APPDATA%\SysKit`
+前置：**先退出托盘里正在运行的 SysKit**（Python 版已退役；数据目录共用 `%APPDATA%\SysKit`
 且都会注册同名全局热键，同时运行必然互相抢键、并可能并发写同一份
 `clipboard.json`）。然后 `npm run build` + `cargo run --manifest-path src-tauri/Cargo.toml`。
 
@@ -658,7 +658,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.2.0_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.4.0_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。

@@ -539,13 +539,7 @@ pub fn remove_keys(keys: &[&str]) -> std::io::Result<()> {
         return Ok(());
     }
     *cache().lock().expect("settings 缓存锁中毒") = Some(merged.clone());
-    let path = paths::settings_file();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let text = serde_json::to_string_pretty(&Value::Object(merged))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    crate::stores::atomic_write(&path, text.as_bytes())
+    crate::stores::save_json_pretty(&paths::settings_file(), &Value::Object(merged))
 }
 
 /// 指定路径写入（测试用；同时更新缓存，与 Python 先更新缓存同语义）。
@@ -556,13 +550,7 @@ pub fn save_to(path: &Path, patch: &Map<String, Value>) -> std::io::Result<()> {
     }
     let merged = typed(&merged);
     *cache().lock().expect("settings 缓存锁中毒") = Some(merged.clone());
-
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let text = serde_json::to_string_pretty(&Value::Object(merged))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    crate::stores::atomic_write(path, text.as_bytes())
+    crate::stores::save_json_pretty(path, &Value::Object(merged))
 }
 
 #[cfg(test)]

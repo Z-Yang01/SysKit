@@ -331,10 +331,6 @@ export function displayValue(item: SettingItem): string {
   return s.length > 60 ? `${s.slice(0, 57)}…` : s;
 }
 
-/** 重启生效提示文案（为空表示无需重启）。 */
-export function restartNote(item: SettingItem): string {
-  return item.needs_restart ? "重启后生效" : "";
-}
 
 /**
  * 该设置是否"暂未生效"（无消费方，改了没有效果）。
@@ -366,14 +362,6 @@ export function humanLogSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** 日志时间戳（秒）→ 本地时间。 */
-export function formatLogTime(ts: number): string {
-  if (!ts) return "—";
-  const d = new Date(ts * 1000);
-  if (Number.isNaN(d.getTime())) return "—";
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
 
 /** 尾部读取的摘要（说明是否被截断）。 */
 export function tailSummary(t: LogTail | null): string {
@@ -393,7 +381,7 @@ export function logLevel(line: string): "err" | "warn" | "info" {
 // ---------------- 热键速查三方一致（注册链 × 设置页 × 侧栏，轮次36） ----------------
 
 /** 热键类设置键：改任一键后侧栏速查都要即时刷新（否则三方显示分叉）。 */
-export const HOTKEY_SETTING_KEYS: readonly string[] = [
+const HOTKEY_SETTING_KEYS: readonly string[] = [
   "palette_hotkey",
   "clip_quick_hotkey",
   "clip_paste_hotkey",

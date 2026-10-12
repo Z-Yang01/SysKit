@@ -278,7 +278,6 @@ export function Empty({ description }: { description: string }) {
 }
 
 // ---------------- 第三批（表单/表格/菜单/进度） ----------------
-export { Slider } from './slider';
 export { Checkbox, Radio } from './checkbox';
 export { Table } from './table';
 export type { Column } from './table';

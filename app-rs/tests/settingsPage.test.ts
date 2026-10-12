@@ -14,7 +14,6 @@ import {
   changedCount,
   displayValue,
   filterSettings,
-  formatLogTime,
   groupKey,
   groupSettings,
   humanLogSize,
@@ -27,7 +26,6 @@ import {
   monitorStateLabel,
   logLevel,
   matchesQuery,
-  restartNote,
   settingKeyTip,
   tailSummary,
   unwiredBadge,
@@ -184,13 +182,6 @@ describe("displayValue", () => {
 
   it("短字符串原样", () => {
     expect(displayValue(item({ ty: "str", current: "阿里", options: ["阿里"] }))).toBe("阿里");
-  });
-});
-
-describe("restartNote", () => {
-  it("需要重启时给出标注（否则用户以为没生效是 bug）", () => {
-    expect(restartNote(item({ needs_restart: true }))).toBe("重启后生效");
-    expect(restartNote(item({ needs_restart: false }))).toBe("");
   });
 });
 
@@ -419,11 +410,6 @@ describe("日志展示", () => {
     expect(humanLogSize(512)).toBe("512 B");
     expect(humanLogSize(2048)).toBe("2.0 KB");
     expect(humanLogSize(3 * 1024 * 1024)).toBe("3.0 MB");
-  });
-
-  it("formatLogTime 本地时间，非法值为「—」", () => {
-    expect(formatLogTime(1_700_000_000)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-    expect(formatLogTime(0)).toBe("—");
   });
 
   it("tailSummary 说明截断", () => {

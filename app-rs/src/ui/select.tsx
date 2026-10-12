@@ -6,7 +6,7 @@
  */
 import { cx } from "./index";
 
-export interface SelectOption {
+interface SelectOption {
   label: string;
   value: string;
 }

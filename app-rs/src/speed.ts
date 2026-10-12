@@ -157,7 +157,7 @@ export function speedStats(result: DnsSpeedResult | null): { usable: number; fai
 
 /** 可一键应用为系统 DNS 的测速服务器（与后端 repairs::DNS_PRESETS 对齐：
     百度/Cloudflare/Google 无预设，测出再好也只能手动改）。 */
-export const APPLYABLE_PRESETS = new Set(["阿里", "腾讯", "114"]);
+const APPLYABLE_PRESETS = new Set(["阿里", "腾讯", "114"]);
 
 /** 推荐项是否可一键应用为系统 DNS。 */
 export function applyablePreset(name: string): boolean {
