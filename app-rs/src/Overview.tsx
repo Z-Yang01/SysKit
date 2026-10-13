@@ -9,7 +9,7 @@
  * v1.4 UI 迁移：脱离 AntD（Tabs tabBarExtraContent → ui Tabs right 插槽；
  * Radio.Group/Segmented/Table/Tag → ui 件）。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { EChart as ReactECharts } from "./EChart";
@@ -70,6 +70,148 @@ const RATE_BUCKET_CFG: Record<Exclude<RateWindow, "1m">, { gran: Granularity; bu
   "1d": { gran: "hour", bucketSec: 3600, count: 24 },
 };
 
+/** 日报卡（memo + 自持天数/加载态）：父级每分钟的 events/流量桶刷新
+ *  不再拖本卡 30 行表 diff（B14）。数据由卡片自己 invoke 拉取。 */
+const ReportCard = memo(function ReportCard() {
+  const [days, setDays] = useState<number>(7);
+  const [report, setReport] = useState<DayReport[]>([]);
+  const load = useCallback(async () => {
+    try {
+      const r = await invoke<{ days: number; rows: DayReport[] }>("sk_daily_report", {
+        days: days,
+      });
+      setReport(r.rows ?? []);
+    } catch {
+      setReport([]);
+    }
+  }, [days]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  const columns: Column<DayReport>[] = [
+    { title: REPORT_COLUMNS[0], dataIndex: "date", width: 100 },
+    { title: REPORT_COLUMNS[1], dataIndex: "outages", width: 80 },
+    {
+      title: REPORT_COLUMNS[2],
+      dataIndex: "outage_sec",
+      width: 120,
+      render: (v: number) => formatDuration(v),
+    },
+    {
+      title: REPORT_COLUMNS[3],
+      dataIndex: "recv",
+      render: (v: number, r) => trafficCell(r.has_traffic, v),
+    },
+    {
+      title: REPORT_COLUMNS[4],
+      dataIndex: "sent",
+      render: (v: number, r) => trafficCell(r.has_traffic, v),
+    },
+  ];
+  const summary = useMemo(() => summarizeReport(report), [report]);
+  return (
+    <Card className="min-h-[260px]">
+      <CardHeader>
+        <CardTitle>近 7 / 30 天日报</CardTitle>
+        <Segmented<"7" | "30">
+          size="sm"
+          value={days === 30 ? "30" : "7"}
+          onChange={(v) => setDays(Number(v))}
+          options={[
+            { label: "7 天", value: "7" },
+            { label: "30 天", value: "30" },
+          ]}
+        />
+      </CardHeader>
+      <CardBody>
+        <div className="mb-2 flex items-center gap-5 text-sm text-sk-sub">
+          <span>断网 {summary.outages} 次</span>
+          <span>累计 {formatDuration(summary.outageSec)}</span>
+          <span>有记录 {summary.daysWithEvents} 天</span>
+        </div>
+        <div className="max-h-[220px] overflow-y-auto">
+          <Table<DayReport>
+            rowKey={(r) => r.date}
+            dataSource={report}
+            columns={columns}
+            empty={<Empty description="暂无日报——挂机一天后这里会有断网与流量统计" />}
+          />
+        </div>
+      </CardBody>
+    </Card>
+  );
+});
+
+/** 事件时间线卡（memo + 自持双筛选态）：只有 events 引用真变（每分钟
+ *  拉取）才重渲；父级其他轮询（流量桶/序列）不波及（B14）。 */
+const EventsCard = memo(function EventsCard({ events }: { events: EventItem[] }) {
+  const [kind, setKind] = useState<"all" | "net" | "quality" | "traffic">("all");
+  const [time, setTime] = useState<"1h" | "24h" | "7d" | "all">("all");
+  const RANGE_SECS: Record<typeof time, number | null> = {
+    "1h": 3600,
+    "24h": 86400,
+    "7d": 604800,
+    all: null,
+  };
+  const shown = useMemo(() => {
+    const inTime = filterEventsByTime(events, RANGE_SECS[time], Date.now() / 1000);
+    return kind === "all"
+      ? inTime
+      : inTime.filter((ev) => eventCategory(ev.state) === kind);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, kind, time]);
+  return (
+    <Card className="min-h-[260px]">
+      <CardHeader>
+        <CardTitle>事件时间线</CardTitle>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Segmented<"all" | "net" | "quality" | "traffic">
+            size="sm"
+            value={kind}
+            onChange={setKind}
+            options={[
+              { label: "全部", value: "all" },
+              { label: "断网", value: "net" },
+              { label: "质量", value: "quality" },
+              { label: "流量", value: "traffic" },
+            ]}
+          />
+          <Segmented<"1h" | "24h" | "7d" | "all">
+            size="sm"
+            value={time}
+            onChange={setTime}
+            options={[
+              { label: "近1h", value: "1h" },
+              { label: "24h", value: "24h" },
+              { label: "7天", value: "7d" },
+              { label: "全部", value: "all" },
+            ]}
+          />
+        </div>
+      </CardHeader>
+      <CardBody>
+        <div className="max-h-[260px] overflow-y-auto">
+          {shown.length === 0 ? (
+            <Empty
+              description={
+                events.length === 0
+                  ? "暂无事件——断网/恢复、质量告警、流量提醒都会写入这里"
+                  : "该筛选下暂无事件"
+              }
+            />
+          ) : (
+            shown.map((ev, i) => (
+              <div key={`${ev.ts}-${i}`} className="sk-hint py-0.5">
+                {eventLine(ev)}
+              </div>
+            ))
+          )}
+        </div>
+      </CardBody>
+    </Card>
+  );
+});
+
 export function Dashboard({ dark }: { dark: boolean }) {
   const [tick, setTick] = useState<Tick | null>(null);
   const [history, setHistory] = useState<Tick[]>([]);
@@ -86,8 +228,6 @@ export function Dashboard({ dark }: { dark: boolean }) {
   }, [granularity]);
   const [ssid, setSsid] = useState<string>("");
   const [series, setSeries] = useState<Series | null>(null);
-  const [reportDays, setReportDays] = useState<number>(7);
-  const [report, setReport] = useState<DayReport[]>([]);
   // 速率曲线窗口：1m=逐拍实时；1h/1d=后端分钟/小时桶的均值速率
   const [rateWindow, setRateWindow] = useState<RateWindow>(() => {
     const v = localStorage.getItem("sk.rateWindow");
@@ -122,9 +262,6 @@ export function Dashboard({ dark }: { dark: boolean }) {
   // （时间轴如实断开，与系统助手「隐藏期间采样暂停」同语义）
   const [ovTab, setOvTab] = useState("overview");
   // 事件时间线类型过滤（sk_events 拉最近 100 条，前端按组筛）
-  const [eventFilter, setEventFilter] = useState<"all" | "net" | "quality" | "traffic">("all");
-  // 时间范围档（与类型筛独立叠加；档位→秒数映射见 EVENT_RANGE_SECS）
-  const [eventTime, setEventTime] = useState<"1h" | "24h" | "7d" | "all">("all");
 
   // ---------------- 每秒 tick ----------------
   useEffect(() => {
@@ -199,22 +336,6 @@ export function Dashboard({ dark }: { dark: boolean }) {
     const cfg = RATE_BUCKET_CFG[rateWindow];
     return rateViewFromBuckets(rateBuckets, cfg.bucketSec, cfg.count);
   }, [rateWindow, history, rateBuckets]);
-
-  // ---------------- 日报 ----------------
-  const loadReport = useCallback(async () => {
-    try {
-      const r = await invoke<{ days: number; rows: DayReport[] }>("sk_daily_report", {
-        days: reportDays,
-      });
-      setReport(r.rows ?? []);
-    } catch {
-      setReport([]);
-    }
-  }, [reportDays]);
-
-  useEffect(() => {
-    void loadReport();
-  }, [loadReport]);
 
   // ---------------- 图表数据 ----------------
   const rateOption = useMemo(() => {
@@ -355,30 +476,8 @@ export function Dashboard({ dark }: { dark: boolean }) {
     };
   }, [series, dark]);
 
-  const summary = useMemo(() => summarizeReport(report), [report]);
   const currentState = tick ? "ok" : "offline";
   const st = stateLabel(currentState);
-
-  const reportColumns: Column<DayReport>[] = [
-    { title: REPORT_COLUMNS[0], dataIndex: "date", width: 100 },
-    { title: REPORT_COLUMNS[1], dataIndex: "outages", width: 80 },
-    {
-      title: REPORT_COLUMNS[2],
-      dataIndex: "outage_sec",
-      width: 120,
-      render: (v: number) => formatDuration(v),
-    },
-    {
-      title: REPORT_COLUMNS[3],
-      dataIndex: "recv",
-      render: (v: number, r) => trafficCell(r.has_traffic, v),
-    },
-    {
-      title: REPORT_COLUMNS[4],
-      dataIndex: "sent",
-      render: (v: number, r) => trafficCell(r.has_traffic, v),
-    },
-  ];
 
   const overviewTab = (
     <div className="flex flex-col gap-3.5">
@@ -477,97 +576,8 @@ export function Dashboard({ dark }: { dark: boolean }) {
       <QualityCard dark={dark} />
 
       <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
-        <Card className="min-h-[260px]">
-          <CardHeader>
-            <CardTitle>近 7 / 30 天日报</CardTitle>
-            <Segmented<"7" | "30">
-              size="sm"
-              value={reportDays === 30 ? "30" : "7"}
-              onChange={(v) => setReportDays(Number(v))}
-              options={[
-                { label: "7 天", value: "7" },
-                { label: "30 天", value: "30" },
-              ]}
-            />
-          </CardHeader>
-          <CardBody>
-            <div className="mb-2 flex items-center gap-5 text-sm text-sk-sub">
-              <span>断网 {summary.outages} 次</span>
-              <span>累计 {formatDuration(summary.outageSec)}</span>
-              <span>有记录 {summary.daysWithEvents} 天</span>
-            </div>
-            <div className="max-h-[220px] overflow-y-auto">
-              <Table<DayReport>
-                rowKey={(r) => r.date}
-                dataSource={report}
-                columns={reportColumns}
-                empty={<Empty description="暂无日报——挂机一天后这里会有断网与流量统计" />}
-              />
-            </div>
-          </CardBody>
-        </Card>
-        <Card className="min-h-[260px]">
-          <CardHeader>
-            <CardTitle>事件时间线</CardTitle>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Segmented<"all" | "net" | "quality" | "traffic">
-                size="sm"
-                value={eventFilter}
-                onChange={setEventFilter}
-                options={[
-                  { label: "全部", value: "all" },
-                  { label: "断网", value: "net" },
-                  { label: "质量", value: "quality" },
-                  { label: "流量", value: "traffic" },
-                ]}
-              />
-              <Segmented<"1h" | "24h" | "7d" | "all">
-                size="sm"
-                value={eventTime}
-                onChange={setEventTime}
-                options={[
-                  { label: "近1h", value: "1h" },
-                  { label: "24h", value: "24h" },
-                  { label: "7天", value: "7d" },
-                  { label: "全部", value: "all" },
-                ]}
-              />
-            </div>
-          </CardHeader>
-          <CardBody>
-            <div className="max-h-[260px] overflow-y-auto">
-              {(() => {
-                const RANGE_SECS: Record<typeof eventTime, number | null> = {
-                  "1h": 3600,
-                  "24h": 86400,
-                  "7d": 604800,
-                  all: null,
-                };
-                const inTime = filterEventsByTime(events, RANGE_SECS[eventTime], Date.now() / 1000);
-                const shown =
-                  eventFilter === "all"
-                    ? inTime
-                    : inTime.filter((ev) => eventCategory(ev.state) === eventFilter);
-                if (shown.length === 0) {
-                  return (
-                    <Empty
-                      description={
-                        events.length === 0
-                          ? "暂无事件——断网/恢复、质量告警、流量提醒都会写入这里"
-                          : "该类型暂无事件"
-                      }
-                    />
-                  );
-                }
-                return shown.map((ev, i) => (
-                  <div key={`${ev.ts}-${i}`} className="sk-hint py-0.5">
-                    {eventLine(ev)}
-                  </div>
-                ));
-              })()}
-            </div>
-          </CardBody>
-        </Card>
+        <ReportCard />
+        <EventsCard events={events} />
       </div>
     </div>
   );
