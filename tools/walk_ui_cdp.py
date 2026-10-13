@@ -19,6 +19,13 @@ TAGS = {
     'set': '⚙ 设置',
 }
 
+# 页内子 tab（v1.4 六入口结构；遍历时逐个点按+截图+收集错误）
+SUB_TABS = {
+    'tool': ['剪贴板', 'Hosts 编辑', '端口 / 局域网', 'DNS / 子网 / ping', '测速', '应用联网', '二维码识别'],
+    'sys': ['性能监控', '启动项管理', '磁盘空间', '垃圾清理', '电池健康', '场景模式', 'WiFi 密码'],
+    'set': ['设置', '后台监控', '日志'],
+}
+
 
 def connect_main():
     pages = json.load(urllib.request.urlopen('http://127.0.0.1:9223/json'))
@@ -128,6 +135,20 @@ def main():
         print(f'== {name}: chars={len(b)} 新错误={len(new_err)} -> {path}')
         for e in new_err[:5]:
             print('   ', e[:170])
+        # 子 tab 遍历：同页头仍在导航态，点页内 tab 按钮
+        for i, sub in enumerate(SUB_TABS.get(tag, [])):
+            r = s.ev(
+                "(e=>{const els=[...document.querySelectorAll('button')].filter(x=>x.textContent && x.textContent.trim()==="
+                + json.dumps(sub)
+                + "&&x.offsetParent!==null);if(!els.length)return 'NF';els[els.length-1].click();return 'OK';})('')")
+            time.sleep(1.1)
+            s.drain(0.3)
+            p2 = s.shot(f'{tag}_sub{i}')
+            errs2 = s.errors[len(s.errors) - (0 if r == 'NF' else 1):]
+            print(f'   -- {sub}: {r} -> {p2}')
+            for e2 in s.errors[-2:]:
+                if 'sub' not in str(e2):
+                    pass
     return s
 
 
