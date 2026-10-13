@@ -413,7 +413,7 @@ function SettingsPanel() {
       <div
         className="sticky top-0 z-10 mb-2.5 flex flex-wrap items-center gap-2 rounded-[8px] border border-sk-border bg-sk-card px-3 py-2"
       >
-        <span className="sk-hint whitespace-nowrap">共 {all?.count ?? 0} 项</span>
+        <span className="sk-hint whitespace-nowrap">共 {items.length} 项</span>
         {/* 已改动计数即过滤器：点亮后右侧只剩与默认值不同的项 */}
         {changed > 0 ? (
           <Tooltip title="点击只显示与默认值不同的设置项">
@@ -517,7 +517,7 @@ function SettingsPanel() {
         }
       >
         <div className="whitespace-pre-wrap">
-          将把所有设置恢复为默认值（共 {all?.count ?? 0} 项）。
+          将把所有设置恢复为默认值（共 {items.length} 项）。
           {"\n\n"}
           动态键（如场景模式记录的进模式前音量）会保留，不受影响。
         </div>

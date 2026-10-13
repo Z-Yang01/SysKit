@@ -539,12 +539,18 @@ export function ToolboxClipboard() {
             className="h-7 w-[220px] text-xs"
             placeholder="搜索历史…"
             value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
+            onChange={(e) => {
+              setKeyword(e.target.value);
+              setPage(0);
+            }}
           />
           <Segmented
             size="sm"
             value={kind}
-            onChange={setKind}
+            onChange={(v) => {
+              setKind(v);
+              setPage(0);
+            }}
             options={kindFilterOptions(summary).map((k) => ({ label: k.label, value: k.key }))}
           />
           <Button size="sm" onClick={() => void load()}>

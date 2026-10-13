@@ -104,6 +104,7 @@ function forceDelete(
   path: string,
   isDir: boolean,
   toast: { success: (t: string) => void; error: (t: string) => void },
+  onDeleted?: () => void,
 ) {
   confirm({
     title: `强制删除${isDir ? "文件夹" : "文件"}`,
@@ -122,6 +123,7 @@ function forceDelete(
         const first = r.results[0];
         if (first?.ok) {
           toast.success(`已删除：${path}`);
+          onDeleted?.(); // 刷新数据源，别让用户盯着幽灵行
         } else {
           toast.error(first?.reason || "删除失败");
         }
@@ -514,7 +516,11 @@ export function DiskOverviewPanel({ onDrill }: { onDrill: (path: string) => void
           <Button variant="ghost" size="sm" onClick={() => void reveal(r.path)}>
             定位
           </Button>
-          <Button variant="danger" size="sm" onClick={() => forceDelete(r.path, false, toast)}>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => forceDelete(r.path, false, toast, () => void runScan())}
+          >
             删除…
           </Button>
         </span>
@@ -809,7 +815,11 @@ export function DirDrillPanel({ external }: { external?: DrillRequest | null }) 
           <Button
             variant="danger"
             size="sm"
-            onClick={() => forceDelete(r.row!.path, r.row!.is_dir, toast)}
+            onClick={() =>
+              forceDelete(r.row!.path, r.row!.is_dir, toast, () =>
+                void runScan(root?.path ?? dirInput.trim(), true),
+              )
+            }
           >
             删除…
           </Button>

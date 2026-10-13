@@ -30,7 +30,10 @@ export function Tabs({
   // 重面板（WiFi netsh 扫描/磁盘枚举）不在打开容器页时就白跑；
   // 已挂载的 pane 切走只隐藏不卸载——页内状态（生成的二维码/扫描结果/表单）不丢
   const [mounted, setMounted] = useState<string[]>(() => [activeKey ?? items[0]?.key ?? ""]);
-  const cur = activeKey ?? inner;
+  // 兜底：activeKey 不在 items 里（localStorage 残留已撤并的 key 等）回落
+  // 首个页签——否则内容区会渲染成无页签高亮的空白
+  const raw = activeKey ?? inner;
+  const cur = items.some((i) => i.key === raw) ? raw : (items[0]?.key ?? "");
   useEffect(() => {
     setMounted((m) => (m.includes(cur) ? m : [...m, cur]));
   }, [cur]);

@@ -200,8 +200,10 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
     [comboRun, toast],
   );
 
-  // palette「快速诊断」动作信号：递增即触发一次快速检测（消费一次）
-  const ranRef = useRef(quickRequest ?? 0);
+  // palette「快速诊断」动作信号：递增即触发一次快速检测（消费一次）。
+  // ref 恒初始化 0：若用 quickRequest ?? 0 初始化，从其他页跳转过来时
+  // 组件带着信号值挂载，effect 首跑即"信号==已消费"直接吞掉（bug 修复）
+  const ranRef = useRef(0);
   useEffect(() => {
     if (quickRequest === undefined || quickRequest === ranRef.current) return;
     ranRef.current = quickRequest;
@@ -633,7 +635,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
           <Button
             variant="ghost"
             size="sm"
-            disabled={isBusy || diagBusy !== ""}
+            disabled={isBusy || diagBusy !== "" || comboRun !== null}
             loading={recheckId === row.id}
             onClick={() => {
               setRecheckId(row.id);
