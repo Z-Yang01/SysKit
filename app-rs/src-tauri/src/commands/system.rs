@@ -315,6 +315,26 @@ pub async fn sk_disk_scan_children(dir: String) -> Result<serde_json::Value, Str
     .map_err(|e| format!("扫描线程失败: {e}"))?
 }
 
+/// 顽固文件/文件夹强制删除（流氓软件残留）：四阶段管线（属性→直接删→
+/// takeown→icacls→强删+重试）。不经回收站、不可还原——前端必须二次确认。
+/// 需要管理员（takeown/icacls 对非自有文件生效的前提）。
+#[tauri::command]
+pub async fn sk_force_delete(paths: Vec<String>) -> Result<serde_json::Value, String> {
+    if !crate::w32::is_elevated() {
+        return Err("强制删除需要管理员权限：takeown/icacls 重置所有权必须提权运行。请以管理员身份重启 SysKit 后重试。".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let results: Vec<crate::disk::stubborn::ForceResult> = paths
+            .iter()
+            .map(|p| crate::disk::stubborn::force_remove(p))
+            .collect();
+        let ok_count = results.iter().filter(|r| r.ok).count();
+        serde_json::json!({ "ok_count": ok_count, "results": results })
+    })
+    .await
+    .map_err(|e| format!("删除线程失败: {e}"))
+}
+
 /// 批量移入回收站（可还原），返回 (成功数, 失败路径列表)。
 #[tauri::command]
 pub async fn sk_disk_recycle_delete(paths: Vec<String>) -> Result<serde_json::Value, String> {

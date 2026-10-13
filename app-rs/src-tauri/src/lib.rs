@@ -462,6 +462,7 @@ pub fn run() {
             commands::sk_disk_scan_children,
             commands::sk_disk_scan_cancel,
             commands::sk_disk_recycle_delete,
+            commands::sk_force_delete,
             commands::sk_clean_targets,
             commands::sk_clean_scan,
             commands::sk_clean_run,

@@ -303,13 +303,21 @@ pub fn clean_dir(target: CleanTarget, root: &Path) -> CleanOutcome {
             continue;
         }
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        match std::fs::remove_file(&path) {
+        let removed = std::fs::remove_file(&path).or_else(|first| {
+            // 只读属性是白名单清理最常见的假失败：清属性重试一次再判死活
+            if crate::disk::stubborn::clear_stubborn_attrs(&path) {
+                std::fs::remove_file(&path)
+            } else {
+                Err(first)
+            }
+        });
+        match removed {
             Ok(()) => {
                 out.deleted += 1;
                 out.freed += size;
             }
             Err(_) => {
-                // 正在使用/只读/权限不足：跳过并计数，不中断整轮
+                // 正在使用/权限不足：跳过并计数，不中断整轮
                 out.failed += 1;
                 if out.errors.len() < 10 {
                     out.errors.push(
@@ -333,6 +341,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn readonly_file_cleaned_after_attr_retry() {
+        let d = temp_root("ro");
+        let f = d.join("locked.tmp");
+        std::fs::write(&f, b"xx").unwrap();
+        crate::disk::stubborn::clear_stubborn_attrs(&f); // 幂等：先确保无属性
+                                                         // 设只读（NUL 终止宽串）
+        let disp = crate::disk::stubborn::strip_long_prefix(&f.canonicalize().unwrap());
+        let mut wide: Vec<u16> = disp.encode_utf16().collect();
+        wide.push(0);
+        unsafe {
+            windows::Win32::Storage::FileSystem::SetFileAttributesW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(
+                    windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY.0,
+                ),
+            )
+            .unwrap();
+        }
+        let out = clean_dir(CleanTarget::UserTemp, &d);
+        assert_eq!(out.deleted, 1, "只读临时文件应被属性重试清除: {out:?}");
+        assert!(!f.exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

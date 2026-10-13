@@ -97,6 +97,41 @@ function OverviewBar({ percent }: { percent: number }) {
   );
 }
 
+/** 顽固强制删除（不经回收站）：后端四阶段管线（属性→直接删→takeown→
+ * icacls→强删）；需管理员，非管理员时后端结构化报错原样透传。
+ * 模块级：Top200 与下钻两面板共用。 */
+function forceDelete(
+  path: string,
+  isDir: boolean,
+  toast: { success: (t: string) => void; error: (t: string) => void },
+) {
+  confirm({
+    title: `强制删除${isDir ? "文件夹" : "文件"}`,
+    content: `${path}
+
+将不经回收站直接删除，不可还原。系统要害目录会被后端拒绝；文件被占用时将重试并重置所有权。`,
+    okText: "强制删除",
+    danger: true,
+    width: 560,
+    onOk: async () => {
+      try {
+        const r = await invoke<{ ok_count: number; results: { path: string; ok: boolean; reason: string }[] }>(
+          "sk_force_delete",
+          { paths: [path] },
+        );
+        const first = r.results[0];
+        if (first?.ok) {
+          toast.success(`已删除：${path}`);
+        } else {
+          toast.error(first?.reason || "删除失败");
+        }
+      } catch (e) {
+        toast.error(String(e));
+      }
+    },
+  });
+}
+
 export function DiskPanel() {
   const toast = useToast();
   const [list, setList] = useState<DiskList | null>(null);
@@ -473,11 +508,16 @@ export function DiskOverviewPanel({ onDrill }: { onDrill: (path: string) => void
     {
       title: "",
       key: "reveal",
-      width: 64,
+      width: 100,
       render: (_: unknown, r: { path: string }) => (
-        <Button variant="ghost" size="sm" onClick={() => void reveal(r.path)}>
-          定位
-        </Button>
+        <span className="flex gap-1">
+          <Button variant="ghost" size="sm" onClick={() => void reveal(r.path)}>
+            定位
+          </Button>
+          <Button variant="danger" size="sm" onClick={() => forceDelete(r.path, false, toast)}>
+            删除…
+          </Button>
+        </span>
       ),
     },
   ];
@@ -759,6 +799,21 @@ export function DirDrillPanel({ external }: { external?: DrillRequest | null }) 
       width: 90,
       render: (_: unknown, r) =>
         r.kind === "row" && r.row!.is_dir ? r.row!.file_count : "",
+    },
+    {
+      title: "",
+      key: "ops",
+      width: 74,
+      render: (_: unknown, r) =>
+        r.kind === "row" ? (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => forceDelete(r.row!.path, r.row!.is_dir, toast)}
+          >
+            删除…
+          </Button>
+        ) : null,
     },
   ];
 
