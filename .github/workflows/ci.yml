@@ -1,0 +1,55 @@
+# 五段门禁的 CI 镜像（与 app-rs/check.ps1 同命令集）：
+# fmt --check / clippy -D warnings / cargo test / tsc / vitest。
+# 真机冒烟（Win32 注键）不进 CI——那需要交互桌面，只在本地人工触发。
+name: ci
+on:
+  push:
+    branches: [main, rust-rewrite]
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust 缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app-rs/src-tauri
+
+      - name: fmt --check
+        working-directory: app-rs/src-tauri
+        run: cargo fmt --check
+
+      - name: clippy -D warnings
+        working-directory: app-rs/src-tauri
+        run: cargo clippy --lib --tests -- -D warnings
+
+      - name: cargo test
+        working-directory: app-rs/src-tauri
+        run: cargo test --lib
+
+      - name: Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app-rs/package-lock.json
+
+      - name: npm ci
+        working-directory: app-rs
+        run: npm ci
+
+      - name: tsc
+        working-directory: app-rs
+        run: npx tsc --noEmit
+
+      - name: vitest
+        working-directory: app-rs
+        run: npx vitest run
