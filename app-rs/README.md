@@ -447,13 +447,18 @@ app-rs/
 │  ├─ src/rate_store.rs      # TrafficStore + EventStore（traffic/events.json 对齐）
 │  ├─ src/rate_stats.rs      # 多粒度流量桶 netstats_buckets.json（含整点归并）
 │  ├─ src/netstats.rs        # 日报聚合 + 多粒度序列（纯逻辑）
-│  ├─ src/telemetry.rs       # 1 秒采样（GetIfTable2/GetSystemTimes/内存/磁盘）
-│  ├─ src/telemetry_hub.rs   # 采样线程 + 共享状态 + sk://tick 事件
-│  ├─ src/dnsclient.rs       # 自研 UDP DNS 客户端（线格式纯函数 + 超时重发）
-│  ├─ src/netcheck.rs        # 15 项网络诊断 + verdict 综合判定
+│  ├─ src/telemetry/         # 遥测域（core 采样纯逻辑 + hub 运行时线程）
+│  ├─ src/net/               # 网络工具域（client/speed/history/dl 四件）
+│  ├─ src/netcheck/          # 15 项网络诊断 + verdict 综合判定（mod/probe/checks）
 │  ├─ src/snapshot.rs        # 网卡/路由/服务/WLAN 快照（PowerShell JSON + 原生解析）
-│  ├─ src/repairs.rs         # 修复动作库（19 项分级 + 组合 + 管理员门禁）
-│  ├─ src/commands/          # invoke 接口（mod + clipboard/diag/network/palette/toolbox/vault 六域）
+│  ├─ src/repairs/           # 修复域（类型+注册表+三批执行器+backup/restore）
+│  ├─ src/w32/               # 唯一 FFI 出口（input/clipboard/crypto/process/sysui）
+│  ├─ src/vault/             # 密码库域（crypto/store/pwgen）
+│  ├─ src/appnet/            # 应用网络域（firewall 防火墙 + traffic ETW 流量）
+│  ├─ src/disk/              # 磁盘域（overview 空间 + usage 占用分析）
+│  ├─ src/paste_guard.rs     # 粘贴守卫链（焦点守卫 + SendInput 编排）
+│  ├─ src/jsonio.rs          # 原子 JSON 读写（tmp+replace 纪律）
+│  ├─ src/commands/          # invoke 接口（mod + clipboard_cmds/diag/network/palette/toolbox/vault/settings_cmds/system 八域）
 │  └─ capabilities/default.json  # 窗口能力（前端 show/hide/listen 必需）
 └─ check.ps1       # 门禁一条命令
 ```
