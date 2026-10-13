@@ -321,7 +321,7 @@ mod tests {
             "network.rs",
             "toolbox.rs",
             "vault.rs",
-            "clipboard.rs",
+            "clipboard_cmds.rs",
             "palette.rs",
         ] {
             cmds_src_all.push_str(
