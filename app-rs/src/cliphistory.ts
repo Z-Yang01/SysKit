@@ -105,6 +105,79 @@ export function relativeTime(ts: number, nowMs: number): string {
   return `${Math.floor(diff / 86400)} 天前`;
 }
 
+// ---------------- 按天查看 ----------------
+
+/**
+ * 本地日期键 `YYYY-MM-DD`。
+ *
+ * **必须按本地时区算**（`getFullYear/Month/Date`）而不是 `toISOString()`：
+ * 后者是 UTC，东八区用户在 00:00–08:00 之间复制的内容会被归到"昨天"，
+ * 这正是"按天查看"最容易被用户发现的错误。
+ */
+export function dayKey(ts: number): string {
+  if (!ts || ts <= 0) return "";
+  const d = new Date(ts * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** 某天的显示名：今天 / 昨天 / YYYY-MM-DD。 */
+export function dayLabel(key: string, nowMs = Date.now()): string {
+  if (!key) return "未知日期";
+  const today = new Date(nowMs);
+  const yesterday = new Date(nowMs);
+  yesterday.setDate(today.getDate() - 1);
+  const tk = dayKey(Math.floor(today.getTime() / 1000));
+  const yk = dayKey(Math.floor(yesterday.getTime() / 1000));
+  if (key === tk) return "今天";
+  if (key === yk) return "昨天";
+  return key;
+}
+
+/** 日期筛选下拉项（key="" 表示全部）。 */
+export interface DayBucket {
+  key: string;
+  label: string;
+  count: number;
+}
+
+/**
+ * 按天聚合（保持首次出现顺序）。
+ *
+ * 用 Map 而不是"相邻两行比较"：置顶条目排在列表最前、可能来自更早的日期，
+ * 相邻比较会把同一天切成好几段、出现重复的日期头。这里一天只出现一次，
+ * 组内保持后端原有顺序（置顶仍在其所在组的前面）。
+ */
+export function dayBuckets(rows: ClipRow[], nowMs = Date.now()): DayBucket[] {
+  const seen = new Map<string, DayBucket>();
+  for (const r of rows) {
+    const k = dayKey(r.ts);
+    const hit = seen.get(k);
+    if (hit) hit.count += 1;
+    else seen.set(k, { key: k, label: dayLabel(k, nowMs), count: 1 });
+  }
+  return [...seen.values()];
+}
+
+/** 只保留某一天（key 为空 = 不过滤）。 */
+export function filterByDay<T extends { ts: number }>(rows: T[], key: string): T[] {
+  if (!key) return rows;
+  return rows.filter((r) => dayKey(r.ts) === key);
+}
+
+/** 把当前页的行按天分组（渲染日期小标题用）。 */
+export function groupRowsByDay(rows: ClipRow[]): { key: string; rows: ClipRow[] }[] {
+  const groups = new Map<string, ClipRow[]>();
+  for (const r of rows) {
+    const k = dayKey(r.ts);
+    const list = groups.get(k);
+    if (list) list.push(r);
+    else groups.set(k, [r]);
+  }
+  return [...groups.entries()].map(([key, rs]) => ({ key, rows: rs }));
+}
+
 /**
  * 置顶条目**不会被自动淘汰**，且文本重复时不再入库。
  * 所以"哪些会被淘汰"的判断要排除置顶项——用户需要知道置顶是不是真的保护了它。

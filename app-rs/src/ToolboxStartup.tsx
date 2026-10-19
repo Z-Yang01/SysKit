@@ -17,14 +17,18 @@ import {
   filterStartup,
   locationColor,
   locationHint,
+  sortStartup,
   startupStats,
   toggleConfirmText,
   toggleErrorText,
+  STARTUP_SORTS,
   type StartupItem,
   type StartupList,
+  type StartupSort,
   type StartupStatusFilter,
 } from "./startup";
 import { Badge, Button, Empty, Input, Segmented, Table, type Column } from "./ui";
+import { Select } from "./ui/select";
 import { Alert } from "./ui/alert";
 import { confirm } from "./ui/confirm";
 import { Tooltip as UiTooltip } from "./ui/tooltip";
@@ -51,13 +55,18 @@ export function ToolboxStartup() {
   const [list, setList] = useState<StartupList | null>(null);
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState<StartupStatusFilter>("all");
+  const [sort, setSort] = useState<StartupSort>("default");
   const [page, setPage] = useState(0);
   // 记录"正在切换哪一行"而不是全局布尔：全局 busy 会让每一行的按钮同时转圈，
   // 用户分不清刚才点的是哪个
   const [busyKey, setBusyKey] = useState("");
   const [loadError, setLoadError] = useState("");
+  // 枚举本身要读四个注册表位置 + 两个启动文件夹，几百毫秒起；没有加载态时
+  // 点 🔄 完全没反馈，用户会以为按钮坏了（重复点还会并发枚举）
+  const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
       setList(await invoke<StartupList>("sk_startup_list"));
       // 成功后清掉旧错误，重试入口随 Empty 一起消失
@@ -68,6 +77,8 @@ export function ToolboxStartup() {
       // 已有数据时保留旧表——刷新失败不该把上一次的枚举结果也抹掉。
       setLoadError(String(e));
       toast.error(`枚举启动项失败：${String(e)}`);
+    } finally {
+      setLoading(false);
     }
   }, [toast]);
 
@@ -76,8 +87,8 @@ export function ToolboxStartup() {
   }, [load]);
 
   const rows = useMemo(
-    () => filterStartup(list?.rows ?? [], keyword, status),
-    [list, keyword, status],
+    () => sortStartup(filterStartup(list?.rows ?? [], keyword, status), sort),
+    [list, keyword, status, sort],
   );
   const stats = useMemo(() => startupStats(list?.rows ?? []), [list]);
   const isAdmin = list?.is_admin ?? false;
@@ -208,7 +219,7 @@ export function ToolboxStartup() {
 
       <div className="flex flex-wrap items-center gap-2">
         <UiTooltip title="重新枚举启动项">
-          <Button variant="primary" size="sm" onClick={() => void load()}>
+          <Button variant="primary" size="sm" loading={loading} onClick={() => void load()}>
             🔄
           </Button>
         </UiTooltip>
@@ -235,6 +246,16 @@ export function ToolboxStartup() {
             { value: "enabled", label: `已启用(${stats.enabled})` },
             { value: "disabled", label: `已禁用(${stats.disabled})` },
           ]}
+        />
+        <Select
+          className="h-7 text-xs"
+          aria-label="排序方式"
+          value={sort}
+          onChange={(v) => {
+            setSort(v as StartupSort);
+            setPage(0);
+          }}
+          options={STARTUP_SORTS.map((s) => ({ value: s.value, label: s.label }))}
         />
       </div>
 

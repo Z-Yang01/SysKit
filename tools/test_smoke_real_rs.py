@@ -196,7 +196,7 @@ def configured_panel_hotkey():
     if p:
         try:
             import json as _json
-            text = str(_json.load(open(p, encoding="utf-8")).get("clip_paste_hotkey", "") or "")
+            text = str(_json.load(open(p, encoding="utf-8-sig")).get("clip_paste_hotkey", "") or "")
             for part in text.split("+"):
                 pp = part.strip().lower()
                 if pp in ("ctrl", "control"):
@@ -478,7 +478,7 @@ def recorded_tokens() -> set:
     try:
         import base64
         import json as _json
-        with open(cj, "r", encoding="utf-8") as f:
+        with open(cj, "r", encoding="utf-8-sig") as f:
             parsed = _json.load(f)
         if isinstance(parsed, dict) and parsed.get("enc") == "dpapi":
             parsed = _json.loads(
@@ -860,7 +860,7 @@ def panel_hotkey_configured() -> bool:
         return True
     try:
         import json as _json
-        return bool(str(_json.load(open(p, encoding="utf-8")).get("clip_paste_hotkey", "")).strip())
+        return bool(str(_json.load(open(p, encoding="utf-8-sig")).get("clip_paste_hotkey", "")).strip())
     except Exception:
         return True
 
@@ -1038,7 +1038,7 @@ class TestEdgeAFallbackChain:
         if not settings_path:
             pytest.skip("未定位到运行实例的 settings.json（用 SYSKIT_DATA_DIR 指定后重跑）")
         import json
-        before = json.load(open(settings_path, encoding="utf-8"))
+        before = json.load(open(settings_path, encoding="utf-8-sig"))
         panel_before = before.get("clip_paste_hotkey", "")
         if panel_before != "Ctrl+Win+V":
             pytest.skip(f"面板热键当前为 {panel_before!r}（需为 Ctrl+Win+V 再跑本靶）")
@@ -1064,7 +1064,7 @@ class TestEdgeAFallbackChain:
                                  90, step=0.5)
             if not changed:
                 pytest.skip("90s 内未检测到保存动作（人工步骤未执行），本靶跳过")
-            after = json.load(open(settings_path, encoding="utf-8"))
+            after = json.load(open(settings_path, encoding="utf-8-sig"))
             panel_after = after.get("clip_paste_hotkey", "")
             quick_key = str(after.get("clip_quick_hotkey", "")).strip().lower()
             if quick_key == "ctrl+alt+v":
@@ -1110,7 +1110,7 @@ def _find_settings_file():
 def _panel_key_changed(settings_path, panel_before):
     try:
         import json
-        cur = json.load(open(settings_path, encoding="utf-8")).get("clip_paste_hotkey", "")
+        cur = json.load(open(settings_path, encoding="utf-8-sig")).get("clip_paste_hotkey", "")
         return cur != panel_before
     except Exception:
         return False

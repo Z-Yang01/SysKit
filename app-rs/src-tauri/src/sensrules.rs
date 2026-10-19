@@ -32,40 +32,53 @@ pub fn detect_sensitive(text: &str) -> Option<&'static str> {
 
 // ---------------- 信用卡：Luhn ----------------
 
-/// 从文本中提取「数字分组」片段（数字与空格/连字符分隔符），去分隔符后
-/// 13~19 位纯数字且 Luhn 通过 → 命中。
+/// 扫描「数字/空格/连字符」连续段；段内去分隔符后 13~19 位纯数字且 Luhn 通过 → 命中。
+///
+/// 全程按**字节**扫描，不再 `chars().collect()` 物化整串：三类命中形态
+///（信用卡数字、身份证数字+X、API 密钥的 `[A-Za-z0-9_-]`）都是 ASCII，
+/// 而非 ASCII 的 UTF-8 字节（≥0x80）天然起分隔符作用——与按 char 切分**等价**。
+/// 这是热路径（每次剪贴板变化都跑一遍）：旧实现在这里与 `has_id_number` 各
+/// 物化一次 `Vec<char>`，复制 1MB 文本就是两次百万级分配。
 fn has_credit_card(text: &str) -> bool {
-    let bytes: Vec<char> = text.chars().collect();
-    let mut run = String::new();
-    let check = |run: &str| -> bool {
-        let digits: String = run.chars().filter(|c| c.is_ascii_digit()).collect();
-        digits.len() >= 13
-            && digits.len() <= 19
-            && digits.chars().all(|c| c.is_ascii_digit())
-            && luhn_ok(&digits)
-    };
-    for c in &bytes {
-        if c.is_ascii_digit() || *c == ' ' || *c == '-' {
-            run.push(*c);
-        } else {
-            if check(&run) {
+    let b = text.as_bytes();
+    let mut start = 0usize;
+    for i in 0..=b.len() {
+        let in_run = i < b.len() && (b[i].is_ascii_digit() || b[i] == b' ' || b[i] == b'-');
+        if !in_run {
+            if i > start && luhn_run_ok(&b[start..i]) {
                 return true;
             }
-            run.clear();
+            start = i + 1;
         }
     }
-    check(&run)
+    false
+}
+
+/// 段内数字（去空格/连字符）13~19 位且 Luhn 通过。
+///
+/// 超过 19 位立即判否——与「先数完再判长度」结果相同，但不必扫完长数字串，
+/// 也不必为它分配。
+fn luhn_run_ok(run: &[u8]) -> bool {
+    let mut digits = [0u8; 19];
+    let mut n = 0usize;
+    for &c in run {
+        if c.is_ascii_digit() {
+            if n == digits.len() {
+                return false;
+            }
+            digits[n] = c - b'0';
+            n += 1;
+        }
+    }
+    n >= 13 && luhn_ok(&digits[..n])
 }
 
 /// Luhn 算法（模 10 双倍加）：从右往左奇数位原样、偶数位翻倍 >9 减 9，总和 %10==0。
-fn luhn_ok(digits: &str) -> bool {
-    let mut sum = 0usize;
+fn luhn_ok(digits: &[u8]) -> bool {
+    let mut sum = 0u32;
     let mut double = false;
-    for c in digits.chars().rev() {
-        let Some(d) = c.to_digit(10) else {
-            return false;
-        };
-        let mut v = d as usize;
+    for &d in digits.iter().rev() {
+        let mut v = d as u32;
         if double {
             v *= 2;
             if v > 9 {
@@ -85,26 +98,29 @@ const ID_CHECK: [char; 11] = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', 
 
 /// 18 位身份证（末位可为 X/x）：前 17 位加权模 11 对应校验码。
 ///
-/// 全程按 **char 窗口**切分（`&[char]`），不做 `String[..n]` 字节切片——
-/// 剪贴板文本任由多字节字符（中文）开头，字节下标会落在字符中间直接 panic
-/// （轮次116 回归锁 `multibyte_text_never_panics_id_window` 的教训）。
+/// 按**字节窗口**滑动：非 ASCII 字节不可能通过 `is_ascii_digit()`，因此与按
+/// char 窗口切分等价，且不再物化 `Vec<char>`（热路径，见 `has_credit_card`）。
+///
+/// 这里是 `String[..n]` 字节切片 panic 的旧伤处——剪贴板文本任由多字节字符
+/// （中文）开头，字节下标会落在字符中间（轮次116 回归锁
+/// `multibyte_text_never_panics_id_window`）。现在只做**窗口读取**、从不按
+/// 绝对下标切字符串，多字节前缀不会 panic。
 fn has_id_number(text: &str) -> bool {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() < 18 {
+    let b = text.as_bytes();
+    if b.len() < 18 {
         return false;
     }
-    for win in chars.windows(18) {
-        let head: &[char] = &win[..17];
+    for win in b.windows(18) {
+        let head = &win[..17];
         if !head.iter().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        let last = win[17].to_ascii_uppercase();
         let sum: u32 = head
             .iter()
             .enumerate()
-            .map(|(i, c)| (*c as u8 - b'0') as u32 * ID_WEIGHTS[i])
+            .map(|(i, &c)| ((c - b'0') as u32) * ID_WEIGHTS[i])
             .sum();
-        if ID_CHECK[(sum % 11) as usize] == last {
+        if ID_CHECK[(sum % 11) as usize] as u8 == win[17].to_ascii_uppercase() {
             return true;
         }
     }
@@ -149,20 +165,28 @@ fn looks_like_token(word: &str) -> bool {
     word.len() >= 20 && entropy_bits_per_char(word) >= 3.5
 }
 
+/// 词 = 连续的 `[A-Za-z0-9_-]`；"Bearer <token>" 的 token 靠高熵规则命中。
+///
+/// 按字节取词边界、只把词切片成 `&str`，不为每个词分配 `String`
+/// （长文本里词数以千计，旧实现逐词分配）。
 fn has_api_token(text: &str) -> bool {
-    // 词 = 连续的 [A-Za-z0-9_-]；"Bearer <token>" 的 token 靠高熵规则命中
-    let mut word = String::new();
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            word.push(c);
-        } else {
-            if looks_like_token(&word) {
-                return true;
+    let b = text.as_bytes();
+    let mut start = 0usize;
+    for i in 0..=b.len() {
+        let in_word = i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'-');
+        if !in_word {
+            if i > start {
+                // 词只含 ASCII，[start, i) 必落在 UTF-8 字符边界上
+                if let Ok(w) = std::str::from_utf8(&b[start..i]) {
+                    if looks_like_token(w) {
+                        return true;
+                    }
+                }
             }
-            word.clear();
+            start = i + 1;
         }
     }
-    looks_like_token(&word)
+    false
 }
 
 #[cfg(test)]
@@ -295,5 +319,24 @@ mod tests {
             detect_sensitive("示例文本11010519491231002X结尾"),
             Some("身份证号")
         );
+    }
+
+    #[test]
+    fn byte_scan_treats_non_ascii_as_separator() {
+        // 按字节扫描的等价性锁：非 ASCII 的 UTF-8 字节必须断开数字串。
+        // 若被当成延续，下面两段 8 位会拼成 16 位卡号而**误命中**。
+        assert_eq!(detect_sensitive("4111111111111111"), Some("信用卡号"));
+        assert_eq!(detect_sensitive("41111111中11111111"), None);
+    }
+
+    #[test]
+    fn large_text_scan_still_detects_at_tail() {
+        // 热路径回归：整串不再物化为 Vec<char>（复制 1MB 文本曾要两次百万级
+        // 分配），但语义不变——20 万字节文本尾部的卡号仍必须命中。
+        let mut big = String::with_capacity(260_000);
+        big.push_str(&"填充文本 ".repeat(20_000));
+        big.push_str("4111 1111 1111 1111");
+        assert!(big.len() >= 200_000, "构造的输入应达到 200KB 量级");
+        assert_eq!(detect_sensitive(&big), Some("信用卡号"));
     }
 }

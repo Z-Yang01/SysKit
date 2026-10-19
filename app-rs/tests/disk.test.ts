@@ -32,6 +32,8 @@ import {
   toggleKey,
   topFileRows,
   topFilesNote,
+  parentPath,
+  canGoUp,
   treeGuard,
   truncatedNote,
   usageColor,
@@ -550,5 +552,45 @@ describe("总览 → 下钻联动：换根作废判定", () => {
   it("next=null（面板初始/无请求）永不触发", () => {
     expect(drillResetNeeded(null, null)).toBe(false);
     expect(drillResetNeeded(req(1), null)).toBe(false);
+  });
+});
+
+/**
+ * 「↑ 上一级」的路径推导。
+ *
+ * 边界比看上去多，且错法都很危险：盘根再按 `\` 切会得到空串，传给后端就
+ * 变成"扫描当前工作目录"——静默扫错地方，用户还以为在看 C 盘。
+ */
+describe("parentPath / canGoUp", () => {
+  // 全用普通字符串字面量：`String.raw` 模板以反斜杠结尾时会把收尾反引号
+  // 转义掉（`C:\` 直接是语法错误），这类边界正是本函数的主题
+  const ROOT = "C:\\";
+
+  it("普通目录", () => {
+    expect(parentPath("C:\\Users\\x\\Downloads")).toBe("C:\\Users\\x");
+    expect(parentPath("C:\\Users")).toBe(ROOT);
+  });
+
+  it("盘根没有上一级，原样返回", () => {
+    expect(parentPath("C:\\")).toBe(ROOT);
+    expect(parentPath("C:/")).toBe(ROOT);
+    expect(parentPath("C:")).toBe(ROOT);
+    expect(canGoUp("C:\\")).toBe(false);
+  });
+
+  it("尾部斜杠不影响结果", () => {
+    expect(parentPath("C:\\Users\\x\\")).toBe("C:\\Users");
+    expect(parentPath("C:\\Users\\")).toBe(ROOT);
+  });
+
+  it("UNC 共享根不越过服务器名", () => {
+    expect(parentPath("\\\\server\\share")).toBe("\\\\server\\share");
+    expect(canGoUp("\\\\server\\share")).toBe(false);
+    expect(parentPath("\\\\server\\share\\dir")).toBe("\\\\server\\share");
+  });
+
+  it("空串原样返回（不由本函数造路径）", () => {
+    expect(parentPath("")).toBe("");
+    expect(canGoUp("")).toBe(false);
   });
 });

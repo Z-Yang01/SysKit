@@ -51,6 +51,8 @@ import {
   PWGEN_MIN_LENGTH,
   accountTitle,
   canSetMasterPassword,
+  contactKindLabel,
+  contactSummary,
   maskedSecret,
   modeLabel,
   passwordStrength,
@@ -60,8 +62,11 @@ import {
   pwgenUsable,
   setupConfirmText,
   storageAvailable,
+  validateContact,
   vaultPhase,
+  CONTACT_KINDS,
   type AccountRow,
+  type ContactRow,
   type PwgenOptions,
   type SiteRow,
   type VaultStatus,
@@ -230,6 +235,22 @@ export function VaultPage() {
   const [selectedSite, setSelectedSite] = useState<number | null>(null);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
+  // 联系方式（账号级一对多）：按 account_id 索引，随账号列表**一次批量**拉回
+  // —— 逐行 sk_vault_contacts 在"一个站点几十个账号"时是几十次 IPC，
+  // 实测列表切换会肉眼可见地卡（后端 sk_vault_accounts_contacts 一条 SQL 拿齐）。
+  const [contacts, setContacts] = useState<Record<number, ContactRow[]>>({});
+  // 联系方式编辑弹窗（独立弹窗而非塞进账号表单：账号表单已有密码生成面板
+  // + TOTP 导入，再叠多值编辑器会高到滚动不便）
+  const [contactForm, setContactForm] = useState<{
+    open: boolean;
+    account?: AccountRow;
+    rows: ContactRow[];
+    loading: boolean;
+    kind: "email" | "phone";
+    value: string;
+    label: string;
+    error: string;
+  } | null>(null);
   const [search, setSearch] = useState("");
   // 账号搜索（走 `sk_vault_site_accounts` 的 q 参数；换站时重置）
   const [accSearch, setAccSearch] = useState("");
@@ -310,6 +331,29 @@ export function VaultPage() {
     [],
   );
 
+  /**
+   * 批量拉联系方式（一次 IPC）。空 id 列表直接清空——后端收到空数组会返回
+   * 空 map，省一次往返。
+   */
+  const loadContacts = useCallback(async (ids: number[]) => {
+    if (ids.length === 0) {
+      setContacts({});
+      return;
+    }
+    try {
+      const map = await invoke<Record<string, ContactRow[]>>("sk_vault_accounts_contacts", {
+        accountIds: ids,
+      });
+      // JSON 对象的 key 必然是字符串，转回数字索引（取值时统一用数字键）
+      const out: Record<number, ContactRow[]> = {};
+      for (const [k, v] of Object.entries(map ?? {})) out[Number(k)] = v ?? [];
+      setContacts(out);
+    } catch {
+      // 老版本后端没有该命令 / 未解锁：不阻断列表，仅不显示联系方式列内容
+      setContacts({});
+    }
+  }, []);
+
   const loadAccounts = useCallback(
     async (q?: string) => {
       if (selectedSite === null) return;
@@ -318,14 +362,17 @@ export function VaultPage() {
       setReveal(null); // 行集合即将刷新，旧明文展示作废
       setAccountsLoading(true);
       try {
-        setAccounts(await invoke<AccountRow[]>("sk_vault_site_accounts", { siteId: selectedSite, q: query }));
+        const rows = await invoke<AccountRow[]>("sk_vault_site_accounts", { siteId: selectedSite, q: query });
+        setAccounts(rows);
+        await loadContacts(rows.map((a) => a.id));
       } catch {
         setAccounts([]);
+        setContacts({});
       } finally {
         setAccountsLoading(false);
       }
     },
-    [selectedSite, accSearch],
+    [selectedSite, accSearch, loadContacts],
   );
 
   useEffect(() => {
@@ -334,6 +381,8 @@ export function VaultPage() {
     else {
       setSites([]);
       setAccounts([]);
+      setContacts({});
+      setContactForm(null);
       setSelectedSite(null);
       setAccSearch("");
       setReveal(null);
@@ -587,6 +636,83 @@ export function VaultPage() {
     [loadAccounts, toast],
   );
 
+  // ---------------- 账号级联系方式（邮箱 / 电话，一对多） ----------------
+
+  /** 打开联系方式弹窗（顺带把该账号现有条目拉齐）。 */
+  const contactModal = useCallback(
+    async (a: AccountRow) => {
+      setContactForm({
+        open: true, account: a, rows: contacts[a.id] ?? [], loading: true,
+        kind: "email", value: "", label: "", error: "",
+      });
+      try {
+        const rows = await invoke<ContactRow[]>("sk_vault_contacts", { accountId: a.id });
+        setContactForm((f) => (f ? { ...f, rows, loading: false } : f));
+        setContacts((m) => ({ ...m, [a.id]: rows }));
+      } catch (e) {
+        setContactForm((f) => (f ? { ...f, loading: false, error: String(e) } : f));
+      }
+    },
+    [contacts],
+  );
+
+  /** 新增一条（后端校验，前端预检同口径——即时反馈，避免空跑一次往返）。 */
+  const addContact = useCallback(async () => {
+    const f = contactForm;
+    if (!f?.account) return;
+    const chk = validateContact(f.kind, f.value);
+    if (!chk.ok) {
+      setContactForm({ ...f, error: chk.reason });
+      return;
+    }
+    try {
+      await invoke<number>("sk_vault_add_contact", {
+        accountId: f.account.id,
+        kind: f.kind,
+        value: f.value.trim(),
+        label: f.label.trim(),
+        isPrimary: false, // 同类型第一条后端自动设为主项；后续追加不抢主项
+      });
+      const rows = await invoke<ContactRow[]>("sk_vault_contacts", { accountId: f.account.id });
+      setContactForm({ ...f, rows, value: "", label: "", error: "" });
+      setContacts((m) => ({ ...m, [f.account!.id]: rows }));
+    } catch (e) {
+      setContactForm({ ...f, error: String(e).replace(/^Error:\s*/, "") });
+    }
+  }, [contactForm]);
+
+  const setPrimaryContact = useCallback(
+    async (id: number) => {
+      const f = contactForm;
+      if (!f?.account) return;
+      try {
+        await invoke("sk_vault_set_primary_contact", { contactId: id });
+        const rows = await invoke<ContactRow[]>("sk_vault_contacts", { accountId: f.account.id });
+        setContactForm({ ...f, rows, error: "" });
+        setContacts((m) => ({ ...m, [f.account!.id]: rows }));
+      } catch (e) {
+        setContactForm({ ...f, error: String(e) });
+      }
+    },
+    [contactForm],
+  );
+
+  const deleteContact = useCallback(
+    async (c: ContactRow) => {
+      const f = contactForm;
+      if (!f?.account) return;
+      try {
+        await invoke("sk_vault_delete_contact", { contactId: c.id });
+        const rows = await invoke<ContactRow[]>("sk_vault_contacts", { accountId: f.account.id });
+        setContactForm({ ...f, rows, error: "" });
+        setContacts((m) => ({ ...m, [f.account!.id]: rows }));
+      } catch (e) {
+        setContactForm({ ...f, error: String(e) });
+      }
+    },
+    [contactForm],
+  );
+
   // ---------------- 解锁 / 主密码（全部收进顶部工具条） ----------------
 
   const setup = useCallback(() => {
@@ -746,14 +872,48 @@ export function VaultPage() {
 
   const accountColumns: Column<AccountRow>[] = [
     {
+      // 账号单元格两行：标题（label 优先）+ 主联系方式。
+      // 联系方式不单开一列——980 宽窗口下右栏只有约 430px，6 列必然横向滚动；
+      // 而"认账号"本来就该在一处看全（谁、用哪个邮箱/电话）。
       title: "账号",
       key: "title",
-      render: (_: unknown, a) => (
-        <span className="inline-flex items-center gap-1">
-          {a.is_favorite && <span>⭐</span>}
-          <span>{accountTitle(a)}</span>
-        </span>
-      ),
+      render: (_: unknown, a) => {
+        const s = contactSummary(contacts[a.id] ?? []);
+        const line = (kind: "email" | "phone", text: string, more: number) =>
+          text ? (
+            <UiTooltip title={`双击复制${contactKindLabel(kind)}`}>
+              <span
+                className="inline-flex max-w-full cursor-copy items-center gap-1 overflow-hidden text-ellipsis whitespace-nowrap"
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  void invoke("sk_clip_copy_plain", { text })
+                    .then(() => toast.success(`${contactKindLabel(kind)}已复制`))
+                    .catch((err) => toast.error(String(err)));
+                }}
+              >
+                <span style={{ opacity: 0.55 }}>{kind === "email" ? "✉" : "☎"}</span>
+                <span className="overflow-hidden text-ellipsis">{text}</span>
+                {more > 0 && <span className="sk-hint">+{more}</span>}
+              </span>
+            </UiTooltip>
+          ) : null;
+        return (
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="inline-flex items-center gap-1">
+              {a.is_favorite && <span>⭐</span>}
+              <span className="overflow-hidden text-ellipsis whitespace-nowrap">
+                {accountTitle(a)}
+              </span>
+            </span>
+            {(s.email || s.phone) && (
+              <span className="flex min-w-0 flex-col text-xs" style={{ color: "var(--sk-sub)" }}>
+                {line("email", s.email, s.emailMore)}
+                {line("phone", s.phone, s.phoneMore)}
+              </span>
+            )}
+          </div>
+        );
+      },
     },
     {
       title: "用户名",
@@ -763,11 +923,13 @@ export function VaultPage() {
           <UiTooltip title="双击复制用户名（不进剪贴板历史）">
             <span
               className="cursor-copy whitespace-nowrap"
-              onDoubleClick={() =>
+              onDoubleClick={(e) => {
+                // 行双击 = 编辑；用户名双击 = 复制——各归各，阻断冒泡
+                e.stopPropagation();
                 void invoke("sk_clip_copy_plain", { text: a.username })
                   .then(() => toast.success("用户名已复制"))
-                  .catch((e) => toast.error(String(e)))
-              }
+                  .catch((err) => toast.error(String(err)));
+              }}
             >
               {a.username}
             </span>
@@ -790,27 +952,42 @@ export function VaultPage() {
           <UiTooltip
             title={
               revealed
-                ? "双击复制密码；显示/复制/隐藏都在行尾 ··· 菜单"
-                : "双击复制密码（敏感通道，25 秒后自动清空剪贴板）；显示明文走 ··· 菜单"
+                ? "点击 👁 隐藏；双击复制密码（敏感通道，25 秒后自动清空剪贴板）"
+                : "双击复制密码（敏感通道，25 秒后自动清空剪贴板）；悬停点 👁 显示明文（30 秒后自动隐藏）"
             }
           >
-            <span
-              className="inline-block max-w-[120px] cursor-copy overflow-hidden align-bottom text-ellipsis whitespace-nowrap"
-              style={{ letterSpacing: revealed ? 0 : 2 }}
-              onDoubleClick={() => void copySecret(a.id, "password")}
-            >
-              {revealed ? reveal?.text : maskedSecret()}
+            <span className="group inline-flex items-center gap-1">
+              <span
+                className="inline-block max-w-[110px] cursor-copy overflow-hidden align-bottom text-ellipsis whitespace-nowrap"
+                style={{ letterSpacing: revealed ? 0 : 2 }}
+                onDoubleClick={(e) => {
+                  e.stopPropagation(); // 行双击 = 编辑，复制密码不触发编辑
+                  void copySecret(a.id, "password");
+                }}
+              >
+                {revealed ? reveal?.text : maskedSecret()}
+              </span>
+              {/* 悬停才浮现的 👁：显示/隐藏明文（30 秒定时强制熄灭）。
+                  不做成常驻图标——用户实锤过「行内图标太多」；但 ··· 菜单
+                  藏太深（用户实测找不到"密码怎么看"），悬停是折中。 */}
+              <button
+                type="button"
+                aria-label={revealed ? "隐藏密码" : "显示密码"}
+                className="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-xs opacity-0 transition-opacity duration-150 group-hover:opacity-60 hover:!opacity-100"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void toggleReveal(a);
+                }}
+              >
+                {revealed ? "🙈" : "👁"}
+              </button>
             </span>
           </UiTooltip>
         );
       },
     },
-    {
-      title: "标签",
-      dataIndex: "label",
-      width: 120,
-      render: (v: string) => (v ? <span>{v}</span> : <span style={{ opacity: 0.35 }}>—</span>),
-    },
+    // 「标签」列已移除：accountTitle 本来就是 label 优先，同一信息显示两遍。
+    // 省下的 120px 给窄窗口下的账号/用户名列，避免横向滚动。
     {
       // 操作列收进行尾「···」菜单：置顶/编辑/删除/动态码/显示密码/
       // 复制密码全部菜单化（密码列只留纯掩码，行内不放图标——
@@ -824,6 +1001,7 @@ export function VaultPage() {
           ...(a.has_totp ? [{ key: "totp", label: "⏱ 动态码" }] : []),
           { key: "fav", label: a.is_favorite ? "⭐ 取消置顶" : "📌 置顶" },
           { key: "edit", label: "✏️ 编辑" },
+          { key: "contacts", label: "📇 联系方式" },
           {
             key: "reveal",
             label: revealed ? "🙈 隐藏密码" : "👁️ 显示密码（30 秒后自动隐藏）",
@@ -844,6 +1022,7 @@ export function VaultPage() {
               if (key === "totp") showTotp(a);
               else if (key === "fav") toggleFav(a);
               else if (key === "edit") accountModal(a);
+              else if (key === "contacts") void contactModal(a);
               else if (key === "reveal") void toggleReveal(a);
               else if (key === "copypw") void copySecret(a.id, "password");
               else if (key === "del") confirmDeleteAccount(a);
@@ -1043,24 +1222,57 @@ export function VaultPage() {
                 </div>
               ) : (
                 sites.map((r) => (
-                  <button
+                  // 行容器用 div 而不是 button：里面还要放 Dropdown（button 里
+                  // 嵌 button 是非法 HTML，点击还会冒泡成「选中站点」）
+                  <div
                     key={r.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedSite(r.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") setSelectedSite(r.id);
+                    }}
                     className={
-                      "block w-full cursor-pointer rounded-md px-2 py-1.5 text-left transition-colors " +
+                      "group flex w-full cursor-pointer items-start gap-1 rounded-md px-2 py-1.5 text-left transition-colors " +
                       (r.id === selectedSite
                         ? "bg-sk-accent/12"
                         : "hover:bg-sk-hover")
                     }
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="truncate font-semibold text-sk-text">{r.name}</div>
                       <div className="sk-hint text-[11px]">
                         {r.n_accounts} 个账号{r.domain ? ` · ${r.domain}` : ""}
                       </div>
                     </div>
-                  </button>
+                    {/* 每个站点自己的操作入口：不用先选中再去右栏找 ···。
+                        悬停才出现，不干扰列表整洁（删除仍带二次确认）。 */}
+                    <span
+                      className="shrink-0 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Dropdown
+                        trigger={
+                          <UiButton variant="ghost" size="sm" aria-label="站点操作">
+                            ···
+                          </UiButton>
+                        }
+                        items={[
+                          { key: "edit", label: "✏️ 编辑站点" },
+                          { key: "sep", type: "divider" as const, label: "" },
+                          {
+                            key: "del",
+                            danger: true,
+                            label: `🗑️ 删除站点（波及 ${r.n_accounts} 个账号）`,
+                          },
+                        ]}
+                        onItemClick={(key) => {
+                          if (key === "edit") siteModal(r);
+                          else if (key === "del") confirmDeleteSite(r);
+                        }}
+                      />
+                    </span>
+                  </div>
                 ))
               )}
             </div>
@@ -1150,6 +1362,7 @@ export function VaultPage() {
                     loading={accountsLoading}
                     dataSource={accounts}
                     columns={accountColumns}
+                    onRowDoubleClick={(a) => accountModal(a)}
                     empty={<Empty description="该站点暂无账号——点右上角「+ 账号」添加" />}
                   />
                 </div>
@@ -1294,6 +1507,108 @@ export function VaultPage() {
               value={accountForm.notes}
               onChange={(e) => setAccountForm({ ...accountForm, notes: e.target.value })}
             />
+          </div>
+        )}
+      </UiModal>
+
+      {/* 联系方式（一个账号可有多个邮箱 / 多个电话；主项用于列表展示与默认复制） */}
+      <UiModal
+        open={contactForm?.open === true}
+        title={contactForm?.account ? `联系方式 · ${accountTitle(contactForm.account)}` : "联系方式"}
+        onClose={() => setContactForm(null)}
+        width={560}
+        footer={
+          <>
+            <UiButton onClick={() => setContactForm(null)}>关闭</UiButton>
+            <UiButton
+              variant="primary"
+              onClick={() => void addContact()}
+              disabled={!contactForm?.value.trim()}
+            >
+              添加
+            </UiButton>
+          </>
+        }
+      >
+        {contactForm && (
+          <div className="flex flex-col gap-2">
+            <div className="text-xs text-sk-sub">
+              同一个账号可以有多个邮箱和多个电话（换绑前的旧号、备用号都留着）。
+              每类里的<b>主项</b>是列表展示与双击复制默认取用的那一个。
+            </div>
+
+            {/* 新增行：类型 + 值 + 备注标签 */}
+            <div className="flex items-center gap-2">
+              <Select
+                className="w-24"
+                aria-label="联系方式类型"
+                value={contactForm.kind}
+                onChange={(v) =>
+                  setContactForm({ ...contactForm, kind: v === "phone" ? "phone" : "email" })
+                }
+                options={CONTACT_KINDS.map((k) => ({ label: k.label, value: k.value }))}
+              />
+              <UiInput
+                className="flex-1"
+                placeholder={contactForm.kind === "email" ? "邮箱（如 me@example.com）" : "电话（如 13800138000）"}
+                value={contactForm.value}
+                onChange={(e) => setContactForm({ ...contactForm, value: e.target.value, error: "" })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && contactForm.value.trim()) void addContact();
+                }}
+              />
+              <UiInput
+                className="w-28"
+                placeholder="备注（如 常用）"
+                value={contactForm.label}
+                onChange={(e) => setContactForm({ ...contactForm, label: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && contactForm.value.trim()) void addContact();
+                }}
+              />
+            </div>
+            {contactForm.error && <div className="text-xs text-sk-err">{contactForm.error}</div>}
+
+            {/* 已有条目：主项星标 / 值 / 备注 / 设为主 / 删除 */}
+            <div className="mt-1 flex flex-col gap-1">
+              {contactForm.loading && <div className="text-xs text-sk-sub">读取中…</div>}
+              {!contactForm.loading && contactForm.rows.length === 0 && (
+                <div className="text-xs text-sk-sub">还没有联系方式——上面填一条再点「添加」。</div>
+              )}
+              {contactForm.rows.map((c) => (
+                <div
+                  key={c.id}
+                  className="flex items-center gap-2 rounded-[8px] border border-sk-border px-2 py-1"
+                >
+                  <span className="w-10 shrink-0 text-xs text-sk-sub">{contactKindLabel(c.kind)}</span>
+                  <UiTooltip title="双击复制（不进剪贴板历史）">
+                    <span
+                      className="flex-1 cursor-copy overflow-hidden text-ellipsis whitespace-nowrap text-sm"
+                      onDoubleClick={() =>
+                        void invoke("sk_clip_copy_plain", { text: c.value })
+                          .then(() => toast.success(`${contactKindLabel(c.kind)}已复制`))
+                          .catch((e) => toast.error(String(e)))
+                      }
+                    >
+                      {c.value}
+                    </span>
+                  </UiTooltip>
+                  {c.label && <span className="shrink-0 text-xs text-sk-sub">{c.label}</span>}
+                  {c.is_primary ? (
+                    <span className="shrink-0 text-xs" style={{ color: "var(--sk-accent)" }}>
+                      ★ 主项
+                    </span>
+                  ) : (
+                    <UiButton size="sm" onClick={() => void setPrimaryContact(c.id)}>
+                      设为主项
+                    </UiButton>
+                  )}
+                  <UiButton size="sm" onClick={() => void deleteContact(c)} aria-label="删除">
+                    ✕
+                  </UiButton>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </UiModal>

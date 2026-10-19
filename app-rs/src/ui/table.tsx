@@ -26,6 +26,7 @@ export function Table<T>({
   empty,
   loading,
   onRowClick,
+  onRowDoubleClick,
   rowClassName,
   fixed,
   className,
@@ -36,6 +37,8 @@ export function Table<T>({
   empty?: ReactNode;
   loading?: boolean;
   onRowClick?: (row: T) => void;
+  /** 行双击（密码库：双击行 = 编辑该账号；单元格自己的 dblclick 需 stopPropagation） */
+  onRowDoubleClick?: (row: T) => void;
   rowClassName?: (row: T) => string;
   /** table-fixed：列宽只看 columns 声明，内容不撑宽（长命令/路径列配 truncate 用） */
   fixed?: boolean;
@@ -72,6 +75,9 @@ export function Table<T>({
             <tr
               key={rowKey(row)}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
+              onDoubleClick={
+                onRowDoubleClick ? () => onRowDoubleClick(row) : undefined
+              }
               className={cx(
                 "transition-colors duration-150 hover:bg-sk-hover",
                 onRowClick && "cursor-pointer",

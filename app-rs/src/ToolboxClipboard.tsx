@@ -17,8 +17,12 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   clearConfirmText,
   clipSummaryText,
+  dayBuckets,
+  dayLabel,
   evictionCandidates,
+  filterByDay,
   formatTs,
+  groupRowsByDay,
   kindColor,
   kindFilterOptions,
   kindLabel,
@@ -50,6 +54,7 @@ import { ToolboxQr } from "./ToolboxQr";
 import { Badge, Button, Dropdown, Empty, Input, Segmented, type MenuItem } from "./ui";
 import { InputNumber } from "./ui/input-number";
 import { Modal } from "./ui/modal";
+import { Select } from "./ui/select";
 import { Tooltip as UiTooltip } from "./ui/tooltip";
 import { Alert } from "./ui/alert";
 import { confirm } from "./ui/confirm";
@@ -94,9 +99,16 @@ function CopyInline({ text, children }: { text: string; children: React.ReactNod
   );
 }
 
-/** 图片条目缩略图：按需拉取后端 base64 缩略图；点击开本地灯箱放大（56px）。 */
+/**
+ * 图片条目缩略图：列表内嵌用后端缩略图（192px）；点击开灯箱时**另拉原图**。
+ *
+ * 之前灯箱直接把缩略图拉满全屏——96px 铺到 1000px 必然糊。现在放大走
+ * `sk_clip_image_full`（原尺寸，超 1600 才等比缩），拿到前先用缩略图占位。
+ * 缩略图本身也从 `thumbnail()`（快速采样）换成 Lanczos3 等比缩放。
+ */
 function ClipImageThumb({ index }: { index: number }) {
   const [src, setSrc] = useState<string | null>(null);
+  const [full, setFull] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [zoom, setZoom] = useState(false);
 
@@ -114,6 +126,22 @@ function ClipImageThumb({ index }: { index: number }) {
     };
   }, [index]);
 
+  // 只在放大时拉原图：列表里几十条不预取（原图可达数 MB）
+  useEffect(() => {
+    if (!zoom || full) return;
+    let alive = true;
+    invoke<string>("sk_clip_image_full", { index: index })
+      .then((url) => {
+        if (alive) setFull(url);
+      })
+      .catch(() => {
+        /* 拉原图失败：继续显示缩略图，总比空白好 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [zoom, index, full]);
+
   if (failed) return <span className="sk-hint">图片缺失</span>;
   if (!src) return <span className="sk-hint">…</span>;
   return (
@@ -129,10 +157,15 @@ function ClipImageThumb({ index }: { index: number }) {
       />
       {zoom && (
         <div
-          className="fixed inset-0 z-[2200] flex items-center justify-center bg-black/70 p-8"
+          className="fixed inset-0 z-[2200] flex flex-col items-center justify-center gap-2 bg-black/70 p-8"
           onClick={() => setZoom(false)}
         >
-          <img src={src} className="max-h-full max-w-full rounded-md" alt="剪贴板图片（放大）" />
+          <img
+            src={full ?? src}
+            className="max-h-full max-w-full rounded-md"
+            alt="剪贴板图片（放大）"
+          />
+          {!full && <span className="text-xs text-white/70">加载清晰原图…</span>}
         </div>
       )}
     </>
@@ -165,6 +198,8 @@ export function ToolboxClipboard() {
   const [busy, setBusy] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [page, setPage] = useState(0);
+  // 按天筛选："" = 全部日期；否则 "YYYY-MM-DD"（本地时区）
+  const [day, setDay] = useState("");
   // 内容规则动作：detected 是"当前展示的那一条"的检测结果
   const [detected, setDetected] = useState<DetectResult | null>(null);
   const [detectedFor, setDetectedFor] = useState(-1);
@@ -495,9 +530,21 @@ export function ToolboxClipboard() {
   const enabled = summary?.watch_enabled ?? false;
   const paused = summary?.watch_paused ?? false;
 
-  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  // 日期下拉：选项从**当前筛选结果**里推导（切了类型/关键词后，只剩有内容的日期）
+  const buckets = useMemo(() => dayBuckets(rows), [rows]);
+  const dayRows = useMemo(() => filterByDay(rows, day), [rows, day]);
+
+  const pageCount = Math.max(1, Math.ceil(dayRows.length / PAGE_SIZE));
   const cur = Math.min(page, pageCount - 1);
-  const pageRows = rows.slice(cur * PAGE_SIZE, cur * PAGE_SIZE + PAGE_SIZE);
+  const pageRows = dayRows.slice(cur * PAGE_SIZE, cur * PAGE_SIZE + PAGE_SIZE);
+  // 「全部日期」时按天分小标题；选定某天时整页都是同一天，不再重复标题
+  const pageGroups = day ? null : groupRowsByDay(pageRows);
+
+  // 选中的日期被筛掉（换了类型/关键词、或那天被清理）→ 自动回到全部，
+  // 否则会停在一个永远空白的日期上，看起来像"历史没了"
+  useEffect(() => {
+    if (day && !buckets.some((b) => b.key === day)) setDay("");
+  }, [buckets, day]);
 
   return (
     <>
@@ -553,6 +600,21 @@ export function ToolboxClipboard() {
             }}
             options={kindFilterOptions(summary).map((k) => ({ label: k.label, value: k.key }))}
           />
+          {/* 按天查看：只列**当前筛选结果里真的有内容**的日期，避免下拉里
+              一排空日期；计数随类型/关键词联动。 */}
+          <Select
+            className="h-7 text-xs"
+            aria-label="按天筛选"
+            value={day}
+            onChange={(v) => {
+              setDay(v);
+              setPage(0);
+            }}
+            options={[
+              { value: "", label: `全部日期（${rows.length}）` },
+              ...buckets.map((b) => ({ value: b.key, label: `${b.label}（${b.count}）` })),
+            ]}
+          />
           <Button size="sm" onClick={() => void load()}>
             🔄 刷新
           </Button>
@@ -589,8 +651,8 @@ export function ToolboxClipboard() {
           )}
         </div>
 
-        {rows.length === 0 ? (
-          keyword || kind ? (
+        {dayRows.length === 0 ? (
+          keyword || kind || day ? (
             <Empty description="没有匹配的条目" />
           ) : (
             // 空态行动化：历史为空且监听未开时，直接给开启按钮——否则用户
@@ -607,7 +669,20 @@ export function ToolboxClipboard() {
         ) : (
           <>
             <div className="flex flex-col">
-              {pageRows.map((r) => (
+              {(pageGroups ?? [{ key: "", rows: pageRows }]).map((g) => (
+                <div key={g.key || "flat"} className="flex flex-col">
+                  {/* 全部日期时按天分节：粘性小标题，滚动时不丢"这是哪天" */}
+                  {!day && g.key && (
+                    <div className="sticky top-0 z-[1] flex items-center gap-2 bg-sk-bg/85 px-2.5 pb-1 pt-2 text-[11px] font-medium text-sk-sub backdrop-blur-sm">
+                      <span>{dayLabel(g.key, nowMs)}</span>
+                      {dayLabel(g.key, nowMs) !== g.key && (
+                        <span className="opacity-60">{g.key}</span>
+                      )}
+                      <span className="h-px flex-1 bg-sk-border" />
+                      <span className="opacity-60">{g.rows.length} 条</span>
+                    </div>
+                  )}
+                  {g.rows.map((r) => (
                 // 点击整行 = 复制回剪贴板（sk_clip_write_back：写回不进历史）
                 <div
                   key={r.idx}
@@ -675,12 +750,14 @@ export function ToolboxClipboard() {
                     />
                   </span>
                 </div>
+                  ))}
+                </div>
               ))}
             </div>
             {pageCount > 1 && (
               <div className="flex items-center justify-end gap-2 text-xs text-sk-sub">
                 <span>
-                  共 {rows.length} 条 · 第 {cur + 1}/{pageCount} 页
+                  共 {dayRows.length} 条 · 第 {cur + 1}/{pageCount} 页
                 </span>
                 <Button size="sm" disabled={cur === 0} onClick={() => setPage(cur - 1)}>
                   上一页

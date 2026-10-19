@@ -517,10 +517,42 @@ pub fn sk_open_url(url: String) -> Result<(), String> {
     }
 }
 
+/// 在 max 边界内等比缩放的尺寸（**只缩不放**：小图放大只会更糊）。
+///
+/// 返回 (w, h)，至少 1px——0 会让 image::resize 抛错。
+fn fit_within(w: u32, h: u32, max: u32) -> (u32, u32) {
+    let (w, h) = (w.max(1), h.max(1));
+    let long = w.max(h);
+    if long <= max {
+        return (w, h);
+    }
+    let scale = max as f32 / long as f32;
+    (
+        (w as f32 * scale).round().max(1.0) as u32,
+        (h as f32 * scale).round().max(1.0) as u32,
+    )
+}
+
+/// 读历史第 index 条图片的文件名（不是图片条目则报错）。
+fn image_file_of(index: usize) -> Result<String, String> {
+    hist::with(|h| {
+        h.search(None, None)
+            .get(index)
+            .filter(|i| i.kind == "image")
+            .map(|i| i.data.clone())
+    })
+    .ok_or_else(|| format!("找不到第 {index} 条图片历史（可能已被淘汰）"))
+}
+
 /// 图片条目缩略图（base64 PNG data URL）：列表内嵌显示用。
 ///
-/// 用 image crate 缩到最长边 96px 再编码——历史里可能几十张截图，
-/// 原图直出会把列表内存/传输量顶到几十 MB。点击放大由前端 AntD Image 预览承担。
+/// **为什么是 192 而不是 96**：列表里显示 56 CSS px，Windows 常见缩放
+/// 125%/150%/200% 下物理像素需求是 70/84/112；96px 在 200% 屏上就已经不够，
+/// 再经浏览器降采样必然发虚。192px 覆盖到 200%，代价只是单条几十 KB。
+///
+/// **为什么用 `resize(Lanczos3)` 而不是 `thumbnail()`**：`thumbnail` 是快速
+/// 采样（不带完整抗锯齿），截图里细文字缩到 96px 会糊成一团——用户实测
+/// "剪贴板图片显示很模糊"。Lanczos3 慢几毫秒，但落在 LRU 缓存里只付一次。
 ///
 /// **LRU 缓存**（v1.3.1）：PNG 文件名是 md5（内容寻址，不随时间变），
 /// 命中即免掉整图解码+缩放+编码（几十 MB 图 ~几十 ms → 微秒级）。容量
@@ -528,13 +560,7 @@ pub fn sk_open_url(url: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn sk_clip_image_thumb(index: usize) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let name = hist::with(|h| {
-            h.search(None, None)
-                .get(index)
-                .filter(|i| i.kind == "image")
-                .map(|i| i.data.clone())
-        })
-        .ok_or_else(|| format!("找不到第 {index} 条图片历史（可能已被淘汰）"))?;
+        let name = image_file_of(index)?;
 
         // LRU 命中：免解码免缩放
         if let Some(cached) = thumb_cache_get(&name) {
@@ -546,7 +572,8 @@ pub async fn sk_clip_image_thumb(index: usize) -> Result<String, String> {
         let bytes = std::fs::read(&src)
             .map_err(|e| format!("图片读取失败（{}）: {e}", src.to_string_lossy()))?;
         let img = image::load_from_memory(&bytes).map_err(|e| format!("图片解码失败: {e}"))?;
-        let thumb = img.thumbnail(96, 96);
+        let (w, h) = fit_within(img.width(), img.height(), THUMB_MAX);
+        let thumb = img.resize(w, h, image::imageops::FilterType::Lanczos3);
         let mut out = std::io::Cursor::new(Vec::new());
         thumb
             .write_to(&mut out, image::ImageFormat::Png)
@@ -563,29 +590,97 @@ pub async fn sk_clip_image_thumb(index: usize) -> Result<String, String> {
     .map_err(|e| format!("缩略图线程失败: {e}"))?
 }
 
-// ---------------- 缩略图 LRU（key = PNG 文件名，value = data URL） ----------------
+/// 图片条目**原图**（base64 PNG data URL）：点击放大/灯箱用。
+///
+/// 之前前端放大直接把 96px 缩略图拉满全屏——糊是必然的（用户实测反馈）。
+/// 这里返回原尺寸（超过 `FULL_MAX` 才等比缩到 1600，1600 已够铺满常见
+/// 屏幕且避免几十 MB 的 base64 传输）。**小图不放大**——放大只会更糊，
+/// 由前端按原始像素居中显示。
+#[tauri::command]
+pub async fn sk_clip_image_full(index: usize) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = image_file_of(index)?;
+        if let Some(cached) = full_cache_get(&name) {
+            return Ok(cached);
+        }
+        let src =
+            crate::paths::image_path(&name).ok_or_else(|| format!("图片文件名非法: {name}"))?;
+        let bytes = std::fs::read(&src)
+            .map_err(|e| format!("图片读取失败（{}）: {e}", src.to_string_lossy()))?;
+
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| {
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(b)
+            )
+        };
+        // 已经是 PNG 且尺寸在界内 → 原样编码，不做一次解码+重编码（不损失质量）
+        let is_png = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
+        if is_png && bytes.len() <= FULL_PASSTHROUGH_BYTES {
+            if let Ok(dim) = image::load_from_memory(&bytes) {
+                if dim.width().max(dim.height()) <= FULL_MAX {
+                    let url = b64(&bytes);
+                    full_cache_put(name, url.clone(), url.len());
+                    return Ok(url);
+                }
+            }
+        }
+        let img = image::load_from_memory(&bytes).map_err(|e| format!("图片解码失败: {e}"))?;
+        let (w, h) = fit_within(img.width(), img.height(), FULL_MAX);
+        let full = img.resize(w, h, image::imageops::FilterType::Lanczos3);
+        let mut out = std::io::Cursor::new(Vec::new());
+        full.write_to(&mut out, image::ImageFormat::Png)
+            .map_err(|e| format!("原图编码失败: {e}"))?;
+        let url = b64(&out.into_inner());
+        full_cache_put(name, url.clone(), url.len());
+        Ok(url)
+    })
+    .await
+    .map_err(|e| format!("原图线程失败: {e}"))?
+}
+
+// ---------------- 图片 data URL 缓存（key = PNG 文件名，value = data URL） ----------------
+
+/// 缩略图最长边（列表显示 56 CSS px，覆盖 200% 屏的物理像素需求）。
+const THUMB_MAX: u32 = 192;
+/// 原图最长边上限（够铺满常见屏幕；再大只是白付 base64 传输与内存）。
+const FULL_MAX: u32 = 1600;
+/// 原图直通上限：小于它且尺寸合规的 PNG 直接编码，不解码重编码（零质量损失）。
+const FULL_PASSTHROUGH_BYTES: usize = 4 * 1024 * 1024;
 
 const THUMB_CACHE_CAP: usize = 256;
+/// 原图缓存条数：单条可达数 MB，容量必须小（灯箱一次只看一张）。
+const FULL_CACHE_CAP: usize = 8;
+/// 超过这个体量的原图不进缓存（见 full_cache_put）。
+const FULL_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
-/// 缩略图缓存：访问顺序队列 + key→dataURL 表。
-type ThumbCache = (
+/// data URL 缓存：访问顺序队列 + key→dataURL 表。
+type UrlCache = (
     std::collections::VecDeque<String>,
     std::collections::HashMap<String, String>,
 );
 
-fn thumb_cache_state() -> &'static std::sync::Mutex<ThumbCache> {
-    use std::sync::{Mutex, OnceLock};
-    static STATE: OnceLock<Mutex<ThumbCache>> = OnceLock::new();
-    STATE.get_or_init(|| {
-        Mutex::new((
-            std::collections::VecDeque::new(),
-            std::collections::HashMap::new(),
-        ))
-    })
+fn empty_cache() -> std::sync::Mutex<UrlCache> {
+    std::sync::Mutex::new((
+        std::collections::VecDeque::new(),
+        std::collections::HashMap::new(),
+    ))
 }
 
-fn thumb_cache_get(key: &str) -> Option<String> {
-    let st = &mut *thumb_cache_state().lock_ok();
+/// 缩略图槽与原图槽分开：容量/体积上限差两个量级，共用会把内存顶上去。
+fn thumb_slot() -> &'static std::sync::Mutex<UrlCache> {
+    static S: std::sync::OnceLock<std::sync::Mutex<UrlCache>> = std::sync::OnceLock::new();
+    S.get_or_init(empty_cache)
+}
+
+fn full_slot() -> &'static std::sync::Mutex<UrlCache> {
+    static S: std::sync::OnceLock<std::sync::Mutex<UrlCache>> = std::sync::OnceLock::new();
+    S.get_or_init(empty_cache)
+}
+
+fn cache_get(slot: &'static std::sync::Mutex<UrlCache>, key: &str) -> Option<String> {
+    let st = &mut *slot.lock_ok();
     if let Some(v) = st.1.get(key).cloned() {
         // 刷新访问顺序
         if let Some(pos) = st.0.iter().position(|k| k == key) {
@@ -598,8 +693,8 @@ fn thumb_cache_get(key: &str) -> Option<String> {
     }
 }
 
-fn thumb_cache_put(key: String, value: String) {
-    let st = &mut *thumb_cache_state().lock_ok();
+fn cache_put(slot: &'static std::sync::Mutex<UrlCache>, key: String, value: String, cap: usize) {
+    let st = &mut *slot.lock_ok();
     if st.1.contains_key(&key) {
         if let Some(pos) = st.0.iter().position(|k| k == &key) {
             st.0.remove(pos);
@@ -607,13 +702,34 @@ fn thumb_cache_put(key: String, value: String) {
     }
     st.0.push_back(key.clone());
     st.1.insert(key, value);
-    while st.1.len() > THUMB_CACHE_CAP {
+    while st.1.len() > cap {
         if let Some(oldest) = st.0.pop_front() {
             st.1.remove(&oldest);
         } else {
             break;
         }
     }
+}
+
+fn thumb_cache_get(key: &str) -> Option<String> {
+    cache_get(thumb_slot(), key)
+}
+
+fn thumb_cache_put(key: String, value: String) {
+    cache_put(thumb_slot(), key, value, THUMB_CACHE_CAP);
+}
+
+/// 原图缓存：`size` 是 data URL 长度——超过阈值的超大图**不进缓存**
+/// （8 条 × 数十 MB 会把常驻内存顶上去；灯箱一次只看一张，重解码可承受）。
+fn full_cache_get(key: &str) -> Option<String> {
+    cache_get(full_slot(), key)
+}
+
+fn full_cache_put(key: String, value: String, size: usize) {
+    if size > FULL_CACHE_MAX_BYTES {
+        return;
+    }
+    cache_put(full_slot(), key, value, FULL_CACHE_CAP);
 }
 
 #[tauri::command]
@@ -695,5 +811,40 @@ pub fn safe_default_name(text: &str) -> String {
         "clip.txt".to_string()
     } else {
         format!("{trimmed}.txt")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_within_keeps_aspect_and_never_upscales() {
+        // 只缩不放：小图放大只会更糊
+        assert_eq!(fit_within(40, 30, 192), (40, 30));
+        assert_eq!(fit_within(192, 100, 192), (192, 100), "正好等于上限不动");
+        // 横图以宽为长边
+        let (w, h) = fit_within(1920, 1080, 1600);
+        assert_eq!(w, 1600);
+        assert_eq!(h, 900, "等比：1080/1920*1600");
+        // 竖图以高为长边
+        assert_eq!(fit_within(1080, 1920, 1600), (900, 1600));
+        // 极端细长：缩放后不得退化成 0（image::resize 会抛错）
+        let (w, h) = fit_within(10000, 1, 192);
+        assert_eq!((w, h), (192, 1));
+        assert!(w >= 1 && h >= 1);
+        // 0 尺寸（损坏图）也不得产生 0
+        assert_eq!(fit_within(0, 0, 192), (1, 1));
+    }
+
+    #[test]
+    fn full_image_is_sharper_than_thumbnail() {
+        // 用行为而不是常量比较：常量之间比大小是编译期就能判的，
+        // clippy 会当成无意义断言（assertions_on_constants）
+        let (tw, _) = fit_within(4000, 3000, THUMB_MAX);
+        let (fw, _) = fit_within(4000, 3000, FULL_MAX);
+        assert_eq!(tw, THUMB_MAX);
+        assert_eq!(fw, FULL_MAX);
+        assert!(tw < fw, "放大用的原图上限必须大于缩略图，否则放大没有意义");
     }
 }

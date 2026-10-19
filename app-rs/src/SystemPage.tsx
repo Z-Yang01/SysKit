@@ -21,6 +21,7 @@ import { WifiPasswordPanel } from "./WifiPasswordPanel";
 import type { DrillRequest } from "./disk";
 
 import {
+  SERIES_LEN,
   formatRate,
   humanBytes,
   isStale,
@@ -334,15 +335,18 @@ function PerfPanel() {
           setProcsFailed(true);
         });
     load();
-    // 后端有 2 秒缓存，这里 3 秒轮询即可（tasklist 一次约 0.5 秒）
+    // 后端 2 秒 TTL + 原生快照 16ms（原来是 tasklist 子进程 1.4 秒，只能 3 秒一刷）。
+    // 现在跟着 TTL 走 2 秒，榜单更跟手，代价可以忽略。
     const t = window.setInterval(() => {
       if (!document.hidden && !panelHidden()) load();
-    }, 3000);
+    }, 2000);
     return () => window.clearInterval(t);
   }, []);
 
   const latestCpu = cpu.length ? cpu[cpu.length - 1] : 0;
   const latestMem = mem.length ? mem[mem.length - 1] : 0;
+  // 曲线窗口：SERIES_LEN 个点 × 1 秒一拍。写出来用户才知道"这条线是多长时间"
+  const windowMin = Math.round(SERIES_LEN / 60);
   const diskPeak = useMemo(
     () => Math.max(...diskR, ...diskW, 1),
     [diskR, diskW],
@@ -352,13 +356,13 @@ function PerfPanel() {
     <div ref={panelRef} className="flex flex-col gap-3">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
         <Card>
-          <Stat title="CPU" value={`${latestCpu.toFixed(1)}%`} color={tokenColor(usageToken(latestCpu))}>
+          <Stat title={`CPU · 近 ${windowMin} 分钟`} value={`${latestCpu.toFixed(1)}%`} color={tokenColor(usageToken(latestCpu))}>
             <Spark values={cpu} color={tokenColor(usageToken(latestCpu))} />
           </Stat>
         </Card>
         <Card>
           <Stat
-            title={`内存${last ? `（已用 ${last.mem_used_gb.toFixed(1)} GB）` : ""}`}
+            title={`内存${last ? `（已用 ${last.mem_used_gb.toFixed(1)} GB）` : ""} · 近 ${windowMin} 分钟`}
             value={`${latestMem.toFixed(1)}%`}
             color={tokenColor(usageToken(latestMem))}
           >
@@ -367,7 +371,7 @@ function PerfPanel() {
         </Card>
         <Card className="md:col-span-2">
           <div className="px-4 pb-3 pt-3">
-            <div className="text-xs text-sk-sub">磁盘读写</div>
+            <div className="text-xs text-sk-sub">磁盘读写 · 近 {windowMin} 分钟</div>
             <div className="mt-1.5 flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
                 <Badge tone="ok">读 {humanBytes(last?.disk_r ?? 0)}</Badge>

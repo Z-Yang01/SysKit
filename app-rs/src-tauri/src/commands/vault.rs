@@ -490,6 +490,85 @@ pub fn sk_vault_toggle_favorite(
     crate::vault::store::toggle_favorite(account_id).map_err(|e| e.to_string())
 }
 
+// ---------------- 账号联系方式（v2：一个账号多个邮箱/电话） ----------------
+
+/// 单账号的联系方式。明文元数据，但仍要求已解锁——密码库整体是解锁后才可读的。
+#[tauri::command]
+pub fn sk_vault_contacts(
+    session: tauri::State<'_, VaultSession>,
+    account_id: i64,
+) -> Result<serde_json::Value, String> {
+    let _session = session_lock(&session)?;
+    crate::vault::store::init_db().map_err(|e| e.to_string())?;
+    let rows = crate::vault::store::list_contacts(account_id).map_err(|e| e.to_string())?;
+    serde_json::to_value(rows).map_err(|e| e.to_string())
+}
+
+/// 批量取多个账号的联系方式（列表页一次拿齐，避免逐行查询）。
+#[tauri::command]
+pub fn sk_vault_accounts_contacts(
+    session: tauri::State<'_, VaultSession>,
+    account_ids: Vec<i64>,
+) -> Result<serde_json::Value, String> {
+    let _session = session_lock(&session)?;
+    crate::vault::store::init_db().map_err(|e| e.to_string())?;
+    let map =
+        crate::vault::store::contacts_for_accounts(&account_ids).map_err(|e| e.to_string())?;
+    serde_json::to_value(map).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn sk_vault_add_contact(
+    session: tauri::State<'_, VaultSession>,
+    account_id: i64,
+    kind: String,
+    value: String,
+    label: String,
+    is_primary: bool,
+) -> Result<i64, String> {
+    let _session = session_lock(&session)?;
+    crate::vault::store::init_db().map_err(|e| e.to_string())?;
+    crate::vault::store::add_contact(account_id, &kind, &value, &label, is_primary)
+}
+
+#[tauri::command]
+pub fn sk_vault_update_contact(
+    session: tauri::State<'_, VaultSession>,
+    contact_id: i64,
+    value: Option<String>,
+    label: Option<String>,
+    is_primary: Option<bool>,
+) -> Result<(), String> {
+    let _session = session_lock(&session)?;
+    crate::vault::store::update_contact(
+        contact_id,
+        &crate::vault::store::ContactPatch {
+            value,
+            label,
+            is_primary,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn sk_vault_delete_contact(
+    session: tauri::State<'_, VaultSession>,
+    contact_id: i64,
+) -> Result<(), String> {
+    let _session = session_lock(&session)?;
+    crate::vault::store::delete_contact(contact_id)
+}
+
+/// 把某条联系方式设为主项（UI 上"设为主"一颗星，省一次全量 PATCH）。
+#[tauri::command]
+pub fn sk_vault_set_primary_contact(
+    session: tauri::State<'_, VaultSession>,
+    contact_id: i64,
+) -> Result<(), String> {
+    let _session = session_lock(&session)?;
+    crate::vault::store::set_primary_contact(contact_id)
+}
+
 /// 解密单字段。`sensitive_ttl` 给定时同步登记敏感窗口（复制密码/TOTP 用，
 /// 与 Python 版 UI 同口径：TTL 内剪贴板监听不记录 + 系统侧排除）。
 #[tauri::command]

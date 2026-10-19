@@ -33,10 +33,21 @@ fn tmp_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// 去掉 UTF-8 BOM（U+FEFF）。
+///
+/// **这不是洁癖**：PowerShell 5.1 的 `Set-Content -Encoding UTF8`、不少编辑器、
+/// Python 的 `utf-8-sig` 都会写 BOM；而 serde_json 不接受 BOM，会把一份完全
+/// 合法的 JSON 判成损坏。对 `settings.json` 而言，后果是**所有用户设置静默
+/// 回退默认值**（只在日志里留一句警告），用户看到的是"我的配置全没了"。
+/// 读取路径统一在这里剥一次，写入仍保持无 BOM（与 Python `json.dump` 一致）。
+pub fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
 /// 读取 JSON；不存在/损坏返回 `default`（并留痕），语义等同 stores._load。
 pub fn load_json(path: &Path, default: serde_json::Value) -> serde_json::Value {
     match std::fs::read_to_string(path) {
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(strip_bom(&text)) {
             Ok(v) => v,
             Err(e) => {
                 log::warn!("JSON 损坏，已回退默认值: {} ({e})", path.display());
@@ -109,6 +120,27 @@ mod tests {
         let p = d.join("bad.json");
         std::fs::write(&p, "{ 半截").unwrap();
         assert_eq!(load_json(&p, json!("fallback")), json!("fallback"));
+    }
+
+    #[test]
+    fn loads_utf8_bom_prefixed_json() {
+        // 外部工具写的 BOM 不能让合法 JSON 被当成损坏
+        let d = temp_dir("bom");
+        let p = d.join("bom.json");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(r#"{"a":1,"b":"中文"}"#.as_bytes());
+        std::fs::write(&p, bytes).unwrap();
+        assert_eq!(load_json(&p, json!(null)), json!({"a": 1, "b": "中文"}));
+    }
+
+    #[test]
+    fn writes_without_bom() {
+        // 写入端保持无 BOM（与 Python json.dump 逐字节对齐）；BOM 只在读取端兼容
+        let d = temp_dir("nobom");
+        let p = d.join("plain.json");
+        assert!(save_json(&p, &json!({"a": 1})));
+        let raw = std::fs::read(&p).unwrap();
+        assert!(!raw.starts_with(&[0xEF, 0xBB, 0xBF]), "写入不得引入 BOM");
     }
 
     #[test]

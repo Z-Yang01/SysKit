@@ -11,7 +11,12 @@ import {
   canSaveAs,
   clearConfirmText,
   clipSummaryText,
+  dayBuckets,
+  dayKey,
+  dayLabel,
   evictionCandidates,
+  filterByDay,
+  groupRowsByDay,
   formatTs,
   kindColor,
   kindFilterOptions,
@@ -281,5 +286,73 @@ describe("监听开关（M6 后补的界面入口）", () => {
   it("恢复确认文案必须说明不补录", () => {
     expect(watchResumeConfirmText()).toContain("不会");
     expect(watchResumeConfirmText()).toContain("补录");
+  });
+});
+
+/**
+ * 按天查看。
+ *
+ * 最容易错的不是分组，而是**时区**：用 toISOString() 取日期会把东八区
+ * 00:00–08:00 复制的内容归到昨天。用例用本地时间构造时间戳，锁住这一点。
+ */
+describe("按天查看", () => {
+  /** 本地时间的某天某点 → unix 秒（避免 UTC 偏移导致的假红）。 */
+  const local = (y: number, m: number, d: number, h = 12, min = 0) =>
+    Math.floor(new Date(y, m - 1, d, h, min, 0).getTime() / 1000);
+
+  it("dayKey 按本地时区取日期（不是 UTC）", () => {
+    // 本地 00:30 必须仍属于当天——toISOString() 在东八区会返回前一天
+    expect(dayKey(local(2026, 10, 19, 0, 30))).toBe("2026-10-19");
+    expect(dayKey(local(2026, 10, 19, 23, 59))).toBe("2026-10-19");
+    expect(dayKey(0)).toBe("");
+    expect(dayKey(-1)).toBe("");
+  });
+
+  it("dayLabel 区分今天/昨天/更早", () => {
+    const now = Date.now();
+    const today = dayKey(Math.floor(now / 1000));
+    const y = new Date(now);
+    y.setDate(y.getDate() - 1);
+    const yesterday = dayKey(Math.floor(y.getTime() / 1000));
+    expect(dayLabel(today, now)).toBe("今天");
+    expect(dayLabel(yesterday, now)).toBe("昨天");
+    expect(dayLabel("2020-01-02", now)).toBe("2020-01-02");
+    expect(dayLabel("")).toBe("未知日期");
+  });
+
+  it("dayBuckets 计数正确，且同一天只出现一次（置顶穿插也不切段）", () => {
+    const rows = [
+      row({ idx: 0, ts: local(2026, 10, 15), pinned: true }),
+      row({ idx: 1, ts: local(2026, 10, 19, 9) }),
+      row({ idx: 2, ts: local(2026, 10, 15), pinned: true }),
+      row({ idx: 3, ts: local(2026, 10, 19, 10) }),
+    ];
+    const b = dayBuckets(rows, local(2026, 10, 19) * 1000);
+    expect(b.map((x) => x.key)).toEqual(["2026-10-15", "2026-10-19"]);
+    expect(b[0].count).toBe(2);
+    expect(b[1].count).toBe(2);
+    expect(b[1].label).toBe("今天");
+  });
+
+  it("filterByDay 只留当天；空 key = 原样返回", () => {
+    const rows = [
+      row({ idx: 0, ts: local(2026, 10, 18) }),
+      row({ idx: 1, ts: local(2026, 10, 19) }),
+      row({ idx: 2, ts: local(2026, 10, 19) }),
+    ];
+    expect(filterByDay(rows, "2026-10-19").map((r) => r.idx)).toEqual([1, 2]);
+    expect(filterByDay(rows, "")).toBe(rows);
+  });
+
+  it("groupRowsByDay 保持组内顺序，且跨日的同一天合并", () => {
+    const rows = [
+      row({ idx: 0, ts: local(2026, 10, 15) }),
+      row({ idx: 1, ts: local(2026, 10, 19) }),
+      row({ idx: 2, ts: local(2026, 10, 15) }),
+    ];
+    const g = groupRowsByDay(rows);
+    expect(g.map((x) => x.key)).toEqual(["2026-10-15", "2026-10-19"]);
+    expect(g[0].rows.map((r) => r.idx)).toEqual([0, 2]);
+    expect(g[1].rows.map((r) => r.idx)).toEqual([1]);
   });
 });

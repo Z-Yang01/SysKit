@@ -7,7 +7,7 @@
  *
  * v1.4 UI 迁移：脱离 AntD（Descriptions → 键值行，Badge/Alert/Empty → ui 件）。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import {
@@ -53,6 +53,10 @@ export function ToolboxBattery() {
   const [powerFailed, setPowerFailed] = useState(false);
   const [health, setHealth] = useState<BatteryHealth | null>(null);
   const [querying, setQuerying] = useState(false);
+  // 面板不可见（切到别的 tab / 最小化）时停表：ui Tabs 是 keepMounted，
+  // 切走后组件仍在、定时器仍跑——10 秒一次的 GetSystemPowerStatus 虽便宜，
+  // 但没人在看时刷新就是纯浪费（性能监控页同款守卫）
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // 实时状态：轻量，可轮询
   useEffect(() => {
@@ -68,7 +72,10 @@ export function ToolboxBattery() {
           setPowerFailed(true);
         });
     load();
-    const t = window.setInterval(load, 10000);
+    const t = window.setInterval(() => {
+      if (document.hidden || panelRef.current?.offsetParent === null) return;
+      load();
+    }, 10000);
     return () => window.clearInterval(t);
   }, []);
 
@@ -86,7 +93,7 @@ export function ToolboxBattery() {
   const warning = lowBatteryWarning(power);
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div ref={panelRef} className="flex flex-col gap-2.5">
       {warning && <Alert tone="warning" title={warning} />}
 
       <Card>

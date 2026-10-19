@@ -12,6 +12,8 @@ import { describe, expect, it } from "vitest";
 import {
   canAddPassword,
   canSetMasterPassword,
+  contactKindLabel,
+  contactSummary,
   modeLabel,
   passwordStrength,
   PWGEN_AMBIGUOUS,
@@ -26,12 +28,15 @@ import {
   pwgenEntropyBits,
   pwgenMeterPercent,
   pwgenTier,
+  primaryContact,
   pwgenUsable,
   setupConfirmText,
   statusSummary,
   storageAvailable,
   storageNotice,
+  validateContact,
   vaultPhase,
+  type ContactRow,
   type PwgenOptions,
   type VaultStatus,
 } from "../src/vault";
@@ -217,6 +222,89 @@ describe("setupConfirmText", () => {
     expect(t).toContain("无法找回");
     expect(t).toContain("PBKDF2");
     expect(t).toContain("不落盘");
+  });
+});
+
+/**
+ * 账号级联系方式（一个账号多个邮箱 / 多个电话）。
+ *
+ * 校验规则与后端 `vault::store::validate_contact` 同口径：前端预检的意义是
+ * 即时反馈，后端仍会再挡一次。**两边不同步就会出现"前端放行、后端报错"**，
+ * 所以规则要点在下面用源码守卫钉住（改一侧必须改另一侧）。
+ */
+describe("联系方式纯逻辑", () => {
+  const c = (over: Partial<ContactRow> = {}): ContactRow => ({
+    id: 1,
+    account_id: 10,
+    kind: "email",
+    value: "a@b.com",
+    label: "",
+    is_primary: false,
+    sort_order: 0,
+    ...over,
+  });
+
+  it("邮箱必须有 @ 且两端非空", () => {
+    expect(validateContact("email", "me@example.com").ok).toBe(true);
+    expect(validateContact("email", "not-an-email").ok).toBe(false);
+    expect(validateContact("email", "@example.com").ok).toBe(false);
+    expect(validateContact("email", "me@").ok).toBe(false);
+    expect(validateContact("email", "  ").ok).toBe(false);
+  });
+
+  it("电话按数字位数判定（≥5 位），容忍分隔符与国际码写法", () => {
+    expect(validateContact("phone", "13800138000").ok).toBe(true);
+    expect(validateContact("phone", "+86 138 0013 8000").ok).toBe(true);
+    expect(validateContact("phone", "1234").ok).toBe(false);
+    expect(validateContact("phone", "12345").ok).toBe(true);
+  });
+
+  it("未知类型一律拒绝（库级 CHECK 只有 email/phone）", () => {
+    expect(validateContact("wechat", "abc").ok).toBe(false);
+  });
+
+  it("主项缺失时退第一条——老数据可能没有主项，列表不该留空", () => {
+    const rows = [c({ id: 1, is_primary: false }), c({ id: 2, is_primary: false })];
+    expect(primaryContact(rows, "email")?.id).toBe(1);
+    expect(primaryContact([], "email")).toBeNull();
+    // 类型隔离：phone 的空缺不受 email 影响
+    expect(primaryContact([c({ kind: "email" })], "phone")).toBeNull();
+  });
+
+  it("摘要取主项并把其余折成 +N", () => {
+    const rows = [
+      c({ id: 1, kind: "email", value: "main@x.com", is_primary: true }),
+      c({ id: 2, kind: "email", value: "alt@x.com" }),
+      c({ id: 3, kind: "phone", value: "13800138000", is_primary: true }),
+    ];
+    const s = contactSummary(rows);
+    expect(s.email).toBe("main@x.com");
+    expect(s.emailMore).toBe(1);
+    expect(s.phone).toBe("13800138000");
+    expect(s.phoneMore).toBe(0);
+    expect(contactSummary([])).toEqual({ email: "", emailMore: 0, phone: "", phoneMore: 0 });
+  });
+
+  it("类型展示名不得出现空白（后端加类型时宁可露 key）", () => {
+    expect(contactKindLabel("email")).toBe("邮箱");
+    expect(contactKindLabel("phone")).toBe("电话");
+    expect(contactKindLabel("wechat")).toBe("wechat");
+  });
+
+  it("校验规则与后端 validate_contact 同口径（源码守卫）", () => {
+    const rs = readFileSync(
+      resolve(__dirname, "../src-tauri/src/vault/store.rs"),
+      "utf-8",
+    ).replace(/\r\n/g, "\n");
+    const body = rs.slice(rs.indexOf("fn validate_contact"));
+    const fn = body.slice(0, body.indexOf("\n}"));
+    // 邮箱：含 @ 且首尾不是 @
+    expect(fn).toContain("!v.contains('@') || v.starts_with('@') || v.ends_with('@')");
+    // 电话：数字位数阈值必须仍是 5（前端 validateContact 硬编码 5）
+    expect(fn).toMatch(/if digits < 5/);
+    // 阈值一旦在后端改动，这里必须红——改一侧就要改另一侧
+    const m = fn.match(/if digits < (\d+)/);
+    expect(Number(m![1])).toBe(5);
   });
 });
 

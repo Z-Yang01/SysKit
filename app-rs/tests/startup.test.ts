@@ -14,6 +14,7 @@ import {
   locationColor,
   locationHint,
   needsAdmin,
+  sortStartup,
   startupStats,
   toggleConfirmText,
   toggleErrorText,
@@ -179,5 +180,48 @@ describe("toggleErrorText", () => {
   it("补上动作上下文（是禁用还是启用失败了）", () => {
     expect(toggleErrorText(false, "需要管理员权限")).toBe("禁用失败：需要管理员权限");
     expect(toggleErrorText(true, "boom")).toBe("启用失败：boom");
+  });
+});
+
+/**
+ * 排序（列表常有 50+ 项、每页 15 行）：默认是注册表遍历顺序，想集中看
+ * 某个位置只能一页页翻。这里锁两件事：不改输入数组、同位置内按名称有序。
+ */
+describe("sortStartup", () => {
+  it("default 原样返回（连数组都不复制，省一次分配）", () => {
+    const rows = [item({ name: "b" }), item({ name: "a" })];
+    expect(sortStartup(rows, "default")).toBe(rows);
+  });
+
+  it("按位置分组，同位置内按名称", () => {
+    const rows = [
+      item({ location: "HKLM-Run", name: "zeta" }),
+      item({ location: "HKCU-Run", name: "beta" }),
+      item({ location: "HKLM-Run", name: "alpha" }),
+      item({ location: "HKCU-Run", name: "gamma" }),
+    ];
+    const got = sortStartup(rows, "location").map((r) => `${r.location}|${r.name}`);
+    expect(got).toEqual([
+      "HKCU-Run|beta",
+      "HKCU-Run|gamma",
+      "HKLM-Run|alpha",
+      "HKLM-Run|zeta",
+    ]);
+  });
+
+  it("不改输入数组", () => {
+    const rows = [item({ name: "b" }), item({ name: "a" })];
+    const before = rows.map((r) => r.name);
+    sortStartup(rows, "name");
+    expect(rows.map((r) => r.name)).toEqual(before);
+  });
+
+  it("按名称用中文排序而不是码点序", () => {
+    // localeCompare("zh-CN") 下 "阿里" 排在 "Zebra" 前后取决于拼音，
+    // 这里只断言"稳定且与 localeCompare 一致"，避免把实现锁死
+    const rows = [item({ name: "Zebra" }), item({ name: "阿里" })];
+    const got = sortStartup(rows, "name").map((r) => r.name);
+    const want = ["Zebra", "阿里"].sort((a, b) => a.localeCompare(b, "zh-CN"));
+    expect(got).toEqual(want);
   });
 });

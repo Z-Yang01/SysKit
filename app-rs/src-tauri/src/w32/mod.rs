@@ -117,6 +117,26 @@ pub fn syskit_instance_running() -> bool {
 mod tests {
     use super::*;
 
+    /// 原生进程快照必须能看到**自己**且工作集非 0——这条同时验证了
+    /// Toolhelp 结构体布局（dwSize）与 `PROCESS_MEMORY_COUNTERS.cb` 都对，
+    /// 写错任一处会静默返回 0 条/0 字节。
+    #[test]
+    fn native_snapshot_sees_self_with_memory() {
+        let t0 = std::time::Instant::now();
+        let v = snapshot_process_memory().expect("Toolhelp 快照应能创建");
+        let ms = t0.elapsed().as_millis();
+        assert!(!v.is_empty(), "至少应枚举到进程（含自己）");
+        let me = std::process::id();
+        let mine = v.iter().find(|p| p.pid == me).expect("快照里应有当前进程");
+        assert!(mine.working_set > 0, "工作集不应为 0");
+        assert!(!mine.name.is_empty());
+        // 回归守卫：这条路径必须是全内存操作。若有人改回 spawn 子进程
+        // （实测 tasklist 单次 1.4s），这里会直接红——性能页每 3 秒调一次，
+        // 那就等于常驻半个核。
+        eprintln!("原快照：{} 个进程，耗时 {ms}ms", v.len());
+        assert!(ms < 500, "原生快照不该接近子进程量级（实测 {ms}ms）");
+    }
+
     #[test]
     fn ctrl_v_event_shape_matches_python() {
         let e = ctrl_v_events();

@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import {
   allTargetKeys,
+  canGoUp,
   childIcon,
   cleanConfirmText,
   cleanResultSummary,
@@ -24,6 +25,7 @@ import {
   humanSize,
   meaningfulKeys,
   needsSpaceWarning,
+  parentPath,
   rootEmptyText,
   selectedBytes,
   targetResultText,
@@ -64,6 +66,7 @@ import {
 import { Alert } from "./ui/alert";
 import { confirm } from "./ui/confirm";
 import { useToast } from "./ui/toast";
+import { Tooltip as UiTooltip } from "./ui/tooltip";
 
 /** 总览扩展名条形的 Top-N 行数（后端全量降序给出，前端只展示最大的几类）。 */
 const OVERVIEW_EXT_ROWS = 15;
@@ -178,13 +181,15 @@ export function DiskPanel() {
     {
       title: "使用率",
       dataIndex: "used_percent",
-      width: 260,
+      // 980 宽窗口下右栏约 740px：卷 200 + 使用率 200 + 已用/总量 180 + 可用 96
+      // = 676，留出余量——原来 790 会横向滚动，最后一列被切一半
+      width: 200,
       render: (v: number, r) => (
         <span className="flex w-full items-center gap-2">
           <Progress
             percent={Number(v.toFixed(0))}
             showInfo={false}
-            className="w-[140px] flex-none"
+            className="w-[110px] flex-none"
             tone={tokenToneOf(r.token) === "neutral" ? "accent" : (tokenToneOf(r.token) as "ok" | "warn" | "err")}
           />
           <Badge tone={tokenToneOf(r.token)}>{v.toFixed(0)}%</Badge>
@@ -194,13 +199,13 @@ export function DiskPanel() {
     {
       title: "已用 / 总量",
       dataIndex: "used",
-      width: 210,
+      width: 180,
       render: (_: unknown, r) => `${humanSize(r.used)} / ${humanSize(r.total)}`,
     },
     {
       title: "可用",
       dataIndex: "free_total",
-      width: 120,
+      width: 96,
       render: (v: number) => humanSize(v),
     },
   ];
@@ -263,6 +268,14 @@ export function CleanupPanel() {
       const s = await invoke<CleanScan>("sk_clean_scan");
       setScan(s);
       setScanError("");
+      // 重新扫描后把已选的 key 与当前目标求交集：清理/系统自动清空之后
+      // 某项可能整个消失，残留的选中项会让「已选 N 项·约 X」虚高，
+      // 还会把不存在的 key 传给后端（白跑一趟并报失败）
+      const alive = new Set(s.rows.map((r) => r.key));
+      setSelected((prev) => {
+        const next = prev.filter((k) => alive.has(k));
+        return next.length === prev.length ? prev : next;
+      });
     } catch (e) {
       // 扫描失败要和"还在扫"区分开（空态才能给出重试）；已有结果时保留旧表
       setScanError(String(e));
@@ -373,11 +386,16 @@ export function CleanupPanel() {
                   aria-label={r.title}
                 />
               </span>
-              <span className="min-w-[140px]">{r.title}</span>
+              <span className="min-w-[140px] shrink-0">{r.title}</span>
               <Badge tone={(r.bytes ?? 0) > 0 ? "warn" : "neutral"}>
                 {(r.bytes ?? 0) > 0 ? (r.human ?? humanSize(r.bytes ?? 0)) : "无"}
               </Badge>
-              <span className="sk-hint text-xs">
+              {/* 路径可能很长（多根目录用「；」拼接）：必须 min-w-0 + truncate，
+                  否则会把整行撑出横向滚动条，勾选框被挤到视口外 */}
+              <span
+                className="sk-hint min-w-0 flex-1 truncate text-xs"
+                title={(r.roots ?? (r.root ? [r.root] : [])).join("；") || "（Shell COM 清空）"}
+              >
                 {(r.roots ?? (r.root ? [r.root] : [])).join("；") || "（Shell COM 清空）"}
               </span>
             </div>
@@ -422,6 +440,14 @@ export function DiskOverviewPanel({ onDrill }: { onDrill: (path: string) => void
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
   const [topPage, setTopPage] = useState(0);
+  // 盘符快捷入口：让用户不用手打绝对路径（"分析 C 盘"是最高频的一次操作）
+  const [drives, setDrives] = useState<DriveRow[]>([]);
+
+  useEffect(() => {
+    void invoke<DiskList>("sk_disk_list")
+      .then((l) => setDrives(l.rows))
+      .catch(() => setDrives([])); // 读不到就只留手输，不弹错（总览页不该被它拖住）
+  }, []);
 
   const runScan = useCallback(async () => {
     const dir = dirInput.trim();
@@ -556,6 +582,24 @@ export function DiskOverviewPanel({ onDrill }: { onDrill: (path: string) => void
           </Button>
         )}
       </div>
+
+      {drives.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="sk-hint">快速选择：</span>
+          {drives.map((d) => (
+            <Button
+              key={d.letter}
+              size="sm"
+              // 点击只填路径不立刻扫：整盘全量扫描可能数十秒，得让用户
+              // 有机会先改主意（误点就开扫等于替用户做了个重决定）
+              onClick={() => setDirInput(d.letter)}
+              title={`${driveLabel(d)}（可用 ${humanSize(d.free_to_caller)}）`}
+            >
+              {d.letter}
+            </Button>
+          ))}
+        </div>
+      )}
 
       {scanError && <Alert tone="danger" title={`扫描失败：${scanError}`} />}
 
@@ -854,6 +898,21 @@ export function DirDrillPanel({ external }: { external?: DrillRequest | null }) 
         >
           开始扫描
         </Button>
+        {/* 上一级：下钻到四五层后想回头，原来只能重新输入路径或回总览重扫 */}
+        <UiTooltip title="扫描父目录（盘根时不可用）">
+          <Button
+            size="sm"
+            disabled={loadingPath !== null || !root || !canGoUp(root.path)}
+            onClick={() => {
+              if (!root) return;
+              const up = parentPath(root.path);
+              setDirInput(up);
+              void runScan(up, true);
+            }}
+          >
+            ↑ 上一级
+          </Button>
+        </UiTooltip>
         {loadingPath !== null && (
           <Button size="sm" onClick={() => void invoke("sk_disk_scan_cancel")}>
             取消扫描

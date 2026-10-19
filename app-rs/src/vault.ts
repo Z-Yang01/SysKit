@@ -99,6 +99,80 @@ export interface AccountRow {
   has_notes: boolean;
 }
 
+// ---------------- 账号级联系方式（v2：一个账号可有多个邮箱 / 多个电话） ----------------
+
+/** 后端 `account_contacts` 行（`kind` 受库级 CHECK 约束，只有这两种）。 */
+export interface ContactRow {
+  id: number;
+  account_id: number;
+  kind: "email" | "phone";
+  value: string;
+  label: string;
+  is_primary: boolean;
+  sort_order: number;
+}
+
+/** 类型下拉的可选项（值与后端 `normalize_kind` 认可的英文键一致）。 */
+export const CONTACT_KINDS: { value: "email" | "phone"; label: string }[] = [
+  { value: "email", label: "邮箱" },
+  { value: "phone", label: "电话" },
+];
+
+/**
+ * 类型下拉 key → 展示名。未知值原样返回（后端加了新类型时前端不该崩，
+ * 也不该显示空白——宁可露出原始 key 也比丢信息好）。
+ */
+export function contactKindLabel(kind: string): string {
+  return CONTACT_KINDS.find((k) => k.value === kind)?.label ?? kind;
+}
+
+/**
+ * 取值校验——**与后端 `validate_contact` 同一口径**（只挡明显填错的）。
+ *
+ * 前端预检的意义是即时反馈（后端仍会再挡一次，双端各自成立）；两边规则
+ * 不同步就会出现"前端说能存、后端报错"的落差，tests/vault.test.ts 里
+ * 有用例把两条规则钉在一起。
+ */
+export function validateContact(kind: string, value: string): { ok: boolean; reason: string } {
+  const v = value.trim();
+  if (!v) return { ok: false, reason: "联系方式不能为空" };
+  if (kind === "email") {
+    if (!v.includes("@") || v.startsWith("@") || v.endsWith("@")) {
+      return { ok: false, reason: "邮箱地址必须包含 @，且 @ 前后都要有内容" };
+    }
+    return { ok: true, reason: "" };
+  }
+  if (kind === "phone") {
+    const digits = [...v].filter((c) => c >= "0" && c <= "9").length;
+    if (digits < 5) return { ok: false, reason: "电话号码至少要包含 5 位数字" };
+    return { ok: true, reason: "" };
+  }
+  return { ok: false, reason: `未知的联系方式类型 ${kind}` };
+}
+
+/**
+ * 取某类型的主项；没有主项时退第一条（排序同后端：sort_order, id）。
+ *
+ * 为什么退化：后端保证"同类型必有主项"（删主项会自动递补），但老数据
+ * 或绕过 UI 写入的行可能出现空缺——列表/复制拿不到默认值比少显示一星严重。
+ */
+export function primaryContact(list: ContactRow[], kind: "email" | "phone"): ContactRow | null {
+  const same = list.filter((c) => c.kind === kind);
+  return same.find((c) => c.is_primary) ?? same[0] ?? null;
+}
+
+/** 联系方式列的一行摘要：`主邮箱`（+2）形式——多值时带计数，不铺开占列宽。 */
+export function contactSummary(list: ContactRow[]): { email: string; emailMore: number; phone: string; phoneMore: number } {
+  const pick = (kind: "email" | "phone") => {
+    const c = primaryContact(list, kind);
+    const n = list.filter((x) => x.kind === kind).length;
+    return { text: c?.value ?? "", more: c ? Math.max(0, n - 1) : 0 };
+  };
+  const e = pick("email");
+  const p = pick("phone");
+  return { email: e.text, emailMore: e.more, phone: p.text, phoneMore: p.more };
+}
+
 /** 账号行的展示标题：label 优先，退用户名，再退「账号 #id」。 */
 export function accountTitle(a: AccountRow): string {
   if (a.label.trim()) return a.label.trim();

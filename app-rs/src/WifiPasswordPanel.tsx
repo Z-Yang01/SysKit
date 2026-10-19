@@ -519,10 +519,17 @@ function PasswordsTab(props: {
 }) {
   const toast = useToast();
   const [selected, setSelected] = useState("");
+  // 已存配置可能几十上百条（公司/学校网络+热点），逐个滚动找太慢
+  const [query, setQuery] = useState("");
   const [cred, setCred] = useState<ProfileCredential | null>(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [show, setShow] = useState(false);
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q ? props.profiles.filter((p) => p.toLowerCase().includes(q)) : props.profiles;
+  }, [props.profiles, query]);
 
   const read = useCallback(async (name: string) => {
     setSelected(name);
@@ -561,20 +568,36 @@ function PasswordsTab(props: {
       {/* 左栏：已存 WiFi 列表（固定 ~280px，刷新嵌在卡标题）；列表在卡体内自滚 */}
       <Card className="flex w-[280px] flex-none flex-col">
         <CardHeader>
-          <CardTitle>已存 WiFi（{props.profiles.length}）</CardTitle>
+          <CardTitle>
+            已存 WiFi（
+            {query.trim() ? `${shown.length}/${props.profiles.length}` : props.profiles.length}）
+          </CardTitle>
           <Button size="sm" loading={props.profilesLoading} onClick={props.onRefreshProfiles}>
             刷新
           </Button>
         </CardHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+          <div className="sticky top-0 z-[1] bg-sk-card px-1 pb-1.5 pt-1">
+            <Input
+              className="h-7 w-full text-xs"
+              placeholder="筛选已存 WiFi…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="筛选已存 WiFi"
+            />
+          </div>
           {props.profilesLoading ? (
             <div className="py-4 text-center text-sm text-sk-sub">读取中…</div>
           ) : props.profiles.length === 0 ? (
             <div className="px-2 py-4 text-center text-[13px] text-sk-sub">
               本机没有已保存的 WiFi 配置（或无线网卡被禁用）
             </div>
+          ) : shown.length === 0 ? (
+            <div className="px-2 py-4 text-center text-[13px] text-sk-sub">
+              没有匹配「{query}」的网络
+            </div>
           ) : (
-            props.profiles.map((name) => (
+            shown.map((name) => (
               <button
                 key={name}
                 type="button"

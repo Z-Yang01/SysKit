@@ -622,3 +622,81 @@ pub fn acquire_single_instance_mutex(name: &str) -> bool {
         GetLastError() != ERROR_ALREADY_EXISTS
     }
 }
+
+// ---------------- 进程内存快照（原生，替代 tasklist 子进程） ----------------
+
+/// 单个进程的内存读数（工作集 = 任务管理器「内存」列同口径）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcMemRaw {
+    pub pid: u32,
+    pub name: String,
+    pub working_set: u64,
+}
+
+/// 枚举全部进程的工作集大小。
+///
+/// **为什么不用 `tasklist`**：起一个子进程要 0.8–1.5 秒（实测本机 1.43s），
+/// 而性能页每 3 秒要刷一次 Top 进程——等于常驻半个核。Toolhelp 快照 +
+/// `K32GetProcessMemoryInfo` 是全内存操作，几百个进程约 5–15ms，且不产生
+/// 子进程（不触发安全软件的子进程审计）。
+///
+/// 打不开的进程（受保护/系统进程）**跳过而不是记 0**：记 0 会让「Top 10」
+/// 里混进一堆 0 字节条目，把真正吃内存的挤出榜单。返回 None 表示快照本身
+/// 失败（调用方回退 tasklist），空 Vec 表示枚举到 0 个（同样触发回退）。
+pub fn snapshot_process_memory() -> Option<Vec<ProcMemRaw>> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    };
+
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut out: Vec<ProcMemRaw> = Vec::with_capacity(256);
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(0)],
+                );
+                let pid = entry.th32ProcessID;
+                if pid != 0 && !name.is_empty() {
+                    // QUERY_LIMITED_INFORMATION 对受保护进程也常能开；VM_READ 不行时退一档
+                    let h = OpenProcess(
+                        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                        false,
+                        pid,
+                    )
+                    .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid));
+                    if let Ok(h) = h {
+                        let mut c = PROCESS_MEMORY_COUNTERS {
+                            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+                            ..Default::default()
+                        };
+                        // windows 0.62 里该导出返回 BOOL 而不是 Result
+                        if K32GetProcessMemoryInfo(h, &mut c, c.cb).as_bool() {
+                            out.push(ProcMemRaw {
+                                pid,
+                                name,
+                                working_set: c.WorkingSetSize as u64,
+                            });
+                        }
+                        let _ = CloseHandle(h);
+                    }
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+        Some(out)
+    }
+}

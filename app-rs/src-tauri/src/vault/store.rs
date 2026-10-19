@@ -45,8 +45,30 @@ CREATE INDEX IF NOT EXISTS idx_accounts_site ON accounts(site_id, is_favorite DE
 CREATE INDEX IF NOT EXISTS idx_sites_name ON sites(name COLLATE NOCASE);
 ";
 
-/// SCHEMA 结构变更时递增并补迁移（当前纯 IF-NOT-EXISTS 幂等 DDL）。
-const SCHEMA_VERSION: i32 = 1;
+/// v2 迁移：账号级联系方式（邮箱 / 电话，一对多）。
+///
+/// **为什么用迁移而不是改 `SCHEMA` 常量**：`SCHEMA` 必须与 Python 版
+/// `vault.py` 逐字一致——同一个 vault.db 要能两版互开（跨语言硬约束）。
+/// 新增表用 `CREATE TABLE IF NOT EXISTS` 追加即可：Python 打开时根本不认识
+/// 这张表，但它只读写 sites/accounts，互不冲突；反过来 Rust 打开 Python 建的
+/// 老库也能就地补上。改基础 SCHEMA 文本则会让"逐字一致"这条契约失效。
+const MIGRATION_V2: &str = "
+CREATE TABLE IF NOT EXISTS account_contacts (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('email','phone')),
+  value TEXT NOT NULL,
+  label TEXT DEFAULT '',
+  is_primary INTEGER DEFAULT 0,
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_contacts_account ON account_contacts(account_id, kind, sort_order);
+";
+
+/// SCHEMA 结构变更时递增并补迁移（基础 DDL 幂等，v2 起追加迁移脚本）。
+const SCHEMA_VERSION: i32 = 2;
 
 /// 测试专用 DB 目录覆盖（Mutex 可重设——paths::set_appdata_override 是
 /// OnceLock 一次性的，跨语言 fixture 测试需要来回指，实测踩过）。
@@ -61,6 +83,28 @@ fn set_db_override(dir: std::path::PathBuf) {
 #[cfg(test)]
 fn clear_db_override() {
     *DB_OVERRIDE.lock_ok() = None;
+}
+
+/// RAII 覆盖：`Drop` 时必清——否则 panic 会把 DB 路径留在临时目录上，
+/// 后续用例（串行锁内）全去读写那个目录，连锁失败且极难定位。
+#[cfg(test)]
+struct DbOverrideGuard(std::path::PathBuf);
+
+#[cfg(test)]
+impl DbOverrideGuard {
+    /// 注意：**必须走 `new`**——元组构造只包一层，不会设置覆盖。
+    fn new(dir: std::path::PathBuf) -> Self {
+        set_db_override(dir.clone());
+        Self(dir)
+    }
+}
+
+#[cfg(test)]
+impl Drop for DbOverrideGuard {
+    fn drop(&mut self) {
+        clear_db_override();
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn db_path() -> PathBuf {
@@ -98,8 +142,17 @@ pub fn init_db() -> rusqlite::Result<()> {
     }
     let conn = conn()?;
     let ver: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if ver < SCHEMA_VERSION {
+    // 逐级补迁移：老库（含 Python 版建的）就地升级，不重放已执行过的脚本。
+    // 版本号只在**全部脚本跑完**后统一盖章——半途失败时库仍停在旧版本，
+    // 下次启动会重跑（盖章早于 DDL 成功 = 永久缺失一张表且无从察觉）。
+    if ver < 1 {
         conn.execute_batch(SCHEMA)?;
+    }
+    if ver < 2 {
+        conn.execute_batch(MIGRATION_V2)?;
+    }
+    if ver < SCHEMA_VERSION {
+        // PRAGMA 不支持参数绑定；SCHEMA_VERSION 是本模块常量，无注入面
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
     DB_READY.store(true, std::sync::atomic::Ordering::Release);
@@ -481,6 +534,256 @@ pub fn mark_used(account_id: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+// ---------------- 账号联系方式（v2：一对多的邮箱 / 电话） ----------------
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ContactRow {
+    pub id: i64,
+    pub account_id: i64,
+    /// `email` | `phone`（落库受 CHECK 约束）。
+    pub kind: String,
+    pub value: String,
+    pub label: String,
+    pub is_primary: bool,
+    pub sort_order: i64,
+}
+
+/// kind 归一化：界面/命令可能给中文，统一落到 CHECK 认可的两个字面值。
+pub fn normalize_kind(kind: &str) -> Option<&'static str> {
+    match kind.trim().to_lowercase().as_str() {
+        "email" | "邮箱" | "邮件" | "电子邮箱" => Some("email"),
+        "phone" | "电话" | "手机" | "手机号" | "电话号码" => Some("phone"),
+        _ => None,
+    }
+}
+
+/// 取值校验：**只挡明显填错的**，不做严格格式校验——内部短号、分机、
+/// 各种国家码写法都得能存。宁可放过一条格式奇怪的真号码，也不要把用户
+/// 的真实联系方式拒之门外（保存不进去比格式不规整严重得多）。
+pub(crate) fn validate_contact(kind: &str, value: &str) -> Result<(), String> {
+    let v = value.trim();
+    if v.is_empty() {
+        return Err("联系方式不能为空".into());
+    }
+    match kind {
+        "email" => {
+            if !v.contains('@') || v.starts_with('@') || v.ends_with('@') {
+                Err("邮箱地址必须包含 @，且 @ 前后都要有内容".into())
+            } else {
+                Ok(())
+            }
+        }
+        "phone" => {
+            let digits = v.chars().filter(|c| c.is_ascii_digit()).count();
+            if digits < 5 {
+                Err("电话号码至少要包含 5 位数字".into())
+            } else {
+                Ok(())
+            }
+        }
+        other => Err(format!("未知的联系方式类型 {other}")),
+    }
+}
+
+fn map_contact(r: &rusqlite::Row) -> rusqlite::Result<ContactRow> {
+    Ok(ContactRow {
+        id: r.get("id")?,
+        account_id: r.get("account_id")?,
+        kind: r.get("kind")?,
+        value: r.get::<_, Option<String>>("value")?.unwrap_or_default(),
+        label: r.get::<_, Option<String>>("label")?.unwrap_or_default(),
+        is_primary: r.get::<_, i64>("is_primary")? != 0,
+        sort_order: r.get::<_, i64>("sort_order")?,
+    })
+}
+
+const CONTACT_COLS: &str =
+    "id, account_id, kind, value, label, is_primary, sort_order FROM account_contacts";
+
+/// 单账号的联系方式（主项在前）。
+pub fn list_contacts(account_id: i64) -> rusqlite::Result<Vec<ContactRow>> {
+    let conn = conn()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {CONTACT_COLS} WHERE account_id=? ORDER BY kind, is_primary DESC, sort_order, id"
+    ))?;
+    let rows = stmt.query_map([account_id], map_contact)?;
+    rows.collect()
+}
+
+/// 批量取多个账号的联系方式——列表页一次拿齐，避免逐行查询（账号多时
+/// 这是 N+1 的主要来源）。
+pub fn contacts_for_accounts(
+    account_ids: &[i64],
+) -> rusqlite::Result<std::collections::HashMap<i64, Vec<ContactRow>>> {
+    let mut ids = account_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut out = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let marks = vec!["?"; ids.len()].join(",");
+    let conn = conn()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {CONTACT_COLS} WHERE account_id IN ({marks}) ORDER BY kind, is_primary DESC, sort_order, id"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), map_contact)?;
+    for r in rows {
+        let c = r?;
+        out.entry(c.account_id).or_insert_with(Vec::new).push(c);
+    }
+    Ok(out)
+}
+
+/// 新增联系方式。
+///
+/// 同类型的第一条**自动成为主项**——用户给账号填第一个邮箱时不会想到
+/// 还要勾"主邮箱"，而我们后面要拿主项做列表展示与复制。
+pub fn add_contact(
+    account_id: i64,
+    kind: &str,
+    value: &str,
+    label: &str,
+    is_primary: bool,
+) -> Result<i64, String> {
+    let kind = normalize_kind(kind)
+        .ok_or_else(|| format!("联系方式类型必须是 email/phone，收到 {kind:?}"))?;
+    validate_contact(kind, value)?;
+    let conn = conn().map_err(|e| e.to_string())?;
+    let (existing, next_sort): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), coalesce(MAX(sort_order),0)+1 FROM account_contacts WHERE account_id=? AND kind=?",
+            rusqlite::params![account_id, kind],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let is_primary = is_primary || existing == 0;
+    if is_primary {
+        conn.execute(
+            "UPDATE account_contacts SET is_primary=0 WHERE account_id=? AND kind=?",
+            rusqlite::params![account_id, kind],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.execute(
+        "INSERT INTO account_contacts(account_id, kind, value, label, is_primary, sort_order, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
+        rusqlite::params![
+            account_id,
+            kind,
+            value.trim(),
+            label.trim(),
+            if is_primary { 1 } else { 0 },
+            next_sort,
+            now(),
+            now()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 联系方式可编辑字段（None=不改）。
+#[derive(Debug, Default, Clone)]
+pub struct ContactPatch {
+    pub value: Option<String>,
+    pub label: Option<String>,
+    pub is_primary: Option<bool>,
+}
+
+pub fn update_contact(id: i64, patch: &ContactPatch) -> Result<(), String> {
+    let conn = conn().map_err(|e| e.to_string())?;
+    let (account_id, kind): (i64, String) = conn
+        .query_row(
+            "SELECT account_id, kind FROM account_contacts WHERE id=?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| format!("联系方式 #{id} 不存在"))?;
+    let mut sets: Vec<String> = Vec::new();
+    let mut vals: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(v) = &patch.value {
+        validate_contact(&kind, v)?;
+        sets.push("value=?".into());
+        vals.push(rusqlite::types::Value::Text(v.trim().to_string()));
+    }
+    if let Some(l) = &patch.label {
+        sets.push("label=?".into());
+        vals.push(rusqlite::types::Value::Text(l.trim().to_string()));
+    }
+    if let Some(p) = patch.is_primary {
+        if p {
+            // 主项唯一：同账号同类型的其它项先落为普通项
+            conn.execute(
+                "UPDATE account_contacts SET is_primary=0 WHERE account_id=? AND kind=? AND id<>?",
+                rusqlite::params![account_id, kind, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        sets.push("is_primary=?".into());
+        vals.push(rusqlite::types::Value::Integer(if p { 1 } else { 0 }));
+    }
+    if sets.is_empty() {
+        return Ok(());
+    }
+    sets.push("updated_at=?".into());
+    vals.push(rusqlite::types::Value::Text(now()));
+    vals.push(rusqlite::types::Value::Integer(id));
+    let sql = format!("UPDATE account_contacts SET {} WHERE id=?", sets.join(","));
+    let params: Vec<&dyn rusqlite::types::ToSql> = vals
+        .iter()
+        .map(|v| v as &dyn rusqlite::types::ToSql)
+        .collect();
+    conn.execute(&sql, params.as_slice())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 设为主项（快捷入口，等价于 `update_contact` 只勾 is_primary）。
+pub fn set_primary_contact(id: i64) -> Result<(), String> {
+    update_contact(
+        id,
+        &ContactPatch {
+            is_primary: Some(true),
+            ..Default::default()
+        },
+    )
+}
+
+/// 删除联系方式。**删掉主项时把同类型剩下的第一条递补为主项**——否则会出现
+/// "这个账号没有主邮箱"的空档，列表与复制都少了默认取值。
+pub fn delete_contact(id: i64) -> Result<(), String> {
+    let conn = conn().map_err(|e| e.to_string())?;
+    let meta = conn
+        .query_row(
+            "SELECT account_id, kind, is_primary FROM account_contacts WHERE id=?",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            },
+        )
+        .ok();
+    let n = conn
+        .execute("DELETE FROM account_contacts WHERE id=?", [id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("联系方式 #{id} 不存在"));
+    }
+    if let Some((account_id, kind, was_primary)) = meta {
+        if was_primary {
+            conn.execute(
+                "UPDATE account_contacts SET is_primary=1 WHERE id=(SELECT id FROM account_contacts WHERE account_id=? AND kind=? ORDER BY sort_order, id LIMIT 1)",
+                rusqlite::params![account_id, kind],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// 按需解密单字段（field ∈ password|totp|notes）。touch=复制语义（顺带 mark_used）。
 /// 缺密文返回空串；解密失败（含锁定态）向上抛——调用方给用户可见的降级提示。
 pub fn get_secret(
@@ -561,8 +864,13 @@ pub fn all_accounts_with_passwords() -> rusqlite::Result<Vec<AccountPasswordRow>
     rows.collect()
 }
 
-/// 全局搜索：空格分词 AND，命中网站名/域名/别名/标签/用户名/label 的拼接串。
-/// 只返回元数据，不解密。
+/// 全局搜索：空格分词 AND，命中网站名/域名/别名/标签/用户名/label，
+/// 外加该账号的**联系方式**（邮箱/电话，v2 起）。只返回元数据，不解密。
+///
+/// **过滤下推到 SQL**：旧实现把整表拉到 Rust 里、逐行 `format!` 拼一个
+/// haystack 再做 `contains`——账号多时每敲一个字就是一次全表扫描加
+/// O(行数) 次堆分配。分词按空格切分，因此**不含空格的分词不可能跨字段
+/// 边界命中**，改写为「各字段 LIKE 求或」与逐行拼接语义等价。
 pub fn global_search(q: &str) -> rusqlite::Result<Vec<serde_json::Value>> {
     let tokens: Vec<String> = q
         .split_whitespace()
@@ -572,9 +880,33 @@ pub fn global_search(q: &str) -> rusqlite::Result<Vec<serde_json::Value>> {
     if tokens.is_empty() {
         return Ok(vec![]);
     }
+    // account_contacts 由 v2 迁移建立：先确保迁移已跑（DB_READY 命中时
+    // 几乎零成本），否则下面的 EXISTS 子查询会因表不存在直接报错。
+    init_db()?;
     let conn = conn()?;
-    let mut stmt = conn.prepare("SELECT a.id, a.site_id, a.label, a.username, a.is_favorite, a.totp_enc IS NOT NULL AS has_totp, s.name AS site_name, s.domain AS site_domain, coalesce(s.aliases,'') AS site_aliases, coalesce(s.tags,'') AS site_tags FROM accounts a JOIN sites s ON s.id=a.site_id")?;
-    let rows = stmt.query_map([], |r| {
+    // 每个分词 7 个占位符：站点 4 列 + 账号 2 列 + 联系方式 EXISTS
+    let per_token = "(lower(coalesce(s.name,'')) LIKE ? ESCAPE '\\'
+        OR lower(coalesce(s.domain,'')) LIKE ? ESCAPE '\\'
+        OR lower(coalesce(s.aliases,'')) LIKE ? ESCAPE '\\'
+        OR lower(coalesce(s.tags,'')) LIKE ? ESCAPE '\\'
+        OR lower(coalesce(a.username,'')) LIKE ? ESCAPE '\\'
+        OR lower(coalesce(a.label,'')) LIKE ? ESCAPE '\\'
+        OR EXISTS(SELECT 1 FROM account_contacts c WHERE c.account_id=a.id AND lower(c.value) LIKE ? ESCAPE '\\'))";
+    let mut conds: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut params: Vec<String> = Vec::with_capacity(tokens.len() * 7);
+    for t in &tokens {
+        conds.push(per_token.to_string());
+        let like = format!("%{}%", escape_like(t));
+        for _ in 0..7 {
+            params.push(like.clone());
+        }
+    }
+    let sql = format!(
+        "SELECT a.id, a.site_id, a.label, a.username, a.is_favorite, a.totp_enc IS NOT NULL AS has_totp, s.name AS site_name, s.domain AS site_domain, coalesce(s.aliases,'') AS site_aliases, coalesce(s.tags,'') AS site_tags FROM accounts a JOIN sites s ON s.id=a.site_id WHERE {}",
+        conds.join(" AND ")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         Ok(serde_json::json!({
             "id": r.get::<_, i64>("id")?,
             "site_id": r.get::<_, i64>("site_id")?,
@@ -588,24 +920,7 @@ pub fn global_search(q: &str) -> rusqlite::Result<Vec<serde_json::Value>> {
             "site_tags": r.get::<_, Option<String>>("site_tags")?.unwrap_or_default(),
         }))
     })?;
-    let mut out = Vec::new();
-    for row in rows {
-        let d = row?;
-        let hay = format!(
-            "{} {} {} {} {} {}",
-            d["site_name"].as_str().unwrap_or(""),
-            d["site_domain"].as_str().unwrap_or(""),
-            d["site_aliases"].as_str().unwrap_or(""),
-            d["site_tags"].as_str().unwrap_or(""),
-            d["username"].as_str().unwrap_or(""),
-            d["label"].as_str().unwrap_or(""),
-        )
-        .to_lowercase();
-        if tokens.iter().all(|t| hay.contains(t.as_str())) {
-            out.push(d);
-        }
-    }
-    Ok(out)
+    rows.collect()
 }
 
 // ---------------- TOTP（RFC 6238） ----------------
@@ -790,6 +1105,144 @@ mod tests {
         assert_eq!(list_accounts(site, "").unwrap().len(), 0);
         delete_site(site).unwrap();
         assert!(get_site(site).unwrap().is_none());
+    }
+
+    #[test]
+    fn account_contacts_crud_primary_and_cascade() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        reset_db_ready_for_test();
+        init_db().unwrap();
+        let crypto = crypto_dpapi();
+        let site = add_site("淘宝", "taobao.com", "", "", "购物").unwrap();
+        let acc = add_account(site, "pw", &crypto, "主号", "buyer", "", "").unwrap();
+
+        // 同类型第一条自动成为主项（用户填第一个邮箱时不会想到还要勾"主"）
+        let e1 = add_contact(acc, "邮箱", "a@taobao.com", "常用", false).unwrap();
+        let list = list_contacts(acc).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].kind, "email", "中文 kind 应归一化为 email");
+        assert!(list[0].is_primary, "同类型第一条应自动成为主项");
+
+        // 第二条勾主项 → 前一条落为普通项（主项唯一）
+        let e2 = add_contact(acc, "email", "b@taobao.com", "备用", true).unwrap();
+        let list = list_contacts(acc).unwrap();
+        assert_eq!(
+            list.iter().filter(|c| c.is_primary).count(),
+            1,
+            "主项必须唯一"
+        );
+        assert_eq!(list.iter().find(|c| c.is_primary).unwrap().id, e2);
+
+        // phone 是另一种 kind，主项独立
+        let p1 = add_contact(acc, "电话", "13800138000", "手机", false).unwrap();
+        let list = list_contacts(acc).unwrap();
+        assert_eq!(list.iter().filter(|c| c.kind == "phone").count(), 1);
+        assert!(list.iter().any(|c| c.id == p1 && c.is_primary));
+
+        // 校验：邮箱缺 @、电话位数不足、未知类型
+        assert!(add_contact(acc, "email", "not-an-email", "", false).is_err());
+        assert!(add_contact(acc, "phone", "123", "", false).is_err());
+        assert!(add_contact(acc, "wechat", "abc", "", false).is_err());
+        assert_eq!(list_contacts(acc).unwrap().len(), 3, "非法输入不得入库");
+
+        // 批量取（列表页防 N+1）
+        let bulk = contacts_for_accounts(&[acc]).unwrap();
+        assert_eq!(bulk.get(&acc).unwrap().len(), 3);
+
+        // 全局搜索可按邮箱 / 电话命中（v2 起联系方式纳入搜索）
+        assert_eq!(global_search("b@taobao.com").unwrap().len(), 1);
+        assert_eq!(global_search("13800138000").unwrap().len(), 1);
+        assert!(
+            !global_search("淘宝 13800").unwrap().is_empty(),
+            "多分词 AND 应可跨站点名与联系方式命中"
+        );
+
+        // 删除主项 → 同类型剩下的第一条递补（不留"没有主邮箱"的空档）
+        delete_contact(e2).unwrap();
+        let list = list_contacts(acc).unwrap();
+        let emails: Vec<_> = list.iter().filter(|c| c.kind == "email").collect();
+        assert_eq!(emails.len(), 1);
+        assert_eq!(emails[0].id, e1);
+        assert!(emails[0].is_primary, "删掉主项后应由剩下的第一条递补");
+        assert!(delete_contact(e2).is_err(), "重复删除应报错");
+
+        // 删除账号 → 联系方式随外键 CASCADE 清空（不留孤儿行）
+        delete_account(acc).unwrap();
+        assert_eq!(list_contacts(acc).unwrap().len(), 0);
+        delete_site(site).unwrap();
+    }
+
+    #[test]
+    fn migration_v2_upgrades_legacy_db() {
+        let _g = crate::test_support::serial();
+        crate::test_support::isolate();
+        // 必须落到**全新的独立目录**：默认隔离目录是每进程一份（OnceLock），
+        // 前面的用例已经把 v2 表建好了，"迁移前表不存在" 无从谈起。
+        let dir = std::env::temp_dir().join(format!("sk_vault_mig_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _guard = DbOverrideGuard::new(dir.clone());
+
+        // 模拟 Python 版（或 v1 Rust 版）建的库：只有基础 schema，user_version=1
+        {
+            let c = Connection::open(dir.join("vault.db")).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.execute_batch("PRAGMA user_version = 1").unwrap();
+        }
+        reset_db_ready_for_test();
+        assert_eq!(
+            db_path(),
+            dir.join("vault.db"),
+            "用例必须作用在独立库上（否则断言的是上一个用例留下的表）"
+        );
+        assert!(
+            list_contacts(1).is_err(),
+            "迁移前 account_contacts 表不应存在"
+        );
+        init_db().unwrap();
+        assert_eq!(
+            list_contacts(1).unwrap().len(),
+            0,
+            "迁移后表应已建立且可查询"
+        );
+        // 基础 schema 逐字不变（跨语言硬约束：Python 版要能继续互开）
+        let c = conn().unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(accounts)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                "id",
+                "site_id",
+                "label",
+                "username",
+                "password_enc",
+                "totp_enc",
+                "notes_enc",
+                "is_favorite",
+                "last_used_at",
+                "created_at",
+                "updated_at"
+            ],
+            "迁移不得改动基础表结构"
+        );
+        drop(c);
+        let ver: i32 = conn()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ver, SCHEMA_VERSION);
+
+        // 幂等：再跑一次不得报错、也不得重置数据
+        reset_db_ready_for_test();
+        init_db().unwrap();
+        assert_eq!(list_contacts(1).unwrap().len(), 0);
     }
 
     #[test]

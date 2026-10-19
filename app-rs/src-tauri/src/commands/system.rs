@@ -527,17 +527,18 @@ pub async fn sk_startup_set(
 
 // ---------------- M5 系统助手：Top 进程 ----------------
 
-/// Top 进程缓存（tasklist 一次约 0.5 秒，2 秒窗口内复用同一份）。
+/// Top 进程缓存（2 秒窗口内复用同一份，前端 3 秒轮询时大多直接命中）。
 static TOP_PROCS_CACHE: std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>> =
     std::sync::Mutex::new(None);
 
 /// 内存占用最高的 N 个进程。
 ///
-/// 数据源用 `tasklist /fo csv`（约 0.5 秒）而不是 `Get-CimInstance
-/// Win32_PerfFormattedData_PerfProc_Process`（实测 3.3 秒，且 Name 是
-/// `chrome#20` 这种性能计数器实例名而非真实进程名），也不是 `Get-Process`
-/// （0.3 秒但要多一个解析分支）。选 tasklist 的决定性理由：**端口页已经在解析
-/// 同一份 CSV**，复用同一份规则就没有第二处解析可能出错。
+/// **数据源（2026-10-19 换）**：主路径是 `w32::snapshot_process_memory`
+/// （Toolhelp + `K32GetProcessMemoryInfo`），全内存操作、约 5–15ms；
+/// `tasklist /fo csv` 降级为兜底。换掉的原因不是解析规则，而是**成本**：
+/// 起一个 tasklist 子进程实测 1.43 秒，而性能页每 3 秒刷一次——等于常驻
+/// 半个 CPU 核，用户会直接看到"SysKit 自己很吃 CPU"。
+/// 端口页仍用 tasklist CSV 解析（那里是一次性动作，且有现成规则）。
 #[tauri::command]
 pub async fn sk_top_procs(limit: Option<usize>) -> Result<serde_json::Value, String> {
     let n = limit.unwrap_or(15).clamp(1, 100);
@@ -551,11 +552,26 @@ pub async fn sk_top_procs(limit: Option<usize>) -> Result<serde_json::Value, Str
                 }
             }
         }
-        let out = crate::w32::run_capture(&args(&["tasklist", "/fo", "csv", "/nh"]), 30)
-            .map_err(|e| format!("tasklist 无法执行: {e}"))?;
-        let procs = crate::portscan::parse_tasklist_mem(&out.stdout);
+        // 主路径：原生 Toolhelp 快照（全内存操作，5–15ms）。
+        // 兜底：tasklist 子进程（实测 1.4s）——只在原生路径整体失败时用，
+        // 保证"换实现"不会把功能换没了。
+        let procs: Vec<crate::portscan::ProcMem> = match crate::w32::snapshot_process_memory() {
+            Some(raw) if !raw.is_empty() => raw
+                .into_iter()
+                .map(|p| crate::portscan::ProcMem {
+                    pid: p.pid,
+                    name: p.name,
+                    bytes: p.working_set,
+                })
+                .collect(),
+            _ => {
+                let out = crate::w32::run_capture(&args(&["tasklist", "/fo", "csv", "/nh"]), 30)
+                    .map_err(|e| format!("tasklist 无法执行: {e}"))?;
+                crate::portscan::parse_tasklist_mem(&out.stdout)
+            }
+        };
         if procs.is_empty() {
-            return Err("未能解析出任何进程（tasklist 输出格式可能有变）".to_string());
+            return Err("未能枚举出任何进程".to_string());
         }
         let (count, total) = crate::portscan::procs_summary(&procs);
         let top: Vec<serde_json::Value> = crate::portscan::top_by_mem(procs, n)

@@ -154,6 +154,36 @@ export function collapsePath(
   return next;
 }
 
+/**
+ * 上一级目录（下钻面板「↑ 上一级」用）。
+ *
+ * 边界比看上去多：
+ * - 尾部斜杠先剥掉（`C:\Users\` 与 `C:\Users` 应得到同一个父级）；
+ * - 盘根 `C:\` 没有上一级，**原样返回**（继续按 `\` 切会得到空串，
+ *   再传给后端就变成"扫描当前工作目录"，属于最坏的那种静默错误）；
+ * - `C:` 这种没有分隔符的写法补成 `C:\`；
+ * - UNC 路径（`\\server\share`）到共享根就停，不越过 `\\server`。
+ */
+export function parentPath(p: string): string {
+  const raw = p.trim();
+  if (!raw) return raw;
+  // 盘根：C:\ / C:/ / C:
+  if (/^[a-zA-Z]:[\\/]*$/.test(raw)) return `${raw.slice(0, 2)}\\`;
+  const s = raw.replace(/[\\/]+$/, "");
+  const idx = Math.max(s.lastIndexOf("\\"), s.lastIndexOf("/"));
+  if (idx < 0) return raw;
+  const parent = s.slice(0, idx);
+  if (/^[a-zA-Z]:$/.test(parent)) return `${parent}\\`;
+  // UNC 共享根（\\server\share）不再上溯
+  if (/^\\\\[^\\]+$/.test(parent) || parent === "") return raw;
+  return parent;
+}
+
+/** 是否还能上一级（盘根/共享根为 false，供按钮 disabled 用）。 */
+export function canGoUp(p: string): boolean {
+  return parentPath(p) !== p.trim();
+}
+
 /** 拍平后的可见行：普通子项行，或「已展开但结果未到」的加载占位行。 */
 export interface FlatChildRow {
   kind: "row" | "loading";

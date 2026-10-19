@@ -434,7 +434,10 @@ pub fn reset_cache() {
 pub fn load_from(path: &Path) -> Map<String, Value> {
     let mut data = default_map();
     match std::fs::read_to_string(path) {
-        Ok(text) => match serde_json::from_str::<Value>(&text) {
+        // 与 jsonio 同口径：外部工具（PowerShell 5.1 等）可能写 BOM。
+        // 不剥离的话 serde_json 会把合法设置判成损坏 → 全量回退默认值，
+        // 用户看到的是"我的设置全没了"。
+        Ok(text) => match serde_json::from_str::<Value>(crate::jsonio::strip_bom(&text)) {
             Ok(Value::Object(stored)) => {
                 for (k, v) in stored {
                     data.insert(k, v);
@@ -934,5 +937,24 @@ mod tests {
         std::fs::write(&p, "{ 半截").unwrap();
         let d = load_from(&p);
         assert_eq!(d.get("clipboard_max"), Some(&json!(1000)));
+    }
+
+    #[test]
+    fn load_bom_prefixed_file_keeps_user_values() {
+        // 回归：PowerShell 5.1 `Set-Content -Encoding UTF8` 等外部写手会带 BOM。
+        // 旧实现直接 serde_json::from_str，BOM 会让整份设置判为损坏并回退默认值。
+        let dir = std::env::temp_dir().join("syskit_rs_settings_bom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(r#"{"clipboard_max": 321, "dns_preset": "阿里"}"#.as_bytes());
+        std::fs::write(&p, bytes).unwrap();
+        let d = load_from(&p);
+        assert_eq!(
+            d.get("clipboard_max"),
+            Some(&json!(321)),
+            "BOM 不得导致用户设置静默回退默认值"
+        );
+        assert_eq!(d.get("dns_preset"), Some(&json!("阿里")));
     }
 }

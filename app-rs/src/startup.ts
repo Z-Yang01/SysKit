@@ -82,6 +82,40 @@ export type StartupStatusFilter = "all" | "enabled" | "disabled";
  * 关键字 + 状态双重筛选。
  * status 用可选参数保持旧签名兼容（只按关键字筛）。
  */
+/**
+ * 排序维度（下拉框用）。
+ *
+ * 为什么需要它：启动项常有 50+ 条、每页 15 行，默认顺序是"注册表遍历顺序"，
+ * 想集中看某个位置（比如 HKLM 全局项）或先处理已启用的，只能一页页翻。
+ */
+export type StartupSort = "default" | "name" | "location";
+
+export const STARTUP_SORTS: { value: StartupSort; label: string }[] = [
+  { value: "default", label: "默认顺序" },
+  { value: "location", label: "按位置" },
+  { value: "name", label: "按名称" },
+];
+
+/**
+ * 排序（不改输入数组）。
+ *
+ * `default` 原样返回；「按位置」是主要用途——把 HKLM（全局、需管理员）与
+ * HKCU 的项各自聚在一起，用户一眼看出哪些能动。
+ * 用 `localeCompare(.., "zh-CN")` 而不是码点比较：`%APPDATA%` 这类 ASCII 项
+ * 与中文名混排时，码点序会把中文全排到最后，读起来像"根本没排"。
+ */
+export function sortStartup(rows: StartupItem[], sort: StartupSort = "default"): StartupItem[] {
+  if (sort === "default") return rows;
+  const byName = (a: StartupItem, b: StartupItem) => a.name.localeCompare(b.name, "zh-CN");
+  const out = [...rows];
+  if (sort === "name") out.sort(byName);
+  else
+    out.sort(
+      (a, b) => a.location.localeCompare(b.location, "zh-CN") || byName(a, b),
+    );
+  return out;
+}
+
 export function filterStartup(
   rows: StartupItem[],
   keyword: string,

@@ -55,38 +55,189 @@ impl std::fmt::Display for DnsError {
     }
 }
 
+/// DNS 单标签上限（线格式长度字节只有 6 bit 可用）。
+const MAX_LABEL_BYTES: usize = 63;
+/// DNS 全名上限（含长度字节与结尾 0，RFC 1035 §2.3.4）。
+const MAX_NAME_WIRE_BYTES: usize = 255;
+
+/// RFC 3492 punycode 参数。
+const PUNY_BASE: u64 = 36;
+const PUNY_TMIN: u64 = 1;
+const PUNY_TMAX: u64 = 26;
+const PUNY_SKEW: u64 = 38;
+const PUNY_DAMP: u64 = 700;
+const PUNY_INITIAL_BIAS: u64 = 72;
+const PUNY_INITIAL_N: u64 = 128;
+
+/// RFC 3492 §6.1 的 bias 自适应。
+fn puny_adapt(mut delta: u64, num_points: u64, first_time: bool) -> u64 {
+    delta = if first_time {
+        delta / PUNY_DAMP
+    } else {
+        delta / 2
+    };
+    delta += delta / num_points;
+    let mut k = 0u64;
+    while delta > ((PUNY_BASE - PUNY_TMIN) * PUNY_TMAX) / 2 {
+        delta /= PUNY_BASE - PUNY_TMIN;
+        k += PUNY_BASE;
+    }
+    k + (((PUNY_BASE - PUNY_TMIN + 1) * delta) / (delta + PUNY_SKEW))
+}
+
+fn puny_digit(d: u64) -> char {
+    if d < 26 {
+        (b'a' + d as u8) as char
+    } else {
+        (b'0' + (d - 26) as u8) as char
+    }
+}
+
+/// RFC 3492 punycode 编码（不含 `xn--` 前缀）。
+///
+/// 自己实现而不是引 `idna` crate：本模块的定位就是「DNS 不可信时的对照工具」，
+/// 依赖越少越好；算法边界（增量、溢出、基本码点分隔符）都能用固定向量逐条断言。
+fn punycode_encode(label: &str) -> Result<String, DnsError> {
+    // 先做 IDNA 的最低限度映射：小写化（Python `str.encode("idna")` 同样小写）。
+    let lowered = label.to_lowercase();
+    let input: Vec<u64> = lowered.chars().map(|c| c as u64).collect();
+    if input.is_empty() {
+        return Err(DnsError::InvalidLabel(label.to_string()));
+    }
+
+    let mut out = String::new();
+    let basic: Vec<u64> = input.iter().copied().filter(|&c| c < 0x80).collect();
+    if !basic.is_empty() {
+        for c in &basic {
+            out.push(*c as u8 as char);
+        }
+        out.push('-');
+    }
+
+    let mut n = PUNY_INITIAL_N;
+    let mut delta: u64 = 0;
+    let mut bias = PUNY_INITIAL_BIAS;
+    let total = input.len() as u64;
+    let mut h = basic.len() as u64;
+
+    while h < total {
+        // 下一个待编码码点：所有 >= n 的码点中的最小值。
+        let m = input
+            .iter()
+            .copied()
+            .filter(|&c| c >= n)
+            .min()
+            .ok_or_else(|| DnsError::InvalidLabel(label.to_string()))?;
+        delta =
+            delta
+                .checked_add((m - n).checked_mul(h + 1).ok_or_else(|| {
+                    DnsError::InvalidLabel(format!("{label}（punycode 增量溢出）"))
+                })?)
+                .ok_or_else(|| DnsError::InvalidLabel(format!("{label}（punycode 增量溢出）")))?;
+        n = m;
+
+        for &c in &input {
+            if c < n {
+                delta = delta
+                    .checked_add(1)
+                    .ok_or_else(|| DnsError::InvalidLabel(label.to_string()))?;
+            } else if c == n {
+                let mut q = delta;
+                let mut k = PUNY_BASE;
+                loop {
+                    let t = if k <= bias {
+                        PUNY_TMIN
+                    } else if k >= bias + PUNY_TMAX {
+                        PUNY_TMAX
+                    } else {
+                        k - bias
+                    };
+                    if q < t {
+                        break;
+                    }
+                    out.push(puny_digit(t + (q - t) % (PUNY_BASE - t)));
+                    q = (q - t) / (PUNY_BASE - t);
+                    k += PUNY_BASE;
+                }
+                out.push(puny_digit(q));
+                bias = puny_adapt(delta, h + 1, h == basic.len() as u64);
+                delta = 0;
+                h += 1;
+            }
+        }
+        delta += 1;
+        n += 1;
+    }
+    Ok(out)
+}
+
+/// 把 IDNA 里的各种「点」归一为 ASCII 句点。
+///
+/// 中文输入法常见全角句号（U+3002）/全角句点（U+FF0E）/半角日文句点（U+FF61）；
+/// 不归一化会把整串当成一个标签，punycode 编出来的是一个谁都不认识的域名。
+fn normalize_dots(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{3002}' | '\u{FF0E}' | '\u{FF61}' => '.',
+            _ => c,
+        })
+        .collect()
+}
+
 /// 按 DNS 线格式编码域名（长度字节 = 编码后**字节数**）。
 ///
-/// 非 ASCII 标签走 punycode（`xn--`）——这里对中文标签做最小实现：
-/// 实际工程里应当用 IDNA 库，但本工具诊断的都是 `www.baidu.com` 这类
-/// ASCII 域名；非 ASCII 直接判非法比悄悄编码错更安全（Python 版走
-/// `str.encode("idna")`，此处显式不支持并给出清晰错误）。
+/// 非 ASCII 标签走 IDNA → punycode（`xn--` 前缀），与 Python 版
+/// `str.encode("idna")` 的主路径对齐（小写化 + punycode；不做 NFC 归一化）。
+///
+/// 两处必须显式校验的边界：
+/// - 单标签 ≤ 63 字节（长度字节只有 6 bit）；
+/// - **全名线格式 ≤ 255 字节**——只校验单标签是不够的，4 个 63 字节标签
+///   拼起来就是 257 字节，协议栈会拒绝但错误信息通常很含糊。
 pub fn encode_qname(host: &str) -> Result<Vec<u8>, DnsError> {
-    let trimmed = host.trim().trim_end_matches('.');
+    let normalized = normalize_dots(host.trim());
+    let trimmed = normalized.trim_end_matches('.');
     if trimmed.is_empty() {
         return Err(DnsError::InvalidLabel(host.to_string()));
     }
     let mut out = Vec::new();
     for label in trimmed.split('.') {
-        if !label.is_ascii() {
-            return Err(DnsError::InvalidLabel(format!(
-                "{label}（非 ASCII 域名需 punycode，本版未实现）"
-            )));
+        if label.is_empty() {
+            return Err(DnsError::InvalidLabel(format!("{host:?} 含空标签")));
         }
-        let bytes = label.as_bytes();
+        let wire_label = if label.is_ascii() {
+            label.to_ascii_lowercase()
+        } else {
+            // 非 ASCII：IDNA 把标签转成 `xn--` + punycode。
+            let encoded = punycode_encode(label)?;
+            format!("xn--{encoded}")
+        };
+        let bytes = wire_label.as_bytes();
         if bytes.is_empty() {
             return Err(DnsError::InvalidLabel(label.to_string()));
         }
-        if bytes.len() > 63 {
+        if bytes.len() > MAX_LABEL_BYTES {
             return Err(DnsError::InvalidLabel(format!(
-                "{label}（标签 {} 字节，超过 63）",
+                "{label}（编码后 {} 字节，超过 {MAX_LABEL_BYTES}）",
                 bytes.len()
+            )));
+        }
+        // 编码后可能出现非 ASCII 字符（理论上不会；punycode 只产出 ASCII），
+        // 这里再兜一次，避免把非法字节写进报文。
+        if !bytes.is_ascii() {
+            return Err(DnsError::InvalidLabel(format!(
+                "{label}（punycode 编码结果含非 ASCII 字符）"
             )));
         }
         out.push(bytes.len() as u8);
         out.extend_from_slice(bytes);
     }
     out.push(0);
+    if out.len() > MAX_NAME_WIRE_BYTES {
+        return Err(DnsError::InvalidLabel(format!(
+            "{host}（全名线格式 {} 字节，超过 {MAX_NAME_WIRE_BYTES}）",
+            out.len()
+        )));
+    }
     Ok(out)
 }
 
@@ -211,6 +362,20 @@ pub fn query_with(
     query_with_txid(host, server, timeout, qtype, attempts, rand_u16())
 }
 
+/// 解析 DNS 服务器地址（统一按 53 端口）。
+///
+/// 先解析 IP 再拼端口：`format!("{server}:53")` 对 IPv6 会得到
+/// `2001:4860:4860::8888:53`——那是一个合法 IPv6 地址但没有端口，
+/// SocketAddr 解析必然失败，用户填 IPv6 DNS 服务器时只会看到
+/// 含糊的「地址非法」。SocketAddr::new 对 v4/v6 都正确。
+fn parse_server_addr(server: &str) -> Result<SocketAddr, DnsError> {
+    let ip: IpAddr = server
+        .trim()
+        .parse()
+        .map_err(|e| DnsError::Malformed(format!("DNS 服务器地址非法: {server} ({e})")))?;
+    Ok(SocketAddr::new(ip, 53))
+}
+
 /// 指定 txid 的版本（测试注入固定值，避免随机性）。
 pub fn query_with_txid(
     host: &str,
@@ -221,9 +386,7 @@ pub fn query_with_txid(
     txid: u16,
 ) -> Result<Vec<String>, DnsError> {
     let packet = build_query(txid, host, qtype)?;
-    let addr: SocketAddr = format!("{server}:53")
-        .parse()
-        .map_err(|e| DnsError::Malformed(format!("DNS 服务器地址非法: {server} ({e})")))?;
+    let addr = parse_server_addr(server)?;
     let socket = UdpSocket::bind(("0.0.0.0", 0))
         .map_err(|e| DnsError::Malformed(format!("无法创建 UDP 套接字: {e}")))?;
     let dur = Duration::from_secs_f64(timeout.max(0.1));
@@ -363,15 +526,104 @@ mod tests {
             encode_qname(&long),
             Err(DnsError::InvalidLabel(_))
         ));
-        // 非 ASCII：显式拒绝而不是写出非法报文
-        assert!(matches!(
-            encode_qname("中文.com"),
-            Err(DnsError::InvalidLabel(_))
-        ));
         // 空标签（连续点）
         assert!(matches!(
             encode_qname("a..b"),
             Err(DnsError::InvalidLabel(_))
+        ));
+        // 非 ASCII 编码后仍超长：IDNA 不是"绕过长度限制"的通道
+        let long_cjk = "中".repeat(200);
+        assert!(matches!(
+            encode_qname(&long_cjk),
+            Err(DnsError::InvalidLabel(_))
+        ));
+    }
+
+    #[test]
+    fn qname_encodes_non_ascii_labels_via_idna() {
+        // 已知 punycode 向量（IDNA 主路径：小写化 + punycode）
+        assert_eq!(punycode_encode("münchen").unwrap(), "mnchen-3ya");
+        assert_eq!(punycode_encode("bücher").unwrap(), "bcher-kva");
+        assert_eq!(punycode_encode("中文").unwrap(), "fiq228c");
+        assert_eq!(punycode_encode("例子").unwrap(), "fsqu00a");
+
+        // 线格式：xn-- + punycode，长度字节 = 字节数（不是字符数）
+        let q = encode_qname("例子.com").unwrap();
+        assert_eq!(
+            q,
+            {
+                let mut v = vec![11u8];
+                v.extend_from_slice(b"xn--fsqu00a");
+                v.extend_from_slice(&[3, b'c', b'o', b'm', 0]);
+                v
+            },
+            "非 ASCII 标签必须编码为 xn-- 形式且长度前缀按字节计"
+        );
+        // 与 ASCII 标签混排也要正确
+        let q2 = encode_qname("www.中文.com").unwrap();
+        assert_eq!(q2[0], 3);
+        assert_eq!(&q2[1..4], b"www");
+        assert_eq!(q2[4], 11, "中文 = xn--fiq228c，11 字节");
+    }
+
+    #[test]
+    fn qname_normalizes_idna_dots_and_ascii_case() {
+        // 中文输入法常见全角句号，必须当成标签分隔符
+        assert_eq!(
+            encode_qname("例子。com").unwrap(),
+            encode_qname("例子.com").unwrap()
+        );
+        assert_eq!(
+            encode_qname("例子．com").unwrap(),
+            encode_qname("例子.com").unwrap()
+        );
+        // DNS 大小写不敏感；与 Python idna codec 一致地小写化
+        assert_eq!(
+            encode_qname("EXAMPLE.COM").unwrap(),
+            encode_qname("example.com").unwrap()
+        );
+        assert_eq!(
+            encode_qname("例子.COM").unwrap(),
+            encode_qname("例子.com").unwrap()
+        );
+    }
+
+    #[test]
+    fn qname_rejects_name_longer_than_255_wire_bytes() {
+        // 单个标签都合法（63），但 4 个拼起来是 257 字节 > 255
+        let label = "a".repeat(63);
+        let host = [label.clone(), label.clone(), label.clone(), label].join(".");
+        let err = encode_qname(&host).unwrap_err();
+        assert!(
+            matches!(err, DnsError::InvalidLabel(_)),
+            "全名超 255 字节必须拒绝，实际: {err:?}"
+        );
+        // 3 个 63 字节标签 = 193 字节，合法
+        let ok_host = ["a".repeat(63), "b".repeat(63), "c".repeat(63)].join(".");
+        assert!(encode_qname(&ok_host).is_ok());
+    }
+
+    #[test]
+    fn ipv6_dns_server_address_is_accepted() {
+        // 回归：旧实现 format!("{server}:53") 对 IPv6 必然解析失败。
+        // 这里直接测地址解析（纯函数），不发真实报文。
+        assert_eq!(
+            parse_server_addr("::1").unwrap(),
+            SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 53)
+        );
+        assert_eq!(
+            parse_server_addr("2001:4860:4860::8888").unwrap(),
+            SocketAddr::new(IpAddr::V6("2001:4860:4860::8888".parse().unwrap()), 53)
+        );
+        // 前后空白容忍
+        assert_eq!(
+            parse_server_addr(" 223.5.5.5 ").unwrap(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(223, 5, 5, 5)), 53)
+        );
+        // 非 IP 仍然报「地址非法」
+        assert!(matches!(
+            parse_server_addr("not-an-ip"),
+            Err(DnsError::Malformed(_))
         ));
     }
 
