@@ -41,12 +41,15 @@ MAC 随机化与公寓/企业 AP 授权冲突、NCSI 探测配置被改——任
 
 ### 安装
 
-- **安装包**：`app-rs` 下 `npx tauri build` 产出 NSIS 安装器（`src-tauri/target/release/bundle/nsis/`），
-  可选安装位置、桌面快捷方式、开机自启，默认**便携模式**（数据存安装目录 `data\`，整体拷贝即迁移），
-  自动写入卸载信息（卸载不删除用户数据）
-- **便携使用**：直接运行 `SysKit.exe` 即可（无 data 目录时数据回退 `%APPDATA%`）
+- **下载**：最新安装包见 [Releases](https://github.com/Z-Yang01/SysKit/releases)
+  （`SysKit_<版本>_x64-setup.exe`，约 2.7 MB，Windows x64）
+- 安装器**支持覆盖升级**：装了新版直接覆盖程序文件，不卸载旧版；
+  设置、密码库、剪贴板历史都不受影响（数据在 `%APPDATA%\SysKit`）
+- 自行构建：`app-rs` 下 `npx tauri build`，产物在 `src-tauri/target/release/bundle/nsis/`
+- **便携使用**：直接运行 `SysKit.exe` 即可；exe 旁有 `data\` 目录即进入便携模式
+  （数据存该目录，整体拷贝即迁移），否则回退 `%APPDATA%`
 - 版本号见 [`app-rs/src-tauri/tauri.conf.json`](app-rs/src-tauri/tauri.conf.json) 的 `version`
-  （当前 1.2.0，窗口标题与设置页显示）
+  （窗口标题与设置页显示同一值）
 
 ### 侧栏六入口（v1.4 简约化）
 
@@ -73,9 +76,9 @@ npx tauri dev      # 开发运行
 npx tauri build    # 产出 NSIS 安装包
 ```
 
-- 后端 Rust 单测 850+ 例，前端 vitest 610+ 例；真机冒烟驱动见 `tools/test_smoke_real_rs.py`
+- 后端 Rust 单测 **878 例**，前端 vitest **644 例**（2026-10-20）；真机冒烟驱动见 `tools/test_smoke_real_rs.py`
   （人工在场 + `--run-real`，详见脚本头注释）
-- 夜间无人值守会话的作业规范见 `UNATTENDED.md`
+
 
 ## Python 版（已退役）
 

@@ -9,6 +9,7 @@ import time
 import base64
 import os
 import sys
+import tempfile
 
 TAGS = {
     'ov': '🏠 概览 / 网络监控',
@@ -111,7 +112,8 @@ class Session:
 
     def shot(self, name):
         shot = self.call("Page.captureScreenshot", {"format": "png"})
-        tmp = os.environ.get('TEMP', r'C:\Users\y3030\AppData\Local\Temp')
+        # 不写死任何本机路径（用户名会随机器不同，也不该出现在仓库里）
+        tmp = os.environ.get('TEMP') or tempfile.gettempdir()
         path = os.path.join(tmp, f'ui_{name}.png')
         with open(path, 'wb') as f:
             f.write(base64.b64decode(shot["data"]))
