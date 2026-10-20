@@ -85,7 +85,7 @@ function migrateLegacyPage(idx: number): { page: string; tab?: { kind: "tool" | 
 
 const NAV_ITEMS = [
   { key: "overview", label: "🏠 概览 / 网络监控" },
-  { key: "diagnose", label: "🔍 诊断 / 修复" },
+  { key: "diagnose", label: "🌐 网络" },
   { key: "toolbox", label: "🧰 工具" },
   { key: "system", label: "💼 系统" },
   { key: "vault", label: "🔒 密码库" },

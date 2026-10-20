@@ -218,7 +218,7 @@ function DnsSpeedPanel() {
                 <span>
                   {applyablePreset(rec.name)
                     ? "测速推荐可直接应用为系统 DNS（改前自动备份，dns_auto 可恢复）。"
-                    : "可到「诊断 / 修复」页手动改 DNS（该服务器暂无一键预设，仅阿里/腾讯/114 支持）。"}
+                    : "可到「网络」页手动改 DNS（该服务器暂无一键预设，仅阿里/腾讯/114 支持）。"}
                 </span>
                 {applyablePreset(rec.name) && (
                   <Button

@@ -575,21 +575,26 @@ pub fn parse_custom_commands(raw: &str) -> Vec<CustomCommand> {
 /// 自定义命令照旧走 custom:*。
 pub fn builtin_actions() -> Vec<PaletteAction> {
     // v1.4 简约化：侧栏 6 页（clipboard 并入工具页、日志并入设置页的子 tab）
-    let nav_pages: [(&str, &str); 6] = [
-        ("overview", "🏠 概览 / 网络监控"),
-        ("diagnose", "🔍 诊断 / 修复"),
-        ("toolbox", "🧰 工具"),
-        ("system", "💼 系统"),
-        ("vault", "🔒 密码库"),
-        ("settings", "⚙ 设置"),
+    // 第三列是额外关键词：改了显示名（诊断/修复 -> 网络）后，老用户按
+    // 「诊断」「修复」搜索仍要能找到这页
+    let nav_pages: [(&str, &str, &[&str]); 6] = [
+        ("overview", "🏠 概览 / 网络监控", &["网络"]),
+        ("diagnose", "🌐 网络", &["诊断", "修复", "体检"]),
+        ("toolbox", "🧰 工具", &[]),
+        ("system", "💼 系统", &[]),
+        ("vault", "🔒 密码库", &["密码", "账号"]),
+        ("settings", "⚙ 设置", &["配置", "选项"]),
     ];
     let mut out: Vec<PaletteAction> = nav_pages
         .iter()
-        .map(|(key, label)| PaletteAction {
+        .map(|(key, label, extra)| PaletteAction {
             id: format!("nav:{key}"),
             label: format!("打开 {label}"),
             hint: "页面".into(),
-            keywords: vec!["goto".into(), "页面".into(), "打开".into()],
+            keywords: vec!["goto".into(), "页面".into(), "打开".into()]
+                .into_iter()
+                .chain(extra.iter().map(|s| s.to_string()))
+                .collect(),
             source: "页面".into(),
         })
         .collect();
