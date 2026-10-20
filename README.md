@@ -76,7 +76,7 @@ npx tauri dev      # 开发运行
 npx tauri build    # 产出 NSIS 安装包
 ```
 
-- 后端 Rust 单测 **878 例**，前端 vitest **644 例**（2026-10-20）；真机冒烟驱动见 `tools/test_smoke_real_rs.py`
+- 后端 Rust 单测 **878 例**，前端 vitest **654 例**（2026-10-20）；真机冒烟驱动见 `tools/test_smoke_real_rs.py`
   （人工在场 + `--run-real`，详见脚本头注释）
 
 

@@ -22,6 +22,10 @@ import {
   humanBytes,
   peakPoint,
   pushTick,
+  ema,
+  freshness,
+  smoothSeries,
+  smoothTick,
   rateViewFromBuckets,
   rateViewFromTicks,
   seriesPoints,
@@ -391,5 +395,100 @@ describe("filterEventsByTime 时间范围过滤", () => {
   it("解析失败的 ts 保守保留（诚实展示不丢行）", () => {
     const bad: EventItem = { ts: "not-a-date", state: "ok", detail: "" };
     expect(filterEventsByTime([bad], 60, now)).toEqual([bad]);
+  });
+});
+
+/**
+ * 速率平滑（EMA）。
+ *
+ * 后端每秒给的是「上一秒的字节增量」，直接显示会疯狂闪烁；这类显示问题
+ * 用户第一反应是"软件坏了"。锁住三件事：首值不被削、能收敛到真值、
+ * 只平滑速率字段（cpu/mem 是区间平均，再平滑会迟滞）。
+ */
+describe("速率平滑 ema / smoothTick", () => {
+  it("首值直接采用，不被 0 拖低", () => {
+    expect(ema(null, 1234)).toBe(1234);
+    expect(ema(undefined, 88)).toBe(88);
+    expect(ema(NaN, 50)).toBe(50);
+    expect(ema(-1, 50)).toBe(50);
+  });
+
+  it("按 α 混合，且能收敛到真值", () => {
+    expect(ema(0, 100, 0.5)).toBe(50);
+    let v = 0;
+    for (let i = 0; i < 20; i++) v = ema(v, 100, 0.35);
+    expect(v).toBeGreaterThan(99);
+    // 掉到 0 时同样会衰减，不会永远挂着旧值
+    for (let i = 0; i < 20; i++) v = ema(v, 0, 0.35);
+    expect(v).toBeLessThan(1);
+  });
+
+  it("非法输入夹到 0，不产生 NaN/负数", () => {
+    expect(ema(10, NaN)).toBe(ema(10, 0));
+    expect(ema(10, -5)).toBe(ema(10, 0));
+    // 非有限值（Infinity）同样按 0 处理：宁可显示平滑后的旧值，也不能把
+    // Infinity/NaN 送进 toFixed 或坐标轴
+    expect(ema(10, Number.POSITIVE_INFINITY)).toBe(ema(10, 0));
+    expect(Number.isFinite(ema(10, Number.POSITIVE_INFINITY))).toBe(true);
+  });
+
+  it("smoothSeries 与逐点 ema 完全一致", () => {
+    const raw = [0, 1000, 0, 5000, 200, 0];
+    const got = smoothSeries(raw, 0.35);
+    let prev: number | undefined;
+    const want = raw.map((v) => {
+      const s = ema(prev, v, 0.35);
+      prev = s;
+      return s;
+    });
+    expect(got).toEqual(want);
+    expect(got).toHaveLength(raw.length);
+  });
+
+  it("smoothTick 只动速率，不动 cpu/mem/累计流量", () => {
+    const prev: Tick = {
+      ts: 1, down: 1000, up: 1000, cpu: 10, mem: 20, mem_used_gb: 8,
+      disk_r: 1000, disk_w: 1000, today_sent: 5, today_recv: 6,
+    };
+    const next: Tick = { ...prev, down: 0, up: 0, cpu: 99, mem: 88, disk_r: 0, disk_w: 0 };
+    const s = smoothTick(prev, next, 0.5);
+    expect(s.cpu).toBe(99);   // 不平滑
+    expect(s.mem).toBe(88);
+    expect(s.today_sent).toBe(5);
+    expect(s.down).toBe(500); // 平滑
+    expect(s.up).toBe(500);
+    expect(s.disk_r).toBe(500);
+  });
+});
+
+/** 数据新鲜度：数字停住而不提示，用户会把卡住的读数当成真实网速。 */
+describe("freshness", () => {
+  const now = 1_700_000_000_000;
+
+  it("无数据时不谎报新鲜", () => {
+    expect(freshness(null, now)).toEqual({ text: "等待数据…", stale: false });
+    expect(freshness(undefined, now).stale).toBe(false);
+  });
+
+  it("刚更新与几秒前", () => {
+    expect(freshness(now, now).text).toBe("刚刚更新");
+    expect(freshness(now - 1000, now).text).toBe("刚刚更新");
+    expect(freshness(now - 5000, now)).toEqual({ text: "5 秒前", stale: false });
+  });
+
+  it("超过 10 秒判为陈旧（漏 1–2 拍不算）", () => {
+    expect(freshness(now - 10_000, now).stale).toBe(false);
+    expect(freshness(now - 11_000, now).stale).toBe(true);
+  });
+
+  it("一分钟以上按分钟显示", () => {
+    expect(freshness(now - 90_000, now)).toEqual({ text: "1 分钟前", stale: true });
+    expect(freshness(now - 600_000, now).text).toBe("10 分钟前");
+  });
+
+  it("时间戳在将来（时钟回拨）按刚刚处理，不出现负数秒", () => {
+    const f = freshness(now + 30_000, now);
+    expect(f.text).toBe("刚刚更新");
+    expect(f.text.includes("-")).toBe(false);
   });
 });

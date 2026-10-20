@@ -27,7 +27,7 @@ import {
   type StartupSort,
   type StartupStatusFilter,
 } from "./startup";
-import { Badge, Button, Empty, Input, Segmented, Table, type Column } from "./ui";
+import { Badge, Button, Checkbox, Empty, Input, Segmented, Table, type Column } from "./ui";
 import { Select } from "./ui/select";
 import { Alert } from "./ui/alert";
 import { confirm } from "./ui/confirm";
@@ -64,6 +64,10 @@ export function ToolboxStartup() {
   // 枚举本身要读四个注册表位置 + 两个启动文件夹，几百毫秒起；没有加载态时
   // 点 🔄 完全没反馈，用户会以为按钮坏了（重复点还会并发枚举）
   const [loading, setLoading] = useState(false);
+  // 多选（key = location|name）：批量禁用是"清理启动项"最常见的用法，
+  // 逐条点确认太慢；只允许勾选可操作项，HKLM 项在没有管理员时不给勾
+  const [picked, setPicked] = useState<string[]>([]);
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -71,6 +75,7 @@ export function ToolboxStartup() {
       setList(await invoke<StartupList>("sk_startup_list"));
       // 成功后清掉旧错误，重试入口随 Empty 一起消失
       setLoadError("");
+      setPicked([]); // 重新枚举后旧选择可能已不存在
     } catch (e) {
       // 必须区分「还在加载」和「加载失败」：失败若也停在 list=null，
       // 界面会永远显示"正在枚举启动项…"骗人（toast 提示 3 秒后就没了）。
@@ -134,12 +139,109 @@ export function ToolboxStartup() {
     [isAdmin, load, toast],
   );
 
+
+  const keyOf = (r: StartupItem) => `${r.location}|${r.name}`;
+
+  /** 批量启用/禁用：逐条串行执行（注册表写入不能并发），失败项汇总报告。 */
+  const batch = useCallback(
+    (enable: boolean) => {
+      // 从**全量**列表取目标，不是当前筛选结果：用户可能先勾了几项再改筛选，
+      // 用 rows 会让"已选 5 项"实际只执行其中 2 项，且没有任何提示
+      const all = list?.rows ?? [];
+      const targets = all.filter(
+        (r) => picked.includes(keyOf(r)) && canToggle(r, isAdmin).ok && r.enabled !== enable,
+      );
+      if (targets.length === 0) {
+        toast.info(
+          picked.length === 0
+            ? "先勾选要操作的启动项"
+            : `选中的 ${picked.length} 项都已经${enable ? "启用" : "禁用"}，无需操作`,
+        );
+        return;
+      }
+      confirm({
+        title: `${enable ? "启用" : "禁用"} ${targets.length} 个启动项`,
+        width: 560,
+        content: (
+          <div className="flex flex-col gap-1">
+            <span>
+              将对以下 {targets.length} 项执行{enable ? "启用" : "禁用"}：
+            </span>
+            <span className="sk-hint max-h-40 overflow-y-auto">
+              {targets.map((t) => `${t.name}（${t.location}）`).join("、")}
+            </span>
+            <span className="sk-hint">
+              写回注册表/启动文件夹前会自动备份，可逐条恢复。
+            </span>
+          </div>
+        ),
+        okText: enable ? "全部启用" : "全部禁用",
+        danger: !enable,
+        onOk: async () => {
+          setBatchBusy(true);
+          let ok = 0;
+          const failed: string[] = [];
+          try {
+            for (const t of targets) {
+              try {
+                await invoke<string>("sk_startup_set", {
+                  location: t.location,
+                  name: t.name,
+                  enable,
+                });
+                ok += 1;
+              } catch (e) {
+                failed.push(`${t.name}：${String(e)}`);
+              }
+            }
+          } finally {
+            setBatchBusy(false);
+          }
+          await load();
+          if (failed.length === 0) {
+            toast.success(`已${enable ? "启用" : "禁用"} ${ok} 项`);
+          } else {
+            // 逐条列出失败项：批量操作最怕"部分成功但不知道哪几条"
+            toast.error(
+              `${ok} 项成功，${failed.length} 项失败：${failed.slice(0, 3).join("；")}` +
+                (failed.length > 3 ? " …" : ""),
+            );
+          }
+        },
+      });
+    },
+    [isAdmin, list, load, picked, toast],
+  );
+
+  const operable = useMemo(() => rows.filter((r) => canToggle(r, isAdmin).ok), [rows, isAdmin]);
+
   const lockedCount = useMemo(
     () => (isAdmin ? 0 : (list?.rows ?? []).filter((r) => !canToggle(r, isAdmin).ok).length),
     [list, isAdmin],
   );
 
   const columns: Column<StartupItem>[] = [
+    {
+      title: "",
+      key: "pick",
+      width: 36,
+      render: (_: unknown, r) => {
+        // 不可操作的项（无管理员时的 HKLM）不给勾：勾了也只会批量失败
+        if (!canToggle(r, isAdmin).ok) return null;
+        const k = keyOf(r);
+        return (
+          <span onClick={(e) => e.stopPropagation()}>
+            <Checkbox
+              checked={picked.includes(k)}
+              onChange={() =>
+                setPicked((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k]))
+              }
+              aria-label={`选择 ${r.name}`}
+            />
+          </span>
+        );
+      },
+    },
     {
       title: "名称",
       dataIndex: "name",
@@ -194,7 +296,7 @@ export function ToolboxStartup() {
             variant="ghost"
             size="sm"
             loading={busyKey === `${r.location}|${r.name}`}
-            disabled={busyKey !== ""}
+            disabled={busyKey !== "" || batchBusy}
             onClick={() => toggle(r)}
           >
             {r.enabled ? "禁用" : "启用"}
@@ -257,6 +359,37 @@ export function ToolboxStartup() {
           }}
           options={STARTUP_SORTS.map((s) => ({ value: s.value, label: s.label }))}
         />
+        {/* 批量：勾选是"一次性清理启动项"的主路径，逐条点确认太慢 */}
+        {operable.length > 0 && (
+          <>
+            <Button
+              size="sm"
+              disabled={batchBusy || loading || picked.length === operable.length}
+              onClick={() => setPicked(operable.map(keyOf))}
+            >
+              全选（{operable.length}）
+            </Button>
+            <Button size="sm" loading={batchBusy} disabled={picked.length === 0 || loading} onClick={() => batch(true)}>
+              批量启用
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={batchBusy || picked.length === 0 || loading}
+              onClick={() => batch(false)}
+            >
+              批量禁用
+            </Button>
+            {picked.length > 0 && (
+              <span className="flex items-center gap-1">
+                <span className="sk-hint">已选 {picked.length} 项</span>
+                <Button size="sm" variant="ghost" onClick={() => setPicked([])}>
+                  取消
+                </Button>
+              </span>
+            )}
+          </>
+        )}
       </div>
 
       {rows.length === 0 ? (

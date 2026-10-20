@@ -261,6 +261,10 @@ export function CleanupPanel() {
   const [cleaning, setCleaning] = useState(false);
   const [scanError, setScanError] = useState("");
   const [result, setResult] = useState<CleanRunResult | null>(null);
+  // 上次清理记录：清理完只看一眼"释放了多少"，下次进来就忘了。
+  // 存在组件状态里（Tabs 保活，切页不丢）；**重启应用后归零**——
+  // 要跨重启得往设置里加键，先不做（设置项会被写进设置页，为一个只读展示不值当）。
+  const [lastRun, setLastRun] = useState<{ at: string; freed: number; deleted: number } | null>(null);
 
   const doScan = useCallback(async () => {
     setScanning(true);
@@ -308,6 +312,11 @@ export function CleanupPanel() {
         try {
           const r = await invoke<CleanRunResult>("sk_clean_run", { keys: selected });
           setResult(r);
+          setLastRun({
+            at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+            freed: r.outcome?.freed ?? 0,
+            deleted: r.outcome?.deleted ?? 0,
+          });
           const skipped = (r.outcome?.failed ?? 0) > 0;
           if (skipped) toast.info(cleanResultSummary(r));
           else toast.success(cleanResultSummary(r));
@@ -350,6 +359,13 @@ export function CleanupPanel() {
         <span className="sk-hint">
           {scan ? `合计可清理 ${scan.total_human}` : scanError ? "扫描失败" : "正在扫描…"}
         </span>
+        {lastRun && (
+          <UiTooltip title={`上次清理于今天 ${lastRun.at}，删除 ${lastRun.deleted} 个文件`}>
+            <span className="sk-hint">
+              上次清理 {lastRun.at} · 释放 {humanSize(lastRun.freed)}
+            </span>
+          </UiTooltip>
+        )}
         {selected.length > 0 && (
           <Badge tone="warn">
             已选 {selected.length} 项 · 约 {humanSize(selectedBytes(rows, selected))}

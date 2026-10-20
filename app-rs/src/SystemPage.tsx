@@ -34,7 +34,7 @@ import {
   type TopProcs,
   type WifiInfo,
 } from "./system";
-import { humanBytes as humanBytesPlain } from "./dashboard";
+import { ema, humanBytes as humanBytesPlain } from "./dashboard";
 import { Badge, Card, Empty, Table, type Column } from "./ui";
 import { Tabs } from "./ui/tabs";
 
@@ -259,6 +259,9 @@ function PerfPanel() {
   const [mem, setMem] = useState<number[]>([]);
   const [diskR, setDiskR] = useState<number[]>([]);
   const [diskW, setDiskW] = useState<number[]>([]);
+  // 磁盘读写也是「上一秒的增量」，直接展示会每秒乱跳；用 EMA 平滑后再画/显示
+  const [diskNow, setDiskNow] = useState({ r: 0, w: 0 });
+  const diskSmooth = useRef<{ r: number; w: number } | null>(null);
   const [wifi, setWifi] = useState<WifiInfo | null>(null);
   const [wifiFailed, setWifiFailed] = useState(false);
   const [procs, setProcs] = useState<TopProcs | null>(null);
@@ -290,12 +293,17 @@ function PerfPanel() {
         setMem([]);
         setDiskR([]);
         setDiskW([]);
+        diskSmooth.current = null; // 断流后重新起算，别把旧值当基准
       }
       lastTickAt.current = now;
       setCpu((s) => pushSample(s, t.cpu));
       setMem((s) => pushSample(s, t.mem));
-      setDiskR((s) => pushSample(s, t.disk_r));
-      setDiskW((s) => pushSample(s, t.disk_w));
+      const dr = ema(diskSmooth.current?.r, t.disk_r);
+      const dw = ema(diskSmooth.current?.w, t.disk_w);
+      diskSmooth.current = { r: dr, w: dw };
+      setDiskR((s) => pushSample(s, dr));
+      setDiskW((s) => pushSample(s, dw));
+      setDiskNow({ r: dr, w: dw });
       setLast(t);
     }).then((f) => {
       un = f;
@@ -374,8 +382,8 @@ function PerfPanel() {
             <div className="text-xs text-sk-sub">磁盘读写 · 近 {windowMin} 分钟</div>
             <div className="mt-1.5 flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
-                <Badge tone="ok">读 {humanBytes(last?.disk_r ?? 0)}</Badge>
-                <Badge tone="warn">写 {humanBytes(last?.disk_w ?? 0)}</Badge>
+                <Badge tone="ok">读 {humanBytes(diskNow.r)}</Badge>
+                <Badge tone="warn">写 {humanBytes(diskNow.w)}</Badge>
                 <span className="sk-hint">峰值 {humanBytes(diskPeak)}</span>
               </div>
               <Spark values={diskR} color="var(--sk-ok)" height={28} />

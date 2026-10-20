@@ -9,7 +9,7 @@
  * v1.4 UI 迁移：脱离 AntD（Tabs tabBarExtraContent → ui Tabs right 插槽；
  * Radio.Group/Segmented/Table/Tag → ui 件）。
  */
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { EChart as ReactECharts } from "./EChart";
@@ -28,7 +28,9 @@ import {
   humanBps,
   humanBytes,
   peakPoint,
+  freshness,
   pushTick,
+  smoothTick,
   rateViewFromBuckets,
   rateViewFromTicks,
   seriesPoints,
@@ -47,6 +49,7 @@ import { AppTrafficCard } from "./AppTrafficCard";
 import { QualityCard } from "./QualityCard";
 import { Badge, Card, CardBody, CardHeader, CardTitle, Empty, Radio, Segmented, Table, type Column } from "./ui";
 import { Tabs } from "./ui/tabs";
+import { Tooltip as UiTooltip } from "./ui/tooltip";
 
 interface OverviewInit {
   tick: Tick | null;
@@ -214,6 +217,11 @@ const EventsCard = memo(function EventsCard({ events }: { events: EventItem[] })
 
 export function Dashboard({ dark }: { dark: boolean }) {
   const [tick, setTick] = useState<Tick | null>(null);
+  // 上一拍的**平滑值**：EMA 递推的基准（用 raw 会每拍重新起算，平滑失效）
+  const lastTickRef = useRef<Tick | null>(null);
+  // 1 秒时钟：只服务「最后更新于 N 秒前」这一行文案；tick 停了它还得继续走，
+  // 否则文案会冻结在「刚刚更新」，恰好掩盖了"数据已经停了"这件事
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [history, setHistory] = useState<Tick[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [ssids, setSsids] = useState<string[]>([]);
@@ -243,8 +251,10 @@ export function Dashboard({ dark }: { dark: boolean }) {
     try {
       const data = await invoke<OverviewInit>("sk_overview_init");
       if (data.tick) {
-        setTick(data.tick);
-        setHistory((h) => pushTick(h, data.tick as Tick));
+        const first = smoothTick(null, data.tick as Tick);
+        lastTickRef.current = first;
+        setTick(first);
+        setHistory((h) => pushTick(h, first));
       }
       setEvents(data.events ?? []);
       setSsids(data.known_ssids ?? []);
@@ -256,6 +266,13 @@ export function Dashboard({ dark }: { dark: boolean }) {
   useEffect(() => {
     void init();
   }, [init]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (!document.hidden) setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, []);
 
   // 本页两个 tab（ui Tabs keepMounted）：概览 pane 不可见时 tick 处理全部跳过
   // ——每秒 3 张图 setOption + 一轮 setState 是纯浪费；切回后序列出现时间空洞
@@ -270,8 +287,12 @@ export function Dashboard({ dark }: { dark: boolean }) {
       if (document.hidden) return; // 窗口不可见时不积累样本
       const t = ev.payload;
       t.ts = Date.now();
-      setTick(t);
-      setHistory((h) => pushTick(h, t));
+      // 速率平滑：后端给的是上一秒的瞬时增量，直接显示会让数字疯狂闪烁
+      // （下载一个网页就在几 MB/s 与 0 之间跳）。cpu/mem 不平滑，见 smoothTick 注释。
+      const s = smoothTick(lastTickRef.current, t);
+      lastTickRef.current = s;
+      setTick(s);
+      setHistory((h) => pushTick(h, s));
     });
     return () => {
       void un.then((f) => f());
@@ -476,6 +497,7 @@ export function Dashboard({ dark }: { dark: boolean }) {
     };
   }, [series, dark]);
 
+  const fresh = freshness(tick?.ts ?? null, nowMs);
   const currentState = tick ? "ok" : "offline";
   const st = stateLabel(currentState);
 
@@ -486,7 +508,15 @@ export function Dashboard({ dark }: { dark: boolean }) {
       <Card>
         <CardHeader>
           <CardTitle>实时速率</CardTitle>
-          <Badge tone={st.token === "ok" ? "ok" : st.token === "err" ? "err" : "warn"}>{st.text}</Badge>
+          <span className="flex items-center gap-2">
+            {/* 数据停住时不提示，用户会把"卡住的数字"当成真实网速 */}
+            <UiTooltip title="遥测每秒一拍；超过 10 秒没有新数据说明采样已暂停（窗口最小化或后端未响应）">
+              <span className={fresh.stale ? "text-xs text-sk-warn" : "sk-hint"}>
+                {fresh.stale ? `⚠ ${fresh.text}` : fresh.text}
+              </span>
+            </UiTooltip>
+            <Badge tone={st.token === "ok" ? "ok" : st.token === "err" ? "err" : "warn"}>{st.text}</Badge>
+          </span>
         </CardHeader>
         <div className="flex items-stretch gap-4 px-3.5 pb-3 pt-1">
           <div

@@ -83,7 +83,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.5.6_x64-setup.exe` | 2.68 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.6.0_x64-setup.exe` | 2.68 MB |
 
 **安装 = 升级，不再"卸载旧版"（2026-10-20）**：Tauri 原版 NSIS 在检测到旧版本时
 会弹一个选择页，且把「安装前卸载旧版本」设为**默认选中**——用户点「下一步」就先跑
@@ -227,6 +227,23 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
     扫描当前工作目录，属最坏那类静默错误）。
 12. **性能监控**：曲线卡片标注窗口长度（`SERIES_LEN` 180 点 × 1 秒 = 近 3 分钟），
     之前只画线不说时间，用户无从判断"这条线是多长时间"。
+
+**全面优化（v1.6.0，2026-10-20）**：
+
+1. **速率平滑**（`dashboard.ts::ema/smoothTick`，α=0.35 ≈ 3 秒时间常数）：
+   后端每秒给的是"上一秒的字节增量"，直接显示会在几 MB/s 与 0 之间狂跳，
+   曲线全是刺。概览页与系统页的**上下行/磁盘读写**统一走平滑值；
+   **cpu/mem 不平滑**——它们本来就是系统计数的区间平均，再平滑会迟滞，
+   反而看不清瞬时峰值。断流后重置基准，避免把旧值当起点。
+2. **数据新鲜度**（`freshness`）：卡片标题旁显示"刚刚更新 / N 秒前"，
+   超过 10 秒（漏 3 拍）转警告色。数字停住而不提示，用户会把卡住的读数
+   当成真实网速——这比显示错误更危险。
+3. **启动项批量操作**：勾选列（不可操作项不给勾）+「全选 / 批量启用 /
+   批量禁用」，逐条串行写注册表，失败项汇总报告。目标从**全量列表**取而非
+   当前筛选结果，避免"已选 5 项只执行了 2 项"这种静默偏差。
+4. **垃圾清理上次记录**：清理后显示「上次清理 HH:MM · 释放 X」，存在组件
+   状态里（Tabs 保活，切页不丢）；**重启归零**——跨重启要往设置 schema 加键，
+   为一个只读展示不值当，已在代码注释里写明这个取舍。
 
 新增 `sk_clip_save_as`：图片走 PNG、其它走文本，用 Win32 `GetSaveFileNameW`
 （带 `OFN_OVERWRITEPROMPT` 与 `OFN_NOCHANGEDIR`）。文本的默认文件名由内容生成并
@@ -535,7 +552,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.5.6_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.6.0_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -819,7 +836,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.5.6_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.6.0_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。

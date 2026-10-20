@@ -87,8 +87,73 @@ export function humanBps(bytesPerSec: number): string {
   return `${humanBytes(bytesPerSec)}/s`;
 }
 
-/** 断网时长格式化：<60 秒 → 「N 秒」；<60 分 → 「N分M秒」；否则「N.N 小时」。 */
-export function formatDuration(sec: number): string {
+/**
+ * 速率指数的平滑系数（EMA）。
+ *
+ * **为什么需要**：后端每秒给出的是「上一秒的字节增量」，是瞬时值——下载
+ * 一个网页会在几 MB/s 与 0 之间来回跳，界面上就是数字疯狂闪烁、曲线全是刺。
+ * Windows 任务管理器同样做了平滑，用户对"数字稳、趋势真"的预期来自那里。
+ *
+ * α=0.35 时，约 3 拍（3 秒）走完 70% 的差距、6 拍走完 92%：既压住抖动，
+ * 又能在开关下载时明显感到"上去了/下来了"。
+ * **只平滑速率类**（up/down/disk），不平滑 cpu/mem 百分比——
+ * 那两个原本就是系统计数的区间平均，再平滑会迟滞，反而看不清瞬时峰值。
+ */
+export const RATE_EMA_ALPHA = 0.35;
+
+/** 单点 EMA：首值直接采用（prev 为空/非法时），否则按 α 混合。 */
+export function ema(prev: number | null | undefined, next: number, alpha = RATE_EMA_ALPHA): number {
+  const n = Number.isFinite(next) ? Math.max(0, next) : 0;
+  if (prev === null || prev === undefined || !Number.isFinite(prev) || prev < 0) return n;
+  const a = Math.min(1, Math.max(0, alpha));
+  return prev + (n - prev) * a;
+}
+
+/** 对整条序列逐点平滑（图表用；首点直取）。 */
+export function smoothSeries(values: number[], alpha = RATE_EMA_ALPHA): number[] {
+  const out: number[] = [];
+  let prev: number | undefined;
+  for (const v of values) {
+    const s = ema(prev, v, alpha);
+    out.push(s);
+    prev = s;
+  }
+  return out;
+}
+
+/**
+ * 把一个 tick 的速率类字段替换为平滑值（不改入参）。
+ * `prev` 是上一拍的 tick（未平滑即可——平滑值会被重新算，等价于递推）。
+ */
+export function smoothTick(prev: Tick | null | undefined, t: Tick, alpha = RATE_EMA_ALPHA): Tick {
+  return {
+    ...t,
+    up: ema(prev?.up, t.up, alpha),
+    down: ema(prev?.down, t.down, alpha),
+    disk_r: ema(prev?.disk_r, t.disk_r, alpha),
+    disk_w: ema(prev?.disk_w, t.disk_w, alpha),
+  };
+}
+
+/**
+ * 数据新鲜度：把「最后一拍距现在多久」变成人能判断状态的一句话。
+ *
+ * 遥测每秒一拍，但窗口最小化、面板切走、后端卡死都会让数字停住。
+ * 数字停住而不提示，用户会以为"网速一直是这样"——比显示错误更危险。
+ * 判定阈值为 3 拍（10 秒）：漏 1–2 拍属正常抖动，不惊动用户。
+ */
+export function freshness(
+  tsMs: number | null | undefined,
+  nowMs: number,
+): { text: string; stale: boolean } {
+  if (!tsMs || !Number.isFinite(tsMs)) return { text: "等待数据…", stale: false };
+  const age = Math.max(0, Math.floor((nowMs - tsMs) / 1000));
+  if (age <= 1) return { text: "刚刚更新", stale: false };
+  if (age < 60) return { text: `${age} 秒前`, stale: age > 10 };
+  return { text: `${Math.floor(age / 60)} 分钟前`, stale: true };
+}
+
+/** 断网时长格式化：<60 秒 → 「N 秒」；<60 分 → 「N分M秒」；否则「N.N 小时」。 */export function formatDuration(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
   if (s === 0) return "—";
   if (s < 60) return `${s} 秒`;
