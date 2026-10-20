@@ -398,6 +398,24 @@ function SettingsPanel() {
 
   return (
     <div>
+      {/* 使用引导入口：首次启动弹过，但"什么时候想看"不由启动时机决定——
+          常驻一个入口，新功能上线的最初几周也有人能找到说明书 */}
+      <Alert
+        tone="info"
+        className="mb-2.5"
+        title="第一次使用，或想快速回顾核心用法？"
+      >
+        <span className="flex flex-wrap items-center gap-2">
+          <span>四步引导讲清：一键修复、命令面板、数据隐私。</span>
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={() => window.dispatchEvent(new CustomEvent("sk:show-onboarding"))}
+          >
+            查看使用引导
+          </Button>
+        </span>
+      </Alert>
       {unwired > 0 && (
         <Alert
           tone="info"

@@ -25,6 +25,7 @@ import { ToolboxQr } from "./ToolboxQr";
 import { SystemPage } from "./SystemPage";
 import { VaultPage } from "./VaultPage";
 import { SettingsView } from "./SettingsView";
+import { Onboarding, onboardingSeen } from "./Onboarding";
 import type { SettingsAll } from "./settingsPage";
 import { applyHotkeyEcho, type HotkeyHints } from "./settingsPage";
 import { applyTheme, palette, type Palette } from "./theme";
@@ -295,6 +296,18 @@ export function App() {
     localStorage.setItem("sk.settingsTab", settingsTab);
   }, [settingsTab]);
 
+  // 首次启动引导：localStorage 无标记即弹；设置页「查看使用引导」按钮
+  // 派发 sk:show-onboarding 重看
+  const [onboardingOpen, setOnboardingOpen] = useState(() => !onboardingSeen());
+  useEffect(() => {
+    const show = () => setOnboardingOpen(true);
+    window.addEventListener("sk:show-onboarding", show);
+    return () => window.removeEventListener("sk:show-onboarding", show);
+  }, []);
+  // 标记已看过由 Onboarding 内部统一处理（跳过/完成/X 都走同一出口），
+  // 这里只负责关 UI——职责分离，避免两处写同一状态
+  const closeOnboarding = () => setOnboardingOpen(false);
+
   const pages: Record<string, React.ReactNode> = {
     overview: <Dashboard dark={dark} />,
     diagnose: <Diagnose quickRequest={quickDiagRequest} />,
@@ -400,6 +413,8 @@ export function App() {
           </div>
         </div>
       </div>
+      {/* 首次启动引导（含设置页重看入口）：Modal 是全屏 fixed 遮罩，挂哪都行 */}
+      <Onboarding open={onboardingOpen} onClose={closeOnboarding} />
     </div>
   );
 }
