@@ -114,12 +114,22 @@ pub async fn sk_hosts_backup() -> Result<String, String> {
 #[tauri::command]
 pub async fn sk_ports_list() -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let ns = crate::w32::run_capture(&args(&["netstat", "-ano"]), 30)
-            .map_err(|e| format!("netstat 无法执行: {e}"))?;
-        // tasklist 失败不致命：只是进程名缺失
-        let tl = crate::w32::run_capture(&args(&["tasklist", "/fo", "csv", "/nh"]), 30)
-            .map(|o| o.stdout)
-            .unwrap_or_default();
+        // netstat 与 tasklist 并行跑：两者各占 0.3~0.8s 且互不依赖，
+        // 串行是两次子进程开销之和，并行端口页刷新近乎减半
+        let (ns, tl) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| crate::w32::run_capture(&args(&["netstat", "-ano"]), 30));
+            let b = scope.spawn(|| {
+                // tasklist 失败不致命：只是进程名缺失
+                crate::w32::run_capture(&args(&["tasklist", "/fo", "csv", "/nh"]), 30)
+                    .map(|o| o.stdout)
+                    .unwrap_or_default()
+            });
+            (
+                a.join().unwrap_or_else(|_| Err("netstat 线程失败".into())),
+                b.join().unwrap_or_else(|_| String::new()),
+            )
+        });
+        let ns = ns.map_err(|e| format!("netstat 无法执行: {e}"))?;
         let procs = crate::portscan::parse_tasklist_csv(&tl);
         let rows: Vec<serde_json::Value> = crate::portscan::parse_netstat(&ns.stdout)
             .into_iter()

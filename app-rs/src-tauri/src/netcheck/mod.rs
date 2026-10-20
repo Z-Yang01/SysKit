@@ -228,10 +228,39 @@ pub fn run_all(quick: bool) -> Vec<CheckResult> {
     // **快照只采一次**：多项检查都需要它，每项各采一次就是多次 PowerShell
     //（与 Python 版 `snap = take_snap()` 的做法一致）
     let snap = crate::snapshot::take();
-    all_checks()
+    let checks: Vec<&CheckDef> = all_checks()
         .iter()
         .filter(|c| !(quick && c.slow))
-        .map(|c| c.run(&snap))
+        .collect();
+    // **并行执行**：15 项里有 ping / HTTP / DNS / 服务查询等多个秒级操作，
+    // 串行耗时 = 各项之和（完整检测 10s+），并行 = 最慢一项（~2-3s）。
+    // CheckDef 是 &'static 静态表 + fn 指针（天然 Sync），Snapshot 只读借用，
+    // scope 线程零拷贝零移动；结果按原顺序收集——verdict 与前端表格的
+    // 顺序不因并行而变。
+    let joined: Vec<std::thread::Result<CheckResult>> = std::thread::scope(|scope| {
+        // 非 move 闭包：按引用借用 snap 与 checks（scope 保证不活得比它们久），
+        // 快照不需要为每个线程克隆
+        let mut handles = Vec::with_capacity(checks.len());
+        for c in &checks {
+            handles.push(scope.spawn(|| c.run(&snap)));
+        }
+        handles
+            .into_iter()
+            .map(|h| h.join())
+            .collect()
+    });
+    joined
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            r.unwrap_or_else(|_| {
+                // 线程 panic 兜底：单项异常不能把整轮诊断炸掉（unwrap 会 panic），
+                // 降级为 warn 并提示重查该项——与单项重查的口径一致
+                let c = checks[i];
+                CheckResult::new(c.id, c.name, WARN)
+                    .with_detail("检查线程异常退出，请对该项单独重查")
+            })
+        })
         .collect()
 }
 
