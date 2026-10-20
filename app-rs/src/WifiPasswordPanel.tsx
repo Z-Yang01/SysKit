@@ -64,6 +64,9 @@ export function WifiPasswordPanel() {
   // 在途互斥用 ref 而不是 state：interval 回调里读到的一定是最新值，
   // 不会因闭包捕获旧值而并发起两次 netsh
   const scanBusy = useRef(false);
+  // keepMounted 面板可见性守卫：切到别的工具 tab（窗口仍可见）时，
+  // document.hidden 是 false——必须看本面板自身是否 display:none
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const scan = useCallback(async () => {
     if (scanBusy.current) return;
@@ -93,7 +96,8 @@ export function WifiPasswordPanel() {
   useEffect(() => {
     if (!auto) return;
     const t = window.setInterval(() => {
-      if (!document.hidden) void scan();
+      if (document.hidden || panelRef.current?.offsetParent === null) return;
+      void scan();
     }, WIFI_SCAN_INTERVAL_MS);
     return () => window.clearInterval(t);
   }, [auto, scan]);
@@ -116,6 +120,7 @@ export function WifiPasswordPanel() {
   }, [loadProfiles]);
 
   return (
+    <div ref={panelRef}>
     <Tabs
       items={[
         {
@@ -152,6 +157,7 @@ export function WifiPasswordPanel() {
         },
       ]}
     />
+    </div>
   );
 }
 

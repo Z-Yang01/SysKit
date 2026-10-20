@@ -46,8 +46,12 @@ export const QualityCard = memo(function QualityCard({ dark }: { dark: boolean }
 
   useEffect(() => {
     void load(range);
-    // 桶粒度随 range 变化：60 分钟档每分钟一个新桶，60 秒刷一次即可跟随
-    const t = window.setInterval(() => void load(range), range === "minute" ? 60_000 : 300_000);
+    // 桶粒度随 range 变化：60 分钟档每分钟一个新桶，60 秒刷一次即可跟随；
+    // 窗口不可见时跳过——卡片在保活面板里，最小化后刷了也没人看
+    const t = window.setInterval(() => {
+      if (document.hidden) return;
+      void load(range);
+    }, range === "minute" ? 60_000 : 300_000);
     return () => window.clearInterval(t);
   }, [load, range]);
 

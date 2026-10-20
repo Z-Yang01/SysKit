@@ -6,7 +6,7 @@
  *
  * v1.4 UI 迁移：脱离 AntD，交互件来自 src/ui/（Toast/Confirm 由 ui 层承担）。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import {
@@ -658,6 +658,9 @@ export function SettingsView({
 
 /** 后台监控 / 自动修复的只读视图与"立即检查"。 */
 function MonitorPanel() {
+  // 面板不可见（切到别的设置 tab / 最小化）时停轮询：状态卡是只读展示，
+  // 没人看时每 5 秒读一次后端纯浪费
+  const panelRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
   const [state, setState] = useState<MonitorState | null>(null);
   const [preview, setPreview] = useState<MonitorPreview | null>(null);
@@ -677,7 +680,10 @@ function MonitorPanel() {
 
   useEffect(() => {
     void load();
-    const t = window.setInterval(() => void load(), 5000);
+    const t = window.setInterval(() => {
+      if (document.hidden || panelRef.current?.offsetParent === null) return;
+      void load();
+    }, 5000);
     return () => window.clearInterval(t);
   }, [load]);
 
@@ -685,7 +691,7 @@ function MonitorPanel() {
   const okState = state?.state === "ok";
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div ref={panelRef} className="flex flex-col gap-2.5">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={attention ? "warn" : okState ? "ok" : "neutral"}>
           {monitorStateLabel(state?.state ?? "")}

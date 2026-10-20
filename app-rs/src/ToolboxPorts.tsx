@@ -4,7 +4,7 @@
  * 两者放在一个页面里用 Tab 切换，与 Python 工具箱的分页结构对应。
  * 数据来自后端解析好的 `netstat -ano` / `tasklist` / `arp -a`。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import {
@@ -40,6 +40,9 @@ import { useToast } from "./ui/toast";
 
 function PortPanel() {
   const toast = useToast();
+  // keepMounted 面板的可见性守卫：切到别的工具 tab / 最小化时本面板 display:none，
+  // 每 5 秒的 netstat 子进程（实测约 0.5~1 秒）就是纯烧——必须停
+  const panelRef = useRef<HTMLDivElement>(null);
   const [rows, setRows] = useState<PortRow[]>([]);
   const [keyword, setKeyword] = useState("");
   const [listenOnly, setListenOnly] = useState(false);
@@ -65,7 +68,10 @@ function PortPanel() {
   // 每 5 秒自动刷新（与 Python 的 chk_auto 同语义）
   useEffect(() => {
     if (!auto) return;
-    const t = window.setInterval(() => void load(), 5000);
+    const t = window.setInterval(() => {
+      if (document.hidden || panelRef.current?.offsetParent === null) return;
+      void load();
+    }, 5000);
     return () => window.clearInterval(t);
   }, [auto, load]);
 
@@ -98,7 +104,7 @@ function PortPanel() {
   );
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div ref={panelRef} className="flex flex-col gap-2.5">
       <div className="flex flex-wrap items-center gap-2">
         <UiButton variant="primary" loading={busy} onClick={() => void load()}>
           刷新

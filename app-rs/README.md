@@ -83,7 +83,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.6.0_x64-setup.exe` | 2.68 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.6.1_x64-setup.exe` | 2.68 MB |
 
 **安装 = 升级，不再"卸载旧版"（2026-10-20）**：Tauri 原版 NSIS 在检测到旧版本时
 会弹一个选择页，且把「安装前卸载旧版本」设为**默认选中**——用户点「下一步」就先跑
@@ -244,6 +244,16 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
 4. **垃圾清理上次记录**：清理后显示「上次清理 HH:MM · 释放 X」，存在组件
    状态里（Tabs 保活，切页不丢）；**重启归零**——跨重启要往设置 schema 加键，
    为一个只读展示不值当，已在代码注释里写明这个取舍。
+5. **后台轮询可见性守卫**（本轮）：keepMounted 面板切走后组件仍活着，四处
+   轮询在没人看时白烧——
+   - 端口页 auto 每 5 秒一个 `netstat` 子进程（最贵，实测 0.5~1 秒/次）；
+   - WiFi 自动扫描每 8 秒一个 `netsh`（原来只查 `document.hidden`，
+     切到本页其他 tab 时窗口可见，守卫形同虚设）；
+   - 设置页后台监控状态每 5 秒读后端；网络质量卡 60s/300s 拉趋势。
+   统一为 `document.hidden || 面板 offsetParent===null` 双条件。
+   **教训**：给 QualityCard 加守卫时一段 Python 批量替换把文件写坏了
+   （内容变成 SettingsView），靠 `git checkout --` 恢复——多文件批量
+   替换后必须 `git diff` 逐文件核对再提交。
 
 新增 `sk_clip_save_as`：图片走 PNG、其它走文本，用 Win32 `GetSaveFileNameW`
 （带 `OFN_OVERWRITEPROMPT` 与 `OFN_NOCHANGEDIR`）。文本的默认文件名由内容生成并
@@ -552,7 +562,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.6.0_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.6.1_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -836,7 +846,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.6.0_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.6.1_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。
