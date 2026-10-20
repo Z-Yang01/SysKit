@@ -83,7 +83,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.7.0_x64-setup.exe` | 2.68 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.7.1_x64-setup.exe` | 2.68 MB |
 
 **安装 = 升级，不再"卸载旧版"（2026-10-20）**：Tauri 原版 NSIS 在检测到旧版本时
 会弹一个选择页，且把「安装前卸载旧版本」设为**默认选中**——用户点「下一步」就先跑
@@ -259,6 +259,21 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
    立即重拉榜单——刚被结束的进程还挂在榜上会误导，且 PID 可能被复用。
    `loadProcs` 抽成 useCallback 保持引用稳定，否则每秒重渲染换新函数，
    卡片的 memo 就白做了。
+
+**网络修复优化（v1.7.1，2026-10-20）**：
+
+1. **修复记录会话内持久化**（`repair.ts::loadRecords/saveRecords`）：记录此前
+   只存组件 state，刷新/切窗即丢——而排查恰恰发生在"刚才那下坏了"之后。
+   与诊断报告同一策略（sessionStorage，关窗即清）：记录可能带网络环境信息
+   （SSID/网关），不进 localStorage 这类持久存储。恢复时逐条校验字段，
+   脏数据剔除而不是整包丢弃。
+2. **一键修复摘要点名关键信息**：原来只报"成功 N 项，失败 M 项（详见修复
+   记录）"——`need_reboot` 的动作完全不提示（用户改完 DNS 以为立即生效），
+   失败项也得去记录面板翻。现在摘要带"其中 M 项需重启后生效"与失败项标题
+   （最多点名 2 个）。
+3. **批量重查失败留痕**：`recheckAllFailed` 单项重查失败原来只进
+   `console.warn`——用户永远看不到。现在写进修复记录（只进 console 的错误
+   等于没记录）。
 
 新增 `sk_clip_save_as`：图片走 PNG、其它走文本，用 Win32 `GetSaveFileNameW`
 （带 `OFN_OVERWRITEPROMPT` 与 `OFN_NOCHANGEDIR`）。文本的默认文件名由内容生成并
@@ -567,7 +582,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.7.0_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.7.1_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -851,7 +866,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.7.0_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.7.1_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。

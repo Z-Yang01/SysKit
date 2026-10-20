@@ -39,6 +39,8 @@ import {
   pushRecord,
   riskLabel,
   riskToken,
+  loadRecords,
+  saveRecords,
   saveReport,
   skipReason,
   sortBySeverity,
@@ -137,7 +139,8 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   /** 三个风险分组的展开集合（key = 动作 id，跨组唯一；各组展开行共用此集合）。 */
   const [openIds, setOpenIds] = useState<string[]>([]);
   /** 修复记录（手动/组合/后台监控自动修复共用，最新在前，上限 60 条）。 */
-  const [records, setRecords] = useState<RepairRecord[]>([]);
+  // 修复记录：会话内恢复（切页/刷新不丢，关窗即清——与诊断报告同一隐私口径）
+  const [records, setRecords] = useState<RepairRecord[]>(() => loadRecords());
   // 报告脱敏开关（v1.3）：默认关 = 导出/复制走分级脱敏；本机自用可开完整信息
   const [fullInfo, setFullInfo] = useState(false);
   // 只看未通过（v1.4 操作优化）：通过/提示行折叠，失败与警告顶上去
@@ -163,6 +166,11 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
 
   // 「上次结果」会话恢复 + 后台监控事件订阅。
   // Python 侧诊断结果与修复记录在窗口存活期间常驻（切页不丢）；这里组件切页
+  // 记录变化即写会话：pushRecord 的调用点有 8 处，集中在这里收口比逐处补写可靠
+  useEffect(() => {
+    if (records.length > 0) saveRecords(records);
+  }, [records]);
+
   // 会卸载，用 sessionStorage 恢复报告、用事件流续记自动修复（对齐
   // main_window._on_monitor_action/_on_monitor_suggest 的可见反馈）。
   useEffect(() => {
@@ -291,7 +299,10 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
       onOk: async () => {
         let ok = 0;
         let fail = 0;
-        // 复用组合修复的进度形态（卡片按钮同步转圈 + 进度条）
+        // 需重启与失败项要在摘要里点名——toast 3 秒就没了，"详见修复记录"
+        // 不能成为把关键信息埋起来的理由
+        let needReboot = 0;
+        const failedTitles: string[] = [];
         setComboRun({ key: "smart", title: "一键智能修复", total: acts.length, done: 0, current: "" });
         for (const a of acts) {
           setComboRun((r) => (r ? { ...r, current: a.title } : r));
@@ -309,10 +320,16 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
                 text: `${a.title} — ${clipText(out.message || (out.success ? "完成" : "失败"), 90)}`,
               }),
             );
-            if (out.success) ok += 1;
-            else fail += 1;
+            if (out.success) {
+              ok += 1;
+              if (out.need_reboot) needReboot += 1;
+            } else {
+              fail += 1;
+              failedTitles.push(a.title);
+            }
           } catch (e) {
             fail += 1;
+            failedTitles.push(a.title);
             setRecords((list) =>
               pushRecord(list, {
                 time: hhmmss(new Date()),
@@ -328,14 +345,17 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
         setComboRun(null);
         // 第四步：自动复检（快速档闭环）
         await refreshAfterCombo();
-        if (fail === 0)
-          toast.success(
-            `一键修复完成：成功 ${ok} 项，已自动复检`,
-          );
-        else
+        const rebootSuffix = needReboot > 0 ? `；其中 ${needReboot} 项需重启后生效` : "";
+        if (fail === 0) {
+          if (needReboot > 0) toast.info(`一键修复完成：成功 ${ok} 项${rebootSuffix}，已自动复检`);
+          else toast.success(`一键修复完成：成功 ${ok} 项，已自动复检`);
+        } else {
+          // 失败项直接点名（最多 2 个），别让用户去记录面板里翻
+          const names = failedTitles.slice(0, 2).join("、") + (failedTitles.length > 2 ? " 等" : "");
           toast.info(
-            `一键修复完成：成功 ${ok} 项，失败/跳过 ${fail} 项（详见修复记录），已自动复检`,
+            `一键修复完成：成功 ${ok} 项，失败/跳过 ${fail} 项（${names}）${rebootSuffix}，已自动复检`,
           );
+        }
       },
     });
   }, [report, data, busy, comboRun, diagBusy, paramValues, isAdmin, refreshAfterCombo, toast]);
@@ -367,8 +387,16 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
           );
           if (fresh.status === "pass") nowOk += 1;
         } catch (e) {
-          // 单项失败不中断批量（与单项重查同语义），结果行保持原状
+          // 单项失败不中断批量（与单项重查同语义），结果行保持原状；
+          // 但必须留痕——只进 console 的错误用户永远看不到
           console.warn(`重查 ${r.id} 失败`, e);
+          setRecords((list) =>
+            pushRecord(list, {
+              time: hhmmss(new Date()),
+              mark: "×",
+              text: `重查「${r.name}」— ${clipText(String(e), 90)}`,
+            }),
+          );
         }
       }
       if (nowOk > 0) toast.success(`重查完成：${failed.length} 项中 ${nowOk} 项已转为通过`);

@@ -23,7 +23,10 @@ import {
   needsConfirm,
   outcomeLevel,
   outcomeTag,
+  loadRecordsFrom,
   pushRecord,
+  RECORDS_STORAGE_KEY,
+  saveRecordsTo,
   riskLabel,
   riskToken,
   saveReportTo,
@@ -550,5 +553,53 @@ describe("maskSensitive（诊断报告脱敏 v1.3）", () => {
 
   it("port 数字不被误当 IPv4 打码", () => {
     expect(maskSensitive("端口 8080 与版本 1.2.3.4 混排")).toBe("端口 8080 与版本 *.*.*.* 混排");
+  });
+});
+
+/**
+ * 修复记录的会话存储：记录此前只存组件 state，刷新即丢——而排查恰恰发生在
+ * 「刚才那下坏了」之后。与诊断报告同一策略（sessionStorage，关窗即清）。
+ */
+describe("修复记录会话存储", () => {
+  const rec = (over: Partial<RepairRecord> = {}): RepairRecord => ({
+    time: "10:00:00",
+    mark: "√",
+    text: "刷新 DNS 缓存 — 完成",
+    ...over,
+  });
+
+  it("写入后可原样恢复", () => {
+    const store = new Map<string, string>();
+    const list = [rec(), rec({ mark: "×", text: "改静态 DNS — 拒绝访问" })];
+    saveRecordsTo(list, (k, v) => store.set(k, v));
+    expect(loadRecordsFrom((k) => store.get(k) ?? null)).toEqual(list);
+  });
+
+  it("空存储返回空数组而不是报错", () => {
+    expect(loadRecordsFrom(() => null)).toEqual([]);
+  });
+
+  it("脏数据一律回空：数组外结构、字段缺失都不当记录用", () => {
+    const store = new Map<string, string>([
+      ["k", JSON.stringify({ time: "10:00:00" })], // 对象不是数组
+      ["k2", JSON.stringify([{ time: "10:00:00" }])], // 缺 mark/text
+      ["k3", "{broken"],
+    ]);
+    const get = (k: string) => store.get(k) ?? null;
+    expect(loadRecordsFrom(get)).toEqual([]);
+    expect(loadRecordsFrom((k) => (k === "k2" ? store.get(k)! : null))).toEqual([]);
+    expect(loadRecordsFrom((k) => (k === "k3" ? store.get(k)! : null))).toEqual([]);
+  });
+
+  it("部分合法部分脏：合法的留下，脏的剔除", () => {
+    const store = new Map<string, string>();
+    // 必须存在真实键下：load 按 RECORDS_STORAGE_KEY 查，存错键等于没存
+    store.set(
+      RECORDS_STORAGE_KEY,
+      JSON.stringify([rec(), { nope: 1 }, rec({ mark: "×" })]),
+    );
+    const got = loadRecordsFrom((k) => store.get(k) ?? null);
+    expect(got).toHaveLength(2);
+    expect(got[1].mark).toBe("×");
   });
 });

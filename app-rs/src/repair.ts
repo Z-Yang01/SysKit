@@ -498,3 +498,51 @@ export function loadReport(): DiagReport | null {
   return loadReportFrom((k) => sessionStorage.getItem(k));
 }
 
+// ---------------- 修复记录的会话内保存 ----------------
+
+/**
+ * 修复记录的 sessionStorage 键（与诊断报告同一策略：关窗即清，不落盘）。
+ *
+ * 记录此前只存在组件 state 里，**刷新/切窗即丢**——而排查恰恰发生在
+ * "刚才那下坏了"之后。记录里可能带网络环境信息（SSID/网关），所以不进
+ * localStorage 这类持久存储，与报告的隐私口径保持一致。
+ */
+export const RECORDS_STORAGE_KEY = "syskit.repair.records.v1";
+
+export function saveRecordsTo(
+  list: RepairRecord[],
+  set: (key: string, value: string) => void,
+): void {
+  try {
+    set(RECORDS_STORAGE_KEY, JSON.stringify(list));
+  } catch {
+    // 同报告：便利性恢复，失败不打扰
+  }
+}
+
+/** 恢复记录；非数组/字段缺失一律回空（脏数据不如没有）。 */
+export function loadRecordsFrom(get: (key: string) => string | null): RepairRecord[] {
+  try {
+    const raw = get(RECORDS_STORAGE_KEY);
+    if (!raw) return [];
+    const obj = JSON.parse(raw) as unknown;
+    if (!Array.isArray(obj)) return [];
+    return obj.filter(
+      (r): r is RepairRecord =>
+        !!r && typeof r === "object" && typeof (r as RepairRecord).time === "string" &&
+        typeof (r as RepairRecord).mark === "string" && typeof (r as RepairRecord).text === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** 会话保存（webview 的 sessionStorage）。 */
+export function saveRecords(list: RepairRecord[]): void {
+  saveRecordsTo(list, (k, v) => sessionStorage.setItem(k, v));
+}
+
+/** 会话恢复（webview 的 sessionStorage）。 */
+export function loadRecords(): RepairRecord[] {
+  return loadRecordsFrom((k) => sessionStorage.getItem(k));
+}
