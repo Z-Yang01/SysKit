@@ -3518,7 +3518,7 @@ dependencies = [
 
 [[package]]
 name = "syskit-rs"
-version = "1.7.4"
+version = "1.7.5"
 dependencies = [
  "argon2",
  "base64 0.22.1",

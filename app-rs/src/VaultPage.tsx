@@ -872,13 +872,17 @@ export function VaultPage() {
 
   const accountColumns: Column<AccountRow>[] = [
     {
-      // 账号单元格两行：标题（label 优先）+ 主联系方式。
+      // 账号单元格两行：主行=用户名（用户口径「账号就是用户名」——label
+      // 优先的旧显示让人分不清"账号"和"用户名"哪列是登录名），别名（label）
+      // 只在与用户名不同时跟在后面；次行=主联系方式。
       // 联系方式不单开一列——980 宽窗口下右栏只有约 430px，6 列必然横向滚动；
       // 而"认账号"本来就该在一处看全（谁、用哪个邮箱/电话）。
       title: "账号",
       key: "title",
       render: (_: unknown, a) => {
         const s = contactSummary(contacts[a.id] ?? []);
+        const uname = a.username.trim();
+        const label = a.label.trim();
         const line = (kind: "email" | "phone", text: string, more: number) =>
           text ? (
             <UiTooltip title={`双击复制${contactKindLabel(kind)}`}>
@@ -901,9 +905,31 @@ export function VaultPage() {
           <div className="flex min-w-0 flex-col gap-0.5">
             <span className="inline-flex items-center gap-1">
               {a.is_favorite && <span>⭐</span>}
-              <span className="overflow-hidden text-ellipsis whitespace-nowrap">
-                {accountTitle(a)}
-              </span>
+              <UiTooltip
+                title={uname ? "双击复制用户名（不进剪贴板历史）" : undefined}
+              >
+                <span
+                  className={
+                    "overflow-hidden text-ellipsis whitespace-nowrap" +
+                    (uname ? " cursor-copy" : "")
+                  }
+                  onDoubleClick={
+                    uname
+                      ? (e) => {
+                          e.stopPropagation(); // 行双击 = 编辑；复制用户名不触发
+                          void invoke("sk_clip_copy_plain", { text: uname })
+                            .then(() => toast.success("用户名已复制"))
+                            .catch((err) => toast.error(String(err)));
+                        }
+                      : undefined
+                  }
+                >
+                  {uname || label || `账号 #${a.id}`}
+                </span>
+              </UiTooltip>
+              {label && uname && label !== uname && (
+                <span className="sk-hint shrink-0">（{label}）</span>
+              )}
             </span>
             {(s.email || s.phone) && (
               <span className="flex min-w-0 flex-col text-xs" style={{ color: "var(--sk-sub)" }}>
@@ -914,29 +940,6 @@ export function VaultPage() {
           </div>
         );
       },
-    },
-    {
-      title: "用户名",
-      key: "username",
-      render: (_: unknown, a) =>
-        a.username ? (
-          <UiTooltip title="双击复制用户名（不进剪贴板历史）">
-            <span
-              className="cursor-copy whitespace-nowrap"
-              onDoubleClick={(e) => {
-                // 行双击 = 编辑；用户名双击 = 复制——各归各，阻断冒泡
-                e.stopPropagation();
-                void invoke("sk_clip_copy_plain", { text: a.username })
-                  .then(() => toast.success("用户名已复制"))
-                  .catch((err) => toast.error(String(err)));
-              }}
-            >
-              {a.username}
-            </span>
-          </UiTooltip>
-        ) : (
-          <span className="sk-hint">—</span>
-        ),
     },
     {
       // 密码列恒定纯掩码（固定 8 圆点，长度不外泄）+ 单行 ellipsis，
@@ -986,8 +989,8 @@ export function VaultPage() {
         );
       },
     },
-    // 「标签」列已移除：accountTitle 本来就是 label 优先，同一信息显示两遍。
-    // 省下的 120px 给窄窗口下的账号/用户名列，避免横向滚动。
+    // 「标签」列与「用户名」列都已移除：标签随账号名显示（括号别名），
+    // 用户名就是账号列主行——同一信息不再显示两遍，窄窗口不横向滚动。
     {
       // 操作列收进行尾「···」菜单：置顶/编辑/删除/动态码/显示密码/
       // 复制密码全部菜单化（密码列只留纯掩码，行内不放图标——
@@ -1001,7 +1004,7 @@ export function VaultPage() {
           ...(a.has_totp ? [{ key: "totp", label: "⏱ 动态码" }] : []),
           { key: "fav", label: a.is_favorite ? "⭐ 取消置顶" : "📌 置顶" },
           { key: "edit", label: "✏️ 编辑" },
-          { key: "contacts", label: "📇 联系方式" },
+          { key: "contacts", label: "📇 联系方式（邮箱 / 电话）" },
           {
             key: "reveal",
             label: revealed ? "🙈 隐藏密码" : "👁️ 显示密码（30 秒后自动隐藏）",
