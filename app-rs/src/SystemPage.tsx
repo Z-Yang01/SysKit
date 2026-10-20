@@ -38,6 +38,7 @@ import { ema, humanBytes as humanBytesPlain } from "./dashboard";
 import { Badge, Button, Card, Empty, Table, type Column } from "./ui";
 import { confirm } from "./ui/confirm";
 import { useToast } from "./ui/toast";
+import { killConfirmTextFor } from "./ports";
 import { Tabs } from "./ui/tabs";
 
 /** token → 状态色（CSS 变量；Spark 折线经 style.stroke 使用，可解析 var()）。 */
@@ -225,8 +226,8 @@ const TopProcsCard = memo(function TopProcsCard({
       width: 520,
       content: (
         <div className="whitespace-pre-wrap">
-          {`确定结束 ${name}（PID ${pid}）吗？\n\n该进程未保存的数据会丢失；` +
-            "若它是系统服务，可能导致系统功能异常。后端会拒绝结束系统进程（PID 0/4）与 SysKit 自身。"}
+          {killConfirmTextFor(name, pid) +
+            "\n后端会拒绝结束系统进程（PID 0/4）与 SysKit 自身。"}
         </div>
       ),
       okText: "结束进程",

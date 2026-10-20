@@ -103,13 +103,18 @@ export function canKill(pid: number, selfPid?: number): { ok: boolean; reason: s
   return { ok: true, reason: "" };
 }
 
-/** 结束进程前的确认文案（说明后果，避免误点）。 */
-export function killConfirmText(row: PortRow): string {
-  const who = row.process || `PID ${row.pid}`;
+/** 结束进程前的确认文案（说明后果，避免误点）。性能监控页复用同一口径。 */
+export function killConfirmTextFor(name: string, pid: number): string {
+  const who = name || `PID ${pid}`;
   return (
-    `确定结束 ${who}（PID ${row.pid}）吗？\n\n` +
+    `确定结束 ${who}（PID ${pid}）吗？\n\n` +
     `该进程未保存的数据会丢失；若它是系统服务，可能导致网络或系统功能异常。`
   );
+}
+
+/** 端口表行版：转发到 name+pid 版（两处文案必须一致，抽出来才好测）。 */
+export function killConfirmText(row: Pick<PortRow, "process" | "pid">): string {
+  return killConfirmTextFor(row.process, row.pid);
 }
 
 /** MAC 显示：`aa-bb-cc-dd-ee-ff` → 大写（与多数路由器界面一致）。 */

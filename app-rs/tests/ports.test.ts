@@ -12,6 +12,7 @@ import {
   formatLatency,
   formatMac,
   killConfirmText,
+  killConfirmTextFor,
   lanSummary,
   sortDevices,
   stateTagColor,
@@ -196,5 +197,27 @@ describe("局域网展示", () => {
 
   it("未扫描时给明确提示", () => {
     expect(lanSummary(null)).toBe("尚未扫描");
+  });
+});
+
+/** 端口页与性能监控页共用同一份结束进程文案——两处各写一份迟早说岔。 */
+describe("killConfirmTextFor", () => {
+  it("有进程名用进程名", () => {
+    const t = killConfirmTextFor("chrome.exe", 4321);
+    expect(t).toContain("chrome.exe");
+    expect(t).toContain("4321");
+    expect(t).toContain("未保存的数据会丢失");
+  });
+
+  it("进程名缺失退回 PID 兜底，不出「undefined」", () => {
+    const t = killConfirmTextFor("", 99);
+    expect(t).toContain("PID 99");
+    expect(t).not.toContain("undefined");
+  });
+
+  it("行版转发与 name+pid 版一致", () => {
+    expect(killConfirmText({ process: "nginx.exe", pid: 80 })).toBe(
+      killConfirmTextFor("nginx.exe", 80),
+    );
   });
 });
