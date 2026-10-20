@@ -39,6 +39,7 @@ import {
   pushRecord,
   riskLabel,
   riskToken,
+  isReportStale,
   loadRecords,
   saveRecords,
   saveReport,
@@ -141,6 +142,9 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   /** 修复记录（手动/组合/后台监控自动修复共用，最新在前，上限 60 条）。 */
   // 修复记录：会话内恢复（切页/刷新不丢，关窗即清——与诊断报告同一隐私口径）
   const [records, setRecords] = useState<RepairRecord[]>(() => loadRecords());
+  // 半分钟一跳的时钟：只为刷新"报告较旧"标记——不靠它的话，标记只在
+  // 别的状态变化时才更新，用户盯着页面等不出提示
+  const [nowMs, setNowMs] = useState(() => Date.now());
   // 报告脱敏开关（v1.3）：默认关 = 导出/复制走分级脱敏；本机自用可开完整信息
   const [fullInfo, setFullInfo] = useState(false);
   // 只看未通过（v1.4 操作优化）：通过/提示行折叠，失败与警告顶上去
@@ -170,6 +174,13 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   useEffect(() => {
     if (records.length > 0) saveRecords(records);
   }, [records]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (!document.hidden) setNowMs(Date.now());
+    }, 30_000);
+    return () => window.clearInterval(t);
+  }, []);
 
   // 会卸载，用 sessionStorage 恢复报告、用事件流续记自动修复（对齐
   // main_window._on_monitor_action/_on_monitor_suggest 的可见反馈）。
@@ -229,6 +240,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
     setDiagBusy("quick");
     try {
       const r = await invoke<DiagReport>("sk_diag_run", { quick: true });
+      r.ts = Date.now();
       setReport(r);
       saveReport(r);
     } catch {
@@ -253,6 +265,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
     let rep: DiagReport;
     try {
       rep = await invoke<DiagReport>("sk_diag_run", { quick: false });
+      rep.ts = Date.now();
       setReport(rep);
       saveReport(rep);
     } catch (e) {
@@ -593,6 +606,8 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
   }, []);
 
   /** 体检建议里真正有入口可跳的动作（fix_ids 可能指向尚未移植的动作）。 */
+  const reportStale = isReportStale(report?.ts, nowMs);
+
   const fixableIds = useMemo(
     () => (report ? actionableFixes(report, (data?.actions ?? []).map((a) => a.id)) : []),
     [report, data],
@@ -902,6 +917,16 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
                   <span className="sk-hint">
                     {report.quick ? "快速检测（跳过慢速项）" : "完整检测"} · 共{" "}
                     {report.results.length} 项
+                    {report.ts && (
+                      <>
+                        {" "}· 检测于 {hhmmss(new Date(report.ts))}
+                        {reportStale && (
+                          <span className="text-sk-warn">
+                            {" "}（已超过 30 分钟，网络状态可能已变化，建议重新检测）
+                          </span>
+                        )}
+                      </>
+                    )}
                   </span>
                 </div>
 
@@ -1107,7 +1132,7 @@ export function Diagnose({ quickRequest }: { quickRequest?: number }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>修复记录（本次运行）</CardTitle>
+          <CardTitle>修复记录（本会话，最多 60 条，关窗清空）</CardTitle>
           <span className="sk-hint">手动 / 组合 / 后台监控自动修复统一入账（最新在前，最多 60 条）</span>
         </CardHeader>
         <CardBody>

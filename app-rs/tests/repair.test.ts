@@ -23,6 +23,7 @@ import {
   needsConfirm,
   outcomeLevel,
   outcomeTag,
+  isReportStale,
   loadRecordsFrom,
   pushRecord,
   RECORDS_STORAGE_KEY,
@@ -601,5 +602,25 @@ describe("修复记录会话存储", () => {
     const got = loadRecordsFrom((k) => store.get(k) ?? null);
     expect(got).toHaveLength(2);
     expect(got[1].mark).toBe("×");
+  });
+});
+
+/** 报告时效：旧结论会误导下一步判断，但没有证据不能乱报警。 */
+describe("isReportStale", () => {
+  const now = 1_700_000_000_000;
+
+  it("缺时间戳（旧会话遗留）不报警", () => {
+    expect(isReportStale(undefined, now)).toBe(false);
+    expect(isReportStale(NaN, now)).toBe(false);
+  });
+
+  it("30 分钟内新鲜，超过判定过期", () => {
+    expect(isReportStale(now - 29 * 60_000, now)).toBe(false);
+    expect(isReportStale(now - 30 * 60_000, now)).toBe(false);
+    expect(isReportStale(now - 31 * 60_000, now)).toBe(true);
+  });
+
+  it("时间戳在将来（时钟回拨）不算过期", () => {
+    expect(isReportStale(now + 60_000, now)).toBe(false);
   });
 });

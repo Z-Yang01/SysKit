@@ -182,6 +182,9 @@ export interface DiagReport {
   verdict_text: string;
   counts: Record<string, number>;
   quick: boolean;
+  /** 检测完成时间（前端 ms 时间戳）。后端不给，前端在 setReport 前补上，
+      随报告一起进 sessionStorage——用户要能判断"这份结论多旧"。 */
+  ts?: number;
 }
 
 /** 状态中文标签。 */
@@ -545,4 +548,16 @@ export function saveRecords(list: RepairRecord[]): void {
 /** 会话恢复（webview 的 sessionStorage）。 */
 export function loadRecords(): RepairRecord[] {
   return loadRecordsFrom((k) => sessionStorage.getItem(k));
+}
+
+/** 报告过期阈值：网络状态半小时就可能变化（换网/驱动/优化软件动配置）。 */
+export const REPORT_STALE_MS = 30 * 60_000;
+
+/**
+ * 诊断报告是否已旧。ts 缺省（旧会话遗留的报告）不算旧——
+ * 没有证据就不报警，误报会让用户忽略真正的提示。
+ */
+export function isReportStale(ts: number | undefined, nowMs: number): boolean {
+  if (ts === undefined || !Number.isFinite(ts)) return false;
+  return nowMs - ts > REPORT_STALE_MS;
 }
