@@ -30,6 +30,8 @@ import {
   watchToggleLabel,
   type ClipRow,
   type ClipSummary,
+  clampZoom,
+  zoomBy,
 } from "../src/cliphistory";
 
 const row = (over: Partial<ClipRow> = {}): ClipRow => ({
@@ -354,5 +356,26 @@ describe("按天查看", () => {
     expect(g.map((x) => x.key)).toEqual(["2026-10-15", "2026-10-19"]);
     expect(g[0].rows.map((r) => r.idx)).toEqual([0, 2]);
     expect(g[1].rows.map((r) => r.idx)).toEqual([1]);
+  });
+});
+
+/** 灯箱缩放数值：非法输入回适应档，上下界都封死。 */
+describe("clampZoom / zoomBy", () => {
+  it("夹取到 [1,8]", () => {
+    expect(clampZoom(2)).toBe(2);
+    expect(clampZoom(0.5)).toBe(1);
+    expect(clampZoom(100)).toBe(8);
+  });
+
+  it("NaN/负数/0 回适应档，不产生非法缩放", () => {
+    expect(clampZoom(NaN)).toBe(1);
+    expect(clampZoom(-3)).toBe(1);
+    expect(clampZoom(0)).toBe(1);
+  });
+
+  it("zoomBy 步进并在边界收敛", () => {
+    expect(zoomBy(1, 1.25)).toBe(1.25);
+    expect(zoomBy(7.9, 1.25)).toBe(8);
+    expect(zoomBy(1.1, 1 / 1.25)).toBe(1);
   });
 });

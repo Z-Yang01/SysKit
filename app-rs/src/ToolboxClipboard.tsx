@@ -35,6 +35,7 @@ import {
   watchToggleLabel,
   type ClipRow,
   type ClipSummary,
+  zoomBy,
 } from "./cliphistory";
 import {
   actionColor,
@@ -111,6 +112,23 @@ function ClipImageThumb({ index }: { index: number }) {
   const [full, setFull] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [zoom, setZoom] = useState(false);
+  // 缩放状态：scale=1 是"适应窗口"（max-h/max-w），>1 才能拖动平移
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+
+  const openZoom = () => {
+    setZoom(true);
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+  };
+  const closeZoom = () => {
+    setZoom(false);
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -142,6 +160,34 @@ function ClipImageThumb({ index }: { index: number }) {
     };
   }, [zoom, index, full]);
 
+  // 灯箱打开期间的滚轮缩放与 Esc 关闭。
+  // wheel 必须用原生监听 + passive:false——React 的合成 onWheel 挡不住
+  // 默认滚动，缩放时页面会跟着滚
+  useEffect(() => {
+    if (!zoom) return;
+    const el = overlayRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setScale((s) => zoomBy(s, e.deltaY < 0 ? 1.15 : 1 / 1.15));
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeZoom();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKey);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom]);
+
+  // 缩回 1 时清平移：残留偏移会把图移出视野，用户以为"卡死了"
+  useEffect(() => {
+    if (scale === 1) setOffset({ x: 0, y: 0 });
+  }, [scale]);
+
   if (failed) return <span className="sk-hint">图片缺失</span>;
   if (!src) return <span className="sk-hint">…</span>;
   return (
@@ -153,22 +199,93 @@ function ClipImageThumb({ index }: { index: number }) {
         style={{ objectFit: "cover" }}
         className="cursor-zoom-in rounded-md"
         alt="剪贴板图片"
-        onClick={() => setZoom(true)}
+        onClick={openZoom}
       />
       {zoom && (
         <div
-          className="fixed inset-0 z-[2200] flex flex-col items-center justify-center gap-2 bg-black/70 p-8"
-          onClick={() => setZoom(false)}
+          ref={overlayRef}
+          className="fixed inset-0 z-[2200] flex select-none flex-col items-center justify-center gap-2 bg-black/70 p-8"
+          onClick={closeZoom}
         >
-          <img
-            src={full ?? src}
-            className="max-h-full max-w-full rounded-md"
-            alt="剪贴板图片（放大）"
-          />
-          {!full && <span className="text-xs text-white/70">加载清晰原图…</span>}
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+            <img
+              src={full ?? src}
+              alt="剪贴板图片（放大）"
+              draggable={false}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setScale((s) => (s > 1 ? 1 : 2));
+              }}
+              onPointerDown={(e) => {
+                if (scale <= 1) return;
+                e.stopPropagation();
+                e.preventDefault();
+                (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+                dragRef.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+                setDragging(true);
+              }}
+              onPointerMove={(e) => {
+                const d = dragRef.current;
+                if (!d) return;
+                setOffset({ x: d.ox + (e.clientX - d.x), y: d.oy + (e.clientY - d.y) });
+              }}
+              onPointerUp={() => {
+                dragRef.current = null;
+                setDragging(false);
+              }}
+              style={{
+                transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+                cursor: scale > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
+                maxHeight: "100%",
+                maxWidth: "100%",
+                transition: dragging ? "none" : "transform 75ms ease-out",
+              }}
+              className="rounded-md"
+            />
+            {!full && (
+              <span className="absolute bottom-1 text-xs text-white/70">加载清晰原图…</span>
+            )}
+          </div>
+          {/* 工具条：stopPropagation 防止点按钮时触发遮罩关闭 */}
+          <div
+            className="flex items-center gap-1.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="mr-1 text-xs text-white/70">
+              滚轮缩放 · 双击 2×/适应 · {scale > 1 ? "拖动平移" : "Esc 关闭"}
+            </span>
+            <UiSmallBtn onClick={() => setScale((s) => zoomBy(s, 1 / 1.25))}>−</UiSmallBtn>
+            <span className="w-12 text-center text-xs text-white/90">
+              {Math.round(scale * 100)}%
+            </span>
+            <UiSmallBtn onClick={() => setScale((s) => zoomBy(s, 1.25))}>＋</UiSmallBtn>
+            <UiSmallBtn
+              onClick={() => {
+                setScale(1);
+                setOffset({ x: 0, y: 0 });
+              }}
+            >
+              适应
+            </UiSmallBtn>
+            <UiSmallBtn onClick={closeZoom}>关闭</UiSmallBtn>
+          </div>
         </div>
       )}
     </>
+  );
+}
+
+/** 灯箱工具条的小按钮（深底白字，仅此处使用）。 */
+function UiSmallBtn({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="cursor-pointer rounded bg-white/10 px-2 py-0.5 text-xs text-white hover:bg-white/25"
+    >
+      {children}
+    </button>
   );
 }
 

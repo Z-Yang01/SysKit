@@ -83,7 +83,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.7.1_x64-setup.exe` | 2.68 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.7.2_x64-setup.exe` | 2.68 MB |
 
 **安装 = 升级，不再"卸载旧版"（2026-10-20）**：Tauri 原版 NSIS 在检测到旧版本时
 会弹一个选择页，且把「安装前卸载旧版本」设为**默认选中**——用户点「下一步」就先跑
@@ -274,6 +274,19 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
 3. **批量重查失败留痕**：`recheckAllFailed` 单项重查失败原来只进
    `console.warn`——用户永远看不到。现在写进修复记录（只进 console 的错误
    等于没记录）。
+
+**剪贴板图片灯箱缩放（v1.7.2，2026-10-20）**：
+
+灯箱此前只能"看整图"——大图被 max-h/max-w 压到一屏里，想看清二维码/验证码
+局部只能干瞪眼。现在：
+
+- **滚轮缩放**（1.15 步进，范围 1~8 倍）；wheel 用原生监听 + `passive:false`，
+  React 合成 onWheel 挡不住默认滚动，缩放时页面会跟着滚
+- **拖动平移**（scale>1 时 grab 光标，拖动中关掉 transition 避免跟手延迟）
+- **双击 2×/适应**、工具条 −/＋/适应/关闭、百分比实时显示
+- **Esc 关闭**（此前也没有键盘出口）；缩回 1 时清平移偏移，
+  残留偏移会把图移出视野，看起来像"卡死"
+- 数值逻辑抽成 `cliphistory.ts::clampZoom/zoomBy` 纯函数（3 例测试）
 
 新增 `sk_clip_save_as`：图片走 PNG、其它走文本，用 Win32 `GetSaveFileNameW`
 （带 `OFN_OVERWRITEPROMPT` 与 `OFN_NOCHANGEDIR`）。文本的默认文件名由内容生成并
@@ -582,7 +595,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.7.1_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.7.2_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -866,7 +879,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.7.1_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.7.2_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。

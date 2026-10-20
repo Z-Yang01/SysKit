@@ -300,3 +300,21 @@ export function rowMenuItems(r: ClipRow): RowMenuItem[] {
   items.push({ key: "remove", label: "🗑️ 删除", danger: true });
   return items;
 }
+
+// ---------------- 灯箱缩放（纯数值，测试覆盖） ----------------
+
+/** 缩放下限：1 = 适应窗口（再小没有意义）。 */
+export const ZOOM_MIN = 1;
+/** 缩放上限：8 足够看清二维码/验证码的局部，再大只是看马赛克。 */
+export const ZOOM_MAX = 8;
+
+/** 夹取到 [1,8]；非法输入（NaN/负数/0）回 1。 */
+export function clampZoom(v: number): number {
+  if (!Number.isFinite(v) || v <= ZOOM_MIN) return ZOOM_MIN;
+  return Math.min(ZOOM_MAX, v);
+}
+
+/** 以 factor 步进缩放（滚轮 1.15、按钮 1.25 都走这里）。 */
+export function zoomBy(scale: number, factor: number): number {
+  return clampZoom(scale * factor);
+}
