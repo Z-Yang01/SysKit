@@ -51,8 +51,11 @@ export function Table<T>({
     return <>{empty}</>;
   }
   return (
-    <div className={cx("overflow-x-auto", className)}>
-      <table className={cx("w-full border-collapse", fixed && "table-fixed")}>
+    <div className={cx("overflow-x-clip", className)}>
+      {/* border-separate（spacing 0）：border-collapse 下 position:sticky 的
+          表头边框会随内容滚走，separate 才能钉住；视觉上只保留横向边框，
+          与 collapse 版几乎无差 */}
+      <table className={cx("w-full border-separate border-spacing-0", fixed && "table-fixed")}>
         <thead>
           <tr>
             {columns.map((c, i) => (
@@ -60,6 +63,12 @@ export function Table<T>({
                 key={i}
                 style={c.width ? { width: c.width } : undefined}
                 className={cx(
+                  // 吸顶表头（用户实锤：滚动列表时表头跟着滚走，行一多就
+                  // 不知道每列是什么）。sticky 相对**页面滚动容器**生效——
+                  // 外层 wrapper 必须不是滚动容器，所以用 overflow-x-clip
+                  // （clip 不产生滚动上下文；超宽内容裁剪而非横向滚动，
+                  // 各表列宽已按 980 窗口收过）。
+                  "sticky top-0 z-10 bg-sk-card",
                   "border-b border-sk-border px-2.5 pb-2 pt-1 text-left align-bottom text-xs font-medium text-sk-sub",
                   c.align === "right" && "text-right",
                   c.align === "center" && "text-center",
