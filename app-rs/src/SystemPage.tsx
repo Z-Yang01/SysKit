@@ -8,7 +8,7 @@
  * v1.4 UI 迁移：脱离 AntD（Row/Col/Statistic/Descriptions/Table/Tabs → ui 件 + grid）；
  * tokenColor 的写死 hex 改为 --sk-* CSS 变量（Spark 经 style 属性使用，跟随换肤）。
  */
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -35,7 +35,9 @@ import {
   type WifiInfo,
 } from "./system";
 import { ema, humanBytes as humanBytesPlain } from "./dashboard";
-import { Badge, Card, Empty, Table, type Column } from "./ui";
+import { Badge, Button, Card, Empty, Table, type Column } from "./ui";
+import { confirm } from "./ui/confirm";
+import { useToast } from "./ui/toast";
 import { Tabs } from "./ui/tabs";
 
 /** token → 状态色（CSS 变量；Spark 折线经 style.stroke 使用，可解析 var()）。 */
@@ -206,10 +208,44 @@ export function SystemPage({
 const TopProcsCard = memo(function TopProcsCard({
   procs,
   failed,
+  onRefresh,
 }: {
   procs: TopProcs | null;
   failed: boolean;
+  /** 结束进程后让父级立即重拉榜单；父级用 useCallback 保持引用稳定，memo 不失效 */
+  onRefresh: () => void;
 }) {
+  const toast = useToast();
+  // 正在结束哪一行：与启动项页同款"行级 busy"语义，避免全表按钮一起转圈
+  const [killingPid, setKillingPid] = useState<number | null>(null);
+
+  const kill = (name: string, pid: number) => {
+    confirm({
+      title: "结束进程",
+      width: 520,
+      content: (
+        <div className="whitespace-pre-wrap">
+          {`确定结束 ${name}（PID ${pid}）吗？\n\n该进程未保存的数据会丢失；` +
+            "若它是系统服务，可能导致系统功能异常。后端会拒绝结束系统进程（PID 0/4）与 SysKit 自身。"}
+        </div>
+      ),
+      okText: "结束进程",
+      danger: true,
+      onOk: async () => {
+        setKillingPid(pid);
+        try {
+          toast.success(await invoke<string>("sk_kill_process", { pid }));
+          // 立即重拉：榜单里还躺着刚被结束的进程会误导（PID 也可能被复用）
+          onRefresh();
+        } catch (e) {
+          toast.error(String(e));
+        } finally {
+          setKillingPid(null);
+        }
+      },
+    });
+  };
+
   const columns: Column<{ name: string; pid: number; bytes: number; share: number }>[] = [
     {
       title: "进程",
@@ -230,8 +266,24 @@ const TopProcsCard = memo(function TopProcsCard({
     {
       title: "占进程合计",
       dataIndex: "share",
-      width: 150,
+      width: 130,
       render: (v: number) => <Badge tone={v >= 10 ? "warn" : "neutral"}>{v.toFixed(1)}%</Badge>,
+    },
+    {
+      title: "",
+      key: "kill",
+      width: 76,
+      render: (_: unknown, r) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          loading={killingPid === r.pid}
+          disabled={killingPid !== null && killingPid !== r.pid}
+          onClick={() => kill(r.name, r.pid)}
+        >
+          结束
+        </Button>
+      ),
     },
   ];
   return (
@@ -331,25 +383,30 @@ function PerfPanel() {
     return () => window.clearInterval(t);
   }, []);
 
+  // 抽成 useCallback：结束进程后卡片要立即重拉榜单，同时保持引用稳定
+  // （否则每秒重渲染都会换新函数，TopProcsCard 的 memo 就白做了）
+  const loadProcs = useCallback(() => {
+    return invoke<TopProcs>("sk_top_procs", { limit: 15 })
+      .then((p) => {
+        setProcs(p);
+        setProcsFailed(false);
+      })
+      .catch(() => {
+        setProcs(null);
+        setProcsFailed(true);
+      });
+  }, []);
+
   useEffect(() => {
-    const load = () =>
-      void invoke<TopProcs>("sk_top_procs", { limit: 15 })
-        .then((p) => {
-          setProcs(p);
-          setProcsFailed(false);
-        })
-        .catch(() => {
-          setProcs(null);
-          setProcsFailed(true);
-        });
-    load();
+    void loadProcs();
+    const load = loadProcs;
     // 后端 2 秒 TTL + 原生快照 16ms（原来是 tasklist 子进程 1.4 秒，只能 3 秒一刷）。
     // 现在跟着 TTL 走 2 秒，榜单更跟手，代价可以忽略。
     const t = window.setInterval(() => {
       if (!document.hidden && !panelHidden()) load();
     }, 2000);
     return () => window.clearInterval(t);
-  }, []);
+  }, [loadProcs]);
 
   const latestCpu = cpu.length ? cpu[cpu.length - 1] : 0;
   const latestMem = mem.length ? mem[mem.length - 1] : 0;
@@ -422,7 +479,7 @@ function PerfPanel() {
         </div>
       </Card>
 
-      <TopProcsCard procs={procs} failed={procsFailed} />
+      <TopProcsCard procs={procs} failed={procsFailed} onRefresh={loadProcs} />
 
     </div>
   );
