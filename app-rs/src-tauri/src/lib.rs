@@ -30,6 +30,7 @@ mod commands;
 
 // ============ 外壳层：托盘 / 面板 / 粘贴守卫 / 命令面板 / 热键 ============
 mod hotkey;
+mod update;
 mod input_panel;
 mod palette;
 mod paste_guard;
@@ -334,6 +335,13 @@ fn start_hotkeys(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 安装器协作入口：**必须在单实例互斥量之前**处理——拿不到互斥量恰恰是
+    // "有实例在跑"的正常场景，若走到下面就会弹「已在运行」的框，安装器
+    // 只能去强杀（用户看到的就是"装个更新还得自己关软件"）。
+    if std::env::args().any(|a| a == "--quit-for-update") {
+        std::process::exit(update::quit_running_instance());
+    }
+
     // 文件日志先行：其后任何初始化失败都有迹可循
     logging::init();
     // 单实例互斥（与 Python 版同名：兼防本版多开与两版同跑——多实例各自
@@ -354,6 +362,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let handle = app.handle().clone();
+            // 安装器要装新版时用命名事件请本实例退出（见 update.rs）
+            update::spawn_quit_listener(handle.clone());
             // 托盘与两个无边框面板窗口在启动时预建（避免首次呼出卡顿）
             tray::setup(&handle)?;
             input_panel::ensure_panel(&handle)?;

@@ -185,6 +185,10 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; 4. Custom page to ask user if he wants to reinstall/uninstall
 ;    only if a previous installation was detected
 Var ReinstallPageCheck
+; 安装前实例是否在运行（1=在跑）→ 装完自动拉起
+Var SysKitWasRunning
+; 是否已在本轮安装里自动拉起过 → finish 页的「运行」勾选不再重复启动
+Var SysKitRelaunched
 Page custom PageReinstall PageLeaveReinstall
 Function PageReinstall
   ; Uninstall previous WiX installation if exists.
@@ -432,6 +436,10 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_FINISH
 
 Function RunMainBinary
+  ; 已在 .onInstSuccess 自动拉起过就不再开第二个（单实例互斥会弹框）
+  ${If} $SysKitRelaunched == 1
+    Return
+  ${EndIf}
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
 FunctionEnd
 
@@ -657,6 +665,34 @@ Section Install
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
+  ; ---------- SysKit 定制：运行中的实例先请它自己退出，装完自动拉起 ----------
+  ; 为什么不能"暂停进程"：被挂起的进程仍然锁着自己的 exe，File 照样失败；
+  ; 窗口的 X 是收进托盘，taskkill 的软关闭也不会退出。唯一干净的路是
+  ; 「请它自己退 → 覆盖安装 → 重新启动」，且不给用户留下手动步骤。
+  ; 新版支持 --quit-for-update：0=没在跑 1=已优雅退出 2=等待超时。
+  ; 老版本不认识该参数，会启动一个实例并因单实例互斥弹框驻留 →
+  ; /TIMEOUT 兜底后强杀（一次性代价，升级到本版之后不再出现）。
+  ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    nsExec::ExecToStack /TIMEOUT 8000 '"$INSTDIR\${MAINBINARYNAME}.exe" --quit-for-update'
+    Pop $0
+    Pop $1
+    ${If} $0 == 1
+      StrCpy $SysKitWasRunning 1
+    ${ElseIf} $0 == 2
+      StrCpy $SysKitWasRunning 1
+      nsExec::ExecToStack 'taskkill /F /IM ${MAINBINARYNAME}.exe'
+      Pop $0
+      Pop $1
+    ${ElseIf} $0 == "timeout"
+      StrCpy $SysKitWasRunning 1
+      nsExec::ExecToStack 'taskkill /F /IM ${MAINBINARYNAME}.exe'
+      Pop $0
+      Pop $1
+    ${EndIf}
+    ; 文件映射断开不是瞬时的：给内核一点时间释放 exe 句柄
+    Sleep 500
+  ${EndIf}
+
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
   ; Copy main executable
@@ -756,6 +792,12 @@ Section Install
 SectionEnd
 
 Function .onInstSuccess
+  ; 安装前在运行 → 装完自动拉起（用户全程不必手动开关软件）
+  ${If} $SysKitWasRunning == 1
+    nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
+    StrCpy $SysKitRelaunched 1
+  ${EndIf}
+
   ; Check for `/R` flag only in silent and passive installers because
   ; GUI installer has a toggle for the user to (re)start the app
   ${If} $PassiveMode = 1
