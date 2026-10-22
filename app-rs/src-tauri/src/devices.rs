@@ -28,8 +28,10 @@ pub struct PairedDevice {
     pub kind: String,
 }
 
+// **必须带 HKLM\ 前缀**：w32::split_reg_path 按第一个反斜杠切根键，
+// 少了前缀这里会被当成未知根键 → 静默返回空表（v1.9.0 的 bug 就出在这）
 const BTHPORT_DEVICES: &str =
-    r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices";
+    r"HKLM\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices";
 
 /// CoD 里的 Major Device Class（位 8..12）。
 ///
@@ -110,15 +112,22 @@ pub fn list_paired() -> Vec<PairedDevice> {
     out
 }
 
-/// 批量读电量（并行，每个设备独立超时）。
-pub fn batteries(addrs: &[String], timeout: Duration) -> BTreeMap<String, Option<u8>> {
+/// 单个设备的探测结果：是否已连接 + 电量（没有就 None）。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Probe {
+    pub connected: bool,
+    pub battery: Option<u8>,
+}
+
+/// 批量探测（并行，每个设备独立超时）。
+pub fn probes(addrs: &[String], timeout: Duration) -> BTreeMap<String, Option<Probe>> {
     std::thread::scope(|scope| {
         let handles: Vec<_> = addrs
             .iter()
             .map(|a| {
                 let addr = a.clone();
                 scope.spawn(move || {
-                    let v = with_timeout(timeout, move || read_battery(&addr));
+                    let v = with_timeout(timeout, move || read_probe(&addr));
                     (a.clone(), v.ok().flatten())
                 })
             })
@@ -126,15 +135,15 @@ pub fn batteries(addrs: &[String], timeout: Duration) -> BTreeMap<String, Option
         handles
             .into_iter()
             .filter_map(|h| h.join().ok())
-            .collect::<BTreeMap<String, Option<u8>>>()
+            .collect::<BTreeMap<String, Option<Probe>>>()
     })
 }
 
 /// 在独立线程里跑 + 超时：WinRT 的 `.get()` 对失联设备可能长时间不返回，
 /// 直接在主命令线程上等会把「设备页刷新」拖成十几秒。
-fn with_timeout<F>(timeout: Duration, f: F) -> Result<Option<u8>, String>
+fn with_timeout<F>(timeout: Duration, f: F) -> Result<Option<Probe>, String>
 where
-    F: FnOnce() -> Result<Option<u8>, String> + Send + 'static,
+    F: FnOnce() -> Result<Option<Probe>, String> + Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -151,7 +160,7 @@ where
 /// 返回 `Ok(None)` = 设备存在但没上报电量（不支持/未连接）；
 /// `Err` = 这次读取本身失败（超时/权限）。界面两者都显示「—」，
 /// 但排障时能区分是"设备不支持"还是"这次没读到"。
-pub fn read_battery(addr: &str) -> Result<Option<u8>, String> {
+pub fn read_probe(addr: &str) -> Result<Option<Probe>, String> {
     let Some(num) = addr_to_u64(addr) else {
         return Err(format!("地址不合法: {addr}"));
     };
@@ -172,12 +181,25 @@ pub fn read_battery(addr: &str) -> Result<Option<u8>, String> {
         );
     }
 
+    dbg(&format!("{addr} 创建句柄"));
     let dev = block_on(
         BluetoothLEDevice::FromBluetoothAddressAsync(num)
             .map_err(|e| format!("创建蓝牙设备句柄失败: {e}"))?,
     )
     .map_err(|e| format!("连接蓝牙设备失败: {e}"))?;
+    dbg(&format!("{addr} 句柄就绪，读连接状态"));
 
+    // 连接状态先看：未连接的设备读 GATT 只会白等到超时
+    let connected = matches!(
+        dev.ConnectionStatus(),
+        Ok(windows::Devices::Bluetooth::BluetoothConnectionStatus::Connected)
+    );
+    dbg(&format!("{addr} connected={connected}"));
+    if !connected {
+        return Ok(Some(Probe { connected: false, battery: None }));
+    }
+
+    dbg(&format!("{addr} 枚举 GATT 服务"));
     let services = block_on(
         dev.GetGattServicesAsync()
             .map_err(|e| format!("枚举 GATT 服务失败: {e}"))?,
@@ -213,11 +235,21 @@ pub fn read_battery(addr: &str) -> Result<Option<u8>, String> {
             let reader = DataReader::FromBuffer(&buf).map_err(|e| format!("解析失败: {e}"))?;
             let pct = reader.ReadByte().map_err(|e| format!("解析电量失败: {e}"))?;
             // 0..=100 之外的值按"未上报"处理，别把脏数据显示成电量
-            return Ok((pct <= 100).then_some(pct));
+            return Ok(Some(Probe {
+                connected: true,
+                battery: (pct <= 100).then_some(pct),
+            }));
         }
     }
     // 没找到电池服务 = 设备不上报（耳机/老鼠标常见），不是错误
-    Ok(None)
+    Ok(Some(Probe { connected: true, battery: None }))
+}
+
+/// 阶段诊断：仅在 `SK_DEV_DEBUG=1` 时输出（排查 WinRT 卡在哪一步用）。
+fn dbg(msg: &str) {
+    if std::env::var_os("SK_DEV_DEBUG").is_some() {
+        eprintln!("[devices] {msg}");
+    }
 }
 
 /// 最小的 future 阻塞器（windows-future 0.3 只实现 `IntoFuture`，没有 `get()`）。
@@ -234,22 +266,36 @@ where
     use std::sync::Arc;
     use std::task::{Context, Poll, Wake, Waker};
 
-    struct Flag(AtomicBool);
+    /// **wake 必须 unpark**：只置标志的话，park 等待的线程永远醒不过来，
+    /// 每个 WinRT 调用都会白白等到外层超时（v1.9.0 的真 bug——9 台设备
+    /// 全部 4 秒超时，界面显示"未知"）。
+    struct Flag {
+        fired: AtomicBool,
+        thread: std::thread::Thread,
+    }
     impl Wake for Flag {
         fn wake(self: Arc<Self>) {
-            self.0.store(true, Ordering::SeqCst);
+            self.fired.store(true, Ordering::SeqCst);
+            self.thread.unpark();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.fired.store(true, Ordering::SeqCst);
+            self.thread.unpark();
         }
     }
 
     let mut fut = std::pin::pin!(fut.into_future());
-    let flag = Arc::new(Flag(AtomicBool::new(false)));
+    let flag = Arc::new(Flag {
+        fired: AtomicBool::new(false),
+        thread: std::thread::current(),
+    });
     let waker = Waker::from(flag.clone());
     let mut cx = Context::from_waker(&waker);
     loop {
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(v) => return v,
             Poll::Pending => {
-                while !flag.0.swap(false, Ordering::SeqCst) {
+                while !flag.fired.swap(false, Ordering::SeqCst) {
                     std::thread::park();
                 }
             }
@@ -281,6 +327,46 @@ mod tests {
     fn addr_to_u64_round_trip() {
         assert_eq!(addr_to_u64("AA:BB:CC:DD:EE:FF"), Some(0xAABBCCDDEEFF));
         assert_eq!(addr_to_u64("AA:BB"), None);
+    }
+
+    /// v1.9.0 的真 bug：路径少了 `HKLM\` 前缀 → split_reg_path 认不出根键 →
+    /// reg_subkeys 静默返回空表 → "已连接的蓝牙设备一个都不显示"。
+    /// 这条测试锁住前缀，别再让静默空表回来。
+    #[test]
+    fn bthport_path_has_hive_prefix() {
+        assert!(
+            BTHPORT_DEVICES.starts_with("HKLM\\") || BTHPORT_DEVICES.starts_with("HKEY_LOCAL_MACHINE\\"),
+            "注册表路径必须以根键开头，否则会被解析为空表"
+        );
+    }
+
+    /// 真机冒烟（默认 ignore）：确认本机能枚举出已配对设备。
+    /// 手工跑：cargo test list_paired_on_real_machine -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn list_paired_on_real_machine() {
+        let devs = list_paired();
+        println!("发现 {} 台已配对设备", devs.len());
+        for d in devs.iter().take(10) {
+            println!("  {} {} [{}]", d.addr, d.name, d.kind);
+        }
+        assert!(!devs.is_empty(), "本机应至少有一台已配对设备");
+    }
+
+    /// 真机冒烟（默认 ignore）：跑一遍 WinRT 探测，确认 COM 初始化 +
+    /// 自写 block_on 在真实环境不崩、不挂死。手工跑：
+    /// cargo test probe_on_real_machine -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_on_real_machine() {
+        let devs = list_paired();
+        let addrs: Vec<String> = devs.iter().map(|d| d.addr.clone()).collect();
+        let t0 = std::time::Instant::now();
+        let m = probes(&addrs, Duration::from_secs(4));
+        println!("探测 {} 台耗时 {:?}", addrs.len(), t0.elapsed());
+        for d in &devs {
+            println!("  {} → {:?}", d.name, m.get(&d.addr));
+        }
     }
 
     #[test]

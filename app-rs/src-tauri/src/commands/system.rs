@@ -646,18 +646,19 @@ pub async fn sk_devices_list() -> Result<serde_json::Value, String> {
     .map_err(|e| format!("设备枚举线程失败: {e}"))
 }
 
-/// 批量读电量：并行，每个设备独立 4 秒超时。
+/// 批量探测：连接状态 + 电量，并行，每个设备独立 4 秒超时。
 ///
-/// 返回 `{ "battery": { "AA:BB:..": 87|null } }`：
-/// `null` = 设备在但没上报（耳机常见），键缺失 = 这次没读到。
+/// 返回 `{ "probe": { "AA:BB:..": { connected: bool, battery: 87|null } } }`；
+/// 某键缺失 = 这次探测超时/失败（设备失联），与 `battery: null`
+/// （设备在、但不上报电量）是两回事，界面要能区分。
 #[tauri::command]
 pub async fn sk_devices_battery(addrs: Vec<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let map = crate::devices::batteries(&addrs, std::time::Duration::from_secs(4));
-        serde_json::json!({ "battery": map })
+        let map = crate::devices::probes(&addrs, std::time::Duration::from_secs(4));
+        serde_json::json!({ "probe": map })
     })
     .await
-    .map_err(|e| format!("电量读取线程失败: {e}"))
+    .map_err(|e| format!("设备探测线程失败: {e}"))
 }
 
 /// 打开系统蓝牙设置（固定目标，不接受任意协议串——与 sk_open_url 的白名单同理）。

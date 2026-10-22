@@ -83,7 +83,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.0_x64-setup.exe` | 2.68 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.1_x64-setup.exe` | 2.68 MB |
 
 **安装 = 升级，不再"卸载旧版"（2026-10-20）**：Tauri 原版 NSIS 在检测到旧版本时
 会弹一个选择页，且把「安装前卸载旧版本」设为**默认选中**——用户点「下一步」就先跑
@@ -275,7 +275,18 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
    `console.warn`——用户永远看不到。现在写进修复记录（只进 console 的错误
    等于没记录）。
 
-**蓝牙设备电量与管理（v1.9.0，2026-10-22）**：
+**蓝牙设备电量与管理（v1.9.0 → v1.9.1 修复，2026-10-22）**：
+
+> v1.9.1 修了两个"静默失败"级 bug（用户实报：已连接的设备一个都不显示）：
+> 1. **注册表路径少了 `HKLM\` 前缀**——`split_reg_path` 认不出根键，`reg_subkeys`
+>    静默返回空表，列表恒空。已加测试锁住前缀。
+> 2. **自写 block_on 的 `Wake::wake` 没 `unpark`**——WinRT 完成时只置标志、
+>    不唤醒 park 的线程，每个设备都白等到 4 秒超时。修后 9 台设备探测
+>    **4 秒 → 48ms**。`Wake` 的两个方法都要 unpark，这是自写 executor 的经典坑。
+>
+> 同时补了「连接状态」列（WinRT `ConnectionStatus`，未连接的直接跳过 GATT；
+> 探测失败显示"离线"——设备不在范围内，不是错误），已连接的排在最前。
+
 
 系统助手新增「设备电量」tab。能力边界写在 `devices.rs` 顶部（这是最容易
 被误以为"Windows 有现成 API"的一处）：
@@ -613,7 +624,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.0_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.1_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -897,7 +908,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.9.0_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.9.1_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。

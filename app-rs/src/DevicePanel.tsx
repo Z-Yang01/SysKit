@@ -62,7 +62,8 @@ export function deviceIcon(kind: string): string {
 export function DevicePanel() {
   const toast = useToast();
   const [devices, setDevices] = useState<BtDevice[] | null>(null);
-  const [battery, setBattery] = useState<Record<string, number | null>>({});
+  // 探测结果：connected = 已连接；battery = 上报的电量（null=设备不提供）
+  const [probes, setProbes] = useState<Record<string, { connected: boolean; battery: number | null }>>({});
   const [loading, setLoading] = useState(false);
   const [probing, setProbing] = useState(false);
   const [err, setErr] = useState("");
@@ -74,15 +75,17 @@ export function DevicePanel() {
       if (list.length === 0) return;
       setProbing(true);
       try {
-        const r = await invoke<{ battery: Record<string, number | null> }>("sk_devices_battery", {
+        const r = await invoke<{
+          probe: Record<string, { connected: boolean; battery: number | null }>;
+        }>("sk_devices_battery", {
           addrs: list.map((d) => d.addr),
         });
-        setBattery(r.battery ?? {});
+        setProbes(r.probe ?? {});
         // 低电量提醒：同一设备同一档位只弹一次（存 localStorage）
         const alerted = loadAlerted();
         const next = { ...alerted };
         for (const d of list) {
-          const pct = r.battery?.[d.addr];
+          const pct = r.probe?.[d.addr]?.battery;
           if (pct === null || pct === undefined || pct >= LOW_BATTERY) continue;
           if (next[d.addr] === pct) continue;
           next[d.addr] = pct;
@@ -106,7 +109,7 @@ export function DevicePanel() {
         const r = await invoke<{ devices: BtDevice[] }>("sk_devices_list");
         setDevices(r.devices ?? []);
         if (withBattery) void probe(r.devices ?? []);
-        else setBattery({});
+        else setProbes({});
       } catch (e) {
         setErr(String(e));
         setDevices([]);
@@ -137,6 +140,13 @@ export function DevicePanel() {
       .catch(() => toast.error("复制失败：剪贴板不可用"));
   };
 
+  // 已连接的排前面：用户打开这页 90% 是为了看"现在连着哪个、还剩多少电"
+  const rows = [...(devices ?? [])].sort((a, b) => {
+    const ca = probes[a.addr]?.connected ? 0 : 1;
+    const cb = probes[b.addr]?.connected ? 0 : 1;
+    return ca - cb;
+  });
+
   const columns: Column<BtDevice>[] = [
     {
       title: "设备",
@@ -150,11 +160,23 @@ export function DevicePanel() {
     },
     { title: "类型", dataIndex: "kind", width: 130, render: (v: string) => <span className="sk-hint">{v}</span> },
     {
+      title: "状态",
+      key: "conn",
+      width: 96,
+      render: (_: unknown, d) => {
+        const p = probes[d.addr];
+        // 探测没结果 = 设备不在范围内/蓝牙关闭（不是错误）：说"离线"，
+        // 与"配对了但没连"区分开，用户才知道该开设备还是开蓝牙
+        if (!p) return <span className="sk-hint">{probing ? "探测中…" : "离线"}</span>;
+        return p.connected ? <Badge tone="ok">已连接</Badge> : <span className="sk-hint">未连接</span>;
+      },
+    },
+    {
       title: "电量",
       key: "battery",
       width: 150,
       render: (_: unknown, d) => {
-        const pct = battery[d.addr];
+        const pct = probes[d.addr]?.battery;
         if (pct === null || pct === undefined) {
           return (
             <UiTooltip title="该设备未上报电量（部分耳机/鼠标不支持），系统设置里同样看不到">
@@ -232,7 +254,7 @@ export function DevicePanel() {
             <>
               <Table
                 columns={columns}
-                dataSource={devices ?? []}
+                dataSource={rows}
                 rowKey={(d) => d.addr}
                 loading={loading && devices === null}
               />
