@@ -599,7 +599,7 @@ pub fn builtin_actions() -> Vec<PaletteAction> {
         })
         .collect();
     // 页内 tab（对齐 Python 的页内 Tab 动作；前端映射到子 tab key）
-    let tabs: [(&str, &str, &str, &str); 13] = [
+    let tabs: [(&str, &str, &str, &str); 14] = [
         ("toolbox", "clipboard", "🧰 工具", "剪贴板历史"),
         ("toolbox", "hosts", "🧰 工具", "Hosts 编辑"),
         ("toolbox", "ports", "🧰 工具", "端口 / 局域网"),
@@ -613,6 +613,7 @@ pub fn builtin_actions() -> Vec<PaletteAction> {
         ("system", "clean", "💼 系统", "垃圾清理"),
         ("system", "battery", "💼 系统", "电池健康"),
         ("system", "modes", "💼 系统", "场景模式"),
+        ("system", "devices", "💼 系统", "设备电量"),
     ];
     for (page, tab, page_label, tab_label) in tabs {
         out.push(PaletteAction {

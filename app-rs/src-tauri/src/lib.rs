@@ -66,6 +66,7 @@ mod repairs;
 // ============ 系统域 ============
 mod battery;
 mod cleanup;
+mod devices;
 mod disk;
 mod hostsed;
 mod modes;
@@ -468,6 +469,9 @@ pub fn run() {
             commands::sk_clean_run,
             commands::sk_power_status,
             commands::sk_battery_health,
+            commands::sk_devices_list,
+            commands::sk_devices_battery,
+            commands::sk_open_bt_settings,
             commands::sk_modes_info,
             commands::sk_modes_run,
             commands::sk_modes_bg_candidates,

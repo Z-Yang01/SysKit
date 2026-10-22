@@ -262,8 +262,7 @@ fn reg_open_write(path: &str) -> Option<windows::Win32::System::Registry::HKEY> 
     (rc == windows::Win32::Foundation::WIN32_ERROR(0)).then_some(out)
 }
 
-pub fn reg_values(path: &str) -> BTreeMap<String, RegValue> {
-    use windows::Win32::System::Registry::{RegEnumValueW, RegQueryInfoKeyW};
+pub fn reg_values(path: &str) -> BTreeMap<String, RegValue> {    use windows::Win32::System::Registry::{RegEnumValueW, RegQueryInfoKeyW};
     let mut out = BTreeMap::new();
     let Some(hkey) = reg_open(path) else {
         return out;
@@ -316,6 +315,62 @@ pub fn reg_values(path: &str) -> BTreeMap<String, RegValue> {
             if let Some(v) = decode_reg_value(ty, &data[..data_len as usize]) {
                 out.insert(key, v);
             }
+        }
+        let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+    }
+    out
+}
+
+/// 枚举子键（一层）及其值：`{ 子键名: { 值名: 值 } }`。
+///
+/// 蓝牙设备清单就靠它（`BTHPORT\Parameters\Devices\<MAC>` 每个 MAC 一个子键）。
+/// 键不存在 / 无权限一律返回空表——调用方按"没有设备"处理，不弹错。
+pub fn reg_subkeys(path: &str) -> BTreeMap<String, BTreeMap<String, RegValue>> {
+    use windows::Win32::System::Registry::{RegEnumKeyExW, RegQueryInfoKeyW};
+    let mut out = BTreeMap::new();
+    let Some(hkey) = reg_open(path) else {
+        return out;
+    };
+    unsafe {
+        let mut subkeys = 0u32;
+        let mut max_sub = 0u32;
+        if RegQueryInfoKeyW(
+            hkey,
+            None,
+            None,
+            None,
+            Some(&mut subkeys as *mut u32),
+            Some(&mut max_sub as *mut u32),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ) != windows::Win32::Foundation::WIN32_ERROR(0)
+        {
+            let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+            return out;
+        }
+        let cap = (max_sub + 2) as usize;
+        for i in 0..subkeys {
+            let mut buf = vec![0u16; cap];
+            let mut len = cap as u32;
+            let rc = RegEnumKeyExW(
+                hkey,
+                i,
+                Some(windows::core::PWSTR(buf.as_mut_ptr())),
+                &mut len as *mut u32,
+                None,
+                None,
+                None,
+                None,
+            );
+            if rc != windows::Win32::Foundation::WIN32_ERROR(0) {
+                continue;
+            }
+            let name = String::from_utf16_lossy(&buf[..len as usize]);
+            out.insert(name.clone(), reg_values(&format!("{path}\\{name}")));
         }
         let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
     }

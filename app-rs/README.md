@@ -83,7 +83,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.8.1_x64-setup.exe` | 2.68 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.0_x64-setup.exe` | 2.68 MB |
 
 **安装 = 升级，不再"卸载旧版"（2026-10-20）**：Tauri 原版 NSIS 在检测到旧版本时
 会弹一个选择页，且把「安装前卸载旧版本」设为**默认选中**——用户点「下一步」就先跑
@@ -274,6 +274,24 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
 3. **批量重查失败留痕**：`recheckAllFailed` 单项重查失败原来只进
    `console.warn`——用户永远看不到。现在写进修复记录（只进 console 的错误
    等于没记录）。
+
+**蓝牙设备电量与管理（v1.9.0，2026-10-22）**：
+
+系统助手新增「设备电量」tab。能力边界写在 `devices.rs` 顶部（这是最容易
+被误以为"Windows 有现成 API"的一处）：
+
+- **设备清单**：注册表 `BTHPORT\Parameters\Devices\<MAC>`，配对过就在。
+  `Name` 是 **REG_BINARY 的 UTF-8**（不是 REG_SZ），按字符串读必乱码；
+  类型由 CoD 的 major class 粗分类（音频/外设/手机…），无 Class 值时兜底「蓝牙设备」。
+- **电量**：WinRT BLE GATT（服务 0x180F / 特征 0x2A19）。Windows 没有公开的
+  蓝牙电量 Win32 API，只有这条路；**读不到是常态**（经典耳机、老鼠标不广播），
+  所以界面显示「未上报」而不是报错。
+- 工程细节：windows-future 0.3 只剩 `IntoFuture`（没有阻塞 `get()`），
+  自己写了个 30 行的 `block_on`（park/unpark + 丢失唤醒防护）；
+  每个设备独立 4 秒超时（失联设备会让 GATT 卡住），后端并行读取。
+- 提醒：<20% 弹提示，按「地址 + 电量档位」去重存 localStorage——
+  否则每次刷新都会弹一遍。
+- 命令面板同步加「系统 · 设备电量」条目。
 
 **剪贴板图片灯箱缩放（v1.7.2，2026-10-20）**：
 
@@ -595,7 +613,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.8.1_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.0_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -879,7 +897,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.8.1_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.9.0_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。

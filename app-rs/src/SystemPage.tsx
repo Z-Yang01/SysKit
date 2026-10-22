@@ -17,6 +17,7 @@ import { CleanupPanel, DiskOverviewPanel, DiskPanel, DirDrillPanel } from "./Too
 import { ToolboxBattery } from "./ToolboxBattery";
 import { ToolboxModes } from "./ToolboxModes";
 import { WifiPasswordPanel } from "./WifiPasswordPanel";
+import { DevicePanel } from "./DevicePanel";
 
 import type { DrillRequest } from "./disk";
 
@@ -198,6 +199,7 @@ export function SystemPage({
           { key: "battery", label: "电池健康", children: <ToolboxBattery /> },
           { key: "modes", label: "场景模式", children: <ToolboxModes /> },
           { key: "wifipwd", label: "WiFi 密码", children: <WifiPasswordPanel /> },
+          { key: "devices", label: "设备电量", children: <DevicePanel /> },
         ]}
       />
     </Card>
