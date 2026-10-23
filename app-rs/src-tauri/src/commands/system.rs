@@ -672,6 +672,25 @@ pub async fn sk_bt_status() -> Result<serde_json::Value, String> {
     .map_err(|e| format!("蓝牙状态线程失败: {e}"))
 }
 
+/// 开关蓝牙无线电（返回实际生效的状态）。
+#[tauri::command]
+pub async fn sk_bt_set_power(on: bool) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = crate::devices::set_radio(on)?;
+        Ok::<_, String>(serde_json::json!({ "on": state }))
+    })
+    .await
+    .map_err(|e| format!("蓝牙开关线程失败: {e}"))?
+}
+
+/// 移除已配对设备（只删配对关系，需二次确认由前端负责）。
+#[tauri::command]
+pub async fn sk_bt_unpair(addr: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::devices::unpair(&addr))
+        .await
+        .map_err(|e| format!("移除配对线程失败: {e}"))?
+}
+
 /// 打开系统蓝牙设置（固定目标，不接受任意协议串——与 sk_open_url 的白名单同理）。
 #[tauri::command]
 pub fn sk_open_bt_settings() -> Result<(), String> {

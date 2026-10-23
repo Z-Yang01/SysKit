@@ -65,6 +65,75 @@ fn normalize_addr(raw: &str) -> String {
         .join(":")
 }
 
+/// `AA:BB:CC:DD:EE:FF` → `BLUETOOTH_ADDRESS.ullLong`。
+///
+/// 注意**字节序**：Win32 的 BLUETOOTH_ADDRESS 低位存 MAC 的第一个字节，
+/// 所以 `AA:BB:CC:DD:EE:FF` 要写成 `0x0000_FFEE_DDCC_BBAA`（与 WinRT 的
+/// 48 位整数相反）。搞反了会去删另一台设备——这是本函数独立测试的原因。
+pub fn addr_to_bytes(addr: &str) -> Option<[u8; 6]> {
+    let hex: String = addr.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 12 {
+        return None;
+    }
+    let mut b = [0u8; 6];
+    for (i, slot) in b.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(b)
+}
+
+/// 移除配对（Win32 `BluetoothRemoveDevice`）。
+///
+/// 只删配对关系，不碰用户数据；设备下次靠近需重新配对——所以界面必须二次确认。
+pub fn unpair(addr: &str) -> Result<(), String> {
+    use windows::Win32::Devices::Bluetooth::{
+        BluetoothRemoveDevice, BLUETOOTH_ADDRESS, BLUETOOTH_ADDRESS_0,
+    };
+    // 用 rgBytes（MAC 正序）而不是 ullLong：后者是低位在前，写反会删错设备
+    let bytes = addr_to_bytes(addr).ok_or_else(|| format!("地址不合法: {addr}"))?;
+    let a = BLUETOOTH_ADDRESS {
+        Anonymous: BLUETOOTH_ADDRESS_0 { rgBytes: bytes },
+    };
+    let rc = unsafe { BluetoothRemoveDevice(&a) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(format!("移除配对失败（错误码 {rc}，可能需要管理员权限）"))
+    }
+}
+
+/// 开关蓝牙无线电（`Radio::SetStateAsync`），返回**实际生效的状态**。
+///
+/// 比"打开设置页让用户自己点"少一次跳转；被组策略/用户拒绝时返回 Err 说明原因。
+pub fn set_radio(on: bool) -> Result<bool, String> {
+    use windows::Devices::Radios::{Radio, RadioAccessStatus, RadioKind, RadioState};
+
+    unsafe {
+        let _ = windows::Win32::System::WinRT::RoInitialize(
+            windows::Win32::System::WinRT::RO_INIT_MULTITHREADED,
+        );
+    }
+    let list = block_on(Radio::GetRadiosAsync().map_err(|e| format!("枚举无线电失败: {e}"))?)
+        .map_err(|e| format!("等待无线电列表失败: {e}"))?;
+    let want = if on { RadioState::On } else { RadioState::Off };
+    for r in list {
+        if !matches!(r.Kind(), Ok(RadioKind::Bluetooth)) {
+            continue;
+        }
+        let st = block_on(
+            r.SetStateAsync(want)
+                .map_err(|e| format!("设置蓝牙状态失败: {e}"))?,
+        )
+        .map_err(|e| format!("等待状态切换失败: {e}"))?;
+        return match st {
+            RadioAccessStatus::Allowed => Ok(on),
+            RadioAccessStatus::DeniedByUser => Err("系统拒绝了这次切换（可能被策略或用户设置锁定）".into()),
+            _ => Err("蓝牙状态切换未被允许".into()),
+        };
+    }
+    Err("本机没有蓝牙适配器".into())
+}
+
 /// `AA:BB:CC:DD:EE:FF` → u64（WinRT 需要 48 位地址）。
 pub fn addr_to_u64(addr: &str) -> Option<u64> {
     let hex: String = addr.chars().filter(|c| c.is_ascii_hexdigit()).collect();
@@ -354,6 +423,20 @@ mod tests {
         assert_eq!(normalize_addr("aabb"), "aabb");
     }
 
+    /// 字节序测试：写反了会删错设备，这条必须锁住。
+    #[test]
+    fn addr_to_bytes_keeps_mac_order() {
+        assert_eq!(addr_to_bytes("AA:BB:CC:DD:EE:FF"), Some([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]));
+        assert_eq!(addr_to_bytes("00:11:22:33:44:55"), Some([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
+        assert_eq!(addr_to_bytes("AA:BB"), None);
+        // ullLong 视角的同一条地址（低位在前）：留给排障时对照用
+        let b = addr_to_bytes("AA:BB:CC:DD:EE:FF").unwrap();
+        assert_eq!(
+            u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], 0, 0]),
+            0x0000_FFEE_DDCC_BBAA
+        );
+    }
+
     #[test]
     fn addr_to_u64_round_trip() {
         assert_eq!(addr_to_u64("AA:BB:CC:DD:EE:FF"), Some(0xAABBCCDDEEFF));
@@ -398,6 +481,17 @@ mod tests {
         for d in &devs {
             println!("  {} → {:?}", d.name, m.get(&d.addr));
         }
+    }
+
+    /// 真机冒烟（默认 ignore）：**只做幂等开启**，绝不在这里关蓝牙——
+    /// 关掉之后若开启失败，用户就断网/断设备了。手工跑：
+    /// cargo test radio_power_on_idempotent -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn radio_power_on_idempotent() {
+        let r = set_radio(true);
+        println!("set_radio(true) = {r:?}");
+        assert!(r.is_ok(), "开启蓝牙应当成功（幂等）");
     }
 
     /// 真机冒烟（默认 ignore）：蓝牙无线电状态能否读到。

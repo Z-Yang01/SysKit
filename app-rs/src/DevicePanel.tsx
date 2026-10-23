@@ -11,7 +11,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { Badge, Button, Card, CardBody, CardHeader, CardTitle, Empty, Table, type Column } from "./ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  CardTitle,
+  Dropdown,
+  Empty,
+  Switch,
+  Table,
+  type Column,
+  type MenuItem,
+} from "./ui";
+import { confirm } from "./ui/confirm";
 import { Alert } from "./ui/alert";
 import { Tooltip as UiTooltip } from "./ui/tooltip";
 import { useToast } from "./ui/toast";
@@ -98,6 +112,7 @@ export function DevicePanel() {
   // 蓝牙无线电：区分"蓝牙没开"与"设备没连"——两者都表现为探测失败，
   // 但用户该做的事完全不同
   const [bt, setBt] = useState<{ available: boolean; on: boolean } | null>(null);
+  const [btBusy, setBtBusy] = useState(false);
   const [cache, setCache] = useState<Record<string, CacheEntry>>(() => loadCache());
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -194,6 +209,45 @@ export function DevicePanel() {
     return () => window.clearInterval(t);
   }, [devices, probes, probe, bt]);
 
+  /** 开关蓝牙：直接切无线电，不用跳系统设置。 */
+  const togglePower = useCallback(
+    async (on: boolean) => {
+      setBtBusy(true);
+      try {
+        const r = await invoke<{ on: boolean }>("sk_bt_set_power", { on });
+        setBt((b) => (b ? { ...b, on: r.on } : b));
+        toast.success(r.on ? "蓝牙已开启" : "蓝牙已关闭");
+        await load(true);
+      } catch (e) {
+        toast.error(String(e));
+      } finally {
+        setBtBusy(false);
+      }
+    },
+    [load, toast],
+  );
+
+  /** 移除配对（危险动作：二次确认，说清"设备不受影响、下次要重新配对"）。 */
+  const removePair = useCallback(
+    (d: BtDevice) => {
+      confirm({
+        title: `移除配对：${d.name}`,
+        content: `将删除这台设备的配对记录（${d.addr}）。\n\n设备本身不受影响，但下次使用需要在系统设置里重新配对。`,
+        okText: "移除配对",
+        onOk: async () => {
+          try {
+            await invoke("sk_bt_unpair", { addr: d.addr });
+            toast.success(`已移除配对：${d.name}`);
+            await load(false);
+          } catch (e) {
+            toast.error(String(e));
+          }
+        },
+      });
+    },
+    [load, toast],
+  );
+
   const copy = (text: string, what: string) => {
     void navigator.clipboard
       .writeText(text)
@@ -275,6 +329,35 @@ export function DevicePanel() {
       },
     },
     {
+      title: "操作",
+      key: "ops",
+      width: 64,
+      render: (_: unknown, d) => {
+        const items: MenuItem[] = [
+          { key: "settings", label: "打开蓝牙设置" },
+          { key: "sep", type: "divider", label: "" },
+          { key: "unpair", label: "移除配对", danger: true },
+        ];
+        return (
+          <Dropdown
+            trigger={
+              <Button size="sm" variant="ghost" aria-label="设备操作">
+                ···
+              </Button>
+            }
+            items={items}
+            onItemClick={(k) => {
+              if (k === "settings") {
+                void invoke("sk_open_bt_settings").catch((e) => toast.error(String(e)));
+              } else if (k === "unpair") {
+                removePair(d);
+              }
+            }}
+          />
+        );
+      },
+    },
+    {
       title: "地址",
       dataIndex: "addr",
       width: 150,
@@ -301,6 +384,17 @@ export function DevicePanel() {
               {devices ? `${devices.length} 台已配对` : "读取中…"}
               {probing ? " · 读取电量中" : ""}
             </span>
+            {bt?.available && (
+              <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-sk-sub">
+                蓝牙
+                <Switch
+                  checked={bt.on}
+                  disabled={btBusy}
+                  onChange={(v) => void togglePower(v)}
+                  aria-label="蓝牙开关"
+                />
+              </label>
+            )}
             <Button size="sm" loading={loading} onClick={() => void load(true)}>
               刷新
             </Button>

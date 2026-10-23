@@ -83,7 +83,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.3_x64-setup.exe` | 2.68 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.4_x64-setup.exe` | 2.68 MB |
 
 **安装 = 升级，不再"卸载旧版"（2026-10-20）**：Tauri 原版 NSIS 在检测到旧版本时
 会弹一个选择页，且把「安装前卸载旧版本」设为**默认选中**——用户点「下一步」就先跑
@@ -274,6 +274,17 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
 3. **批量重查失败留痕**：`recheckAllFailed` 单项重查失败原来只进
    `console.warn`——用户永远看不到。现在写进修复记录（只进 console 的错误
    等于没记录）。
+
+**蓝牙设备管理动作（v1.9.4，2026-10-23）**：
+
+设备页此前只能"看"，补上三个真正能做的事：
+
+- **一键开关蓝牙**（页头 Switch）：走 `Radio::SetStateAsync`，不用跳系统设置；
+  被策略拒绝时如实报错（`DeniedByUser`），不会假装成功。
+- **移除配对**（行内 ··· 菜单，二次确认）：`BluetoothRemoveDevice`。
+  地址用 `BLUETOOTH_ADDRESS_0.rgBytes`（MAC 正序）传入——**ullLong 是低位在前**，
+  写反会删掉另一台设备，这是专门加测试锁住的点。
+- **打开蓝牙设置**：去连接新设备（连接动作 WinRT 没有公开 API，只能交回系统）。
 
 **蓝牙连接优化（v1.9.3，2026-10-23）**：
 
@@ -638,7 +649,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.3_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.4_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -922,7 +933,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.9.3_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.9.4_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。

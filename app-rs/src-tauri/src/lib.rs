@@ -483,6 +483,8 @@ pub fn run() {
             commands::sk_devices_battery,
             commands::sk_open_bt_settings,
             commands::sk_bt_status,
+            commands::sk_bt_set_power,
+            commands::sk_bt_unpair,
             commands::sk_modes_info,
             commands::sk_modes_run,
             commands::sk_modes_bg_candidates,
