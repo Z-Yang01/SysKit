@@ -654,11 +654,22 @@ pub async fn sk_devices_list() -> Result<serde_json::Value, String> {
 #[tauri::command]
 pub async fn sk_devices_battery(addrs: Vec<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let map = crate::devices::probes(&addrs, std::time::Duration::from_secs(4));
+        let map = crate::devices::probes(&addrs, std::time::Duration::from_secs(3));
         serde_json::json!({ "probe": map })
     })
     .await
     .map_err(|e| format!("设备探测线程失败: {e}"))
+}
+
+/// 蓝牙无线电状态：`available=false` = 本机没有蓝牙适配器。
+#[tauri::command]
+pub async fn sk_bt_status() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| match crate::devices::radio_state() {
+        Some(on) => serde_json::json!({ "available": true, "on": on }),
+        None => serde_json::json!({ "available": false, "on": false }),
+    })
+    .await
+    .map_err(|e| format!("蓝牙状态线程失败: {e}"))
 }
 
 /// 打开系统蓝牙设置（固定目标，不接受任意协议串——与 sk_open_url 的白名单同理）。

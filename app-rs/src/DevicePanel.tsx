@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { Badge, Button, Card, CardBody, CardHeader, CardTitle, Empty, Table, type Column } from "./ui";
+import { Alert } from "./ui/alert";
 import { Tooltip as UiTooltip } from "./ui/tooltip";
 import { useToast } from "./ui/toast";
 
@@ -32,6 +33,33 @@ function loadAlerted(): Record<string, number> {
   } catch {
     return {};
   }
+}
+
+/** 电量缓存：GATT 读取有成本（每设备最坏 3 秒），60 秒内的值直接复用。 */
+const CACHE_KEY = "sk.devices.cache";
+const CACHE_TTL_MS = 60_000;
+
+type CacheEntry = { pct: number; at: number };
+
+function loadCache(): Record<string, CacheEntry> {
+  try {
+    return JSON.parse(localStorage.getItem(CACHE_KEY) ?? "{}") as Record<string, CacheEntry>;
+  } catch {
+    return {};
+  }
+}
+
+function saveCache(m: Record<string, CacheEntry>): void {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(m));
+  } catch {
+    /* 缓存是优化，失败不影响正确性 */
+  }
+}
+
+/** 缓存是否还新鲜。 */
+export function cacheFresh(e: CacheEntry | undefined, now: number): boolean {
+  return !!e && Number.isFinite(e.pct) && now - e.at < CACHE_TTL_MS;
 }
 
 function saveAlerted(m: Record<string, number>): void {
@@ -67,6 +95,10 @@ export function DevicePanel() {
   const [loading, setLoading] = useState(false);
   const [probing, setProbing] = useState(false);
   const [err, setErr] = useState("");
+  // 蓝牙无线电：区分"蓝牙没开"与"设备没连"——两者都表现为探测失败，
+  // 但用户该做的事完全不同
+  const [bt, setBt] = useState<{ available: boolean; on: boolean } | null>(null);
+  const [cache, setCache] = useState<Record<string, CacheEntry>>(() => loadCache());
   const panelRef = useRef<HTMLDivElement>(null);
 
   /** 读电量：并行（后端），每个设备 4 秒超时；低电量顺便提醒一次。 */
@@ -81,6 +113,16 @@ export function DevicePanel() {
           addrs: list.map((d) => d.addr),
         });
         setProbes(r.probe ?? {});
+        // 写电量缓存：下一轮（含切页回来）先用缓存渲染，不必等 GATT
+        const now = Date.now();
+        const merged = { ...loadCache() };
+        for (const [addr, p] of Object.entries(r.probe ?? {})) {
+          if (p?.battery !== null && p?.battery !== undefined) {
+            merged[addr] = { pct: p.battery, at: now };
+          }
+        }
+        saveCache(merged);
+        setCache(merged);
         // 低电量提醒：同一设备同一档位只弹一次（存 localStorage）
         const alerted = loadAlerted();
         const next = { ...alerted };
@@ -106,9 +148,16 @@ export function DevicePanel() {
       setLoading(true);
       setErr("");
       try {
+        // 蓝牙状态先取：关着的话探测必然全部失败，白等 3 秒还没信息量
+        const st = await invoke<{ available: boolean; on: boolean }>("sk_bt_status").catch(
+          () => null,
+        );
+        setBt(st);
         const r = await invoke<{ devices: BtDevice[] }>("sk_devices_list");
         setDevices(r.devices ?? []);
-        if (withBattery) void probe(r.devices ?? []);
+        const canProbe = st === null || !st.available || st.on;
+        if (withBattery && canProbe) void probe(r.devices ?? []);
+        else if (!canProbe) setProbes({});
         else setProbes({});
       } catch (e) {
         setErr(String(e));
@@ -132,6 +181,18 @@ export function DevicePanel() {
     }, 60_000);
     return () => window.clearInterval(t);
   }, [load]);
+
+  // 3 分钟自动复测"已连接"的设备：电量变化只发生在连着的时候，
+  // 没必要每次把 9 台（大多数离线）全探一遍
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (document.hidden || panelRef.current?.offsetParent === null) return;
+      if (bt && (!bt.available || !bt.on)) return;
+      const live = (devices ?? []).filter((d) => probes[d.addr]?.connected);
+      if (live.length > 0) void probe(live);
+    }, 180_000);
+    return () => window.clearInterval(t);
+  }, [devices, probes, probe, bt]);
 
   const copy = (text: string, what: string) => {
     void navigator.clipboard
@@ -176,13 +237,20 @@ export function DevicePanel() {
       key: "battery",
       width: 150,
       render: (_: unknown, d) => {
-        const pct = probes[d.addr]?.battery;
-        if (pct === null || pct === undefined) {
+        const p = probes[d.addr];
+        // 探测值优先；本次没探到就用 60 秒内的缓存（弱化显示，注明是缓存）
+        const cur = p?.battery ?? undefined;
+        const cached = cacheFresh(cache[d.addr], Date.now()) ? cache[d.addr].pct : undefined;
+        const pct = cur ?? cached;
+        if (pct === undefined && p && p.battery === null) {
           return (
             <UiTooltip title="该设备未上报电量（部分耳机/鼠标不支持），系统设置里同样看不到">
               <span className="sk-hint">{probing ? "读取中…" : "未上报"}</span>
             </UiTooltip>
           );
+        }
+        if (pct === undefined) {
+          return <span className="sk-hint">{probing ? "读取中…" : "—"}</span>;
         }
         const tone = batteryTone(pct);
         return (
@@ -201,6 +269,7 @@ export function DevicePanel() {
               />
             </span>
             <Badge tone={tone}>{pct}%</Badge>
+            {cur === undefined && <span className="sk-hint text-[10px]">缓存</span>}
           </span>
         );
       },
@@ -246,6 +315,26 @@ export function DevicePanel() {
           </span>
         </CardHeader>
         <CardBody>
+          {bt && !bt.available && (
+            <Alert tone="warning" className="mb-2.5" title="未检测到蓝牙适配器">
+              这台电脑没有蓝牙（或被 BIOS / 系统完全禁用），设备列表来自历史配对记录。
+            </Alert>
+          )}
+          {bt && bt.available && !bt.on && (
+            <Alert tone="warning" className="mb-2.5" title="蓝牙已关闭">
+              <span className="flex flex-wrap items-center gap-2">
+                <span>蓝牙关闭时无法读取连接状态与电量，打开后点「刷新」。</span>
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    void invoke("sk_open_bt_settings").catch((e) => toast.error(String(e)))
+                  }
+                >
+                  打开蓝牙设置
+                </Button>
+              </span>
+            </Alert>
+          )}
           {err ? (
             <Empty description={`读取设备失败：${err}`} />
           ) : devices && devices.length === 0 ? (

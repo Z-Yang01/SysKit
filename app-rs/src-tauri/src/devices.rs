@@ -112,6 +112,28 @@ pub fn list_paired() -> Vec<PairedDevice> {
     out
 }
 
+/// 蓝牙无线电状态：`None` = 本机没有蓝牙适配器。
+///
+/// 有它才能区分"蓝牙没开"和"设备没连"——两者在设备列表里都表现为探测失败，
+/// 但用户该做的事完全不同（开蓝牙 vs 走近/开机）。
+pub fn radio_state() -> Option<bool> {
+    use windows::Devices::Radios::{Radio, RadioKind, RadioState};
+
+    unsafe {
+        let _ = windows::Win32::System::WinRT::RoInitialize(
+            windows::Win32::System::WinRT::RO_INIT_MULTITHREADED,
+        );
+    }
+    let list = block_on(Radio::GetRadiosAsync().ok()?).ok()?;
+    for r in list {
+        // 只看蓝牙那一个无线电（机器可能还有 WiFi 无线电）
+        if matches!(r.Kind(), Ok(RadioKind::Bluetooth)) {
+            return Some(matches!(r.State(), Ok(RadioState::On)));
+        }
+    }
+    None
+}
+
 /// 单个设备的探测结果：是否已连接 + 电量（没有就 None）。
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct Probe {
@@ -182,11 +204,20 @@ pub fn read_probe(addr: &str) -> Result<Option<Probe>, String> {
     }
 
     dbg(&format!("{addr} 创建句柄"));
-    let dev = block_on(
+    let dev = match block_on(
         BluetoothLEDevice::FromBluetoothAddressAsync(num)
             .map_err(|e| format!("创建蓝牙设备句柄失败: {e}"))?,
-    )
-    .map_err(|e| format!("连接蓝牙设备失败: {e}"))?;
+    ) {
+        Ok(d) => d,
+        // **空结果不是错误**：设备不在范围内/未缓存时，WinRT 返回成功但结果为
+        // null，windows crate 会包成 HRESULT 0（"操作成功完成"）的 Err。
+        // 按"设备不可达"处理——语义就是未连接，不该让 7/9 台设备全变成"离线"。
+        Err(e) if e.code().0 == 0 => {
+            dbg(&format!("{addr} 不可达（空结果）"));
+            return Ok(Some(Probe { connected: false, battery: None }));
+        }
+        Err(e) => return Err(format!("连接蓝牙设备失败: {e}")),
+    };
     dbg(&format!("{addr} 句柄就绪，读连接状态"));
 
     // 连接状态先看：未连接的设备读 GATT 只会白等到超时
@@ -367,6 +398,28 @@ mod tests {
         for d in &devs {
             println!("  {} → {:?}", d.name, m.get(&d.addr));
         }
+    }
+
+    /// 真机冒烟（默认 ignore）：蓝牙无线电状态能否读到。
+    /// cargo test radio_state_on_real_machine -- --ignored --nocapture
+    /// 串行 vs 并行对照（默认 ignore）：判断 7/9 台失败是"不在范围"还是
+    /// "并发抢蓝牙栈"。cargo test probe_serial_on_real_machine -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_serial_on_real_machine() {
+        for d in list_paired() {
+            let t0 = std::time::Instant::now();
+            let r = read_probe(&d.addr);
+            println!("  {:?} {} → {:?}（{:?}）", r.is_ok(), d.name, r, t0.elapsed());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn radio_state_on_real_machine() {
+        let t0 = std::time::Instant::now();
+        let st = radio_state();
+        println!("radio_state = {st:?} 耗时 {:?}", t0.elapsed());
     }
 
     #[test]

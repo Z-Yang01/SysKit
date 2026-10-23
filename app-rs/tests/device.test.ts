@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { batteryTone, deviceIcon, LOW_BATTERY } from "../src/DevicePanel";
+import { batteryTone, cacheFresh, deviceIcon, LOW_BATTERY } from "../src/DevicePanel";
 
 /** 电量分档：低电量必须一眼可辨（提醒阈值与配色是两处，别各走各的）。 */
 describe("batteryTone", () => {
@@ -27,5 +27,23 @@ describe("deviceIcon", () => {
   it("未知类型有兜底图标，不返回空", () => {
     expect(deviceIcon("蓝牙设备")).toBe("📶");
     expect(deviceIcon("")).toBe("📶");
+  });
+});
+
+/** 电量缓存：60 秒内复用，过期不用（避免把旧读数当现状）。 */
+describe("cacheFresh", () => {
+  const now = 1_700_000_000_000;
+
+  it("新鲜缓存可用", () => {
+    expect(cacheFresh({ pct: 80, at: now - 30_000 }, now)).toBe(true);
+  });
+
+  it("过期不用", () => {
+    expect(cacheFresh({ pct: 80, at: now - 61_000 }, now)).toBe(false);
+  });
+
+  it("缺失/脏值当作没有", () => {
+    expect(cacheFresh(undefined, now)).toBe(false);
+    expect(cacheFresh({ pct: NaN, at: now }, now)).toBe(false);
   });
 });

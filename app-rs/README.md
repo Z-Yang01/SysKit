@@ -83,7 +83,7 @@ CLI 2.12.1 与 Rust 侧 `tauri` 2.12.1 **版本对齐**（Tauri 要求二者主�
 | 产物 | 路径 | 实测大小 |
 |---|---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` | 4.94 MB |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.2_x64-setup.exe` | 2.68 MB |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.3_x64-setup.exe` | 2.68 MB |
 
 **安装 = 升级，不再"卸载旧版"（2026-10-20）**：Tauri 原版 NSIS 在检测到旧版本时
 会弹一个选择页，且把「安装前卸载旧版本」设为**默认选中**——用户点「下一步」就先跑
@@ -274,6 +274,20 @@ VaultPage 渲染真实条目（站点/账号 CRUD、复制密码/TOTP 走 `sk_va
 3. **批量重查失败留痕**：`recheckAllFailed` 单项重查失败原来只进
    `console.warn`——用户永远看不到。现在写进修复记录（只进 console 的错误
    等于没记录）。
+
+**蓝牙连接优化（v1.9.3，2026-10-23）**：
+
+1. **空结果不是错误**（真机定位）：设备不在范围内时 `FromBluetoothAddressAsync`
+   返回成功但结果为空，windows crate 包成 `HRESULT 0`（"操作成功完成"）的 Err。
+   原来当异常处理 → 9 台里 7 台显示"离线"；现在按"设备不可达"处理，
+   全部显示"未连接"（语义正确），9 台探测 57ms。
+2. **蓝牙无线电状态**（`Windows.Devices.Radios`）：区分"蓝牙没开"与"设备没连"
+   ——两者都表现为探测失败，但用户该做的事完全不同。关闭时页面顶部横幅
+   提示 + 直达设置，并跳过探测（省 3 秒等待）。
+3. **电量缓存 60 秒**：GATT 读取有成本，缓存命中的设备不必再等；
+   显示时标注"缓存"，不把旧读数当现状。
+4. **自动探测只探已连接设备**（3 分钟一次）：电量只会在连着的时候变，
+   不必每次把 9 台（多数离线）全跑一遍。探测超时 4s → 3s。
 
 **蓝牙设备电量与管理（v1.9.0 → v1.9.1 修复，2026-10-22）**：
 
@@ -624,7 +638,7 @@ npm run package    # 出安装包（tauri build → NSIS）
 | 产物 | 路径 |
 |---|---|
 | 可执行文件 | `src-tauri/target/release/SysKit.exe` |
-| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.2_x64-setup.exe` |
+| NSIS 安装包 | `src-tauri/target/release/bundle/nsis/SysKit_1.9.3_x64-setup.exe` |
 
 配置要点（`src-tauri/tauri.conf.json`）：
 - `bundle.targets = ["nsis"]`，图标 `icons/icon.ico`（内含 7 个尺寸）；
@@ -908,7 +922,7 @@ Python 版退役（tag `python-final`）时与 `syskit/ui/theme.py` 逐值核对
 前置：真机冒烟 12 项全绿（`tools/test_smoke_real_rs.py --run-real`）。
 
 1. **产物**：`npx tauri build` → `src-tauri/target/release/SysKit.exe` +
-   `bundle/nsis/SysKit_1.9.2_x64-setup.exe`（安装向导，含卸载信息）。
+   `bundle/nsis/SysKit_1.9.3_x64-setup.exe`（安装向导，含卸载信息）。
 2. **数据零迁移**：Rust 版与 Python 版读写同一 `%APPDATA%\SysKit`（便携模式同
    `<安装目录>\data`）——settings/clipboard.json/traffic/events/netstats_buckets/
    vault.db+key 全部格式逐字节对齐（各有奇偶校验或双向 fixture 锁定）。
